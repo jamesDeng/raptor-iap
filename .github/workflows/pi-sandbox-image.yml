@@ -1,0 +1,83 @@
+name: Pi sandbox image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['components/agent-sandbox/**', '.github/workflows/pi-sandbox-image.yml']
+  pull_request:
+    branches: [main]
+    paths: ['components/agent-sandbox/**', '.github/workflows/pi-sandbox-image.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: components/agent-sandbox
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: raptor-iap-pi:test
+          provenance: false
+          sbom: false
+      - name: Offline acceptance
+        shell: bash
+        run: components/agent-sandbox/check-image.sh raptor-iap-pi:test
+      - name: Prepare tested image manifest
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          skopeo copy --dest-compress docker-daemon:raptor-iap-pi:test dir:tested-image
+          skopeo manifest-digest tested-image/manifest.json > tested-image/digest.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tested-image
+          path: tested-image/
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: build-test
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: pi-image-publish-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tested-image
+          path: tested-image
+      - name: Install registry client
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish or reuse immutable source tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: components/agent-sandbox/publish-image.sh tested-image

@@ -29,3 +29,13 @@ The script creates a real container using the image's default command with netwo
 Local shell syntax checks are available; Docker is absent on the development Mac. Real image build and offline acceptance results must come from the Actions run before describing this image as verified. A passing offline check proves neither Aliyun reachability nor Gen2 execution, model integration, secret retrieval, or operation safety.
 
 The Docker context admits only its Dockerfile and ignore file. Do not add API keys, registry credentials, `.env` files, Pi sessions or model configuration to it.
+
+## Actions publication
+
+The Pi sandbox image workflow builds on Ubuntu 24.04 with a 20-minute job timeout. Main pushes and pull requests run only when the component or workflow changes; manual dispatch is also available. All runs build Linux AMD64 and execute the offline checks. The build/test job has read-only repository access. Only a successful main push or main manual run can start the publish job, which adds package write access through the built-in `GITHUB_TOKEN`.
+
+After acceptance, Skopeo prepares the tested Docker image as a compressed registry manifest and layers. An Actions artifact retains those files for one day. The publish job downloads that image and preserves its manifest digest during copy; it never rebuilds it. Publications for the same commit are serialized. The full source tag is `ghcr.io/jamesdeng/raptor-iap-pi:sha-<40-character-source-commit>`. An existing identical manifest is reused; different content fails without overwriting the tag. Authentication, network and unexpected registry errors fail publication rather than being treated as a missing tag. The job verifies the registry digest and records source, tag and digest in its summary.
+
+GHCR creates new packages privately by default; this workflow contains no visibility-changing operation. A package's actual private visibility must also be checked through authenticated metadata after the first publication. No personal access token or cloud/model secret is used by this workflow.
+
+Local workflow and shell validation is complete. Remote build, offline container checks and GHCR publication remain pending. A release evidence update must record the successful run URL, full source commit, tag, registry digest, AMD64 metadata and observed private visibility before this document claims a verified release. Aliyun template creation, Gen2 launch, secret retrieval and OpenAI calls remain untested.
