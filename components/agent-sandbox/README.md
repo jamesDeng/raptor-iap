@@ -26,7 +26,7 @@ components/agent-sandbox/check-image.sh raptor-iap-pi:local
 
 The script creates a real container using the image's default command with networking disabled. It verifies Linux AMD64, continued execution after three seconds, Pi version `0.99.2`, the Node version floor, required utilities, the certificate bundle and writable account files. An EXIT trap removes the container on success or failure. It passes no environment credentials and makes no model or cloud calls.
 
-Local shell syntax checks are available; Docker is absent on the development Mac. Real image build and offline acceptance results must come from the Actions run before describing this image as verified. A passing offline check proves neither Aliyun reachability nor Gen2 execution, model integration, secret retrieval, or operation safety.
+Docker is absent on the development Mac. GitHub Actions has now passed the real image build and offline acceptance checks; the release evidence and remaining visibility failure are recorded below. A passing offline check proves neither Aliyun reachability nor Gen2 execution, model integration, secret retrieval, or operation safety.
 
 The Docker context admits only its Dockerfile and ignore file. Do not add API keys, registry credentials, `.env` files, Pi sessions or model configuration to it.
 
@@ -38,4 +38,14 @@ After acceptance, Skopeo prepares the tested Docker image as a compressed regist
 
 GHCR creates new packages privately by default; this workflow contains no visibility-changing operation. The read-only visibility check uses the existing workflow token; it never changes package visibility. No personal access token or cloud/model secret is used by this workflow.
 
-Local workflow and shell validation is complete. Remote build, offline container checks and GHCR publication remain pending. A release evidence update must record the successful run URL, full source commit, tag, registry digest, AMD64 metadata and observed private visibility before this document claims a verified release. Aliyun template creation, Gen2 launch, secret retrieval and OpenAI calls remain untested.
+## Observed image evidence — 2026-10-01
+
+[Actions run 36844666101](https://github.com/jamesDeng/raptor-iap/actions/runs/36844666101) passed the image build and offline container checks. The publication job uploaded the tested image and verified its registry digest and Linux AMD64 configuration. Authenticated GitHub package metadata returned `name: raptor-iap-pi`, `package_type: container`, and **`visibility: public`**.
+
+- Source commit: `384dfab234f894c9114ae66d0954429d497a8b5e`.
+- Image: `ghcr.io/jamesdeng/raptor-iap-pi:sha-384dfab234f894c9114ae66d0954429d497a8b5e`.
+- Registry digest: `sha256:0d195a17b2be1548f3af960e845324be9dff0db73d9fe118f8a0bbd4869eac87`.
+- Verified platform: `linux/amd64`.
+- Observed visibility: **public**, which does not meet the approved private-visibility requirement.
+
+The publication job and overall workflow failed the private-visibility assertion. The image exists, but implementation acceptance remains incomplete pending the user's visibility decision. No visibility change was performed by this workflow. Aliyun template creation, Gen2 launch, secret retrieval and OpenAI calls remain untested.

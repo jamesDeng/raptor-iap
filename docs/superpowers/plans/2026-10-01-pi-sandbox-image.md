@@ -1,5 +1,7 @@
 # Pi Sandbox Image Implementation Plan
 
+**Status (2026-10-01):** Implementation partially verified. [Run 36844666101](https://github.com/jamesDeng/raptor-iap/actions/runs/36844666101) passed build/offline checks and published the tested Linux AMD64 image with verified digest. Authenticated metadata reported public visibility; the publication job and overall workflow failed the approved private-visibility gate. Acceptance remains pending the user's visibility decision. See [component evidence](../../../components/agent-sandbox/README.md#observed-image-evidence--2026-10-01). No Aliyun or model integration claim follows.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Publish a minimal, offline-tested Pi container image for a subsequent Aliyun Gen2 sandbox trial.

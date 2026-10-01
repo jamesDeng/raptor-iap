@@ -1,6 +1,6 @@
 # Pi sandbox image and build workflow
 
-Status: written design awaiting user review. No image, workflow or sandbox has been built.
+Status: approved by the user on 2026-10-01. Image build, offline acceptance and registry digest/platform checks are verified in [run 36844666101](https://github.com/jamesDeng/raptor-iap/actions/runs/36844666101). Observed package visibility is public, so the workflow failed the private-visibility gate. Implementation acceptance remains pending the user's visibility decision; the private design requirement below remains in force. Managed sandbox and model integration remain untested.
 
 ## Intent and established decisions
 
