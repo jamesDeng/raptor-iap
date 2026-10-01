@@ -1,0 +1,4 @@
+# This image fetches its pinned package; no local files belong in the build.
+**
+!Dockerfile
+!.dockerignore

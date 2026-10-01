@@ -1,0 +1,24 @@
+# Local environment and runtime sessions
+.env*
+**/.env*
+.pi/
+**/.pi/
+
+# Credential stores and key material
+credentials/
+**/credentials/
+secrets/
+**/secrets/
+.aws/
+**/.aws/
+.ssh/
+**/.ssh/
+.npmrc
+**/.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*service-account*.json
+.DS_Store
