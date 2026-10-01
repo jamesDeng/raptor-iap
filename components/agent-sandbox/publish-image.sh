@@ -69,6 +69,10 @@ status="$(curl --silent --show-error --config "$work/github-auth" \
   echo "Package metadata lookup failed (HTTP $status); private visibility is unverified." >&2
   exit 1
 }
+# Selected non-secret diagnostics remain available if visibility verification fails.
+jq '{name, visibility, package_type}' "$work/package.json"
+printf 'Verified source: %s\nVerified image: %s\nVerified digest: %s\nVerified platform: linux/amd64\n' \
+  "$GITHUB_SHA" "$reference" "$expected"
 jq -e '.visibility == "private"' "$work/package.json" >/dev/null || {
   echo 'Package visibility is not private; release verification failed.' >&2
   exit 1
