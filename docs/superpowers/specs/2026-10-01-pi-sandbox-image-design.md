@@ -1,6 +1,6 @@
 # Pi sandbox image and build workflow
 
-Status: approved by the user on 2026-10-01. Image build, offline acceptance and registry digest/platform checks are verified in [run 36844666101](https://github.com/jamesDeng/raptor-iap/actions/runs/36844666101). Observed package visibility is public, so the workflow failed the private-visibility gate. Implementation acceptance remains pending the user's visibility decision; the private design requirement below remains in force. Managed sandbox and model integration remain untested.
+Status: approved by the user on 2026-10-01. Image build, offline acceptance and registry digest/platform checks are verified in [run 36844666101](https://github.com/jamesDeng/raptor-iap/actions/runs/36844666101). Observed package visibility is public, so the workflow failed the private-visibility gate. On 2026-10-02 the user explicitly decided to keep the image public, superseding the original private requirement. Implementation acceptance remains pending a successful run of the updated public-visibility gate. Managed sandbox and model integration remain untested.
 
 ## Intent and established decisions
 
@@ -31,7 +31,7 @@ Build only `linux/amd64`, as required by Aliyun. Keep the container alive with `
 
 Run on manual dispatch and changes to the image/workflow on `main`; pull requests run build/tests without publication. Publish only from the trusted `main` branch after tests pass. Use the workflow's built-in `GITHUB_TOKEN`, with explicit `contents: read` and `packages: write`; no Aliyun credential or personal token is needed in Actions for this slice. Pin external Actions by full commit SHA, with the corresponding release noted.
 
-Publish `ghcr.io/jamesdeng/raptor-iap-pi:sha-<full-commit-sha>`. Do not overwrite a published source tag with different content; an identical rerun may reuse it, and a different result must use a distinct tag. Record the pushed digest in the job summary. Keep the package's initial private visibility; the dedicated GHCR token will provide Aliyun pull/push access later. The public source repository does not imply public package visibility.
+Publish `ghcr.io/jamesdeng/raptor-iap-pi:sha-<full-commit-sha>`. Do not overwrite a published source tag with different content; an identical rerun may reuse it, and a different result must use a distinct tag. Record the pushed digest in the job summary. Require observed public package visibility, as explicitly selected by the user on 2026-10-02. This supersedes the initial private-visibility assumption. Verify visibility through authenticated package metadata without changing it; any other visibility fails release verification. The dedicated GHCR token remains separate for later Aliyun registry handling.
 
 ## Credential boundary
 

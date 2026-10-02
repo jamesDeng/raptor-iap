@@ -66,18 +66,18 @@ status="$(curl --silent --show-error --config "$work/github-auth" \
   --output "$work/package.json" --write-out '%{http_code}' \
   'https://api.github.com/users/jamesDeng/packages/container/raptor-iap-pi')"
 [[ "$status" == 200 ]] || {
-  echo "Package metadata lookup failed (HTTP $status); private visibility is unverified." >&2
+  echo "Package metadata lookup failed (HTTP $status); public visibility is unverified." >&2
   exit 1
 }
 # Selected non-secret diagnostics remain available if visibility verification fails.
 jq '{name, visibility, package_type}' "$work/package.json"
 printf 'Verified source: %s\nVerified image: %s\nVerified digest: %s\nVerified platform: linux/amd64\n' \
   "$GITHUB_SHA" "$reference" "$expected"
-jq -e '.visibility == "private"' "$work/package.json" >/dev/null || {
-  echo 'Package visibility is not private; release verification failed.' >&2
+jq -e '.visibility == "public"' "$work/package.json" >/dev/null || {
+  echo 'Package visibility is not public; release verification failed.' >&2
   exit 1
 }
 # Only verified, non-secret release facts reach stdout and the step summary.
 # shellcheck disable=SC2016 # Backticks are literal Markdown formatting.
-printf '### Pi image release\n\n%s\n\n- Source: `%s`\n- Image: `%s`\n- Digest: `%s`\n- Visibility: private\n- Platform: linux/amd64\n' \
+printf '### Pi image release\n\n%s\n\n- Source: `%s`\n- Image: `%s`\n- Digest: `%s`\n- Visibility: public\n- Platform: linux/amd64\n' \
   "$result" "$GITHUB_SHA" "$reference" "$expected" | tee -a "$GITHUB_STEP_SUMMARY"
