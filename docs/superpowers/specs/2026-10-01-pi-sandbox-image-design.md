@@ -1,6 +1,6 @@
 # Pi sandbox image and build workflow
 
-Status: approved by the user on 2026-10-01. Image build, offline acceptance and registry digest/platform checks are verified in [run 36844666101](https://github.com/jamesDeng/raptor-iap/actions/runs/36844666101). Observed package visibility is public, so the workflow failed the private-visibility gate. On 2026-10-02 the user explicitly decided to keep the image public, superseding the original private requirement. Implementation acceptance remains pending a successful run of the updated public-visibility gate. Managed sandbox and model integration remain untested.
+Status: approved by the user on 2026-10-01. Image build, offline acceptance and registry digest/platform checks are verified in [run 36844666101](https://github.com/jamesDeng/raptor-iap/actions/runs/36844666101). Observed package visibility is public, so the workflow failed the private-visibility gate. On 2026-10-02 the user explicitly decided to keep the image public, superseding the original private requirement. The amended image slice completed successfully in [run 36947281741](https://github.com/jamesDeng/raptor-iap/actions/runs/36947281741): build, offline acceptance, registry digest/platform and public visibility checks passed. Exact release evidence is recorded in the component README. Managed sandbox and model integration remain untested.
 
 ## Intent and established decisions
 

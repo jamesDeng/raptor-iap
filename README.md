@@ -4,6 +4,6 @@ This repository starts with a minimal Pi container for later Aliyun Agent Sandbo
 
 See [the agent sandbox image](components/agent-sandbox/README.md) for pinned versions, build instructions and offline acceptance checks.
 
-This slice establishes image construction and offline CLI startup once the Docker checks pass. Aliyun template creation, managed sandbox execution, secret-store retrieval, OpenAI calls and infrastructure operations remain separate integration work. No deployment or performance claim follows from the image checks.
+The image slice is verified: [Actions run 36947281741](https://github.com/jamesDeng/raptor-iap/actions/runs/36947281741) passed the Linux AMD64 build, offline CLI checks and public GHCR publication. The component documentation records the immutable source tag and verified digest. Aliyun template creation, managed sandbox execution, secret-store retrieval, OpenAI calls and infrastructure operations remain separate integration work. No deployment or performance claim follows from the image checks.
 
 Keep credentials outside Git and container images. No credential is required by the offline acceptance checks.

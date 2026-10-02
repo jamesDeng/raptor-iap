@@ -48,4 +48,17 @@ On 2026-10-02 the user explicitly decided to keep the image public, superseding 
 - Verified platform: `linux/amd64`.
 - Observed visibility: **public**, which failed the private requirement in force during this run.
 
-The publication job and overall workflow failed the old private-visibility assertion. The user decided on 2026-10-02 to keep the image public. The updated workflow now requires public visibility; acceptance remains pending a successful run of that updated gate. No visibility change was performed by this workflow. Aliyun template creation, Gen2 launch, secret retrieval and OpenAI calls remain untested.
+The publication job and overall workflow failed the old private-visibility assertion. The user decided on 2026-10-02 to keep the image public. The updated workflow requires public visibility and passed that gate in the October 2 release below. No visibility change was performed by this workflow. Aliyun template creation, Gen2 launch, secret retrieval and OpenAI calls remain untested.
+
+
+## Verified public release — 2026-10-02
+
+[Actions run 36947281741](https://github.com/jamesDeng/raptor-iap/actions/runs/36947281741) completed successfully: both build/test and publication jobs passed. The real container acceptance checks ran with networking disabled. The publication job transferred the tested image, verified its registry digest and Linux AMD64 configuration, and confirmed public visibility through authenticated package metadata.
+
+- Source commit: `3e44067371c5dad9c3224d3fecc0b2847a6d009b`.
+- Image: `ghcr.io/jamesdeng/raptor-iap-pi:sha-3e44067371c5dad9c3224d3fecc0b2847a6d009b`.
+- Registry digest: `sha256:4fc6772c0577156f5722d7474e3e1ea30173496f63acf5253f35c7c512535289`.
+- Verified platform: `linux/amd64`.
+- Verified visibility: **public**, as explicitly selected by the user on October 2.
+
+This completes the image build/offline verification/publication slice. The earlier private-gate failure above remains historical evidence. Aliyun template creation, Gen2 launch, secret retrieval, OpenAI calls and infrastructure operations remain untested.
