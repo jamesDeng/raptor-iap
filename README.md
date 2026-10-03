@@ -9,3 +9,5 @@ The image slice is verified: [Actions run 36947281741](https://github.com/jamesD
 Keep credentials outside Git and container images. No credential is required by the offline acceptance checks.
 
 The [AgenticFS bootstrap tool](docs/setup/agenticfs-bootstrap.md) adds locally tested setup/reconciliation and guarded cleanup for storage APIs not covered by the official Terraform provider. Networking and permissions remain Terraform-owned. Actual storage creation, mounting and Pi credential persistence are not yet verified.
+
+Terraform storage-network preparation: [network/RAM guide](docs/setup/sandbox-storage-network.md). Network creation, mounting and model-session persistence remain separate live acceptance stages.
