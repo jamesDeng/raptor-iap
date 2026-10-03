@@ -1,6 +1,8 @@
 """Official SDK boundary. No cloud request occurs at module import."""
 import re
 import time
+import os
+import hmac
 
 
 class StorageError(Exception):
@@ -44,7 +46,11 @@ class StorageAPI:
             if code is not None and str(code) not in ("200", "OK", "Success"):
                 raise ValueError()
             return body
-        except Exception:
+        except Exception as error:
+            if getattr(error, "code", None) in {
+                    "InvalidFileSystem.NotFound", "InvalidAccessPoint.NotFound",
+                    "InvalidAgenticSpace.NotFound", "VolumeNotFound"}:
+                raise StorageError("ResourceNotFound") from None
             # Raw SDK messages may include request headers or credentials.
             raise StorageError("SDKRequestFailed") from None
 
@@ -74,6 +80,8 @@ class StorageAPI:
         self.filesystem_id = id
         result = self._call(self.nas, "describe_file_systems", self.n.DescribeFileSystemsRequest(file_system_id=id))
         rows = result.get("FileSystems", {}).get("FileSystem", [])
+        if result.get("TotalCount") == 0 and not rows:
+            raise StorageError("ResourceNotFound")
         if len(rows) != 1 or rows[0].get("FileSystemId") != id:
             raise StorageError("ResourceMismatch")
         return rows[0]
@@ -171,3 +179,82 @@ class StorageAPI:
     def owns_filesystem(self, row):
         return (row.get("StorageType") == "Agentic" and row.get("ProtocolType") == "NFS"
                 and row.get("Description") == "raptor-" + self.owner_nonce and self.has_owner_tag(row))
+
+    def active_consumers(self):
+        if self.consumer_checker is not None:
+            return self.consumer_checker()
+        # Bind the E2B key to the intended Team using the authenticated POP API.
+        key_id, key = os.environ.get("E2B_API_KEY_ID"), os.environ.get("E2B_API_KEY")
+        if not key_id or not key:
+            raise StorageError("ConsumerCheckUnavailable")
+        info = self._call(self.volumes, "describe_api_key", key_id,
+                          self.f.DescribeApiKeyRequest()).get("apiKey", {})
+        actual = info.get("apiKeyValue")
+        if info.get("teamID") != self.cfg.team_id or not isinstance(actual, str) or not hmac.compare_digest(actual, key):
+            raise StorageError("ConsumerTeamUnverified")
+        try:
+            from e2b import Sandbox
+            from e2b.sandbox.sandbox_api import SandboxQuery
+            from e2b.api.client.models.sandbox_state import SandboxState
+            pager = Sandbox.list(query=SandboxQuery(state=[SandboxState.RUNNING, SandboxState.PAUSED]),
+                                 api_key=key, domain="ap-southeast-1.sandbox.aliyuncs.com",
+                                 api_url="https://api.ap-southeast-1.sandbox.aliyuncs.com",
+                                 request_timeout=30)
+            ids = []
+            while pager.has_next:
+                ids.extend(item.sandbox_id for item in pager.next_items())
+                if ids:
+                    return ids  # Any sandbox in the Team blocks cleanup conservatively.
+            return []
+        except Exception:
+            raise StorageError("ConsumerCheckUnavailable") from None
+
+    def space_is_empty(self, filesystem_id, space_id):
+        row = self.get_space(filesystem_id, space_id)
+        values = [row.get("SpaceUsage"), row.get("FileCountUsage")]
+        if any(type(value) is not int or value < 0 for value in values):
+            raise StorageError("UnverifiableOccupancy")
+        return values == [0, 0]
+
+    def assert_no_foreign_children(self, inventory):
+        fsid = inventory.get("filesystem_id")
+        if not fsid:
+            return
+        spaces = self._call(self.nas, "describe_agentic_spaces", self.n.DescribeAgenticSpacesRequest(
+            file_system_id=fsid, max_results=100))
+        aps = self._call(self.nas, "describe_access_points", self.n.DescribeAccessPointsRequest(
+            file_system_id=fsid, max_results=100))
+        if spaces.get("NextToken") or aps.get("NextToken"):
+            raise StorageError("UnverifiedChildren")
+        if any(r.get("AgenticSpaceId") != inventory.get("agentic_space_id")
+               for r in spaces.get("AgenticSpaces", {}).get("AgenticSpace", [])):
+            raise StorageError("ForeignChildResource")
+        if any(r.get("AccessPointId") != inventory.get("access_point_id") for r in aps.get("AccessPoints", [])):
+            raise StorageError("ForeignChildResource")
+
+    def delete_volume(self, id):
+        self._call(self.volumes, "delete_volume", id, self.f.DeleteVolumeRequest(team_id=self.cfg.team_id))
+
+    def delete_access_point(self, id):
+        self._call(self.nas, "delete_access_point", self.n.DeleteAccessPointRequest(
+            file_system_id=self.filesystem_id, access_point_id=id))
+
+    def delete_space(self, filesystem_id, space_id):
+        self._call(self.nas, "delete_agentic_space", self.n.DeleteAgenticSpaceRequest(
+            file_system_id=filesystem_id, agentic_space_id=space_id))
+
+    def delete_filesystem(self, id):
+        self._call(self.nas, "delete_file_system", self.n.DeleteFileSystemRequest(file_system_id=id))
+
+    def wait_deleted(self, getter):
+        deadline = time.monotonic() + 120
+        while True:
+            try:
+                getter()
+            except StorageError as error:
+                if str(error) == "ResourceNotFound":
+                    return
+                raise
+            if time.monotonic() >= deadline:
+                raise StorageError("DeletionUnconfirmed")
+            time.sleep(5)

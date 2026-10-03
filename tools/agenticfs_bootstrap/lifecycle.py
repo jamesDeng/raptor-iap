@@ -106,6 +106,8 @@ def ensure_storage(api, config, inventory_path):
                          volume_name="raptor-" + config.run_id + "-" + nonce[:12])
             save_inventory(inventory_path, state)
         bind_inventory(api, config, state)
+        if state.get("phase") in ("deleting", "deleted"):
+            raise StorageError("InventoryBeingDeleted")
         verify_owned(api, state)
         if state.get("pending"):
             reconcile_pending(api, config, state)
@@ -132,5 +134,88 @@ def ensure_storage(api, config, inventory_path):
             save_inventory(inventory_path, state)
             verify_owned(api, state)
         state["phase"] = "ready"
+        save_inventory(inventory_path, state)
+        return state
+
+
+def build_plan(config, inventory):
+    if "fingerprint" in inventory and inventory["fingerprint"] != config.fingerprint:
+        raise StorageError("InventoryConfigMismatch")
+    return {"mode": "plan", "region": config.region, "configuration_fingerprint": config.fingerprint,
+            "sdk_owned": ["AgenticFS", "AgenticSpace", "AccessPoint", "SandboxVolume"],
+            "terraform_owned": ["VPC", "vSwitch", "security_group", "execution_role"],
+            "quota_bytes": 10737418240, "quota_file_count": 10000,
+            "retention": "retain_until_explicit_empty_cleanup", "cloud_verified": False}
+
+
+def cleanup_plan(api, inventory, active_sandbox_ids):
+    bind_inventory(api, api.cfg, inventory)
+    api.assert_identity()
+    consumers = api.active_consumers()
+    if active_sandbox_ids or consumers:
+        raise StorageError("ActiveConsumers")
+    if inventory.get("pending"):
+        raise StorageError("UncertainOperation")
+    verify_owned(api, inventory)
+    api.assert_no_foreign_children(inventory)
+    if inventory.get("agentic_space_id") and not api.space_is_empty(inventory["filesystem_id"], inventory["agentic_space_id"]):
+        raise StorageError("StoredDataPresent")
+    return {"mode": "cleanup-plan", "order": [key for key in (
+        "volume_id", "access_point_id", "agentic_space_id", "filesystem_id") if inventory.get(key)],
+        "data_deletion": False}
+
+
+def cleanup_empty_storage(api, inventory_path, active_sandbox_ids, allow_empty_delete):
+    if not allow_empty_delete:
+        raise StorageError("CleanupNotSelected")
+    with inventory_lock(inventory_path):
+        state = read_inventory(inventory_path)
+        if state.get("pending", "").startswith("delete-"):
+            bind_inventory(api, api.cfg, state)
+            api.assert_identity()
+            if active_sandbox_ids or api.active_consumers():
+                raise StorageError("ActiveConsumers")
+            key = state["pending"][7:]
+            getters = {"volume_id": lambda: api.get_volume(state[key]),
+                       "access_point_id": lambda: api.get_access_point(state[key]),
+                       "agentic_space_id": lambda: api.get_space(state["filesystem_id"], state[key]),
+                       "filesystem_id": lambda: api.get_filesystem(state[key])}
+            if state.get("phase") != "deleting" or key not in getters or not state.get(key):
+                raise StorageError("InvalidPendingStage")
+            recovered = dict(state)
+            try:
+                getters[key]()
+            except StorageError as error:
+                if str(error) != "ResourceNotFound":
+                    raise
+                recovered.pop(key)
+            recovered.pop("pending")
+            cleanup_plan(api, recovered, active_sandbox_ids)
+            save_inventory(inventory_path, recovered)
+            state = recovered
+        cleanup_plan(api, state, active_sandbox_ids)
+        steps = [
+            ("volume_id", lambda id: api.delete_volume(id), lambda id: api.get_volume(id)),
+            ("access_point_id", lambda id: api.delete_access_point(id), lambda id: api.get_access_point(id)),
+            ("agentic_space_id", lambda id: api.delete_space(state["filesystem_id"], id), lambda id: api.get_space(state["filesystem_id"], id)),
+            ("filesystem_id", lambda id: api.delete_filesystem(id), lambda id: api.get_filesystem(id)),
+        ]
+        for key, delete, get in steps:
+            if not state.get(key):
+                continue
+            if api.active_consumers():
+                raise StorageError("ActiveConsumers")
+            api.assert_no_foreign_children(state)
+            if state.get("agentic_space_id") and not api.space_is_empty(state["filesystem_id"], state["agentic_space_id"]):
+                raise StorageError("StoredDataPresent")
+            state["phase"], state["pending"] = "deleting", "delete-" + key
+            save_inventory(inventory_path, state)
+            id = state[key]
+            delete(id)
+            api.wait_deleted(lambda: get(id))
+            state.pop(key)
+            state.pop("pending")
+            save_inventory(inventory_path, state)
+        state["phase"] = "deleted"
         save_inventory(inventory_path, state)
         return state
