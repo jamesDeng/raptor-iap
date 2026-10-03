@@ -31,6 +31,7 @@ INVENTORY_FIELDS = {
     "schema_version", "fingerprint", "run_id", "phase", "client_tokens",
     "filesystem_id", "agentic_space_id", "access_point_id", "access_point_domain",
     "volume_id", "volume_name", "pending", "account_id", "region", "team_id",
+    "owner_nonce",
 }
 Inventory = dict
 
