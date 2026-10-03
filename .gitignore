@@ -22,3 +22,13 @@ secrets/
 *credentials*.json
 *service-account*.json
 .DS_Store
+
+# Local infrastructure state and Python tooling
+.raptor-local/
+**/.raptor-local/
+*terraform-output*.json
+*.tfstate*
+.terraform/
+.venv/
+__pycache__/
+*.pyc
