@@ -1,6 +1,6 @@
 # Terraform network and RAM for the Singapore storage experiment
 
-Status: the user approved the proposed approach on October 3, 2026. This written spec awaits review before implementation planning. No resources have been provisioned by this slice.
+Status: the user approved the proposed approach and then this written spec on October 3, 2026. Implementation planning is authorized. No resources have been provisioned by this slice.
 
 ## Purpose and accepted constraints
 
@@ -92,4 +92,4 @@ Terminate and confirm all experiment sandboxes first. SDK cleanup must verify em
 - [FC supported vSwitch zones/network modes](https://help.aliyun.com/zh/functioncompute/configure-network-settings).
 - [AgenticFS billing](https://help.aliyun.com/zh/nas/product-overview/billing-of-agenticfs) and [linked product pricing](https://www.aliyun.com/page-source/price/detail/markets/aliyun/nasnext).
 
-Self-review: this spec covers Terraform network/RAM preparation only. Optional storage IDs represent explicit deployment stages, not unfilled requirements. No wildcard interim data grant, installed Terraform runtime, Singapore unit price, applied resources or successful mounting is asserted. Architecture approval permits drafting this spec; written-spec approval is still required before implementation planning.
+Self-review: this spec covers Terraform network/RAM preparation only. Optional storage IDs represent explicit deployment stages, not unfilled requirements. No wildcard interim data grant, installed Terraform runtime, Singapore unit price, applied resources or successful mounting is asserted. The written spec is approved; implementation starts only after the implementation-plan review.
