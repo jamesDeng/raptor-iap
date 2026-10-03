@@ -26,5 +26,5 @@ jobs:
           .venv/bin/python -m pip install -r tools/agenticfs_bootstrap/requirements.txt
       - name: Test without cloud credentials
         run: |
-          .venv/bin/python -m unittest discover -s tests -v
+          .venv/bin/python -m unittest discover -s tests -p test_agenticfs_bootstrap.py -v
           .venv/bin/python -m tools.agenticfs_bootstrap --help
