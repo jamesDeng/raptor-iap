@@ -1,6 +1,6 @@
 # AgenticFS storage bootstrap implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for inline execution or superpowers:subagent-driven-development if the user selects delegation. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for inline execution or superpowers:subagent-driven-development if the user selects delegation. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build and locally verify a repeatable setup/cleanup tool for storage objects missing from the official Terraform provider.
 
@@ -46,11 +46,11 @@
 
 Configuration requires account_id, region, zone, team_id, vpc_id, vswitch_id, security_group_id, execution_role_arn, runtime_uid, runtime_gid and run_id. Terraform output JSON supplies the network/role values. Runtime UID/GID must be measured from the selected template, not assumed from documentation examples. Inventory stores schema_version=1, config fingerprint, run_id, phase, client tokens, filesystem_id, agentic_space_id, access_point_id, access_point_domain and volume_id/name. No auth record, API key or secret belongs in either file.
 
-- [ ] Write `test_config_rejects_wrong_region_and_missing_outputs`, `test_inventory_rejects_unknown_secret_fields`, `test_inventory_replace_preserves_previous_record_on_failure`: assert invalid inputs raise before any client call; schema forbids access_token, refresh_token and api_key; failed atomic replace leaves the previous complete record readable.
-- [ ] Run `python3 -m unittest discover -s tests -p 'test_agenticfs_bootstrap.py' -v`; verify the new tests fail because the implementation is absent.
-- [ ] Implement the three interfaces with strict field validation, same-directory temporary file, fsync, replace and directory fsync; inventory permissions 0600, parent 0700.
-- [ ] Rerun the tests and verify all assertions pass.
-- [ ] Commit this task with its tests and inventory ignore rules.
+- [x] Write `test_config_rejects_wrong_region_and_missing_outputs`, `test_inventory_rejects_unknown_secret_fields`, `test_inventory_replace_preserves_previous_record_on_failure`: assert invalid inputs raise before any client call; schema forbids access_token, refresh_token and api_key; failed atomic replace leaves the previous complete record readable.
+- [x] Run `python3 -m unittest discover -s tests -p 'test_agenticfs_bootstrap.py' -v`; verify the new tests fail because the implementation is absent.
+- [x] Implement the three interfaces with strict field validation, same-directory temporary file, fsync, replace and directory fsync; inventory permissions 0600, parent 0700.
+- [x] Rerun the tests and verify all assertions pass.
+- [x] Commit this task with its tests and inventory ignore rules.
 
 ## Task 2: SDK adapters and recoverable setup
 
@@ -60,11 +60,11 @@ Resolve the official SDK schemas before pinning dependencies. Use the normal cre
 
 API sequence: CreateFileSystem(StorageType=Agentic, ProtocolType=NFS, FileSystemType=standard), wait Running; CreateAgenticSpace(Azone=ap-southeast-1a, FileSystemPath=/raptor-<run_id>, Quota.SizeLimit=10737418240, Quota.FileCountLimit=10000); CreateAccessPoint(FileSystemId, AgenticSpaceId, VpcId, VswId, EnabledRam=true), wait active; fcsandbox CreateVolume using actual AccessPointDomain with `:/` and measured UID/GID. The 10-GiB value is an API quota ceiling, not a claim about minimum billed usage.
 
-- [ ] Write `test_setup_request_fields_and_order`, `test_rerun_reuses_recorded_ids`, `test_uncertain_create_stops_before_duplicate`, `test_wrong_team_volume_is_rejected`, `test_sdk_error_is_redacted`: assert the exact API fields above; AccessGroup, RootDirectory and PosixUserId absent; second run makes zero creates; uncertain outcome requires uniquely matching inventory intent; mismatch produces zero writes; secret-bearing fake error text never appears in output.
-- [ ] Run the offline test command and verify new tests fail.
-- [ ] Implement adapters and lifecycle. Record intent/client tokens before calls, successful IDs immediately afterwards, bounded readiness waits of 120 seconds with five-second polls. For APIs without idempotency tokens, reconcile by actual list/get data and run-specific intent; if identity is ambiguous, stop. Serialize invocations with a local exclusive lock; this tool is not distributed orchestration.
-- [ ] Run all offline tests; resolve/pin SDK versions and verify construction/serialization against installed SDK models without calling the cloud.
-- [ ] Commit adapters, lifecycle and tests.
+- [x] Write `test_setup_request_fields_and_order`, `test_rerun_reuses_recorded_ids`, `test_uncertain_create_stops_before_duplicate`, `test_wrong_team_volume_is_rejected`, `test_sdk_error_is_redacted`: assert the exact API fields above; AccessGroup, RootDirectory and PosixUserId absent; second run makes zero creates; uncertain outcome requires uniquely matching inventory intent; mismatch produces zero writes; secret-bearing fake error text never appears in output.
+- [x] Run the offline test command and verify new tests fail.
+- [x] Implement adapters and lifecycle. Record intent/client tokens before calls, successful IDs immediately afterwards, bounded readiness waits of 120 seconds with five-second polls. For APIs without idempotency tokens, reconcile by actual list/get data and run-specific intent; if identity is ambiguous, stop. Serialize invocations with a local exclusive lock; this tool is not distributed orchestration.
+- [x] Run all offline tests; resolve/pin SDK versions and verify construction/serialization against installed SDK models without calling the cloud.
+- [x] Commit adapters, lifecycle and tests.
 
 ## Task 3: Inspection, plans and safe cleanup
 
@@ -74,11 +74,11 @@ Extend `StorageAPI` with `delete_volume(id: str) -> None`, `delete_access_point(
 
 Plan output lists SDK-owned objects, dependencies and retention. Apply is explicit, requires recorded account/region/Team match, verified pricing/remaining budget and reviewed network/role inputs; absent evidence returns a blocking error. This plan authorizes building the tool, not live apply. SDK deletion order is Volume metadata → Access Point → AgenticSpace → filesystem. Only tool-owned resources are eligible; backend occupancy must be verified as empty, all dependent sandboxes terminated, and explicit empty-delete selection provided. If occupancy cannot be established, cleanup stops. Never remove files/auth records as part of infrastructure cleanup. Terraform networking teardown occurs separately after SDK-owned dependents are gone.
 
-- [ ] Write `test_default_command_does_not_mutate`, `test_apply_without_price_evidence_stops`, `test_cleanup_refuses_active_consumer_or_nonempty_space`, `test_child_delete_failure_preserves_parent`, `test_cleanup_rejects_foreign_inventory`: assert zero mutations in each blocked case; failure leaves parents untouched and remaining IDs saved.
-- [ ] Run the offline suite and verify these tests fail.
-- [ ] Implement the interfaces and docs. Allowlisted output includes stage, resource IDs, request ID, error code and remaining-resource count. Cleanup plan is the default; executing cleanup is an explicit separate command.
-- [ ] Verify the full suite passes, invoke the module with `--help` and a synthetic plan fixture, scan tracked changes for secret fixtures, and review the final diff. No credentials or paid resources required for acceptance.
-- [ ] Commit CLI, cleanup and documentation.
+- [x] Write `test_default_command_does_not_mutate`, `test_apply_without_price_evidence_stops`, `test_cleanup_refuses_active_consumer_or_nonempty_space`, `test_child_delete_failure_preserves_parent`, `test_cleanup_rejects_foreign_inventory`: assert zero mutations in each blocked case; failure leaves parents untouched and remaining IDs saved.
+- [x] Run the offline suite and verify these tests fail.
+- [x] Implement the interfaces and docs. Allowlisted output includes stage, resource IDs, request ID, error code and remaining-resource count. Cleanup plan is the default; executing cleanup is an explicit separate command.
+- [x] Verify the full suite passes, invoke the module with `--help` and a synthetic plan fixture, scan tracked changes for secret fixtures, and review the final diff. No credentials or paid resources required for acceptance.
+- [x] Commit CLI, cleanup and documentation.
 
 ## Later cloud acceptance gate
 

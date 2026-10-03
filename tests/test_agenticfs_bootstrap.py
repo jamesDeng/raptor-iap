@@ -88,6 +88,8 @@ class FakeTransport:
         self.calls = []
         self.data = {}
         self.fail = None
+        self.fail_after = None
+        self.responses = {}
 
     def __getattr__(self, name):
         def call(*args):
@@ -97,6 +99,8 @@ class FakeTransport:
                 raise RuntimeError("synthetic-secret-do-not-print")
             if name == "get_caller_identity":
                 result = {"AccountId": "1234567890123456"}
+            elif name == "get_team":
+                result = {"team": {"teamID": "team-fixture"}}
             elif name == "create_file_system":
                 self.data["fs"] = dict(request, Tags={"Tag": request["Tag"]}, FileSystemId="fs-test", Status="Running", RegionId="ap-southeast-1")
                 result = {"FileSystemId": "fs-test"}
@@ -122,7 +126,7 @@ class FakeTransport:
             elif name == "describe_access_points":
                 result = {"AccessPoints": [self.data["ap"]] if "ap" in self.data else []}
             elif name == "create_volume":
-                self.data["volume"] = dict(request["body"], volumeID="vol-test", status="active")
+                self.data["volume"] = dict(request["body"], volumeID="vol-test", status="AVAILABLE")
                 result = {"volume": self.data["volume"]}
             elif name == "get_volume":
                 if "volume" not in self.data:
@@ -137,6 +141,23 @@ class FakeTransport:
                 result = {}
             else:
                 raise AssertionError(name)
+            if self.fail_after == name:
+                raise RuntimeError("synthetic-lost-response")
+            result = self.responses.get(name, result)
+            from tools.agenticfs_bootstrap.nas_boundary import validate_children
+            action = {"describe_agentic_spaces": "DescribeAgenticSpaces",
+                      "describe_access_points": "DescribeAccessPoints"}.get(name)
+            validate_children(action, result)
+            # Reproduce fields dropped by the pinned generated response models.
+            from alibabacloud_nas20170626 import models as nas
+            from alibabacloud_fcsandbox20260509 import models as fc
+            model = {"describe_access_points": nas.DescribeAccessPointsResponseBody,
+                     "describe_agentic_spaces": nas.DescribeAgenticSpacesResponseBody,
+                     "get_volume": fc.GetVolumeResponseBody,
+                     "get_team": fc.GetTeamResponseBody}.get(name)
+            if model:
+                body = model().from_map(result)
+                return SimpleNamespace(body=body)
             return SimpleNamespace(body=SimpleNamespace(to_map=lambda: result))
         return call
 
@@ -151,6 +172,19 @@ class APICase(FileCase):
 
 
 class LifecycleTests(APICase):
+
+    def test_real_sdk_raw_boundary_rejects_missing_collections(self):
+        from alibabacloud_nas20170626.client import Client
+        from alibabacloud_tea_openapi.models import Config
+        from tools.agenticfs_bootstrap.nas_boundary import GuardedNAS
+        client = GuardedNAS(Config(endpoint="nas.ap-southeast-1.aliyuncs.com"))
+        cases = [("describe_access_points", self.api.n.DescribeAccessPointsRequest(), {}),
+                 ("describe_agentic_spaces", self.api.n.DescribeAgenticSpacesRequest(),
+                  {"AgenticSpaces": {}})]
+        for method, request, body in cases:
+            with self.subTest(method=method), patch.object(Client, "call_api", return_value={"body": body}):
+                with self.assertRaisesRegex(StorageError, "UnverifiedChildren"):
+                    getattr(client, method)(request)
 
     def test_setup_request_fields_and_order(self):
         state = ensure_storage(self.api, self.cfg, self.path)
@@ -197,6 +231,31 @@ class LifecycleTests(APICase):
         with self.assertRaises(StorageError) as caught:
             ensure_storage(self.api, self.cfg, self.path)
         self.assertNotIn("synthetic-secret", str(caught.exception))
+
+    def test_reconcile_successful_access_point_create_after_lost_response(self):
+        self.transport.fail_after = "create_access_point"
+        with self.assertRaises(StorageError):
+            ensure_storage(self.api, self.cfg, self.path)
+        self.assertEqual(read_inventory(self.path)["pending"], "access_point")
+        self.transport.fail_after = None
+        self.transport.calls.clear()
+        result = ensure_storage(self.api, self.cfg, self.path)
+        self.assertEqual(result["phase"], "ready")
+        self.assertFalse(any(name == "create_access_point" for name, _ in self.transport.calls))
+
+    def test_unknown_team_stops_before_any_create(self):
+        self.transport.responses["get_team"] = {"team": {"teamID": "other-team"}}
+        with self.assertRaisesRegex(StorageError, "TeamMismatch"):
+            ensure_storage(self.api, self.cfg, self.path)
+        self.assertFalse(any(name.startswith("create_") for name, _ in self.transport.calls))
+
+    def test_terminal_or_unknown_volume_status_is_not_ready(self):
+        ensure_storage(self.api, self.cfg, self.path)
+        for status in ("ERROR", "DELETING", "active", None):
+            with self.subTest(status=status):
+                self.transport.data["volume"]["status"] = status
+                with self.assertRaises(StorageError):
+                    ensure_storage(self.api, self.cfg, self.path)
 
 
 class CleanupTests(APICase):
@@ -292,6 +351,23 @@ class CleanupTests(APICase):
                          "--inventory", str(self.path), "--gate", str(gate)])
         self.assertEqual(code, 0)
         self.assertEqual(read_inventory(self.path)["phase"], "ready")
+
+    def test_malformed_child_collections_never_authorize_deletion(self):
+        for index, (method, response) in enumerate((
+            ("describe_agentic_spaces", {}),
+            ("describe_agentic_spaces", {"AgenticSpaces": {}}),
+            ("describe_access_points", {}),
+            ("describe_access_points", {"AccessPoints": [{}]}),
+        )):
+            with self.subTest(method=method, response=response):
+                self.path = self.root / ("state-" + str(index)) / "inventory.json"
+                self.transport = FakeTransport()
+                self.api = StorageAPI(self.cfg, self.transport, self.transport, self.transport)
+                self.prepare()
+                self.transport.responses = {method: response}
+                with self.assertRaises(StorageError):
+                    cleanup_empty_storage(self.api, self.path, [], True)
+                self.assertFalse(any(name.startswith("delete_") for name, _ in self.transport.calls))
 
 
 if __name__ == "__main__":

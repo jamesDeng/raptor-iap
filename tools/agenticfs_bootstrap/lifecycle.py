@@ -61,7 +61,7 @@ def verify_owned(api, state):
         if api.valid_domain(ap.get("DomainName")) != state["access_point_domain"]:
             raise StorageError("ResourceOwnershipMismatch")
     if state.get("volume_id"):
-        volume = api.get_volume(state["volume_id"])
+        volume = api.wait_volume(state["volume_id"])
         cfg = volume.get("agenticFSVolumeConfig", {})
         if (volume.get("teamID") != api.cfg.team_id or volume.get("volumeID") != state["volume_id"]
                 or volume.get("volumeName") != state["volume_name"] or

@@ -25,7 +25,7 @@ class StorageAPI:
     def from_credentials(cls, config):
         from alibabacloud_credentials.client import Client as Credentials
         from alibabacloud_tea_openapi.models import Config
-        from alibabacloud_nas20170626.client import Client as NAS
+        from .nas_boundary import GuardedNAS as NAS
         from alibabacloud_fcsandbox20260509.client import Client as Volumes
         from alibabacloud_sts20150401.client import Client as STS
         credential = Credentials()
@@ -46,6 +46,8 @@ class StorageAPI:
             if code is not None and str(code) not in ("200", "OK", "Success"):
                 raise ValueError()
             return body
+        except StorageError:
+            raise
         except Exception as error:
             if getattr(error, "code", None) in {
                     "InvalidFileSystem.NotFound", "InvalidAccessPoint.NotFound",
@@ -58,6 +60,10 @@ class StorageAPI:
         body = self._call(self.identity, "get_caller_identity")
         if body.get("AccountId") != self.cfg.account_id:
             raise StorageError("AccountMismatch")
+        team = self._call(self.volumes, "get_team", self.cfg.team_id,
+                          self.f.GetTeamRequest()).get("team", {})
+        if not isinstance(team, dict) or team.get("teamID") != self.cfg.team_id:
+            raise StorageError("TeamMismatch")
 
     def _tag(self, name):
         return [getattr(self.n, name)(key="raptor-owner", value=self.owner_nonce)]
@@ -137,6 +143,32 @@ class StorageAPI:
                 raise StorageError("ReadinessTimeout")
             time.sleep(5)
 
+    def wait_volume(self, id):
+        deadline = time.monotonic() + 120
+        while True:
+            row = self.get_volume(id)
+            status = row.get("status")
+            if status == "AVAILABLE":
+                return row
+            if status != "CREATING":
+                raise StorageError("VolumeNotAvailable")
+            if time.monotonic() >= deadline:
+                raise StorageError("ReadinessTimeout")
+            time.sleep(5)
+
+    @staticmethod
+    def rows(body, field, id_field, child=None):
+        """An absent collection is inconclusive, never evidence of emptiness."""
+        value = body.get(field)
+        if child is not None:
+            if not isinstance(value, dict):
+                raise StorageError("UnverifiedChildren")
+            value = value.get(child)
+        if not isinstance(value, list) or any(not isinstance(row, dict) or
+                not isinstance(row.get(id_field), str) or not row[id_field] for row in value):
+            raise StorageError("UnverifiedChildren")
+        return value
+
     def find_pending(self, stage, inventory):
         """Names alone never prove ownership; also match a journaled random nonce."""
         if stage == "filesystem":
@@ -149,7 +181,7 @@ class StorageAPI:
         if stage == "space":
             body = self._call(self.nas, "describe_agentic_spaces", self.n.DescribeAgenticSpacesRequest(
                 file_system_id=inventory["filesystem_id"], max_results=100))
-            rows = body.get("AgenticSpaces", {}).get("AgenticSpace", [])
+            rows = self.rows(body, "AgenticSpaces", "AgenticSpaceId", "AgenticSpace")
             if body.get("NextToken"):
                 raise StorageError("ReconciliationNeedsPagination")
             return [r for r in rows if r.get("Description") == "raptor-" + self.owner_nonce
@@ -159,14 +191,23 @@ class StorageAPI:
                 file_system_id=inventory["filesystem_id"], max_results=100))
             if body.get("NextToken"):
                 raise StorageError("ReconciliationNeedsPagination")
-            return [r for r in body.get("AccessPoints", []) if
-                    r.get("AccessPointName") == "raptor-" + self.owner_nonce and
-                    r.get("AgenticSpaceId") == inventory["agentic_space_id"] and self.has_owner_tag(r)]
+            matches = []
+            for row in self.rows(body, "AccessPoints", "AccessPointId"):
+                if row.get("AccessPointName") != "raptor-" + self.owner_nonce:
+                    continue
+                # The list SDK model omits AgenticSpaceId; detail supplies it.
+                detail = self.get_access_point(row["AccessPointId"])
+                if (detail.get("AgenticSpaceId") == inventory["agentic_space_id"] and
+                        detail.get("FileSystemId") == inventory["filesystem_id"] and
+                        detail.get("AccessPointName") == "raptor-" + self.owner_nonce and
+                        self.has_owner_tag(detail)):
+                    matches.append(detail)
+            return matches
         body = self._call(self.volumes, "list_volumes", self.f.ListVolumesRequest(
             team_id=self.cfg.team_id, volume_name=inventory["volume_name"], max_results=100))
         if body.get("nextToken"):
             raise StorageError("ReconciliationNeedsPagination")
-        return [r for r in body.get("volumes", []) if r.get("volumeName") == inventory["volume_name"]
+        return [r for r in self.rows(body, "volumes", "volumeID") if r.get("volumeName") == inventory["volume_name"]
                 and r.get("teamID") == self.cfg.team_id and r.get("agenticFSVolumeConfig", {}).get("serverAddr")
                 == inventory["access_point_domain"] + ":/"]
 
@@ -226,10 +267,11 @@ class StorageAPI:
             file_system_id=fsid, max_results=100))
         if spaces.get("NextToken") or aps.get("NextToken"):
             raise StorageError("UnverifiedChildren")
-        if any(r.get("AgenticSpaceId") != inventory.get("agentic_space_id")
-               for r in spaces.get("AgenticSpaces", {}).get("AgenticSpace", [])):
+        if any(r["AgenticSpaceId"] != inventory.get("agentic_space_id")
+               for r in self.rows(spaces, "AgenticSpaces", "AgenticSpaceId", "AgenticSpace")):
             raise StorageError("ForeignChildResource")
-        if any(r.get("AccessPointId") != inventory.get("access_point_id") for r in aps.get("AccessPoints", [])):
+        if any(r["AccessPointId"] != inventory.get("access_point_id")
+               for r in self.rows(aps, "AccessPoints", "AccessPointId")):
             raise StorageError("ForeignChildResource")
 
     def delete_volume(self, id):

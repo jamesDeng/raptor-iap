@@ -54,7 +54,7 @@ This does not construct cloud clients, resolve credentials, create inventory or 
 
 ## Live setup — gated, not performed yet
 
-Live commands use the official Alibaba Cloud credential provider chain. An Aliyun CLI profile is not automatically imported by this tool. Supply credentials using a supported SDK credential source (environment, provider configuration or workload identity), without putting keys in shell arguments, Git or inventory. STS GetCallerIdentity must match the configured account before mutations.
+Live commands use the official Alibaba Cloud credential provider chain. An Aliyun CLI profile is not automatically imported by this tool. Supply credentials using a supported SDK credential source (environment, provider configuration or workload identity), without putting keys in shell arguments, Git or inventory. STS GetCallerIdentity and Sandbox GetTeam must match the configured account and Team before mutations.
 
 Before apply, save a reviewed evidence record outside Git with these fields:
 
@@ -82,11 +82,13 @@ Inspect is read-only:
   --config .raptor-local/agenticfs/config.json
 ```
 
-Resource inventory is atomically saved with 0600 permissions in a 0700 directory. It contains IDs, random ownership tags and client tokens, never model credentials. A local lock serializes this tool's invocations on one host; it is not a distributed lease or the platform's single-active-Pi-run queue.
+Resource inventory is atomically saved with 0600 permissions in a 0700 directory. It contains IDs, random ownership tags and client tokens, never model credentials. A local lock serializes invocations using the same inventory path. Separate inventories do not coordinate ownership, and separate hosts do not share this lock; it is not a distributed lease or the platform's single-active-Pi-run queue.
 
 Interrupted creates retain a pending marker. A rerun searches for the journaled random ownership tag/nonce and matching resource relationships. If no unique match can be proved, it stops with `UncertainCreate`; do not delete the journal and blindly retry. Keep the inventory for manual reconciliation. Existing resources are not adopted based on a familiar name.
 
 ## Cleanup without erasing data
+
+Missing or malformed child collections block cleanup. The NAS adapter checks the raw response before generated SDK models can turn missing fields into empty lists. This may conservatively block a legitimate empty response until its API semantics are verified.
 
 Start with `cleanup-plan`, which checks ownership, children, occupancy and consumers without deleting anything. It requires a Team-bound sandbox key supplied through `E2B_API_KEY` and its nonsecret identifier through `E2B_API_KEY_ID`. The POP DescribeApiKey response must confirm the Team and full key value; otherwise the tool stops. Key values stay in memory and are not printed. The key is used only to query sandbox consumers, not model access.
 
