@@ -32,3 +32,10 @@ secrets/
 .venv/
 __pycache__/
 *.pyc
+
+# Local Terraform plans, inputs and exports (lock files stay tracked)
+*.tfvars
+*.tfvars.json
+*.tfplan
+*plan*.json
+*.terraform-output.json
