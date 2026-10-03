@@ -56,3 +56,25 @@ resource "alicloud_ram_role" "execution" {
   })
   depends_on = [terraform_data.account_guard]
 }
+
+resource "alicloud_ram_policy" "storage" {
+  count       = var.filesystem_id != null && var.access_point_id != null ? 1 : 0
+  policy_name = "${var.name_prefix}-nas-data"
+  force       = false
+  policy_document = jsonencode({
+    Version = "1"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = ["nas:ClientMount", "nas:ClientWrite", "nas:ClientRootAccess"]
+      Resource  = ["acs:nas:${var.region}:${var.account_id}:filesystem/${var.filesystem_id}"]
+      Condition = { StringEquals = { "nas:AccessPointArn" = "acs:nas:${var.region}:${var.account_id}:accesspoint/${var.access_point_id}" } }
+    }]
+  })
+  depends_on = [terraform_data.account_guard]
+}
+resource "alicloud_ram_role_policy_attachment" "storage" {
+  count       = var.filesystem_id != null && var.access_point_id != null ? 1 : 0
+  role_name   = alicloud_ram_role.execution.role_name
+  policy_name = alicloud_ram_policy.storage[0].policy_name
+  policy_type = "Custom"
+}
