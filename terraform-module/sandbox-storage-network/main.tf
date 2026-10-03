@@ -1,9 +1,21 @@
 data "alicloud_account" "current" {}
+# timestamp() remains unknown while planning, ensuring a fresh identity read
+# when a saved plan executes with its current provider credentials.
+resource "terraform_data" "identity_refresh" {
+  input = timestamp()
+}
+data "alicloud_account" "at_apply" {
+  depends_on = [terraform_data.identity_refresh]
+}
 resource "terraform_data" "account_guard" {
   lifecycle {
     precondition {
       condition     = data.alicloud_account.current.id == var.account_id
       error_message = "Authenticated account does not match the requested account."
+    }
+    precondition {
+      condition     = data.alicloud_account.at_apply.id == var.account_id
+      error_message = "Apply-time authenticated account does not match the requested account."
     }
   }
 }

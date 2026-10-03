@@ -13,7 +13,7 @@ Run from the repository root with Python 3.12+ and OpenSSL support. The macOS sy
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -r tools/agenticfs_bootstrap/requirements.txt
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -p test_agenticfs_bootstrap.py -v
 .venv/bin/python -m tools.agenticfs_bootstrap --help
 ```
 

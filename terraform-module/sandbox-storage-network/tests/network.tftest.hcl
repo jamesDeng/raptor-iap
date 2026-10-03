@@ -21,6 +21,17 @@ run "network_only" {
     error_message = "Unexpected inbound allow or missing explicit baseline/egress rules."
   }
   assert {
+    condition = alltrue([for name, want in {
+      deny_ingress = ["ingress", "all", "-1/-1", "0.0.0.0/0", "drop", 100]
+      deny_egress  = ["egress", "all", "-1/-1", "0.0.0.0/0", "drop", 100]
+      nfs          = ["egress", "tcp", "2049/2049", "10.60.0.0/16", "accept", 1]
+      https        = ["egress", "tcp", "443/443", "0.0.0.0/0", "accept", 1]
+      dns_udp      = ["egress", "udp", "53/53", "0.0.0.0/0", "accept", 1]
+      dns_tcp      = ["egress", "tcp", "53/53", "0.0.0.0/0", "accept", 1]
+    } : [alicloud_security_group_rule.rules[name].type, alicloud_security_group_rule.rules[name].ip_protocol, alicloud_security_group_rule.rules[name].port_range, alicloud_security_group_rule.rules[name].cidr_ip, alicloud_security_group_rule.rules[name].policy, alicloud_security_group_rule.rules[name].priority] == want])
+    error_message = "Firewall must retain both deny baselines and exactly the reviewed egress destinations/ports/priorities."
+  }
+  assert {
     condition     = jsondecode(alicloud_ram_role.execution.assume_role_policy_document).Statement[0].Principal.Service[0] == "fc.aliyuncs.com" && jsondecode(alicloud_ram_role.execution.assume_role_policy_document).Statement[0].Action[0] == "sts:AssumeRole" && alicloud_ram_role.execution.force == false
     error_message = "Execution trust or force-delete setting changed."
   }
