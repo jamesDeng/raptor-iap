@@ -237,18 +237,22 @@ class Store:
             gate = dict(binding=asdict(binding) if binding else None, error=error)
             db.execute('UPDATE dispatch_gate SET value=? WHERE id=1', (canonical(gate).decode(),))
 
-    def finish(self, binding, report, answer):
+    def finish(self, binding, report, answer, evidence=None):
         if not isinstance(report, OutcomeReport):
             raise ValidationError()
         if answer is not None and (type(answer) is not str or not answer.strip() or len(answer.encode('utf-8')) > 16384):
             raise ValidationError()
         if report.answer == 'completed' and answer is None:
             raise ValidationError()
+        if evidence is not None:
+            from tools.sandbox_lifecycle.contracts import validate_result
+            validate_result(dict(phase='inference',passed=False,kind='app-question',
+                                 binding=asdict(binding),answer_generated=False,**evidence))
         with self.connection() as db:
             attempt = self._bound(db, binding)
             if attempt['state'] not in ('claimed', 'blocked', 'failed', 'completed'):
                 raise Conflict()
-            attempt.update(state=report.overall, stage='finished', outcomes=asdict(report), answer=answer)
+            attempt.update(state=report.overall, stage='finished', outcomes=asdict(report), answer=answer, evidence=evidence)
             self._save_attempt(db, attempt)
             self._event(db, binding.attempt_id, 'finished')
             if report.overall == 'blocked':

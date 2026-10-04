@@ -129,7 +129,10 @@ class Gateway:
         blocked=(cleanup!='confirmed' or report.get('phase')=='blocked' or report.get('persistence_error')
                  or report.get('error') in ('TaskPersistenceFailed','LedgerPersistenceFailed','AnswerArtifactFailed','TaskBindingMismatch'))
         overall='completed' if report.get('passed') and (answer_outcome,checkpoint,cleanup)==('completed','saved','confirmed') else ('blocked' if blocked else 'failed')
-        self.store.finish(binding,OutcomeReport(answer_outcome,checkpoint,cleanup,overall,report.get('error')),answer)
+        evidence=None
+        if result.get('kind')=='app-question' and result.get('binding')==asdict(binding):
+            evidence={k:result[k] for k in ('actual_model','context_sha256','tool_succeeded','usage') if k in result}
+        self.store.finish(binding,OutcomeReport(answer_outcome,checkpoint,cleanup,overall,report.get('error')),answer,evidence=evidence)
         return overall!='blocked'
 
     def _recover(self, binding):
