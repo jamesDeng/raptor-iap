@@ -10,19 +10,8 @@ class KeyHandle:
  value:str=field(repr=False)
 
 def safe_result(raw,cfg,phase):
- allowed={'phase','passed','tool_succeeded','answer_matches','refresh_succeeded','refresh_token_changed','usage','error','checkpoint'}
- errors={'NeedsSignIn','RunnerFailed','CheckpointFailed','ModelFailed','TurnLimit','Timeout','InvalidJob'}
- try:
-  if not isinstance(raw,dict) or set(raw)-allowed or raw.get('phase')!=phase or type(raw.get('passed')) is not bool:raise ValueError()
-  for k in allowed-{'phase','usage','error','checkpoint'}:
-   if k in raw and type(raw[k]) is not bool:raise ValueError()
-  if 'error' in raw and raw['error'] not in errors:raise ValueError()
-  if 'usage' in raw:
-   if not isinstance(raw['usage'],list) or len(raw['usage'])>4:raise ValueError()
-   for u in raw['usage']:
-    if set(u)!={'input','output','total_tokens'} or any(type(v) is not int or v<0 for v in u.values()):raise ValueError()
-  if 'checkpoint' in raw:validate_checkpoint(raw['checkpoint'],cfg)
-  return raw
+ from .contracts import validate_result
+ try:return validate_result(raw,phase,cfg)
  except (ValueError,TypeError,KeyError):raise CloudError('InvalidRunnerResult') from None
 
 class Cloud:
@@ -57,7 +46,15 @@ class Cloud:
   try:
    self.assert_identity()
    v=self.client.get_volume(self.cfg.volume_id,m.GetVolumeRequest(team_id=self.cfg.team_id)).body.volume
-   if v.status!='AVAILABLE' or v.volume_name!=self.cfg.volume_name:raise ValueError()
+   expected_endpoint='https://oss-'+self.cfg.region+'.aliyuncs.com'
+   oss=v.oss_volume_config
+   if (v.status!='AVAILABLE' or v.volume_name!=self.cfg.volume_name
+       or v.volume_id!=self.cfg.volume_id or v.user_id!=self.cfg.account_id
+       or v.team_id!=self.cfg.team_id or v.storage_class!='OSS' or oss is None
+       or oss.bucket_name!=self.cfg.bucket or oss.bucket_path!='/'+self.cfg.bucket_prefix
+       or oss.endpoint!=expected_endpoint or oss.read_only is not False):raise ValueError()
+   # Existing OSS Volumes may omit mount_config; create explicitly supplies the role.
+   if v.mount_config is not None and v.mount_config.role!=self.cfg.execution_role_arn:raise ValueError()
    self.verify_checkpoint(self.cfg.bootstrap_checkpoint)
   except Exception:raise CloudError('StoragePreflightFailed') from None
  def create_key(self,name,expires_at):

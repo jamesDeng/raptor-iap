@@ -48,3 +48,17 @@ class CloudTests(unittest.TestCase):
 
  def test_cleanup_uses_actual_api_key_id_casing_and_verifies_absence(self):
   self.cloud.remove_key('key-test');self.assertEqual(self.transport.keys,[]);self.assertEqual(self.transport.calls[-1],('delete','key-test'))
+
+ def test_volume_identity_mismatch_stops_before_resource_creation(self):
+  from alibabacloud_fcsandbox20260509 import models as m
+  def volume():return m.E2BVolume(volume_id=self.cfg.volume_id,user_id=self.cfg.account_id,team_id=self.cfg.team_id,status='AVAILABLE',volume_name=self.cfg.volume_name,storage_class='OSS',oss_volume_config=m.OSSVolumeConfig(bucket_name=self.cfg.bucket,bucket_path='/auth',endpoint='https://oss-ap-southeast-1.aliyuncs.com',read_only=False))
+  v=volume();self.transport.get_volume=lambda *args:SimpleNamespace(body=SimpleNamespace(volume=v));self.cloud.assert_storage()
+  for section,field,value in [('oss','bucket_name','wrong-bucket'),('oss','bucket_path','/wrong'),('oss','endpoint','https://oss-cn-hangzhou.aliyuncs.com'),('oss','read_only',True),('volume','storage_class','AgenticFS'),('volume','user_id','other'),('volume','team_id','other'),('volume','volume_id','other'),('role','role','acs:ram::1234567890123456:role/wrong')]:
+   v=volume()
+   if section=='role':v.mount_config=m.E2BVolumeMountConfig(role=value)
+   else:setattr(v.oss_volume_config if section=='oss' else v,field,value)
+   with self.subTest(field=field),self.assertRaises(CloudError):self.cloud.assert_storage()
+  self.assertEqual(self.transport.calls,[])
+ def test_success_result_requires_phase_specific_evidence(self):
+  for phase,result in [('inference',{'phase':'inference','passed':True}),('refresh',{'phase':'refresh','passed':True}),('inference',{'phase':'inference','passed':True,'tool_succeeded':False,'answer_matches':True,'checkpoint':dict(self.cfg.bootstrap_checkpoint.__dict__)})]:
+   with self.subTest(phase=phase),self.assertRaises(CloudError):safe_result(result,self.cfg,phase)

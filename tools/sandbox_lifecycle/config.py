@@ -35,16 +35,21 @@ class Config:
  def fingerprint(self):return hashlib.sha256(json.dumps(asdict(self),sort_keys=True).encode()).hexdigest()
 def _key(v):
  return isinstance(v,str) and bool(re.fullmatch(r'[a-zA-Z0-9_./-]{1,256}',v)) and not v.startswith('/') and all(x not in ('','.', '..') for x in v.split('/'))
-def validate_checkpoint(value,cfg,bootstrap=False):
+def checkpoint_shape(value):
  try:
-  if set(value)!=set(CheckpointRef.__dataclass_fields__):raise ValueError()
+  if not isinstance(value,dict) or set(value)!=set(CheckpointRef.__dataclass_fields__):raise ValueError()
   ref=CheckpointRef(**value)
-  prefix=cfg.bucket_prefix+'/' if bootstrap else cfg.bucket_prefix+'/lifecycle/'
-  if not all(_key(v) and v.startswith(prefix) for v in (ref.archive_key,ref.checksum_key)):raise ValueError()
+  if not all(_key(v) for v in (ref.archive_key,ref.checksum_key)):raise ValueError()
   if not ref.archive_key.endswith('.tgz') or ref.checksum_key!=ref.archive_key[:-4]+'.sha256':raise ValueError()
   if not re.fullmatch('[a-f0-9]{64}',ref.sha256) or type(ref.bytes) is not int or not 0<ref.bytes<=LIMIT or ref.pi_version!='0.99.2':raise ValueError()
   return ref
  except (TypeError,KeyError,ValueError,AttributeError):raise ValueError('InvalidCheckpoint') from None
+
+def validate_checkpoint(value,cfg,bootstrap=False):
+ ref=checkpoint_shape(value)
+ prefix=cfg.bucket_prefix+'/' if bootstrap else cfg.bucket_prefix+'/lifecycle/'
+ if not all(v.startswith(prefix) for v in (ref.archive_key,ref.checksum_key)):raise ValueError('InvalidCheckpoint')
+ return ref
 def load_config(path):
  try:
   raw=json.loads(Path(path).read_text())

@@ -123,5 +123,35 @@
     "Local single-checkout-family locking only; no distributed queue.",
     "Positive live tests only; destructive failure injection remains offline.",
     "No long-term unattended reliability or zero-failure application operations claim."
-  ]
+  ],
+  "post_review_live_run": {
+    "passed": true,
+    "tool_succeeded": true,
+    "answer_matches": true,
+    "usage": [
+      {
+        "input": 601,
+        "output": 36,
+        "total_tokens": 637
+      },
+      {
+        "input": 666,
+        "output": 22,
+        "total_tokens": 688
+      }
+    ],
+    "checkpoint": {
+      "sha256": "485f84822aef5a06dd8182df3f708b3e1dcd62537a2d1845e3142dc03826ae62",
+      "bytes": 7933
+    },
+    "cleanup_confirmed": true,
+    "storage_binding_revalidated": true,
+    "active_lifecycle_sandboxes": 0,
+    "lifecycle_control_keys": 0,
+    "encryption": "AES256"
+  },
+  "final_offline_tests": {
+    "python": 73,
+    "node": 8
+  }
 }

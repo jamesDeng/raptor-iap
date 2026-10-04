@@ -51,3 +51,10 @@ class StateTests(unittest.TestCase):
  def test_corrupt_ledger_never_becomes_idle(self):
   p=self.root/'ledger';p.write_text('{')
   with self.assertRaises(ValueError):load_ledger(p,self.cfg())
+
+ def test_loaded_ledger_rejects_secret_values_and_nonenum_outcomes(self):
+  c=self.cfg();p=self.root/'ledger.json';base=load_ledger(p,c)
+  values=[{'failure':'synthetic-secret'},{'request_outcome':'synthetic-secret'},{'result':{'phase':'inference','passed':False,'error':'synthetic-secret'}},{'refresh_result':{'phase':'refresh','passed':False,'usage':[{'input':'synthetic-secret','output':1,'total_tokens':2}]}}]
+  for fields in values:
+   p.write_text(json.dumps({**base,**fields}))
+   with self.subTest(fields=fields),self.assertRaises(ValueError):load_ledger(p,c)

@@ -10,3 +10,8 @@ test('runner settles inference before checkpoint and keeps model failure separat
 test('restore failure blocks Pi and emits only fixed safe error',async()=>{
  let loaded=false;const result=await runJob({phase:'restore',reference:{},state_root:'/none'},{restoreCheckpoint:async()=>{throw Error('synthetic-token');},loadPiRuntime:async()=>{loaded=true;}});assert.equal(loaded,false);assert.equal(result.passed,false);assert.equal(JSON.stringify(result).includes('synthetic-token'),false);
 });
+test('checkpoint generation failure retains completed inference evidence',async()=>{
+ const result=await runJob({phase:'inference',state_root:'/synthetic',generation:'33333333-3333-4333-8333-333333333333'},
+  {loadPiRuntime:async()=>({runtime:{}}),runReadProbe:async()=>({passed:true,tool_succeeded:true,answer_matches:true,usage:[]}),createCheckpoint:async()=>{throw Error('synthetic-secret');}});
+ assert.equal(result.passed,false);assert.equal(result.error,'CheckpointFailed');assert.equal(result.tool_succeeded,true);assert.equal(result.answer_matches,true);assert.equal(JSON.stringify(result).includes('synthetic-secret'),false);
+});

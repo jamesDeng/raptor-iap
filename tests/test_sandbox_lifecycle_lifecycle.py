@@ -1,4 +1,5 @@
 import json,tempfile,unittest
+from unittest.mock import patch
 from pathlib import Path
 from dataclasses import asdict
 from test_sandbox_lifecycle_state import config_data
@@ -60,3 +61,78 @@ class LifecycleTests(unittest.TestCase):
   self.assertTrue(r["refresh_result"]["refresh_succeeded"])
   self.assertTrue(r["refresh_result"]["refresh_token_changed"])
   self.assertEqual(r["result"]["phase"],"inference")
+
+ def test_recovery_read_failure_still_cleans_compute_and_keys(self):
+  self.cloud.fail='kill';execute(self.cfg,Request('read-probe'),self.ledger,self.cloud);self.cloud.fail=None
+  with patch.object(self.cloud,'read_completed_result',side_effect=CloudError('RecoveryResultUnavailable')):
+   before=len(self.cloud.calls);r=recover(self.cfg,self.ledger,self.cloud)
+  self.assertFalse(r['passed']);self.assertIn('kill',self.cloud.calls[before:]);self.assertIn('remove-key',self.cloud.calls[before:]);self.assertTrue(r['cleanup_confirmed'])
+ def test_persistent_write_failure_after_resource_creation_still_cleans(self):
+  for boundary in ('key_id','sandbox_id'):
+   with self.subTest(boundary=boundary):
+    if self.ledger.exists():self.ledger.unlink()
+    self.cloud.calls=[];started=False
+    def failing_save(path,value):
+     nonlocal started
+     started|=boundary in value
+     if started:raise OSError('synthetic-secret-disk-error')
+     save_ledger(path,value)
+    with patch('tools.sandbox_lifecycle.lifecycle.save_ledger',side_effect=failing_save):
+     r=execute(self.cfg,Request('read-probe'),self.ledger,self.cloud)
+    self.assertFalse(r['passed']);self.assertIn('remove-key',self.cloud.calls)
+    if boundary=='sandbox_id':self.assertIn('kill',self.cloud.calls)
+    self.assertTrue(r['cleanup_confirmed']);self.assertNotIn('synthetic-secret',json.dumps(r))
+ def test_failed_publication_does_not_select_candidate_during_cleanup_saves(self):
+  once=False
+  def fail_publication(path,value):
+   nonlocal once
+   if '/lifecycle/' in value['checkpoint']['archive_key'] and not once:
+    once=True;raise OSError('injected publication')
+   save_ledger(path,value)
+  with patch('tools.sandbox_lifecycle.lifecycle.save_ledger',side_effect=fail_publication):r=execute(self.cfg,Request('read-probe'),self.ledger,self.cloud)
+  self.assertFalse(r['passed']);self.assertEqual(load_ledger(self.ledger,self.cfg)['checkpoint']['archive_key'],'auth/checkpoint-5.tgz')
+ def test_only_inference_recovery_can_establish_request_completion(self):
+  for phase in ('restore','refresh','inference'):
+   with self.subTest(phase=phase):
+    s=load_ledger(self.ledger,self.cfg);s.update(phase='running',sandbox_id='sbx-test',key_id='old-key',job_generation='11111111-1111-4111-8111-111111111111',job_phase=phase,request_outcome='unknown');save_ledger(self.ledger,s)
+    self.cloud.pending_result=self.cloud.run_job('sbx-test',{'phase':phase,'generation':s['job_generation']},None)
+    r=recover(self.cfg,self.ledger,self.cloud);self.assertTrue(r['passed']);self.assertEqual(r['request_outcome'],'completed' if phase=='inference' else 'unknown')
+ def test_complete_answer_failed_checkpoint_generation_keeps_request_completed(self):
+  original=self.cloud.run_job
+  def run(*args):
+   r=original(*args)
+   if r['phase']=='inference':r.pop('checkpoint');r.update(passed=False,error='CheckpointFailed')
+   return r
+  with patch.object(self.cloud,'run_job',side_effect=run):r=execute(self.cfg,Request('read-probe'),self.ledger,self.cloud)
+  self.assertFalse(r['passed']);self.assertEqual(r['request_outcome'],'completed');self.assertEqual(r['checkpoint']['archive_key'],'auth/checkpoint-5.tgz')
+ def test_incomplete_success_result_fails_and_retains_old_checkpoint(self):
+  original=self.cloud.run_job
+  def run(*args):
+   r=original(*args)
+   if r['phase']=='inference':r.pop('checkpoint')
+   return r
+  with patch.object(self.cloud,'run_job',side_effect=run):r=execute(self.cfg,Request('read-probe'),self.ledger,self.cloud)
+  self.assertFalse(r['passed']);self.assertEqual(r['checkpoint']['archive_key'],'auth/checkpoint-5.tgz');self.assertTrue(r['cleanup_confirmed'])
+ def test_uncertain_key_create_reconciles_unique_intent_before_replacement(self):
+  with patch.object(self.cloud,'create_key',side_effect=CloudError('KeyCreateUnconfirmed')):r=execute(self.cfg,Request('read-probe'),self.ledger,self.cloud)
+  self.assertFalse(r['passed']);self.assertNotIn('create',self.cloud.calls);self.assertIn('resolve-key',self.cloud.calls)
+
+ def test_recovery_selects_verified_descriptor_only_after_confirmed_termination(self):
+  self.cloud.fail='kill';execute(self.cfg,Request('read-probe'),self.ledger,self.cloud);self.cloud.fail=None
+  s=load_ledger(self.ledger,self.cfg);s['checkpoint']=dict(self.cfg.bootstrap_checkpoint.__dict__);save_ledger(self.ledger,s)
+  self.cloud.pending_result=self.cloud.run_job('sbx-test',{'phase':'inference','generation':'44444444-4444-4444-8444-444444444444'},None)
+  before=len(self.cloud.calls);r=recover(self.cfg,self.ledger,self.cloud)
+  self.assertTrue(r['passed']);self.assertEqual(r['checkpoint'],self.cloud.pending_result['checkpoint'])
+  calls=self.cloud.calls[before:];self.assertLess(calls.index('kill'),calls.index('verify'))
+ def test_recovery_failed_publication_keeps_previous_checkpoint(self):
+  self.cloud.fail='kill';execute(self.cfg,Request('read-probe'),self.ledger,self.cloud);self.cloud.fail=None
+  s=load_ledger(self.ledger,self.cfg);s['checkpoint']=dict(self.cfg.bootstrap_checkpoint.__dict__);save_ledger(self.ledger,s)
+  self.cloud.pending_result=self.cloud.run_job('sbx-test',{'phase':'inference','generation':'55555555-5555-4555-8555-555555555555'},None)
+  once=False
+  def fail_publication(path,value):
+   nonlocal once
+   if '/lifecycle/' in value['checkpoint']['archive_key'] and not once:
+    once=True;raise OSError('injected')
+   save_ledger(path,value)
+  with patch('tools.sandbox_lifecycle.lifecycle.save_ledger',side_effect=fail_publication):r=recover(self.cfg,self.ledger,self.cloud)
+  self.assertFalse(r['passed']);self.assertTrue(r['cleanup_confirmed']);self.assertEqual(load_ledger(self.ledger,self.cfg)['checkpoint']['archive_key'],'auth/checkpoint-5.tgz')

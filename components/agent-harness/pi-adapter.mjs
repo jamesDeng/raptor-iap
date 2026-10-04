@@ -22,7 +22,7 @@ export function collectProbe(marker,maxTurns,abort){
  if(e.type==='tool_execution_end'&&e.toolName==='read')value.tool_succeeded||=!e.isError&&!!e.result?.content?.some(c=>c.type==='text'&&c.text.includes(marker));
  if(e.type==='message_end'&&e.message.role==='assistant'){
   value.answer_matches=e.message.content.filter(c=>c.type==='text').map(c=>c.text).join('').trim()===marker;
-  if(['error','aborted'].includes(e.message.stopReason))error='ModelFailed';
+  if(['error','aborted'].includes(e.message.stopReason))error||='ModelFailed';
   const u=e.message.usage;if(u)value.usage.push({input:u.input,output:u.output,total_tokens:u.totalTokens});
  }},timeout(){error='Timeout';abort();},result(){return {...value,passed:!!(value.tool_succeeded&&value.answer_matches&&!error),...(error?{error}:{})};}};
 }

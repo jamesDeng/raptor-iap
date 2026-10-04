@@ -3,8 +3,9 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 import fcntl,json,os,tempfile,re
-from .config import validate_checkpoint
-FIELDS={'schema_version','fingerprint','phase','attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','checkpoint','candidate','request_outcome','failure','result','refresh_result','job_generation','job_phase','cleanup_key_ids'}
+from .config import validate_checkpoint,checkpoint_shape
+from .contracts import validate_result,ERRORS
+FIELDS={'schema_version','fingerprint','phase','attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','checkpoint','candidate','request_outcome','failure','result','refresh_result','job_generation','job_phase','cleanup_key_ids','persistence_error'}
 PHASES={'idle','creating-key','creating','restoring','running','checkpointing','terminating','finished','blocked'}
 def safe_path(path):
  p=Path(path).absolute()
@@ -18,10 +19,15 @@ def validate_ledger(s):
  for k in ('attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','request_outcome','failure','job_generation','job_phase'):
   if k in s and (not isinstance(s[k],str) or not re.fullmatch('[a-zA-Z0-9_:./+-]{1,256}',s[k])):raise ValueError('InvalidLedger')
  if 'cleanup_key_ids' in s and (not isinstance(s['cleanup_key_ids'],list) or any(not isinstance(x,str) or not re.fullmatch('[a-zA-Z0-9-]{1,128}',x) for x in s['cleanup_key_ids'])):raise ValueError('InvalidLedger')
+ if 'persistence_error' in s and type(s['persistence_error']) is not bool:raise ValueError('InvalidLedger')
+ for key,values in [('failure',ERRORS),('request_outcome',{'completed','failed','unknown'}),('pending',{'key','sandbox'}),('job_phase',{'restore','refresh','inference'})]:
+  if key in s and s[key] not in values:raise ValueError('InvalidLedger')
+ for key in ('checkpoint','candidate'):
+  if key in s:checkpoint_shape(s[key])
  for result_field in ('result','refresh_result'):
   if result_field not in s:continue
-  allowed={'phase','passed','tool_succeeded','answer_matches','refresh_succeeded','refresh_token_changed','usage','error','checkpoint'}
-  if not isinstance(s[result_field],dict) or set(s[result_field])-allowed:raise ValueError('InvalidLedger')
+  try:validate_result(s[result_field], 'refresh' if result_field=='refresh_result' else None)
+  except (ValueError,TypeError):raise ValueError('InvalidLedger') from None
  return s
 def load_ledger(path,cfg):
  p=safe_path(path)
@@ -31,6 +37,10 @@ def load_ledger(path,cfg):
  if s['fingerprint']!=cfg.fingerprint:raise ValueError('ForeignLedger')
  for k in ('checkpoint','candidate'):
   if k in s:validate_checkpoint(s[k],cfg,True)
+ for key in ('result','refresh_result'):
+  if key in s:
+   try:validate_result(s[key],cfg=cfg)
+   except (TypeError,ValueError):raise ValueError('InvalidLedger') from None
  return s
 
 def save_ledger(path,value):
