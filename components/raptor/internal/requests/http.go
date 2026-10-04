@@ -5,9 +5,23 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
 	"net/http"
+	"strconv"
 )
 
 func (s *Service) Register(m *http.ServeMux, a *auth.Service) {
+	m.Handle("GET /api/v1/requests/{id}/events", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var after int64
+		var e error
+		if r.URL.Query().Has("after") {
+			after, e = strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+		}
+		if e != nil {
+			httpx.Error(w, 400, "InvalidInput")
+			return
+		}
+		v, e := s.Timeline(r.Context(), r.PathValue("id"), after)
+		httpx.Result(w, 200, v, e)
+	})))
 	m.Handle("POST /api/v1/requests/{id}/actions", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Action       string `json:"action"`
@@ -30,7 +44,7 @@ func (s *Service) Register(m *http.ServeMux, a *auth.Service) {
 	})))
 	m.Handle("GET /api/v1/requests", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { v, e := s.List(r.Context()); httpx.Result(w, 200, v, e) })))
 	m.Handle("GET /api/v1/requests/{id}", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		v, e := s.Get(r.Context(), r.PathValue("id"))
+		v, e := s.View(r.Context(), r.PathValue("id"))
 		httpx.Result(w, 200, v, e)
 	})))
 }

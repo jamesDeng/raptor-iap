@@ -16,4 +16,6 @@ CREATE TABLE IF NOT EXISTS raptor.webhook_deliveries(id text PRIMARY KEY, event_
 GRANT USAGE ON SCHEMA raptor TO raptor_app;
 GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA raptor TO raptor_app;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA raptor TO raptor_app;
-
+ALTER TABLE raptor.events ADD COLUMN IF NOT EXISTS source_event_id text;
+ALTER TABLE raptor.events ADD COLUMN IF NOT EXISTS source_sequence bigint;
+CREATE UNIQUE INDEX IF NOT EXISTS events_source_identity ON raptor.events(request_id,source_event_id);
