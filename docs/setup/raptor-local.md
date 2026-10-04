@@ -1,5 +1,7 @@
 # Local Raptor application questions
 
+Status: two real browser-submitted questions passed on October 4, 2026. See [the sanitized acceptance receipt](raptor-local-acceptance.json). Both used the real scoped context tool, retained private answers, saved checkpoints and confirmed cleanup. Creation/confirmed termination times establish serialization; the SDK sandbox list missed a known running sandbox and is not used as that proof. Answers mixed AWS ECS terminology into Aliyun ECS discussion, so owner review remains necessary.
+
 This is a single-owner local POC: a loopback web process persists app context and tasks, and a separate gateway processes one task at a time using the existing Singapore lifecycle. Each question gets a fresh Pi reasoning session and an immutable context snapshot. Only the registered context tool is available. There are no infrastructure mutation tools yet.
 
 ## Preparation and launch

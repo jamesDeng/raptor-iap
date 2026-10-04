@@ -1,0 +1,112 @@
+{
+  "date": "2026-10-04",
+  "region": "ap-southeast-1",
+  "pi_version": "0.99.2",
+  "node_version": "22.23.3",
+  "auth": "existing ChatGPT Pro OAuth through Pi",
+  "template": "official Gen2; runtime installed per sandbox",
+  "live_model_calls": 4,
+  "browser_sign_in_repeated": false,
+  "runs": [
+    {
+      "number": 1,
+      "attempt_count": 1,
+      "actual_model": "gpt-5.6-luna",
+      "context_tool_confirmed": true,
+      "snapshot_hash_matched": true,
+      "answer_available_privately": true,
+      "outcomes": {
+        "answer": "completed",
+        "checkpoint": "saved",
+        "cleanup": "confirmed",
+        "error": null,
+        "overall": "completed"
+      },
+      "usage": [
+        {
+          "input": 205,
+          "output": 15,
+          "total_tokens": 220
+        },
+        {
+          "input": 517,
+          "output": 383,
+          "total_tokens": 900
+        }
+      ],
+      "created_at": "2026-10-04T04:07:31.162627+00:00",
+      "terminated_and_not_found_at": "2026-10-04T04:08:05.693309+00:00"
+    },
+    {
+      "number": 2,
+      "attempt_count": 1,
+      "actual_model": "gpt-5.6-luna",
+      "context_tool_confirmed": true,
+      "snapshot_hash_matched": true,
+      "answer_available_privately": true,
+      "outcomes": {
+        "answer": "completed",
+        "checkpoint": "saved",
+        "cleanup": "confirmed",
+        "error": null,
+        "overall": "completed"
+      },
+      "usage": [
+        {
+          "input": 205,
+          "output": 15,
+          "total_tokens": 220
+        },
+        {
+          "input": 519,
+          "output": 399,
+          "total_tokens": 918
+        }
+      ],
+      "created_at": "2026-10-04T04:08:11.567056+00:00",
+      "terminated_and_not_found_at": "2026-10-04T04:08:38.727740+00:00"
+    }
+  ],
+  "serialization": {
+    "distinct_task_attempt_bindings": true,
+    "first_termination_confirmed_before_second_create": true,
+    "max_known_sandbox_concurrency": 1,
+    "list_inventory_during_running_incomplete": true
+  },
+  "verification": {
+    "known_sandboxes_independently_not_found": 2,
+    "remaining_lifecycle_control_keys": 0,
+    "selected_checkpoint_verified": true,
+    "bucket_encryption": "AES256",
+    "archive_downloaded_to_controller": false,
+    "private_bound_answers_verified": true
+  },
+  "billing_preflight": {
+    "queried": true,
+    "budget_with_delayed_charge_headroom_checked": true,
+    "estimated_two_run_max_compute_cny": 0.27,
+    "account_cap_enforced": false
+  },
+  "offline": {
+    "python_tests": 114,
+    "node_tests": 18,
+    "terraform_mock_tests": 18,
+    "fresh_npm_ci": true,
+    "whole_branch_review_material_findings_fixed": 3
+  },
+  "semantic_review": {
+    "planned_and_unknown_facts_preserved": true,
+    "answers_need_owner_review": true,
+    "observed_issues": [
+      "AWS ECS cluster/service/task terminology appeared in Aliyun ECS discussion.",
+      "First answer misinterpreted future node replacement as potentially replacing the proxy product."
+    ]
+  },
+  "limitations": [
+    "Application-context question/answer path only; no discovery, restart or deployments.",
+    "Tool grounding does not establish semantic correctness.",
+    "Sandbox list returned zero even while a known sandbox was running; serialization uses creation and confirmed not-found termination events, not that list.",
+    "OAuth refresh followed by crash before checkpoint remains a sign-in risk.",
+    "Local owner/checkout-family coordination only."
+  ]
+}
