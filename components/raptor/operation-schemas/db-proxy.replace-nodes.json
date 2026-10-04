@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-operation": "db-proxy.replace-nodes",
+  "x-object-kind": "db-proxy",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}
+

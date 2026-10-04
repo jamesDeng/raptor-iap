@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-operation": "db-proxy.deploy",
+  "x-object-kind": "db-proxy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "targetDbCode",
+    "desiredCapacity",
+    "instanceClass",
+    "pgcatVersion"
+  ],
+  "properties": {
+    "targetDbCode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "desiredCapacity": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "instanceClass": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pgcatVersion": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+

@@ -5,13 +5,15 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 	"net/http"
 )
 
 type Server struct {
-	Mux     *http.ServeMux
-	Auth    *auth.Service
-	Catalog *catalog.Service
+	Mux      *http.ServeMux
+	Auth     *auth.Service
+	Catalog  *catalog.Service
+	Requests *requests.Service
 }
 
 func New(p *pgxpool.Pool) *Server {
@@ -19,6 +21,8 @@ func New(p *pgxpool.Pool) *Server {
 	s.Auth.Register(s.Mux)
 	s.Catalog = catalog.NewService(p, adapters.UnavailableInfra{})
 	s.Catalog.Register(s.Mux, s.Auth)
+	s.Requests = requests.NewService(p, s.Catalog)
+	s.Requests.Register(s.Mux, s.Auth)
 	s.Mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
 	return s
 }
