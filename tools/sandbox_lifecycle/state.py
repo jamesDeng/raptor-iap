@@ -1,0 +1,55 @@
+"""Protected single-host ownership and crash-safe nonsecret ledger."""
+from contextlib import contextmanager
+from dataclasses import asdict
+from pathlib import Path
+import fcntl,json,os,tempfile,re
+from .config import validate_checkpoint
+FIELDS={'schema_version','fingerprint','phase','attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','checkpoint','candidate','request_outcome','failure','result'}
+PHASES={'idle','creating-key','creating','restoring','running','checkpointing','terminating','finished','blocked'}
+def safe_path(path):
+ p=Path(path).absolute()
+ if any(x.is_symlink() for x in (p,*p.parents)):raise ValueError('UnsafeStatePath')
+ return p
+def protect_dir(path):
+ p=safe_path(path);p.mkdir(parents=True,exist_ok=True,mode=0o700);os.chmod(p,0o700);return p
+def validate_ledger(s):
+ if not isinstance(s,dict) or set(s)-FIELDS or s.get('schema_version')!=1 or s.get('phase') not in PHASES:raise ValueError('InvalidLedger')
+ if not re.fullmatch('[a-f0-9]{64}',s.get('fingerprint','')):raise ValueError('InvalidLedger')
+ for k in ('attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','request_outcome','failure'):
+  if k in s and (not isinstance(s[k],str) or not re.fullmatch('[a-zA-Z0-9_:./+-]{1,256}',s[k])):raise ValueError('InvalidLedger')
+ if 'result' in s:
+  allowed={'phase','passed','tool_succeeded','answer_matches','refresh_succeeded','refresh_token_changed','usage','error','checkpoint'}
+  if not isinstance(s['result'],dict) or set(s['result'])-allowed:raise ValueError('InvalidLedger')
+ return s
+def load_ledger(path,cfg):
+ p=safe_path(path)
+ if not p.exists():return {'schema_version':1,'fingerprint':cfg.fingerprint,'phase':'idle','checkpoint':asdict(cfg.bootstrap_checkpoint)}
+ try:s=validate_ledger(json.loads(p.read_text()))
+ except (TypeError,ValueError):raise ValueError('InvalidLedger') from None
+ if s['fingerprint']!=cfg.fingerprint:raise ValueError('ForeignLedger')
+ for k in ('checkpoint','candidate'):
+  if k in s:validate_checkpoint(s[k],cfg,True)
+ return s
+
+def save_ledger(path,value):
+ validate_ledger(value);p=safe_path(path);protect_dir(p.parent)
+ fd,name=tempfile.mkstemp(prefix='.ledger-',dir=p.parent)
+ try:
+  with os.fdopen(fd,'w') as f:
+   os.fchmod(f.fileno(),0o600);json.dump(value,f,sort_keys=True);f.flush();os.fsync(f.fileno())
+  os.replace(name,p)
+  d=os.open(p.parent,os.O_RDONLY)
+  try:os.fsync(d)
+  finally:os.close(d)
+ finally:
+  if os.path.exists(name):os.unlink(name)
+@contextmanager
+def account_lock(state_root,account_id):
+ if not re.fullmatch('[0-9]{12,20}',account_id):raise ValueError('InvalidAccount')
+ parent=protect_dir(Path(state_root)/account_id);path=safe_path(parent/'account.lock')
+ fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+ try:
+  try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  except BlockingIOError:raise ValueError('Busy') from None
+  yield parent/'ledger.json'
+ finally:os.close(fd)
