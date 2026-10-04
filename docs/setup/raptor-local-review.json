@@ -5,15 +5,34 @@
   "review_method": "One fresh whole-branch read-only reviewer; author verified each material fix RED to GREEN, without a second review.",
   "critical_findings": 0,
   "important_findings": [
-    {"finding": "Failed checkpoint verification permitted new dispatch and discarded the candidate.", "fixed_in": "cc004d1", "regression": "test_checkpoint_candidate_requires_recovery_before_next_dispatch"},
-    {"finding": "Confirmed generation was shown unknown when local answer persistence failed.", "fixed_in": "cc004d1", "regression": "test_confirmed_generation_survives_unavailable_local_answer"},
-    {"finding": "Late mutation responses could show/control another application's task.", "fixed_in": "cc004d1", "regression": "late submission and task-action responses cannot change a newly selected app"}
+    {
+      "finding": "Failed checkpoint verification permitted new dispatch and discarded the candidate.",
+      "fixed_in": "cc004d1",
+      "regression": "test_checkpoint_candidate_requires_recovery_before_next_dispatch"
+    },
+    {
+      "finding": "Confirmed generation was shown unknown when local answer persistence failed.",
+      "fixed_in": "cc004d1",
+      "regression": "test_confirmed_generation_survives_unavailable_local_answer",
+      "recovery_regression": "Extended through explicit recovery: missing private answer cannot become successful or stop the worker."
+    },
+    {
+      "finding": "Late mutation responses could show/control another application's task.",
+      "fixed_in": "cc004d1",
+      "regression": "late submission and task-action responses cannot change a newly selected app"
+    }
   ],
   "deferred_minors": [
     "Missing completed result can fail the first recovery even after cleanup; another explicit recovery may be needed.",
     "The operator guide names raptor.sqlite3; actual private database filename is tasks.sqlite3."
   ],
-  "verification_after_fixes": {"python": "114/114", "node": "18/18", "terraform_mock": "18/18", "diff_check": "passed"},
+  "verification_after_fixes": {
+    "python": "114/114",
+    "node": "18/18",
+    "terraform_mock": "18/18",
+    "diff_check": "passed"
+  },
   "live_evidence": "raptor-local-acceptance.json",
-  "merge": "Owner-controlled; not merged automatically."
+  "merge": "Owner-controlled; not merged automatically.",
+  "pull_request": "https://github.com/jamesDeng/raptor-iap/pull/4"
 }

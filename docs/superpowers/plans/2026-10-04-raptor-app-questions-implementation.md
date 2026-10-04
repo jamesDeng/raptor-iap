@@ -154,7 +154,7 @@ Routes: `GET /api/apps`, `POST /api/apps`, `GET /api/apps/<id>`, `PUT /api/apps/
 - [x] Before paid acceptance, read available cumulative billing and retained resource/runtime information; estimate the two bounded sandbox runs and keep below RMB1,000. If budget cannot be established or exceeded, stop the paid step and report that limitation; offline work/review can proceed. This plan introduces no billable environment installation.
 - [x] Run the approved positive live scenario: register a nonsecret planned db-client app, submit its infrastructure/missing-information question through the UI, immediately submit a second distinct question, and watch both progress. Confirm actual Pi/model/context-tool use, saved snapshot/binding, private visible answers, verified checkpoint publication and termination/key cleanup after each. Demonstrate one active sandbox using sanitized start/termination times and resource inventory. Do not assert semantic correctness solely from tool success.
 - [x] Preserve a sanitized public receipt of versions, run counts, tool/usage booleans, independent outcomes, serialization and cleanup evidence. Exclude real question/answer/app/resource/account identifiers and raw logs; private local evidence stays ignored. Confirm no leftover compute/control key; retain encrypted OSS storage. Open the local Raptor UI for the owner to inspect privately.
-- [ ] Follow finishing-a-development-branch: prepare and push the reviewed branch and PR within existing authorization, attach its URL to this chat, wait for checks and report remaining limitations. The owner merges. Do not deploy ACK/RDS/PgCat or declare their acceptance cases complete.
+- [x] Follow finishing-a-development-branch: prepare and push the reviewed branch and PR within existing authorization, attach its URL to this chat, wait for checks and report remaining limitations. The owner merges. Do not deploy ACK/RDS/PgCat or declare their acceptance cases complete.
 
 ## Self-review and handoff
 
@@ -166,4 +166,4 @@ Routes: `GET /api/apps`, `POST /api/apps`, `GET /api/apps/<id>`, `PUT /api/apps/
 
 ## Implementation status — October 4, 2026
 
-Tasks 1–6 are implemented. Task 7 offline checks, independent review fixes and two-question live acceptance passed; see [acceptance receipt](../../setup/raptor-local-acceptance.json). PR publication/checks are the final remaining operator step at this record. The owner merges; later infrastructure slices remain deferred.
+Tasks 1–6 are implemented. Task 7 offline checks, independent review fixes and two-question live acceptance passed; see [acceptance receipt](../../setup/raptor-local-acceptance.json). PR #4 is published; its current check status is recorded by GitHub. The owner merges; later infrastructure slices remain deferred.

@@ -123,13 +123,15 @@ class Gateway:
                     answer_outcome='completed'
                 except (OSError,ValueError):
                     report=dict(report,passed=False,error='AnswerArtifactFailed')
+            else:
+                report=dict(report,passed=False,error='AnswerArtifactFailed')
         checkpoint='unknown'
         if result.get('phase')=='inference':
             checkpoint='saved' if result.get('checkpoint') and result['checkpoint']==report.get('checkpoint') else 'failed'
         cleanup='confirmed' if report.get('cleanup_confirmed') else 'failed'
         blocked=('candidate' in load_ledger(self.path,self.cfg) or cleanup!='confirmed' or report.get('phase')=='blocked' or report.get('persistence_error')
                  or report.get('error') in ('TaskPersistenceFailed','LedgerPersistenceFailed','AnswerArtifactFailed','TaskBindingMismatch'))
-        overall='completed' if report.get('passed') and (answer_outcome,checkpoint,cleanup)==('completed','saved','confirmed') else ('blocked' if blocked else 'failed')
+        overall='completed' if answer is not None and report.get('passed') and (answer_outcome,checkpoint,cleanup)==('completed','saved','confirmed') else ('blocked' if blocked else 'failed')
         evidence=None
         if result.get('kind')=='app-question' and result.get('binding')==asdict(binding):
             evidence={k:result[k] for k in ('actual_model','context_sha256','tool_succeeded','usage') if k in result}

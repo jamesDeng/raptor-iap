@@ -256,6 +256,13 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(saved['outcomes']['error'],'AnswerArtifactFailed')
         self.assertEqual(saved['outcomes']['checkpoint'],'saved')
         self.assertEqual(saved['outcomes']['cleanup'],'confirmed')
+        self.store.request_recovery(self.binding(task),str(uuid.uuid4()))
+        self.assertTrue(self.gateway.tick())
+        recovered=self.store.get_task(task['task_id'])['attempts'][0]
+        self.assertEqual(recovered['outcomes']['error'],'AnswerArtifactFailed')
+        self.assertEqual(recovered['state'],'blocked')
+        self.assertEqual(recovered['outcomes']['answer'],'completed')
+        self.assertEqual(self.cloud.calls.count('inference'),1)
 
     def test_store_event_or_finish_write_failure_still_cleans_resources(self):
         task=self.submit()
