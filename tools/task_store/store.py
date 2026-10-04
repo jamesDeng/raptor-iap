@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sqlite3
 import uuid
-from .models import (Blocked, Conflict, NotFound, ValidationError, TaskBinding, OutcomeReport,
+from .models import (MODEL,Blocked, Conflict, NotFound, ValidationError, TaskBinding, OutcomeReport,
                      STAGES, canonical, digest, identifier, validate_app, validate_snapshot, validate_submission)
 from tools.sandbox_lifecycle.state import protect_dir, safe_path
 
@@ -243,7 +243,11 @@ class Store:
         if answer is not None and (type(answer) is not str or not answer.strip() or len(answer.encode('utf-8')) > 16384):
             raise ValidationError()
         if report.answer == 'completed' and answer is None:
-            raise ValidationError()
+            if (report.overall != 'blocked' or report.error != 'AnswerArtifactFailed' or not evidence
+                    or evidence.get('tool_succeeded') is not True
+                    or evidence.get('actual_model') != MODEL
+                    or evidence.get('context_sha256') != binding.snapshot_sha256):
+                raise ValidationError()
         if evidence is not None:
             from tools.sandbox_lifecycle.contracts import validate_result
             validate_result(dict(phase='inference',passed=False,kind='app-question',

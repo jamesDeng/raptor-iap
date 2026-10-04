@@ -195,7 +195,7 @@ def _execute_locked(cfg, request, path, cloud, *, binding=None, observer=None):
         recovered = recover_locked(cfg, path, cloud, state)
         if not recovered['passed']:
             return recovered
-    if state['phase'] == 'blocked':
+    if state['phase'] == 'blocked' or 'candidate' in state:
         return output(state)
     state = {k: v for k, v in state.items() if k in ('schema_version', 'fingerprint', 'checkpoint')}
     request_binding = TaskBinding(**request.application['binding']) if request.application else None

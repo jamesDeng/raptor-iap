@@ -11,7 +11,7 @@ from tools.sandbox_lifecycle.state import account_lock, load_ledger, protect_dir
 from tools.sandbox_lifecycle.lifecycle import _execute_locked, recover_locked, output
 from tools.sandbox_lifecycle.task_results import TaskResultSink
 
-RESOURCE_FIELDS = ('sandbox_id','key_id','cleanup_key_ids','pending')
+RESOURCE_FIELDS = ('sandbox_id','key_id','cleanup_key_ids','pending','candidate')
 
 
 @contextmanager
@@ -116,6 +116,7 @@ class Gateway:
         answer=None
         answer_outcome='failed' if report.get('request_outcome')=='failed' else 'unknown'
         if result.get('kind')=='app-question' and result.get('binding')==asdict(binding) and result.get('answer_generated'):
+            answer_outcome='completed'
             if 'answer_ref' in result:
                 try:
                     answer=TaskResultSink(self.path.parent,binding).read(result['answer_ref'])
@@ -126,7 +127,7 @@ class Gateway:
         if result.get('phase')=='inference':
             checkpoint='saved' if result.get('checkpoint') and result['checkpoint']==report.get('checkpoint') else 'failed'
         cleanup='confirmed' if report.get('cleanup_confirmed') else 'failed'
-        blocked=(cleanup!='confirmed' or report.get('phase')=='blocked' or report.get('persistence_error')
+        blocked=('candidate' in load_ledger(self.path,self.cfg) or cleanup!='confirmed' or report.get('phase')=='blocked' or report.get('persistence_error')
                  or report.get('error') in ('TaskPersistenceFailed','LedgerPersistenceFailed','AnswerArtifactFailed','TaskBindingMismatch'))
         overall='completed' if report.get('passed') and (answer_outcome,checkpoint,cleanup)==('completed','saved','confirmed') else ('blocked' if blocked else 'failed')
         evidence=None

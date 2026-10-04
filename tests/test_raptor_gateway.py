@@ -217,14 +217,45 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(saved['outcomes']['answer'],'completed')
         self.assertEqual(saved['outcomes']['checkpoint'],'failed')
         self.assertEqual(saved['outcomes']['cleanup'],'confirmed')
-        self.assertEqual(saved['state'],'failed')
-        self.cloud.reject_checkpoint=False;other=self.submit();self.cloud.fail='kill'
+        self.assertEqual(saved['state'],'blocked')
+        self.cloud.reject_checkpoint=False
+        self.store.request_recovery(self.binding(task),str(uuid.uuid4()));self.gateway.tick()
+        self.assertFalse(self.store.get_task(task['task_id'])['blocked'])
+        other=self.submit();self.cloud.fail='kill'
         self.gateway.tick()
         failed=self.store.get_task(other['task_id'])['attempts'][0]
         self.assertEqual(failed['outcomes']['cleanup'],'failed')
         self.assertEqual(failed['state'],'blocked')
         before=self.cloud.calls.count('create');self.submit();self.gateway.tick()
         self.assertEqual(self.cloud.calls.count('create'),before)
+
+    def test_checkpoint_candidate_requires_recovery_before_next_dispatch(self):
+        first,second=self.submit(),self.submit();self.cloud.reject_checkpoint=True
+        self.gateway.tick()
+        state=load_ledger(self.ledger,self.cfg);candidate=state['candidate']
+        self.assertTrue(self.store.get_task(first['task_id'])['blocked'])
+        self.cloud.reject_checkpoint=False
+        self.gateway.tick()
+        self.assertEqual(self.cloud.calls.count('create'),1)
+        self.assertEqual(load_ledger(self.ledger,self.cfg)['candidate'],candidate)
+        self.assertEqual(self.store.get_task(second['task_id'])['attempts'][0]['state'],'queued')
+        self.store.request_recovery(self.binding(first),str(uuid.uuid4()));self.gateway.tick()
+        self.assertEqual(load_ledger(self.ledger,self.cfg)['checkpoint'],candidate)
+        self.assertFalse(self.store.get_task(first['task_id'])['blocked'])
+        self.gateway.tick();self.assertEqual(self.cloud.calls.count('create'),2)
+
+    def test_confirmed_generation_survives_unavailable_local_answer(self):
+        from tools.sandbox_lifecycle.task_results import TaskResultSink
+        task=self.submit()
+        with patch.object(TaskResultSink,'_publish',side_effect=OSError('synthetic storage failure')):
+            self.gateway.tick()
+        saved=self.store.get_task(task['task_id'])['attempts'][0]
+        self.assertEqual(saved['outcomes']['answer'],'completed')
+        self.assertIsNone(saved['answer'])
+        self.assertEqual(saved['state'],'blocked')
+        self.assertEqual(saved['outcomes']['error'],'AnswerArtifactFailed')
+        self.assertEqual(saved['outcomes']['checkpoint'],'saved')
+        self.assertEqual(saved['outcomes']['cleanup'],'confirmed')
 
     def test_store_event_or_finish_write_failure_still_cleans_resources(self):
         task=self.submit()
