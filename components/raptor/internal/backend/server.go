@@ -8,6 +8,7 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	githubservice "github.com/jamesDeng/raptor-iap/components/raptor/internal/github"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/skills"
 	"net/http"
 )
 
@@ -18,6 +19,7 @@ type Server struct {
 	Requests  *requests.Service
 	Approvals *approvals.Service
 	GitHub    *githubservice.Service
+	Skills    *skills.Service
 }
 
 func New(p *pgxpool.Pool) *Server {
@@ -30,6 +32,9 @@ func New(p *pgxpool.Pool) *Server {
 	s.Approvals = &approvals.Service{Pool: p}
 	s.Approvals.RegisterBrowser(s.Mux, s.Auth)
 	s.GitHub = &githubservice.Service{Pool: p}
+	s.Skills = &skills.Service{Pool: p}
+	s.Skills.Register(s.Mux, s.Auth)
+	s.Requests.ResolveSkills = s.Skills.Validate
 	s.Mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
 	return s
 }

@@ -23,7 +23,11 @@ func (w *Worker) Pause(ctx context.Context, x Execution, reason string) error {
 	if reason != "waiting_approval" && reason != "waiting_review" && reason != "blocked" && reason != "cancelled" && reason != "interrupted" {
 		return ErrInvalid
 	}
-	if reason == "waiting_approval" {
+	var pending bool
+	if e := w.Store.Pool.QueryRow(ctx, "SELECT pending_skills<>'{}' FROM gateway.executions WHERE request_id=$1", x.RequestID).Scan(&pending); e != nil {
+		return e
+	}
+	if reason == "waiting_approval" && !pending {
 		_, e := w.Store.Pool.Exec(ctx, "UPDATE gateway.executions SET status=$2,updated_at=$3 WHERE request_id=$1 AND status='running'", x.RequestID, reason, w.now())
 		return e
 	}
@@ -39,7 +43,13 @@ func (w *Worker) Pause(ctx context.Context, x Execution, reason string) error {
 	if e != nil || !out.Confirmed {
 		return w.Store.BlockRecovery(ctx, x.RequestID)
 	}
-	return w.Store.Release(ctx, x.RequestID, w.Owner, reason, ref)
+	if e = w.Store.Release(ctx, x.RequestID, w.Owner, reason, ref); e != nil {
+		return e
+	}
+	if reason == "waiting_review" || reason == "waiting_approval" || reason == "interrupted" {
+		return w.applyPendingSkills(ctx, x.RequestID)
+	}
+	return nil
 }
 func (w *Worker) ExpireApproval(ctx context.Context, id string) error {
 	x, e := w.Store.Get(ctx, id)
@@ -75,6 +85,8 @@ func (w *Worker) ApplySignal(ctx context.Context, x Execution, signal Signal) er
 		return ErrInvalid
 	}
 	switch signal.Kind {
+	case "skills":
+		return w.ApplySkillsChange(ctx, x, signal)
 	case "pause":
 		var p struct {
 			Reason string `json:"reason"`

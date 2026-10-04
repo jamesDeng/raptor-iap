@@ -10,4 +10,4 @@ CREATE TABLE IF NOT EXISTS gateway.apply_retries(request_id uuid NOT NULL REFERE
 GRANT USAGE ON SCHEMA gateway TO gateway_app;
 GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA gateway TO gateway_app;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA gateway TO gateway_app;
-
+ALTER TABLE gateway.executions ADD COLUMN IF NOT EXISTS pending_skills jsonb NOT NULL DEFAULT '{}';

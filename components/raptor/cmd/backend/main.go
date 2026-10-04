@@ -9,6 +9,8 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/backend"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/skills"
 	"golang.org/x/term"
 	"log"
 	"net/http"
@@ -57,6 +59,19 @@ func main() {
 		addr = "127.0.0.1:8871"
 	}
 	h := backend.New(p)
+	h.Skills.Source = skills.GitSource{Repository: os.Getenv("RAPTOR_REPOSITORY")}
+	if gatewayURL := os.Getenv("GATEWAY_URL"); gatewayURL != "" {
+		client := requests.HTTPGateway{BaseURL: gatewayURL, Username: os.Getenv("SERVICE_USERNAME"), Password: os.Getenv("SERVICE_PASSWORD")}
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				if h.Requests.DispatchPending(ctx, client) != nil {
+					log.Print("request dispatch will retry")
+				}
+			}
+		}()
+	}
 	h.RegisterService(os.Getenv("SERVICE_USERNAME"), os.Getenv("SERVICE_PASSWORD"))
 	h.Mux.Handle("POST /webhooks/github", h.GitHub.Handler(os.Getenv("GITHUB_WEBHOOK_SECRET")))
 	if os.Getenv("RAPTOR_SIMULATION") == "true" && os.Getenv("RAPTOR_FIXTURE_FILE") != "" {
