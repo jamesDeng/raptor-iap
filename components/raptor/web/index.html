@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Raptor · Infra Ops</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><a class="brand" href="/">Raptor<span>Infrastructure operations</span></a><span class="badge">Local POC · Singapore</span></header>
+<div id="notice" role="status" aria-live="polite" hidden></div>
+<main>
+<aside><div class="section-heading"><h2>Applications</h2><button id="new-app" class="small">Register app</button></div><p class="muted">Context you maintain. Live discovery comes later.</p><nav id="apps" aria-label="Applications"></nav></aside>
+<div class="workspace">
+<section id="app-editor" hidden><h1 id="editor-title">Register application</h1><p class="muted">Use nonsecret context only. Leave resource identifiers blank when unknown.</p>
+<form id="app-form"><div class="fields">
+<label>Application name<input name="name" required maxlength="128" placeholder="db-client"></label>
+<label>Owner<input name="owner" required maxlength="128" placeholder="Owner label"></label>
+<label>Environment<input name="environment" required maxlength="128" value="poc"></label>
+<label>Region<input name="region" required maxlength="128" value="ap-southeast-1"></label>
+<label>ACK cluster identifier<input name="ack_cluster_id" maxlength="128" placeholder="Unknown"></label>
+<label>Namespace<input name="namespace" maxlength="128" placeholder="Unknown"></label>
+<label>Deployment name<input name="deployment" maxlength="128" placeholder="Unknown"></label></div>
+<div class="section-heading"><h3>Dependencies</h3><button type="button" id="add-dependency" class="small">Add dependency</button></div><div id="dependencies"></div>
+<div class="actions"><button type="submit">Save application</button><button type="button" id="cancel-edit" class="secondary">Cancel</button></div></form></section>
+<section id="app-detail"><div class="empty"><p class="eyebrow">START WITH CONTEXT</p><h1>Ask about your infrastructure.</h1><p>Register an application, describe its environment, then ask the agent what it needs or what is missing.</p><p class="muted">This first slice answers questions using your saved context.</p></div></section>
+<section id="question-section" hidden><h2>Ask the agent</h2><form id="question-form"><label>Your question<textarea id="question" rows="4" required placeholder="What infrastructure does this app need, and what is still missing?"></textarea></label><div class="section-heading"><span id="question-count" class="muted">0 / 2,000 characters</span><label class="model">Model<select id="model"><option value="gpt-5.6-luna">GPT-5.6 Luna</option></select></label></div><button type="submit" id="ask">Submit question</button></form><p class="muted">The task keeps the current context version. You can close this page while it runs.</p></section>
+<div class="task-layout"><section><h2>Task history</h2><div id="tasks"><p class="muted">Your questions will appear here.</p></div></section><section id="task-panel" hidden><div id="task-view"></div><div class="actions"><button id="cancel-task" class="secondary" hidden>Cancel queued task</button><button id="retry-task" hidden>Retry as a new attempt</button><button id="recover-task" class="secondary" hidden>Recover interrupted run</button></div></section></div>
+</div></main><footer>Owner-entered context · Planned and present labels are declarations, not live health checks.</footer><script type="module" src="/app.js"></script></body></html>

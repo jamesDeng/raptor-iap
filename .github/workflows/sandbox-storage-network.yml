@@ -39,4 +39,5 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/python -m pip install -r tools/agenticfs_bootstrap/requirements.txt
-          .venv/bin/python -m unittest discover -s tests -v
+          .venv/bin/python -m unittest discover -s tests -p 'test_agenticfs_*.py' -v
+          .venv/bin/python -m unittest discover -s tests -p 'test_terraform_*.py' -v

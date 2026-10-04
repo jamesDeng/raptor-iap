@@ -1,15 +1,11 @@
 # Raptor Infra Ops Agent POC
 
-This repository starts with a minimal Pi container for later Aliyun Agent Sandbox Gen2 testing in Singapore. It builds only `linux/amd64` and keeps the container running until Pi is explicitly invoked.
+The first connected Raptor slice lets one local owner register application context, submit natural-language questions, and inspect durable task history. A separate gateway runs each task through Pi in an Aliyun Singapore sandbox, retrieves a bound private answer, saves an encrypted OSS credential checkpoint, and confirms compute/control-key cleanup.
 
-See [the agent sandbox image](components/agent-sandbox/README.md) for pinned versions, build instructions and offline acceptance checks.
+Start with [the local Raptor guide](docs/setup/raptor-local.md). Context is manually declared; planned resources are not live infrastructure. This slice has no deployment, restart, live discovery or infrastructure-changing tools. ACK/Argo CD, PostgreSQL RDS, ECS/PgCat replacement and the zero-failed-operations test remain future work.
 
-The image slice is verified: [Actions run 36947281741](https://github.com/jamesDeng/raptor-iap/actions/runs/36947281741) passed the Linux AMD64 build, offline CLI checks and public GHCR publication. The component documentation records the immutable source tag and verified digest. Aliyun template creation, managed sandbox execution, secret-store retrieval, OpenAI calls and infrastructure operations remain separate integration work. No deployment or performance claim follows from the image checks.
+The [OSS-backed lifecycle guide](docs/setup/oss-sandbox-lifecycle.md) records the separately verified normal → refresh → replacement baseline. The [pinned sandbox image](components/agent-sandbox/README.md) has its own build receipt; that image is not substituted for the proven official Gen2 template by this slice.
 
-Keep credentials outside Git and container images. No credential is required by the offline acceptance checks.
+[Terraform networking/RAM preparation](docs/setup/sandbox-storage-network.md) and the [AgenticFS bootstrap tool](docs/setup/agenticfs-bootstrap.md) remain separate setup components. AgenticFS approval/mounting is not a prerequisite for the current encrypted OSS checkpoint route.
 
-The [AgenticFS bootstrap tool](docs/setup/agenticfs-bootstrap.md) adds locally tested setup/reconciliation and guarded cleanup for storage APIs not covered by the official Terraform provider. Networking and permissions remain Terraform-owned. Actual storage creation, mounting and Pi credential persistence are not yet verified.
-
-Terraform storage-network preparation: [network/RAM guide](docs/setup/sandbox-storage-network.md). Network creation, mounting and model-session persistence remain separate live acceptance stages.
-
-The [OSS-backed sandbox lifecycle](docs/setup/oss-sandbox-lifecycle.md) adds a local controller, protected Pi runner and explicit checkpoint recovery. See the guide for actual verification status and remaining limits.
+Credentials, application context, questions and answers stay outside Git and CI. Offline checks use synthetic data and no cloud credentials.

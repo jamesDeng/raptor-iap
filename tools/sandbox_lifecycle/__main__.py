@@ -1,14 +1,13 @@
 """Local POC CLI. Default status never starts compute."""
-import argparse,json,subprocess
+import argparse,json
 from pathlib import Path
 from .config import load_config,load_request
 from .cloud import Cloud,CloudError
 from .lifecycle import execute,recover,status,error_code
+from .paths import lifecycle_root
 
 def state_root():
- repo=Path(__file__).resolve().parents[2]
- p=subprocess.run(['git','rev-parse','--path-format=absolute','--git-common-dir'],cwd=repo,capture_output=True,text=True,check=True)
- return Path(p.stdout.strip()).resolve().parent/'.raptor-local/sandbox-lifecycle'
+ return lifecycle_root()
 def main(argv=None):
  parser=argparse.ArgumentParser(description='Run and recover a single-account Pi sandbox lifecycle.')
  parser.add_argument('command',nargs='?',default='status',choices=['status','run','recover']);parser.add_argument('--config',type=Path,required=True);parser.add_argument('--request',type=Path);parser.add_argument('--profile',default='infra-ops-poc')
