@@ -145,3 +145,13 @@ POC_BROWSER_FIXTURE=true go test ./internal/backend -run TestBrowserFixtureServe
 This intentionally isolated fixture uses `poc-reviewer` / `local-fixture-only-2026`, synthetic releases and deployments, and a fixture Gateway reader. These are test-only identities, not real account credentials. Interrupt only this test process to remove its disposable database. The fixture is skipped during normal tests.
 
 See [the acceptance receipt](go-platform-local-acceptance.md) for what was actually tested and its limits.
+
+## Recovery and redaction boundaries
+
+The simulated Gateway allows one driver process per database. A new driver reports an orphaned runtime as blocked with `recoveryNeeded=true`; its pending signals and durable ownership remain retained. Human Continue does not override unresolved ownership. This slice has no operator recovery interface: verify cleanup and checkpoint identity before designing or performing an explicit reconciliation. Do not clear the runtime slot merely to make the queue move.
+
+The direct runner also uses an exclusive database session lock. After interruption, submitting/observing targets become `unknown` with a recovery explanation. Existing deployment evidence is retained and the mutation is not replayed. A new explicitly chosen operation requires reconciling the deployment first.
+
+Recognizable credential fields and credential-bearing environment URLs are rejected. Event output filters recognizable credential text and the configured service password. Optional `GATEWAY_REDACTION_VALUES_FILE` points to a private (0600) JSON array of additional known sensitive values; these values are filtered before event persistence. Keep this file outside Git. Secret references are supported; arbitrary-secret detection is not promised.
+
+Full submitted review text is retained in the signed webhook record. Oversized text becomes an explicitly labelled excerpt in the bounded Gateway signal. A permanently rejected delivery records a failed outbox reason and a Request event while unrelated work continues.

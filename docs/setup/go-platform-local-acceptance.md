@@ -1,13 +1,13 @@
 # Local Go platform acceptance
 
-Date: 2026-10-04. Product source tested: `c68c6f02414729defac3e410d9d6cd2a29a9f6ce` on `feat/go-platform-local`. The platform specification is [2026-10-04-platform-service-contracts.md](../superpowers/specs/2026-10-04-platform-service-contracts.md). This receipt covers a local simulated slice, not cloud POC completion.
+Date: 2026-10-04. Product source tested: `9099ffea11b105ec63edc4475ad24296014fd555` on `feat/go-platform-local`. The platform specification is [2026-10-04-platform-service-contracts.md](../superpowers/specs/2026-10-04-platform-service-contracts.md). This receipt covers a local simulated slice, not cloud POC completion.
 
 ## Environment and results
 
 - macOS, Go 1.27.1, PostgreSQL 17.11 in a dedicated loopback cluster on port 55432; minimum supported Go version remains 1.25.
 - `go test -race ./...` and `go vet ./...` passed in both `components/raptor` and `components/agent-gateway`.
-- `node --test tests/harness/go-platform-web.test.mjs`: 5 passed.
-- Full offline Node harness suite: 23 passed with the prepared Python 3.12 runtime on PATH. Its cross-language test fails with the system Python 3.9; no legacy product code was changed to hide that environment mismatch.
+- `node --test tests/harness/go-platform-web.test.mjs`: 7 passed.
+- Full offline Node harness suite: 25 passed with the prepared Python 3.12 runtime on PATH. Its cross-language test fails with the system Python 3.9; no legacy product code was changed to hide that environment mismatch.
 - Full offline Python/Terraform suite: 114 passed using the prepared Python runtime and existing Terraform binary. Terraform used the existing offline fixtures; no cloud resources were applied.
 
 Commands used from the isolated worktree:
@@ -43,3 +43,9 @@ The browser check used disposable synthetic catalog/deployment data and a fixtur
 No real Pi/model request, sandbox provisioning, OSS checkpoint restoration, ACK/Argo CD deployment, RDS creation, ECS/PgCat replacement, cloud Infra API mutation or zero-failed-operations measurement was performed by this slice. Existing sandbox/Python verification remains separate. The local simulated approval/review sequence is an acceptance fixture, not a prescribed infrastructure workflow.
 
 The real Infra API adapter, Function Compute deployment, real agent runtime adapter and cloud acceptance remain subsequent work. These tests do not establish exactly-once external mutation, global secret redaction, live cloud SKU validity or production multi-user authorization beyond the selected simple authentication contract.
+
+## Independent review and recovery regressions
+
+The whole-branch reviewer identified nine Important issues. The native fix pass reproduced and fixed each: REST approval scope, human Block preservation, page navigation ordering, review wire bounds and poisoned outbox handling, pause replay after cleanup, credential filtering, browser idempotency, orphaned Gateway ownership and interrupted direct batches. [The review record](go-platform-local-review.md) preserves the findings, test evidence, scope rulings and deferred formatting minor. There was no second independent review.
+
+A Gateway process now holds an exclusive database session lease. If a restarted driver finds another owner's durable runtime slot, it reports blocked/recovery-needed and retains pending signals. Ownership is not automatically released. A restarted direct driver records interrupted submitting/observing targets as unknown, retaining their evidence; it never repeats their mutation. Manual reconciliation is required for these ambiguous outcomes. These are safe reporting boundaries, not a completed operator recovery interface.
