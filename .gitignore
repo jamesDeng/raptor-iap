@@ -39,3 +39,6 @@ __pycache__/
 *.tfplan
 *plan*.json
 *.terraform-output.json
+
+# Installed harness dependencies
+node_modules/

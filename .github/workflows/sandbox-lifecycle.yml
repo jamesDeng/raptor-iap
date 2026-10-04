@@ -1,0 +1,35 @@
+name: Sandbox lifecycle offline checks
+on:
+  push:
+    branches: [main]
+    paths: ['tools/sandbox_lifecycle/**', 'components/agent-harness/**', 'tests/**', '.github/workflows/sandbox-lifecycle.yml']
+  pull_request:
+    paths: ['tools/sandbox_lifecycle/**', 'components/agent-harness/**', 'tests/**', '.github/workflows/sandbox-lifecycle.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare pinned runtimes
+        run: |
+          python3.12 -m venv .venv-lifecycle
+          .venv-lifecycle/bin/pip install -r tools/sandbox_lifecycle/requirements.txt
+          cd /tmp
+          curl -fsSLO https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-x64.tar.xz
+          curl -fsSL https://nodejs.org/dist/v22.23.3/SHASUMS256.txt | awk '$2=="node-v22.23.3-linux-x64.tar.xz"' > node.sha
+          sha256sum -c node.sha
+          tar -xf node-v22.23.3-linux-x64.tar.xz
+          echo /tmp/node-v22.23.3-linux-x64/bin >> "$GITHUB_PATH"
+      - name: Install exact Pi dependency
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix components/agent-harness
+      - name: Run offline lifecycle tests
+        run: |
+          .venv-lifecycle/bin/python -m unittest discover -s tests -p 'test_sandbox_lifecycle_*.py' -v
+          node --test tests/harness/*.test.mjs
+          .venv-lifecycle/bin/python -m tools.sandbox_lifecycle --help

@@ -11,3 +11,5 @@ Keep credentials outside Git and container images. No credential is required by 
 The [AgenticFS bootstrap tool](docs/setup/agenticfs-bootstrap.md) adds locally tested setup/reconciliation and guarded cleanup for storage APIs not covered by the official Terraform provider. Networking and permissions remain Terraform-owned. Actual storage creation, mounting and Pi credential persistence are not yet verified.
 
 Terraform storage-network preparation: [network/RAM guide](docs/setup/sandbox-storage-network.md). Network creation, mounting and model-session persistence remain separate live acceptance stages.
+
+The [OSS-backed sandbox lifecycle](docs/setup/oss-sandbox-lifecycle.md) adds a local controller, protected Pi runner and explicit checkpoint recovery. See the guide for actual verification status and remaining limits.

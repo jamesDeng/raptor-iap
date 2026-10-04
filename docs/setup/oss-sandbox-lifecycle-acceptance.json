@@ -1,0 +1,157 @@
+{
+  "date": "2026-10-04",
+  "region": "ap-southeast-1",
+  "model": "gpt-5.6-luna",
+  "auth": "existing ChatGPT Pro OAuth session through Pi",
+  "pi_version": "0.99.2",
+  "node_version": "22.23.3",
+  "template": "official Gen2, runtime installed per sandbox",
+  "browser_authorization_repeated": false,
+  "runs": [
+    {
+      "request": "normal",
+      "invocation": "python -m tools.sandbox_lifecycle run",
+      "passed": true,
+      "request_outcome": "completed",
+      "cleanup_confirmed": true,
+      "tool_succeeded": true,
+      "answer_matches": true,
+      "usage": [
+        {
+          "input": 601,
+          "output": 36,
+          "total_tokens": 637
+        },
+        {
+          "input": 664,
+          "output": 20,
+          "total_tokens": 684
+        }
+      ],
+      "checkpoint": {
+        "sha256": "97eab11fa39043c1090bfcbe243d93351365b96cf938c94d3aa04c7115b9f73f",
+        "bytes": 6698
+      }
+    },
+    {
+      "request": "forced-refresh",
+      "invocation": "python -m tools.sandbox_lifecycle run",
+      "passed": true,
+      "request_outcome": "completed",
+      "cleanup_confirmed": true,
+      "tool_succeeded": true,
+      "answer_matches": true,
+      "usage": [
+        {
+          "input": 601,
+          "output": 36,
+          "total_tokens": 637
+        },
+        {
+          "input": 665,
+          "output": 21,
+          "total_tokens": 686
+        }
+      ],
+      "checkpoint": {
+        "sha256": "62e9bdedabf675547187adb39054271b4d33c5281e094c9fbe7ebb1c33a9203d",
+        "bytes": 7143
+      },
+      "refresh": {
+        "refresh_succeeded": true,
+        "refresh_token_changed": true
+      }
+    },
+    {
+      "request": "replacement-normal",
+      "invocation": "python -m tools.sandbox_lifecycle run",
+      "passed": true,
+      "request_outcome": "completed",
+      "cleanup_confirmed": true,
+      "tool_succeeded": true,
+      "answer_matches": true,
+      "usage": [
+        {
+          "input": 601,
+          "output": 36,
+          "total_tokens": 637
+        },
+        {
+          "input": 669,
+          "output": 25,
+          "total_tokens": 694
+        }
+      ],
+      "checkpoint": {
+        "sha256": "71290b4df6988f232a65d7a4dcbfe57836e93c4db22456d22928562fbb279281",
+        "bytes": 7576
+      }
+    }
+  ],
+  "independent_verification": {
+    "verified": true,
+    "archive_objects_verified": 4,
+    "checksum_objects_verified": 4,
+    "encryption": "AES256",
+    "volume_bucket_prefix_verified": true,
+    "active_lifecycle_sandboxes": 0,
+    "lifecycle_control_keys": 0,
+    "archive_downloaded_to_controller": false,
+    "selected_checkpoint_matches_final_run": true
+  },
+  "billing": {
+    "billing_query_available": true,
+    "billing_cycle": "2026-10",
+    "total_count": 3,
+    "returned_count": 3,
+    "pretax_amount_sum": "0.0",
+    "currency": [
+      "CNY"
+    ],
+    "delayed_charges_possible": true,
+    "account_budget_cap_enforced": false
+  },
+  "diagnostic_history": [
+    "An initial CLI preflight reported ControllerFailed; safe operator-authentication error reporting was corrected.",
+    "A diagnostic controller invocation completed inference and checkpointing but required explicit recover for key cleanup. An SDK apiKeyID casing bug was fixed with a failing-then-passing test.",
+    "An earlier forced-refresh CLI run passed but overwrote refresh evidence; report retention was fixed with a failing-then-passing test, then the full three-run CLI sequence above was executed.",
+    "One replacement launch was rejected by automatic approval review based on suspected active compute; current finished ledger and zero key inventory were verified before retry."
+  ],
+  "limitations": [
+    "Read-tool acceptance only; no infrastructure changes or Raptor UI.",
+    "Crash after token rotation before completed checkpoint may require sign-in again.",
+    "Local single-checkout-family locking only; no distributed queue.",
+    "Positive live tests only; destructive failure injection remains offline.",
+    "No long-term unattended reliability or zero-failure application operations claim."
+  ],
+  "post_review_live_run": {
+    "passed": true,
+    "tool_succeeded": true,
+    "answer_matches": true,
+    "usage": [
+      {
+        "input": 601,
+        "output": 36,
+        "total_tokens": 637
+      },
+      {
+        "input": 666,
+        "output": 22,
+        "total_tokens": 688
+      }
+    ],
+    "checkpoint": {
+      "sha256": "485f84822aef5a06dd8182df3f708b3e1dcd62537a2d1845e3142dc03826ae62",
+      "bytes": 7933
+    },
+    "cleanup_confirmed": true,
+    "storage_binding_revalidated": true,
+    "active_lifecycle_sandboxes": 0,
+    "lifecycle_control_keys": 0,
+    "encryption": "AES256"
+  },
+  "final_offline_tests": {
+    "python": 73,
+    "node": 8
+  }
+}

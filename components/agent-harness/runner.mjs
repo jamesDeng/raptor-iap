@@ -1,0 +1,23 @@
+import fs from 'node:fs';import path from 'node:path';import {pathToFileURL} from 'node:url';
+import {loadPiRuntime,refreshCredentials,runReadProbe} from './pi-adapter.mjs';import {createCheckpoint,restoreCheckpoint} from './checkpoint.mjs';
+export async function runJob(job,dependencies={}){
+ const deps={loadPiRuntime,refreshCredentials,runReadProbe,createCheckpoint,restoreCheckpoint,...dependencies};const result={phase:job.phase,passed:false};
+ try{
+  if(job.phase==='restore'){await deps.restoreCheckpoint({reference:job.reference,stateRoot:job.state_root,mountRoot:job.mount_root,prefix:job.prefix});await deps.loadPiRuntime({stateRoot:job.state_root});return {...result,passed:true};}
+  const {credentials,runtime}=await deps.loadPiRuntime({stateRoot:job.state_root});
+  if(job.phase==='refresh'){Object.assign(result,await deps.refreshCredentials({credentials,runtime,forceExpiry:true}));result.passed=true;}
+  else if(job.phase==='inference'){Object.assign(result,await deps.runReadProbe({stateRoot:job.state_root,runtime,limits:job.limits}));}
+  else throw Error('InvalidJob');
+ }catch(e){result.error=e.message==='NeedsSignIn'?'NeedsSignIn':'RunnerFailed';}
+ if(['refresh','inference'].includes(job.phase)){
+  try{result.checkpoint=await deps.createCheckpoint({stateRoot:job.state_root,mountRoot:job.mount_root,generation:job.generation,prefix:job.prefix});}
+  catch{result.passed=false;result.error='CheckpointFailed';}
+ }
+ return result;
+}
+async function main(){
+ const input=process.argv[2],output=process.argv[3];let result;
+ try{const job=JSON.parse(fs.readFileSync(input,'utf8'));result=await runJob(job);}catch{result={passed:false,error:'InvalidJob'};}
+ const temp=output+'.tmp';fs.writeFileSync(temp,JSON.stringify(result),{mode:0o600});fs.renameSync(temp,output);process.exitCode=result.passed?0:1;
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)await main();
