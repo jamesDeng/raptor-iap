@@ -129,6 +129,12 @@ func (s *Service) Decide(ctx context.Context, user domain.User, id string, in De
 	kind := "approval"
 	if in.Decision == "deny" {
 		kind = in.Next
+		if in.Next == "block" || in.Next == "cancel" {
+			state := map[string]string{"block": "blocked", "cancel": "cancelled"}[in.Next]
+			if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status=$2,control_state=$2 WHERE id=$1", a.RequestID, state); e != nil {
+				return a, domain.ErrUnavailable
+			}
+		}
 	}
 	if e = requests.QueueSignal(ctx, tx, a.RequestID, kind, map[string]string{"approvalId": id, "decision": a.State, "instructions": in.Guidance}); e != nil {
 		return a, domain.ErrUnavailable
@@ -153,7 +159,7 @@ func (s *Service) Check(ctx context.Context, in ApprovalCheckInput) (ApprovalChe
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}
-	out.Allowed = state == "approved" && requestState != "cancelled" && requestState != "completed" && equalJSON(binding, b)
+	out.Allowed = state == "approved" && requestState != "blocked" && requestState != "cancelled" && requestState != "completed" && equalJSON(binding, b)
 	if out.Allowed {
 		out.Reason = "approved"
 	}

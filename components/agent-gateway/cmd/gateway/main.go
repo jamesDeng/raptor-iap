@@ -46,6 +46,7 @@ func main() {
 			log.Fatal("private checkpoint directory required")
 		}
 		worker := &execution.Worker{Store: s, Owner: execution.NewID(), Runtime: &runtimeadapter.Simulated{Root: root}, Raptor: execution.HTTPRaptor{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}}
+		worker.SimulatedFlow = os.Getenv("GATEWAY_SIMULATED_SCENARIO") == "approval-review"
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
@@ -59,6 +60,9 @@ func main() {
 					if worker.ExpireApproval(ctx, *held) != nil {
 						log.Print("approval wait requires attention")
 					}
+				}
+				if worker.RunActive(ctx) != nil {
+					log.Print("simulated active runtime requires attention")
 				}
 				if worker.RunNext(ctx) != nil {
 					log.Print("simulated worker encountered unavailable dependency")

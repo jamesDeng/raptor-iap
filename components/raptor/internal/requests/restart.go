@@ -23,7 +23,7 @@ func (s *Service) RunRestartBatch(ctx context.Context, id string, client InfraCo
 	if e != nil {
 		return e
 	}
-	if request.Definition.Type != "direct" || request.Status == "cancelled" {
+	if request.Definition.Type != "direct" || request.Status == "cancelled" || request.Status == "blocked" {
 		return domain.ErrConflict
 	}
 	items, e := s.RestartItems(ctx, id)
@@ -51,14 +51,14 @@ func (s *Service) RunRestartBatch(ctx context.Context, id string, client InfraCo
 		}()
 	}
 	wg.Wait()
-	_, e = s.Pool.Exec(ctx, "UPDATE raptor.requests SET status=CASE WHEN EXISTS(SELECT 1 FROM raptor.targets WHERE request_id=$1 AND state<>'succeeded') THEN 'failed' ELSE 'completed' END WHERE id=$1 AND status<>'cancelled'", id)
+	_, e = s.Pool.Exec(ctx, "UPDATE raptor.requests SET status=CASE WHEN EXISTS(SELECT 1 FROM raptor.targets WHERE request_id=$1 AND state<>'succeeded') THEN 'failed' ELSE 'completed' END WHERE id=$1 AND status NOT IN ('cancelled','blocked')", id)
 	if first != nil {
 		return first
 	}
 	return e
 }
 func (s *Service) restartOne(ctx context.Context, id string, target domain.RestartTarget, client InfraCommands) error {
-	tag, e := s.Pool.Exec(ctx, "UPDATE raptor.targets SET state='submitting',details='{}' WHERE request_id=$1 AND target_key=$2 AND state IN ('queued','failed')", id, TargetKey(target))
+	tag, e := s.Pool.Exec(ctx, "UPDATE raptor.targets SET state='submitting',details='{}' WHERE request_id=$1 AND target_key=$2 AND state IN ('queued','failed') AND (SELECT status FROM raptor.requests WHERE id=$1) NOT IN ('cancelled','blocked')", id, TargetKey(target))
 	if e != nil || tag.RowsAffected() == 0 {
 		return e
 	}

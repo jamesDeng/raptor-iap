@@ -16,11 +16,12 @@ type RaptorClient interface {
 	Context(context.Context, string) (ExecutionInput, error)
 }
 type Worker struct {
-	Clock   Clock
-	Store   *Store
-	Runtime Runtime
-	Raptor  RaptorClient
-	Owner   string
+	Clock         Clock
+	Store         *Store
+	Runtime       Runtime
+	Raptor        RaptorClient
+	Owner         string
+	SimulatedFlow bool
 }
 
 func (w *Worker) RunNext(ctx context.Context) error {
@@ -57,6 +58,28 @@ func (w *Worker) RunNext(ctx context.Context) error {
 	if e = w.Store.AppendEvent(ctx, ProgressEvent{EventID: NewID(), RequestID: x.RequestID, AttemptID: x.AttemptID, Kind: "status", Summary: "Simulated runtime started; no infrastructure change executed", EvidenceMode: "simulated"}); e != nil {
 		return w.Store.BlockRecovery(ctx, x.RequestID)
 	}
+	return w.advance(ctx, *x, h)
+}
+func (w *Worker) advance(ctx context.Context, x Execution, h RuntimeHandle) error {
+	if w.SimulatedFlow {
+		var step int
+		if e := w.Store.Pool.QueryRow(ctx, "SELECT simulation_step FROM gateway.executions WHERE request_id=$1", x.RequestID).Scan(&step); e != nil {
+			return e
+		}
+		if step < 3 {
+			reason, kind := "waiting_review", "pr"
+			if step == 0 {
+				reason, kind = "waiting_approval", "approval_wait"
+			}
+			if _, e := w.Store.Pool.Exec(ctx, "UPDATE gateway.executions SET simulation_step=simulation_step+1 WHERE request_id=$1", x.RequestID); e != nil {
+				return e
+			}
+			if e := w.Store.AppendEvent(ctx, ProgressEvent{EventID: NewID(), RequestID: x.RequestID, AttemptID: x.AttemptID, Kind: kind, Summary: "Simulated fixture pause: " + reason, EvidenceMode: "simulated"}); e != nil {
+				return e
+			}
+			return w.Pause(ctx, x, reason)
+		}
+	}
 	checkpoint, e := w.Runtime.Checkpoint(ctx, h)
 	if e != nil {
 		return w.Store.BlockRecovery(ctx, x.RequestID)
@@ -66,6 +89,27 @@ func (w *Worker) RunNext(ctx context.Context) error {
 		return w.Store.BlockRecovery(ctx, x.RequestID)
 	}
 	return w.Store.Release(ctx, x.RequestID, w.Owner, "completed", checkpoint)
+}
+func (w *Worker) RunActive(ctx context.Context) error {
+	if !w.SimulatedFlow {
+		return nil
+	}
+	var id, owner *string
+	if e := w.Store.Pool.QueryRow(ctx, "SELECT request_id::text,owner FROM gateway.runtime_slot WHERE id=1").Scan(&id, &owner); e != nil {
+		return e
+	}
+	if id == nil || owner == nil || *owner != w.Owner {
+		return nil
+	}
+	x, e := w.Store.Get(ctx, *id)
+	if e != nil || x.Status != "running" || x.RecoveryNeeded {
+		return e
+	}
+	h, e := w.handle(ctx, x)
+	if e != nil {
+		return e
+	}
+	return w.advance(ctx, x, h)
 }
 func (s *Store) BlockRecovery(ctx context.Context, id string) error {
 	_, e := s.Pool.Exec(ctx, "UPDATE gateway.executions SET status='blocked',recovery_needed=true,updated_at=now() WHERE request_id=$1", id)

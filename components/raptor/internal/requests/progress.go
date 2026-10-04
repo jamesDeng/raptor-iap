@@ -43,10 +43,19 @@ func (s *Service) View(ctx context.Context, id string) (RequestView, error) {
 			switch status {
 			case "queued", "running", "waiting_approval", "waiting_review", "blocked", "interrupted", "completed", "failed", "cancelled":
 				if r.Status != "cancelled" {
-					if _, e = s.Pool.Exec(ctx, "UPDATE raptor.requests SET status=$2 WHERE id=$1 AND status<>'cancelled'", id, status); e != nil {
+					tag, updateError := s.Pool.Exec(ctx, "UPDATE raptor.requests SET status=$2 WHERE id=$1 AND control_state='' AND status<>'cancelled'", id, status)
+					if updateError != nil {
 						return v, domain.ErrUnavailable
 					}
-					v.Request.Status = status
+					if tag.RowsAffected() > 0 {
+						v.Request.Status = status
+					} else {
+						fresh, e := s.Get(ctx, id)
+						if e != nil {
+							return v, e
+						}
+						v.Request.Status = fresh.Status
+					}
 				}
 			}
 		}

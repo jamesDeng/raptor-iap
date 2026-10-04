@@ -24,3 +24,21 @@ func TestActionsPersistSignal(t *testing.T) {
 		t.Fatal("action signal missing")
 	}
 }
+func TestDirectContinueRetriesFailedTargetsLocally(t *testing.T) {
+	s, id := restartRequest(t)
+	ctx := context.Background()
+	client := &fakeRestart{calls: map[string]int{}, failure: "b"}
+	s.RunRestartBatch(ctx, id, client)
+	if e := s.Action(ctx, id, "continue", "Retry failed target"); e != nil {
+		t.Fatal(e)
+	}
+	r, _ := s.Get(ctx, id)
+	if r.Status != "queued" {
+		t.Fatal("direct retry did not queue local runner")
+	}
+	var signals int
+	s.Pool.QueryRow(ctx, "SELECT count(*) FROM raptor.outbox WHERE entity_id=$1 AND topic='signal'", id).Scan(&signals)
+	if signals != 0 {
+		t.Fatal("direct restart sent to agent Gateway")
+	}
+}

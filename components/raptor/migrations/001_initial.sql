@@ -19,3 +19,4 @@ GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA raptor TO raptor_app;
 ALTER TABLE raptor.events ADD COLUMN IF NOT EXISTS source_event_id text;
 ALTER TABLE raptor.events ADD COLUMN IF NOT EXISTS source_sequence bigint;
 CREATE UNIQUE INDEX IF NOT EXISTS events_source_identity ON raptor.events(request_id,source_event_id);
+ALTER TABLE raptor.requests ADD COLUMN IF NOT EXISTS control_state text NOT NULL DEFAULT '';

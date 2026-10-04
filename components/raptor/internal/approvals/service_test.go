@@ -29,6 +29,12 @@ func TestBoundApproval(t *testing.T) {
 	if e != nil || !v.Allowed {
 		t.Fatal("matching approval denied")
 	}
+	p.Exec(ctx, "UPDATE raptor.requests SET status='blocked' WHERE id=$1", id)
+	v, _ = s.Check(ctx, in)
+	if v.Allowed {
+		t.Fatal("blocked request retained infrastructure permission")
+	}
+	p.Exec(ctx, "UPDATE raptor.requests SET status='queued' WHERE id=$1", id)
 	in.Parameters = map[string]any{"desiredCapacity": float64(0)}
 	v, _ = s.Check(ctx, in)
 	if v.Allowed {
