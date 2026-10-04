@@ -54,3 +54,9 @@ class LifecycleTests(unittest.TestCase):
   self.cloud.fail='kill';execute(self.cfg,Request('read-probe'),self.ledger,self.cloud);self.cloud.fail=None;before=self.cloud.calls.count('inference');r=recover(self.cfg,self.ledger,self.cloud);self.assertTrue(r['passed']);self.assertEqual(self.cloud.calls.count('inference'),before);self.assertNotIn('sandbox_id',load_ledger(self.ledger,self.cfg))
  def test_cleanup_key_failure_is_recoverable(self):
   self.cloud.fail='key-cleanup';self.assertFalse(execute(self.cfg,Request('read-probe'),self.ledger,self.cloud)['passed']);self.assertIn('key_id',load_ledger(self.ledger,self.cfg));self.cloud.fail=None;self.assertTrue(recover(self.cfg,self.ledger,self.cloud)['passed'])
+
+ def test_force_refresh_evidence_retained_in_final_report(self):
+  r=execute(self.cfg,Request("read-probe",True),self.ledger,self.cloud)
+  self.assertTrue(r["refresh_result"]["refresh_succeeded"])
+  self.assertTrue(r["refresh_result"]["refresh_token_changed"])
+  self.assertEqual(r["result"]["phase"],"inference")

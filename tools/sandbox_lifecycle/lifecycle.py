@@ -6,10 +6,10 @@ import uuid
 from .config import validate_checkpoint
 from .state import account_lock,load_ledger,save_ledger
 from .cloud import CloudError,safe_result
-ERRORS={'AccountMismatchOrUnavailable','StoragePreflightFailed','KeyCreateUnconfirmed','KeyCleanupUnconfirmed','KeyInventoryUnavailable','SandboxCreateUnconfirmed','SandboxPreparationFailed','RunnerOutcomeUnknown','InvalidRunnerResult','TerminationUnconfirmed','CheckpointVerificationFailed','RecoveryResultUnavailable','NeedsSignIn','RunnerFailed','CheckpointFailed','ModelFailed','TurnLimit','Timeout','InvalidJob'}
+ERRORS={'OperatorAuthenticationFailed','AccountMismatchOrUnavailable','StoragePreflightFailed','KeyCreateUnconfirmed','KeyCleanupUnconfirmed','KeyInventoryUnavailable','SandboxCreateUnconfirmed','SandboxPreparationFailed','RunnerOutcomeUnknown','InvalidRunnerResult','TerminationUnconfirmed','CheckpointVerificationFailed','RecoveryResultUnavailable','NeedsSignIn','RunnerFailed','CheckpointFailed','ModelFailed','TurnLimit','Timeout','InvalidJob'}
 def error_code(e):return str(e) if isinstance(e,CloudError) and str(e) in ERRORS else 'ControllerFailed'
 def output(s,passed=False):
- return {'passed':passed,'phase':s['phase'],'request_outcome':s.get('request_outcome','unknown'),'checkpoint':s['checkpoint'],'cleanup_confirmed':not any(k in s for k in ('sandbox_id','key_id','cleanup_key_ids','pending')),'error':s.get('failure'),**({'result':s['result']} if 'result' in s else {})}
+ return {'passed':passed,'phase':s['phase'],'request_outcome':s.get('request_outcome','unknown'),'checkpoint':s['checkpoint'],'cleanup_confirmed':not any(k in s for k in ('sandbox_id','key_id','cleanup_key_ids','pending')),'error':s.get('failure'),**{k:s[k] for k in ('result','refresh_result') if k in s}}
 def locked_path(cfg,path):
  path=Path(path).absolute();root=path.parent.parent
  if path!=root/cfg.account_id/'ledger.json':raise ValueError('InvalidLedgerLocation')
@@ -51,6 +51,7 @@ def recover_locked(cfg,path,cloud,s):
    result=cloud.read_completed_result(s['sandbox_id'],key,s.get('job_generation'),s.get('job_phase','inference'))
    if result:
     result=safe_result(result,cfg,s.get('job_phase','inference'));s['result']=result;s['request_outcome']='completed' if result['passed'] else 'failed';save_ledger(path,s)
+    if s.get('job_phase')=='refresh':s['refresh_result']=result;save_ledger(path,s)
     if 'checkpoint' in result:s['candidate']=result['checkpoint'];save_ledger(path,s)
   cleanup(s,path,cloud,key)
   if 'candidate' in s:
@@ -78,6 +79,7 @@ def execute(cfg,request,ledger_path,cloud):
     s['phase']='restoring' if phase=='restore' else 'running';s['job_generation']=str(uuid.uuid4());s['job_phase']=phase;save_ledger(path,s)
     job={'phase':phase,'generation':s['job_generation'],'reference':s['checkpoint'],'limits':{'model_seconds':cfg.model_seconds,'max_turns':cfg.max_turns,'max_output_tokens':cfg.max_output_tokens}}
     result=safe_result(cloud.run_job(s['sandbox_id'],job,key),cfg,phase);s['result']=result;save_ledger(path,s)
+    if phase=='refresh':s['refresh_result']=result;save_ledger(path,s)
     if phase=='inference':s['request_outcome']='completed' if result['passed'] else 'failed';save_ledger(path,s)
     if phase!='restore':s['phase']='checkpointing';save_ledger(path,s);publish(s,path,cloud,result,cfg)
     if not result['passed']:s['request_outcome']='failed';raise CloudError(result.get('error','ModelFailed'))

@@ -4,7 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 import fcntl,json,os,tempfile,re
 from .config import validate_checkpoint
-FIELDS={'schema_version','fingerprint','phase','attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','checkpoint','candidate','request_outcome','failure','result','job_generation','job_phase','cleanup_key_ids'}
+FIELDS={'schema_version','fingerprint','phase','attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','checkpoint','candidate','request_outcome','failure','result','refresh_result','job_generation','job_phase','cleanup_key_ids'}
 PHASES={'idle','creating-key','creating','restoring','running','checkpointing','terminating','finished','blocked'}
 def safe_path(path):
  p=Path(path).absolute()
@@ -18,9 +18,10 @@ def validate_ledger(s):
  for k in ('attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','request_outcome','failure','job_generation','job_phase'):
   if k in s and (not isinstance(s[k],str) or not re.fullmatch('[a-zA-Z0-9_:./+-]{1,256}',s[k])):raise ValueError('InvalidLedger')
  if 'cleanup_key_ids' in s and (not isinstance(s['cleanup_key_ids'],list) or any(not isinstance(x,str) or not re.fullmatch('[a-zA-Z0-9-]{1,128}',x) for x in s['cleanup_key_ids'])):raise ValueError('InvalidLedger')
- if 'result' in s:
+ for result_field in ('result','refresh_result'):
+  if result_field not in s:continue
   allowed={'phase','passed','tool_succeeded','answer_matches','refresh_succeeded','refresh_token_changed','usage','error','checkpoint'}
-  if not isinstance(s['result'],dict) or set(s['result'])-allowed:raise ValueError('InvalidLedger')
+  if not isinstance(s[result_field],dict) or set(s[result_field])-allowed:raise ValueError('InvalidLedger')
  return s
 def load_ledger(path,cfg):
  p=safe_path(path)

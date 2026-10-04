@@ -4,11 +4,14 @@ from test_sandbox_lifecycle_state import config_data
 from tools.sandbox_lifecycle.config import Config,CheckpointRef
 from tools.sandbox_lifecycle.cloud import Cloud,KeyHandle,CloudError,safe_result
 class Transport:
- def __init__(self):self.calls=[];self.fail=False
+ def __init__(self):self.calls=[];self.fail=False;self.keys=[{'apiKeyID':'key-test','apiKeyName':'attempt-test','status':'active','apiKeyMask':'redacted','teamID':'team-test'}]
  def create_api_key(self,request):
   self.calls.append(request.to_map())
   if self.fail:raise RuntimeError('synthetic-secret')
   return SimpleNamespace(body=SimpleNamespace(api_key=SimpleNamespace(api_key_id='key-test',api_key_value='synthetic-control-secret')))
+ def list_api_keys(self,request):return SimpleNamespace(body=SimpleNamespace(to_map=lambda:{'apiKeys':self.keys,'total':len(self.keys)}))
+ def update_api_key(self,identity,request):self.calls.append(('update',identity,request.to_map()))
+ def delete_api_key(self,identity,request):self.keys=[];self.calls.append(('delete',identity))
 class SandboxPort:
  calls=[]
  @classmethod
@@ -42,3 +45,6 @@ class CloudTests(unittest.TestCase):
  def test_safe_result_rejects_unknown_fields_and_secret_values(self):
   for result in [{'phase':'inference','passed':False,'error':'synthetic-secret'},{'phase':'inference','passed':True,'answer':'synthetic-secret'},{'phase':'inference','passed':True,'usage':[{'input':'synthetic-secret','output':1,'total_tokens':2}]}]:
    with self.assertRaises(CloudError):safe_result(result,self.cfg,'inference')
+
+ def test_cleanup_uses_actual_api_key_id_casing_and_verifies_absence(self):
+  self.cloud.remove_key('key-test');self.assertEqual(self.transport.keys,[]);self.assertEqual(self.transport.calls[-1],('delete','key-test'))

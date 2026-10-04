@@ -77,13 +77,13 @@ class Cloud:
  def remove_key(self,key_id):
   from alibabacloud_fcsandbox20260509 import models as m
   try:
-   if not any(x['apiKeyId']==key_id for x in self.list_keys()):return
+   if not any(x['apiKeyID']==key_id for x in self.list_keys()):return
    self.client.update_api_key(key_id,m.UpdateApiKeyRequest(body=m.UpdateApiKeyInput(status='inactive')))
    self.client.delete_api_key(key_id,m.DeleteApiKeyRequest())
-   if any(x['apiKeyId']==key_id for x in self.list_keys()):raise ValueError()
+   if any(x['apiKeyID']==key_id for x in self.list_keys()):raise ValueError()
   except Exception:raise CloudError('KeyCleanupUnconfirmed') from None
  def resolve_key_intent(self,name):
-  keys=[x['apiKeyId'] for x in self.list_keys() if x.get('apiKeyName')==name]
+  keys=[x['apiKeyID'] for x in self.list_keys() if x.get('apiKeyName')==name]
   for identity in keys:self.remove_key(identity)
  def create_sandbox(self,attempt_id,key):
   try:
