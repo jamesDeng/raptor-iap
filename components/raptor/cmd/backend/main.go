@@ -57,6 +57,7 @@ func main() {
 		addr = "127.0.0.1:8871"
 	}
 	h := backend.New(p)
+	h.RegisterService(os.Getenv("SERVICE_USERNAME"), os.Getenv("SERVICE_PASSWORD"))
 	if os.Getenv("RAPTOR_SIMULATION") == "true" && os.Getenv("RAPTOR_FIXTURE_FILE") != "" {
 		h.Catalog.Infra = adapters.FixtureInfra{Path: os.Getenv("RAPTOR_FIXTURE_FILE")}
 	}

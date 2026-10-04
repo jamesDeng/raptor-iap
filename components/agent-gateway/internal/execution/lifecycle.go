@@ -75,6 +75,14 @@ func (w *Worker) ApplySignal(ctx context.Context, x Execution, signal Signal) er
 		return ErrInvalid
 	}
 	switch signal.Kind {
+	case "pause":
+		var p struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(signal.Payload, &p) != nil {
+			return ErrInvalid
+		}
+		return w.Pause(ctx, x, p.Reason)
 	case "cancel", "block", "interrupt":
 		status := map[string]string{"cancel": "cancelled", "block": "blocked", "interrupt": "interrupted"}[signal.Kind]
 		var held *string

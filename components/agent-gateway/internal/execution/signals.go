@@ -12,7 +12,7 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 		return ErrInvalid
 	}
 	switch v.Kind {
-	case "cancel", "block", "interrupt", "continue", "approval", "review", "merged", "skills":
+	case "cancel", "block", "interrupt", "continue", "approval", "review", "merged", "skills", "pause":
 	default:
 		return ErrInvalid
 	}

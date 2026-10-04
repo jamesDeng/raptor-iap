@@ -3,6 +3,7 @@ package backend
 import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
@@ -10,10 +11,11 @@ import (
 )
 
 type Server struct {
-	Mux      *http.ServeMux
-	Auth     *auth.Service
-	Catalog  *catalog.Service
-	Requests *requests.Service
+	Mux       *http.ServeMux
+	Auth      *auth.Service
+	Catalog   *catalog.Service
+	Requests  *requests.Service
+	Approvals *approvals.Service
 }
 
 func New(p *pgxpool.Pool) *Server {
@@ -23,6 +25,8 @@ func New(p *pgxpool.Pool) *Server {
 	s.Catalog.Register(s.Mux, s.Auth)
 	s.Requests = requests.NewService(p, s.Catalog)
 	s.Requests.Register(s.Mux, s.Auth)
+	s.Approvals = &approvals.Service{Pool: p}
+	s.Approvals.RegisterBrowser(s.Mux, s.Auth)
 	s.Mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
 	return s
 }
