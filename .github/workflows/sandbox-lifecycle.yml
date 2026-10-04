@@ -2,9 +2,9 @@ name: Sandbox lifecycle offline checks
 on:
   push:
     branches: [main]
-    paths: ['tools/sandbox_lifecycle/**', 'components/agent-harness/**', 'tests/**', '.github/workflows/sandbox-lifecycle.yml']
+    paths: ['tools/sandbox_lifecycle/**', 'tools/task_store/**', 'components/raptor/**', 'components/agent-gateway/**', 'components/agent-harness/**', 'tests/**', '.github/workflows/sandbox-lifecycle.yml']
   pull_request:
-    paths: ['tools/sandbox_lifecycle/**', 'components/agent-harness/**', 'tests/**', '.github/workflows/sandbox-lifecycle.yml']
+    paths: ['tools/sandbox_lifecycle/**', 'tools/task_store/**', 'components/raptor/**', 'components/agent-gateway/**', 'components/agent-harness/**', 'tests/**', '.github/workflows/sandbox-lifecycle.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -31,5 +31,8 @@ jobs:
       - name: Run offline lifecycle tests
         run: |
           .venv-lifecycle/bin/python -m unittest discover -s tests -p 'test_sandbox_lifecycle_*.py' -v
+          .venv-lifecycle/bin/python -m unittest discover -s tests -p 'test_raptor_*.py' -v
           node --test tests/harness/*.test.mjs
           .venv-lifecycle/bin/python -m tools.sandbox_lifecycle --help
+          .venv-lifecycle/bin/python -m components.raptor.server --help
+          .venv-lifecycle/bin/python components/agent-gateway/worker.py --help

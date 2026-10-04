@@ -72,6 +72,39 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request('GET','/api/session')[1]['data']['token'],token)
         self.assertEqual(self.request('GET','/api/tasks/'+task['task_id'])[1]['data']['question'],task['question'])
 
+    def test_browser_submission_to_worker_result_persists_across_restarts(self):
+        from test_raptor_gateway import ApplicationCloud
+        from test_sandbox_lifecycle_state import config_data
+        from tools.sandbox_lifecycle.config import Config, CheckpointRef
+        from tools.task_store.gateway import Gateway
+        app,first,value=self.app_task()
+        self.request('POST','/api/tasks',value)
+        self.request('PUT','/api/apps/'+app['app_id'],dict(expected_version=1,app=dict(APP,namespace='later-version')))
+        second_value=dict(value,question='Second independent question',idempotency_key=str(uuid.uuid4()))
+        second=self.request('POST','/api/tasks',second_value)[1]['data']
+        d=config_data();d['bootstrap_checkpoint']=CheckpointRef(**d['bootstrap_checkpoint']);cfg=Config(**d)
+        ledger=self.root/'lifecycle'/cfg.account_id/'ledger.json';cloud=ApplicationCloud(ledger)
+        worker=Gateway(Store(self.root/'store'),cfg,cloud,ledger)
+        self.assertTrue(worker.tick())
+        self.assertEqual(self.request('GET','/api/tasks/'+second['task_id'])[1]['data']['attempts'][0]['state'],'queued')
+        self.stop();self.store=Store(self.root/'store');self.start()
+        worker=Gateway(Store(self.root/'store'),cfg,cloud,ledger)
+        self.assertTrue(worker.tick())
+        self.assertFalse(worker.tick())
+        for task,version in ((first,1),(second,2)):
+            saved=self.request('GET','/api/tasks/'+task['task_id'])[1]['data']
+            self.assertEqual(len(saved['attempts']),1)
+            self.assertEqual(saved['snapshot']['version'],version)
+            attempt=saved['attempts'][0]
+            self.assertEqual(attempt['state'],'completed')
+            self.assertEqual(attempt['answer'],'The registered database is planned.')
+            self.assertEqual(attempt['evidence']['context_sha256'],saved['snapshot_sha256'])
+            self.assertEqual([attempt['outcomes'][k] for k in ('answer','checkpoint','cleanup')],['completed','saved','confirmed'])
+        self.assertEqual(len(self.store.list_tasks(app['app_id'])),2)
+        self.assertNotEqual(first['attempts'][0]['attempt_id'],second['attempts'][0]['attempt_id'])
+        self.assertEqual(cloud.calls.count('create'),2)
+        self.assertLess(cloud.calls.index('kill'),len(cloud.calls)-1-cloud.calls[::-1].index('create'))
+
     def test_host_origin_and_token_boundary(self):
         for headers in ({'Host':'attacker.example'}, {'Host':'localhost:'+str(self.port)},
                         {'Origin':'https://attacker.example'}, {'Sec-Fetch-Site':'cross-site'}):
