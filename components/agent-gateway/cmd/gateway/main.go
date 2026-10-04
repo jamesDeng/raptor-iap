@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
@@ -39,8 +40,25 @@ func main() {
 	if user == "" || password == "" {
 		log.Fatal("service authentication required")
 	}
-	s := &execution.Store{Pool: p}
+	s := &execution.Store{Pool: p, KnownSecrets: []string{password}}
+	if path := os.Getenv("GATEWAY_REDACTION_VALUES_FILE"); path != "" {
+		info, e := os.Stat(path)
+		if e != nil || info.Mode().Perm()&0077 != 0 {
+			log.Fatal("private redaction values file required")
+		}
+		b, e := os.ReadFile(path)
+		var values []string
+		if e != nil || json.Unmarshal(b, &values) != nil {
+			log.Fatal("redaction configuration unavailable")
+		}
+		s.KnownSecrets = append(s.KnownSecrets, values...)
+	}
 	if os.Getenv("GATEWAY_SIMULATION") == "true" {
+		release, e := s.AcquireWorker(ctx)
+		if e != nil {
+			log.Fatal("another worker is active or worker lock unavailable")
+		}
+		defer release()
 		root := os.Getenv("GATEWAY_CHECKPOINT_DIR")
 		if root == "" {
 			log.Fatal("private checkpoint directory required")

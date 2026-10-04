@@ -20,3 +20,4 @@ ALTER TABLE raptor.events ADD COLUMN IF NOT EXISTS source_event_id text;
 ALTER TABLE raptor.events ADD COLUMN IF NOT EXISTS source_sequence bigint;
 CREATE UNIQUE INDEX IF NOT EXISTS events_source_identity ON raptor.events(request_id,source_event_id);
 ALTER TABLE raptor.requests ADD COLUMN IF NOT EXISTS control_state text NOT NULL DEFAULT '';
+ALTER TABLE raptor.outbox ADD COLUMN IF NOT EXISTS failed_reason text NOT NULL DEFAULT '';

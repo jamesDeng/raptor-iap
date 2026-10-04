@@ -71,3 +71,43 @@ func TestWebhookSignature(t *testing.T) {
 		t.Fatal("missing delivery identity accepted")
 	}
 }
+
+func TestLongReviewHasBoundedWirePayload(t *testing.T) {
+	ctx := context.Background()
+	p := testutil.Database(t)
+	if e := db.Migrate(ctx, p); e != nil {
+		t.Fatal(e)
+	}
+	s := &Service{Pool: p}
+	id := domain.NewID()
+	sha := strings.Repeat("a", 40)
+	p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash,status) VALUES($1,$2,'long','hash','{}','schema','waiting_review')`, id, domain.NewID())
+	if e := s.AttachPR(ctx, id, PRInput{Repository: "owner/repo", Number: 1, URL: "https://github.com/owner/repo/pull/1", HeadSHA: sha}); e != nil {
+		t.Fatal(e)
+	}
+	body, _ := json.Marshal(map[string]any{"action": "submitted", "repository": map[string]string{"full_name": "owner/repo"}, "pull_request": map[string]any{"number": 1, "head": map[string]string{"sha": sha}}, "review": map[string]string{"state": "changes_requested", "commit_id": sha, "body": strings.Repeat("long review ☃ \" ", 1000)}})
+	if e := s.HandleDelivery(ctx, "long-review", "pull_request_review", body); e != nil {
+		t.Fatal(e)
+	}
+	var wire []byte
+	p.QueryRow(ctx, "SELECT payload FROM raptor.outbox WHERE entity_id=$1", id).Scan(&wire)
+	var envelope struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	json.Unmarshal(wire, &envelope)
+	if len(envelope.Payload) > 4096 {
+		t.Fatal("undeliverable review enqueued", len(envelope.Payload))
+	}
+	var fields map[string]any
+	json.Unmarshal(envelope.Payload, &fields)
+	if fields["reviewTruncated"] != true {
+		t.Fatal("truncated review not labelled")
+	}
+	var saved []byte
+	p.QueryRow(ctx, "SELECT payload FROM raptor.webhook_deliveries WHERE id='long-review'").Scan(&saved)
+	var original map[string]any
+	json.Unmarshal(saved, &original)
+	if original["review"].(map[string]any)["body"] != strings.Repeat("long review ☃ \" ", 1000) {
+		t.Fatal("full review lost")
+	}
+}

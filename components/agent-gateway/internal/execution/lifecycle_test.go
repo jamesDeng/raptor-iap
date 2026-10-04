@@ -113,3 +113,101 @@ func TestCancelRetainsHistory(t *testing.T) {
 		t.Fatal("cancelled request resumed")
 	}
 }
+
+func TestHumanBlockRetainsAutomaticSignals(t *testing.T) {
+	for _, kind := range []string{"approval", "review", "merged", "skills"} {
+		t.Run(kind, func(t *testing.T) {
+			w, x, _, _ := active(t)
+			ctx := context.Background()
+			if e := w.Pause(ctx, x, "blocked"); e != nil {
+				t.Fatal(e)
+			}
+			payload := []byte(`{}`)
+			if kind == "skills" {
+				payload = []byte(`{"version":{"tag":"skills-v0.2.0","commitSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"strategy":"interrupt"}`)
+			}
+			sig := Signal{ID: NewID(), RequestID: x.RequestID, Kind: kind, Payload: payload}
+			if e := w.Store.DeliverSignal(ctx, sig); e != nil {
+				t.Fatal(e)
+			}
+			if e := w.DrainSignals(ctx); e != nil {
+				t.Fatal(e)
+			}
+			fresh, _ := w.Store.Get(ctx, x.RequestID)
+			if fresh.Status != "blocked" {
+				t.Fatal("automatic signal resumed human block", fresh.Status)
+			}
+			var consumed bool
+			w.Store.Pool.QueryRow(ctx, "SELECT consumed FROM gateway.signals WHERE id=$1", sig.ID).Scan(&consumed)
+			if consumed {
+				t.Fatal("blocked signal discarded")
+			}
+			if e := w.Store.DeliverSignal(ctx, Signal{ID: NewID(), RequestID: x.RequestID, Kind: "continue", Payload: []byte(`{"instructions":"human resume"}`)}); e != nil {
+				t.Fatal(e)
+			}
+			if e := w.DrainSignals(ctx); e != nil {
+				t.Fatal(e)
+			}
+			if e := w.DrainSignals(ctx); e != nil {
+				t.Fatal(e)
+			}
+			w.Store.Pool.QueryRow(ctx, "SELECT consumed FROM gateway.signals WHERE id=$1", sig.ID).Scan(&consumed)
+			if !consumed {
+				t.Fatal("retained signal not processed after continue")
+			}
+		})
+	}
+}
+func TestPauseReplayAfterReleaseBeforeAcknowledgement(t *testing.T) {
+	w, x, _, runtime := active(t)
+	ctx := context.Background()
+	sig := Signal{ID: NewID(), RequestID: x.RequestID, Kind: "pause", Payload: []byte(`{"reason":"waiting_review"}`)}
+	if e := w.Store.DeliverSignal(ctx, sig); e != nil {
+		t.Fatal(e)
+	}
+	// Crash boundary: transition has committed but the signal acknowledgement has not.
+	if e := w.ApplySignal(ctx, x, sig); e != nil {
+		t.Fatal(e)
+	}
+	restarted := *w
+	if e := restarted.DrainSignals(ctx); e != nil {
+		t.Fatal("replay poisoned signal queue", e)
+	}
+	if runtime.stops != 1 {
+		t.Fatal("replay stopped runtime again")
+	}
+	var consumed bool
+	w.Store.Pool.QueryRow(ctx, "SELECT consumed FROM gateway.signals WHERE id=$1", sig.ID).Scan(&consumed)
+	if !consumed {
+		t.Fatal("replayed pause not acknowledged")
+	}
+}
+
+func TestRestartReportsOrphanedOwnershipBeforeApproval(t *testing.T) {
+	w, x, _, _ := active(t)
+	ctx := context.Background()
+	if e := w.Pause(ctx, x, "waiting_approval"); e != nil {
+		t.Fatal(e)
+	}
+	signal := Signal{ID: NewID(), RequestID: x.RequestID, Kind: "approval", Payload: []byte(`{}`)}
+	if e := w.Store.DeliverSignal(ctx, signal); e != nil {
+		t.Fatal(e)
+	}
+	restarted := *w
+	restarted.Owner = "new-process"
+	if e := restarted.DrainSignals(ctx); e != nil {
+		t.Fatal(e)
+	}
+	fresh, _ := w.Store.Get(ctx, x.RequestID)
+	if fresh.Status != "blocked" || !fresh.RecoveryNeeded {
+		t.Fatal("orphan not reported as recovery-needed", fresh)
+	}
+	var consumed bool
+	w.Store.Pool.QueryRow(ctx, "SELECT consumed FROM gateway.signals WHERE id=$1", signal.ID).Scan(&consumed)
+	if consumed {
+		t.Fatal("approval consumed before ownership reconciliation")
+	}
+	if next, e := w.Store.ClaimNext(ctx, restarted.Owner); e != nil || next != nil {
+		t.Fatal("orphaned runtime replayed")
+	}
+}

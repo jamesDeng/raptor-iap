@@ -38,6 +38,9 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 	return nil
 }
 func (w *Worker) DrainSignals(ctx context.Context) error {
+	if e := w.reconcileOwnership(ctx); e != nil {
+		return e
+	}
 	rows, e := w.Store.Pool.Query(ctx, "SELECT id,request_id::text,kind,payload FROM gateway.signals WHERE NOT consumed ORDER BY sequence LIMIT 50")
 	if e != nil {
 		return e
@@ -60,6 +63,9 @@ func (w *Worker) DrainSignals(ctx context.Context) error {
 		x, e := w.Store.Get(ctx, v.RequestID)
 		if e != nil {
 			return e
+		}
+		if x.RecoveryNeeded {
+			continue
 		}
 		if x.Status == "completed" || x.Status == "cancelled" {
 			e = nil

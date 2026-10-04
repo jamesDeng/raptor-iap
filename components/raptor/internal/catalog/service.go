@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -117,12 +118,23 @@ func validConfig(v any) bool {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, val := range x {
-			n := strings.ToLower(k)
-			if n == "password" || n == "token" || n == "accesskey" || n == "accesskeysecret" || n == "apikey" || n == "authorization" || n == "secret" {
+			n := normalizeConfigKey(k)
+			if credentialKey(n) {
 				return false
 			}
 			if !validConfig(val) {
 				return false
+			}
+		}
+	case string:
+		if u, e := url.Parse(x); e == nil && u.Scheme != "" {
+			if u.User != nil {
+				return false
+			}
+			for key := range u.Query() {
+				if credentialKey(normalizeConfigKey(key)) {
+					return false
+				}
 			}
 		}
 	case []any:
@@ -163,6 +175,9 @@ func (s *Service) GetEnvironment(ctx context.Context, code string) (domain.Envir
 		return v, storeError(e)
 	}
 	e = json.Unmarshal(b, &v.Config)
+	if e == nil && !validConfig(v.Config) {
+		return v, domain.ErrInvalid
+	}
 	return v, storeError(e)
 }
 func (s *Service) ListEnvironments(ctx context.Context) ([]domain.Environment, error) {
@@ -180,6 +195,9 @@ func (s *Service) ListEnvironments(ctx context.Context) ([]domain.Environment, e
 		}
 		if e = json.Unmarshal(b, &v.Config); e != nil {
 			return nil, domain.ErrUnavailable
+		}
+		if !validConfig(v.Config) {
+			return nil, domain.ErrInvalid
 		}
 		out = append(out, v)
 	}
@@ -216,4 +234,15 @@ func ValidateSameEnvironment(a, b string) error {
 		return domain.ErrInvalid
 	}
 	return nil
+}
+
+func normalizeConfigKey(k string) string {
+	return strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(k))
+}
+func credentialKey(n string) bool {
+	switch n {
+	case "password", "token", "accesstoken", "refreshtoken", "idtoken", "accesskey", "accesskeyid", "accesskeysecret", "apikey", "authorization", "secret", "clientsecret", "privatekey", "credentials":
+		return true
+	}
+	return false
 }

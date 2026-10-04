@@ -12,7 +12,10 @@ import (
 var ErrUnavailable = errors.New("Unavailable")
 var ErrInvalid = errors.New("InvalidInput")
 
-type Store struct{ Pool *pgxpool.Pool }
+type Store struct {
+	Pool         *pgxpool.Pool
+	KnownSecrets []string
+}
 
 func (s *Store) Get(ctx context.Context, id string) (Execution, error) {
 	var x Execution
@@ -79,7 +82,7 @@ func (s *Store) ClaimNext(ctx context.Context, owner string) (*Execution, error)
 }
 func (s *Store) AppendEvent(ctx context.Context, v ProgressEvent) error {
 	var sanitationError error
-	v, sanitationError = sanitizeEvent(v)
+	v, sanitationError = sanitizeEvent(v, s.KnownSecrets...)
 	if sanitationError != nil {
 		return sanitationError
 	}

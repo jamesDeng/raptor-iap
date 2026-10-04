@@ -6,15 +6,15 @@ import (
 	"strings"
 )
 
-var sensitiveText = regexp.MustCompile(`(?i)(authorization|bearer\s|sk-[a-z0-9]|access.?key|password|refresh.?token|[?&]code=|://[^\s/]+:[^\s/]+@)`)
+var sensitiveText = regexp.MustCompile(`(?i)(authorization|bearer\s|sk-[a-z0-9]|access.?key|password|refresh.?token|access.?token|id.?token|api.?key|client.?secret|private.?key|credential|[?&]code=|://[^\s/]+:[^\s/]+@)`)
 
-func sanitizeEvent(v ProgressEvent) (ProgressEvent, error) {
+func sanitizeEvent(v ProgressEvent, known ...string) (ProgressEvent, error) {
 	switch v.Kind {
 	case "status", "progress", "tool_start", "tool_result", "approval_wait", "pr", "checkpoint", "cleanup":
 	default:
 		return v, ErrInvalid
 	}
-	if sensitiveText.MatchString(v.Summary) {
+	if containsSensitive(v.Summary, known) {
 		v.Summary = "[redacted sensitive content]"
 	}
 	if len(v.Details) > 0 {
@@ -32,7 +32,7 @@ func sanitizeEvent(v ProgressEvent) (ProgressEvent, error) {
 			if json.Unmarshal(raw, &value) != nil {
 				continue
 			}
-			if sensitiveText.MatchString(value) {
+			if containsSensitive(value, known) {
 				value = "[redacted sensitive content]"
 			}
 			clean[key] = strings.TrimSpace(value)
@@ -40,4 +40,16 @@ func sanitizeEvent(v ProgressEvent) (ProgressEvent, error) {
 		v.Details, _ = json.Marshal(clean)
 	}
 	return v, nil
+}
+
+func containsSensitive(value string, known []string) bool {
+	if sensitiveText.MatchString(value) {
+		return true
+	}
+	for _, secret := range known {
+		if secret != "" && strings.Contains(value, secret) {
+			return true
+		}
+	}
+	return false
 }

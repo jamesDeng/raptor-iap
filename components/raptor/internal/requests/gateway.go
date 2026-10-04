@@ -84,6 +84,9 @@ func (g HTTPGateway) send(ctx context.Context, method, path string, body any) er
 		return domain.ErrUnavailable
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == 400 || resp.StatusCode == 404 || resp.StatusCode == 422 {
+		return domain.ErrInvalid
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return domain.ErrUnavailable
 	}

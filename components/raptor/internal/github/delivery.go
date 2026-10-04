@@ -63,7 +63,23 @@ func (s *Service) HandleDelivery(ctx context.Context, id, event string, body []b
 			return domain.ErrUnavailable
 		}
 		if e == nil && status != "cancelled" && status != "completed" && (kind == "merged" || v.Review.CommitID == head) {
-			if e = requests.QueueSignal(ctx, tx, requestID, kind, map[string]any{"repository": v.Repository.FullName, "number": v.PullRequest.Number, "headSha": v.PullRequest.Head.SHA, "reviewState": v.Review.State, "instructions": v.Review.Body}); e != nil {
+			payload := map[string]any{"repository": v.Repository.FullName, "number": v.PullRequest.Number, "headSha": v.PullRequest.Head.SHA, "reviewState": v.Review.State, "instructions": v.Review.Body}
+			// Full submitted review remains in webhook_deliveries. Signal text is a
+			// bounded excerpt; the attached PR identifies the complete review source.
+			excerpt := []rune(v.Review.Body)
+			for {
+				wire, _ := json.Marshal(payload)
+				if len(wire) <= 4096 {
+					break
+				}
+				payload["reviewTruncated"] = true
+				if len(excerpt) == 0 {
+					return domain.ErrInvalid
+				}
+				excerpt = excerpt[:len(excerpt)/2]
+				payload["instructions"] = string(excerpt)
+			}
+			if e = requests.QueueSignal(ctx, tx, requestID, kind, payload); e != nil {
 				return domain.ErrUnavailable
 			}
 		}

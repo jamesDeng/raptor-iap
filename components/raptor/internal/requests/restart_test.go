@@ -130,3 +130,31 @@ func TestUnknownSubmissionNotRepeated(t *testing.T) {
 		t.Fatal("unknown submission repeated")
 	}
 }
+
+func TestBackendRestartDoesNotAbandonOrReplayMutation(t *testing.T) {
+	s, id := restartRequest(t)
+	ctx := context.Background()
+	s.Pool.Exec(ctx, "UPDATE raptor.requests SET status='running' WHERE id=$1", id)
+	s.Pool.Exec(ctx, "UPDATE raptor.targets SET state=CASE WHEN target->>'name'='a' THEN 'submitting' ELSE 'observing' END WHERE request_id=$1", id)
+	restarted := *s
+	client := &fakeRestart{calls: map[string]int{}}
+	if e := restarted.RunDirectPending(ctx, client); e != nil {
+		t.Fatal(e)
+	}
+	items, e := s.RestartItems(ctx, id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, v := range items {
+		if v.State != "unknown" {
+			t.Fatal("interrupted mutation left silently active", v.State)
+		}
+	}
+	request, _ := s.Get(ctx, id)
+	if request.Status == "running" {
+		t.Fatal("interrupted batch stuck running")
+	}
+	if client.started != 0 {
+		t.Fatal("mutation replayed during recovery")
+	}
+}

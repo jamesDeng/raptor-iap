@@ -107,3 +107,14 @@ func TestDiscoveryFailureIsNotEmpty(t *testing.T) {
 		t.Fatal("lookup failure converted to empty success")
 	}
 }
+
+func TestEnvironmentRejectsCredentialsPreservesReferences(t *testing.T) {
+	for _, v := range []any{map[string]any{"client_secret": "synthetic"}, map[string]any{"access_token": "synthetic"}, map[string]any{"api_key": "synthetic"}, map[string]any{"endpoint": "https://synthetic:synthetic@host"}, map[string]any{"endpoint": "https://host/?api_key=synthetic"}} {
+		if validConfig(v) {
+			t.Fatal("credential-bearing config accepted", v)
+		}
+	}
+	if !validConfig(map[string]any{"secretRef": "kms://reference-name", "endpoint": "https://host", "client_secret_ref": "reference-only"}) {
+		t.Fatal("secret reference rejected")
+	}
+}

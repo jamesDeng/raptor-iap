@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
@@ -138,5 +139,35 @@ func TestProxyRequiresDeployedDatabase(t *testing.T) {
 	in.Operations = []domain.Operation{{Name: "db-proxy.deploy", Parameters: map[string]any{"targetDbCode": databaseCode, "desiredCapacity": float64(2), "instanceClass": "synthetic", "pgcatVersion": "test"}}}
 	if _, e = s.Create(ctx, u, "proxy", in); e == nil {
 		t.Fatal("proxy accepted undeployed database")
+	}
+}
+
+type invalidDelivery struct{ ids []string }
+
+func (f *invalidDelivery) PutRequest(ctx context.Context, id string) error {
+	f.ids = append(f.ids, id)
+	return nil
+}
+func (f *invalidDelivery) SendSignal(context.Context, string, json.RawMessage) error {
+	return domain.ErrInvalid
+}
+func TestInvalidOutboxDeliveryDoesNotPoisonOtherRequests(t *testing.T) {
+	s, in, u := setup(t)
+	ctx := context.Background()
+	r, e := s.Create(ctx, u, "valid", in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	s.Pool.Exec(ctx, `INSERT INTO raptor.outbox(id,topic,entity_id,payload,created_at) VALUES($1,'signal',$2,'{}',now()-interval '1 minute')`, domain.NewID(), r.ID)
+	client := &invalidDelivery{}
+	if e = s.DispatchPending(ctx, client); e != nil {
+		t.Fatal(e)
+	}
+	if len(client.ids) != 1 {
+		t.Fatal("invalid signal blocked valid request")
+	}
+	var failed int
+	if e = s.Pool.QueryRow(ctx, "SELECT count(*) FROM raptor.outbox WHERE failed_reason<>''").Scan(&failed); e != nil || failed != 1 {
+		t.Fatal("permanent delivery failure not explicit", e)
 	}
 }

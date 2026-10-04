@@ -62,9 +62,12 @@ func (s *Service) Request(ctx context.Context, in ApprovalInput) (domain.Approva
 		return domain.Approval{}, domain.ErrUnavailable
 	}
 	defer tx.Rollback(ctx)
-	var state string
-	if e = tx.QueryRow(ctx, "SELECT status FROM raptor.requests WHERE id=$1 FOR UPDATE", in.RequestID).Scan(&state); e != nil {
+	var state, kind, env string
+	if e = tx.QueryRow(ctx, "SELECT status,coalesce(definition->>'type',''),coalesce(definition->>'envCode','') FROM raptor.requests WHERE id=$1 FOR UPDATE", in.RequestID).Scan(&state, &kind, &env); e != nil {
 		return domain.Approval{}, domain.ErrNotFound
+	}
+	if kind != "agent" || env != in.EnvCode {
+		return domain.Approval{}, domain.ErrInvalid
 	}
 	if state == "cancelled" || state == "completed" {
 		return domain.Approval{}, domain.ErrConflict
@@ -151,15 +154,15 @@ func (s *Service) Check(ctx context.Context, in ApprovalCheckInput) (ApprovalChe
 		return out, e
 	}
 	var binding []byte
-	var state, requestState string
-	e = s.Pool.QueryRow(ctx, "SELECT a.binding,a.state,r.status FROM raptor.approvals a JOIN raptor.requests r ON r.id=a.request_id WHERE a.request_id=$1 AND a.action_id=$2", in.RequestID, in.ActionID).Scan(&binding, &state, &requestState)
+	var state, requestState, kind, env, control string
+	e = s.Pool.QueryRow(ctx, "SELECT a.binding,a.state,r.status,coalesce(r.definition->>'type',''),coalesce(r.definition->>'envCode',''),r.control_state FROM raptor.approvals a JOIN raptor.requests r ON r.id=a.request_id WHERE a.request_id=$1 AND a.action_id=$2", in.RequestID, in.ActionID).Scan(&binding, &state, &requestState, &kind, &env, &control)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return out, nil
 	}
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}
-	out.Allowed = state == "approved" && requestState != "blocked" && requestState != "cancelled" && requestState != "completed" && equalJSON(binding, b)
+	out.Allowed = kind == "agent" && env == in.EnvCode && control == "" && state == "approved" && requestState != "blocked" && requestState != "cancelled" && requestState != "completed" && equalJSON(binding, b)
 	if out.Allowed {
 		out.Reason = "approved"
 	}

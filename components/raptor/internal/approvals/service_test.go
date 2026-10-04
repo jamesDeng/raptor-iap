@@ -15,7 +15,7 @@ func TestBoundApproval(t *testing.T) {
 		t.Fatal(e)
 	}
 	id, user := domain.NewID(), domain.User{ID: domain.NewID(), Role: "user"}
-	p.Exec(ctx, "INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash) VALUES($1,$2,'test','hash','{}','schema')", id, user.ID)
+	p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash) VALUES($1,$2,'test','hash','{"type":"agent","envCode":"adev"}','schema')`, id, user.ID)
 	s := &Service{Pool: p}
 	in := ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "ess.scale-in", EnvCode: "adev", Target: map[string]any{"groupId": "synthetic"}, Parameters: map[string]any{"desiredCapacity": float64(1)}}
 	a, e := s.Request(ctx, in)
@@ -55,5 +55,33 @@ func TestBoundApproval(t *testing.T) {
 	}
 	if _, e = s.Decide(ctx, user, a.ID, DecisionInput{Decision: "deny", Next: "block"}); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestApprovalRejectsForeignRequestScope(t *testing.T) {
+	ctx := context.Background()
+	p := testutil.Database(t)
+	if e := db.Migrate(ctx, p); e != nil {
+		t.Fatal(e)
+	}
+	id := domain.NewID()
+	p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash) VALUES($1,$2,'scope','hash','{"type":"agent","envCode":"adev"}','schema')`, id, domain.NewID())
+	s := &Service{Pool: p}
+	in := ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "ess.scale-in", EnvCode: "bdev", Target: map[string]any{"groupId": "synthetic"}, Parameters: map[string]any{}}
+	if _, e := s.Request(ctx, in); e == nil {
+		t.Fatal("foreign environment approval accepted through shared REST service")
+	}
+	// Even a pre-existing invalid binding must never grant permission.
+	b, _ := canonical(in)
+	p.Exec(ctx, `INSERT INTO raptor.approvals(id,request_id,action_id,binding,state) VALUES($1,$2,$3,$4,'approved')`, domain.NewID(), id, in.ActionID, b)
+	v, e := s.Check(ctx, in)
+	if e != nil || v.Allowed {
+		t.Fatal("foreign persisted binding granted permission")
+	}
+	in.EnvCode = "adev"
+	in.ActionID = domain.NewID()
+	p.Exec(ctx, `UPDATE raptor.requests SET definition='{"type":"direct","envCode":"adev"}' WHERE id=$1`, id)
+	if _, e := s.Request(ctx, in); e == nil {
+		t.Fatal("direct request accepted agent approval")
 	}
 }

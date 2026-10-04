@@ -23,6 +23,23 @@ func (w *Worker) Pause(ctx context.Context, x Execution, reason string) error {
 	if reason != "waiting_approval" && reason != "waiting_review" && reason != "blocked" && reason != "cancelled" && reason != "interrupted" {
 		return ErrInvalid
 	}
+	// A committed release is the durable acknowledgement of the transition.
+	// Replaying its still-unacknowledged signal must not touch an ended runtime.
+	fresh, e := w.Store.Get(ctx, x.RequestID)
+	if e != nil {
+		return e
+	}
+	var held *string
+	if e = w.Store.Pool.QueryRow(ctx, "SELECT request_id::text FROM gateway.runtime_slot WHERE id=1").Scan(&held); e != nil {
+		return e
+	}
+	if fresh.Status == reason && (held == nil || *held != x.RequestID) {
+		if reason == "waiting_review" || reason == "waiting_approval" || reason == "interrupted" {
+			return w.applyPendingSkills(ctx, x.RequestID)
+		}
+		return nil
+	}
+	x = fresh
 	var pending bool
 	if e := w.Store.Pool.QueryRow(ctx, "SELECT pending_skills<>'{}' FROM gateway.executions WHERE request_id=$1", x.RequestID).Scan(&pending); e != nil {
 		return e
@@ -83,6 +100,9 @@ func (w *Worker) ExpireApproval(ctx context.Context, id string) error {
 func (w *Worker) ApplySignal(ctx context.Context, x Execution, signal Signal) error {
 	if signal.RequestID != x.RequestID || x.Status == "cancelled" || x.Status == "completed" || x.RecoveryNeeded {
 		return ErrInvalid
+	}
+	if x.Status == "blocked" && (signal.Kind == "approval" || signal.Kind == "review" || signal.Kind == "merged" || signal.Kind == "skills" || signal.Kind == "pause") {
+		return ErrUnavailable
 	}
 	switch signal.Kind {
 	case "skills":

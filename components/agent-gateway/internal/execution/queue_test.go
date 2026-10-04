@@ -86,3 +86,23 @@ func TestProgressSurvivesRestart(t *testing.T) {
 		t.Fatal("progress lost or duplicated")
 	}
 }
+
+func TestWorkerProcessLeaseRejectsSecondDriver(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	release, e := s.AcquireWorker(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	other, e := s.AcquireWorker(ctx)
+	if e == nil {
+		other()
+		t.Fatal("second process can drive live runtime")
+	}
+	release()
+	next, e := s.AcquireWorker(ctx)
+	if e != nil {
+		t.Fatal("released worker lease unavailable", e)
+	}
+	next()
+}
