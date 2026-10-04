@@ -58,6 +58,7 @@ func main() {
 	}
 	h := backend.New(p)
 	h.RegisterService(os.Getenv("SERVICE_USERNAME"), os.Getenv("SERVICE_PASSWORD"))
+	h.Mux.Handle("POST /webhooks/github", h.GitHub.Handler(os.Getenv("GITHUB_WEBHOOK_SECRET")))
 	if os.Getenv("RAPTOR_SIMULATION") == "true" && os.Getenv("RAPTOR_FIXTURE_FILE") != "" {
 		h.Catalog.Infra = adapters.FixtureInfra{Path: os.Getenv("RAPTOR_FIXTURE_FILE")}
 	}

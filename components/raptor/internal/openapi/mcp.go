@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
+	githubservice "github.com/jamesDeng/raptor-iap/components/raptor/internal/github"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/url"
 )
@@ -29,6 +30,11 @@ type PauseArgs struct {
 	Reason    string `json:"reason"`
 }
 
+type PRArgs struct {
+	RequestID string `json:"requestId"`
+	githubservice.PRInput
+}
+
 func requestPath(id string) string { return "/v1/requests/" + url.PathEscape(id) }
 func definition(ctx context.Context, c Client, id string) (map[string]any, error) {
 	v, e := c.Call(ctx, "GET", requestPath(id)+"/context", nil)
@@ -47,6 +53,10 @@ func definition(ctx context.Context, c Client, id string) (map[string]any, error
 }
 func NewMCP(c Client) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "raptor-open-api", Version: "0.1.0"}, nil)
+	mcp.AddTool(s, &mcp.Tool{Name: "pull_request_attach", Description: "Associate a PR with this request to receive submitted-review and merge events"}, func(ctx context.Context, r *mcp.CallToolRequest, in PRArgs) (*mcp.CallToolResult, any, error) {
+		v, e := c.Call(ctx, "POST", requestPath(in.RequestID)+"/pull-requests", in.PRInput)
+		return nil, v, e
+	})
 	mcp.AddTool(s, &mcp.Tool{Name: "request_pause", Description: "Pause a request while awaiting human approval or PR review"}, func(ctx context.Context, r *mcp.CallToolRequest, in PauseArgs) (*mcp.CallToolResult, any, error) {
 		v, e := c.Call(ctx, "POST", requestPath(in.RequestID)+"/pause", map[string]string{"reason": in.Reason})
 		return nil, v, e

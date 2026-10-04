@@ -3,6 +3,7 @@ package backend
 import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
+	githubservice "github.com/jamesDeng/raptor-iap/components/raptor/internal/github"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
 	"net/http"
 )
@@ -11,6 +12,14 @@ func (s *Server) RegisterService(user, password string) {
 	wrap := func(pattern string, h http.HandlerFunc) {
 		s.Mux.Handle(pattern, auth.BasicAuth(h, auth.Credentials{Username: user, Password: password}))
 	}
+	wrap("POST /v1/requests/{id}/pull-requests", func(w http.ResponseWriter, r *http.Request) {
+		var in githubservice.PRInput
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		e := s.GitHub.AttachPR(r.Context(), r.PathValue("id"), in)
+		httpx.Result(w, 201, map[string]bool{"attached": e == nil}, e)
+	})
 	wrap("POST /v1/requests/{id}/pause", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Reason string `json:"reason"`
