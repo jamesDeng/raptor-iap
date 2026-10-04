@@ -2,9 +2,34 @@ package httpx
 
 import (
 	"encoding/json"
+	"errors"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"io"
 	"net/http"
 )
+
+func Result(w http.ResponseWriter, status int, v any, e error) {
+	if e == nil {
+		Write(w, status, v)
+		return
+	}
+	code := 503
+	switch {
+	case errors.Is(e, domain.ErrInvalid):
+		code = 400
+	case errors.Is(e, domain.ErrNotFound):
+		code = 404
+	case errors.Is(e, domain.ErrConflict):
+		code = 409
+	case errors.Is(e, domain.ErrForbidden):
+		code = 403
+	}
+	if code == 503 {
+		Error(w, 503, "Unavailable")
+	} else {
+		Error(w, code, e.Error())
+	}
+}
 
 func Write(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")

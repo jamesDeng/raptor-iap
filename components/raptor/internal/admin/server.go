@@ -26,6 +26,9 @@ func NewHandler(backendURL string) (http.Handler, error) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(page))
+		content := strings.Replace(page, `<div id="environment-admin"></div>`, `<div id="environment-admin">`+environmentPanel+`</div>`, 1)
+		content = strings.Replace(content, "await refresh()", "await refresh();await refreshEnvironments()", -1)
+		content = strings.Replace(content, "</body>", environmentScript+"</body>", 1)
+		_, _ = w.Write([]byte(content))
 	}), nil
 }

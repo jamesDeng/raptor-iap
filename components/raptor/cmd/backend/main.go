@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/backend"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
@@ -55,7 +56,11 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8871"
 	}
-	server := &http.Server{Addr: addr, Handler: backend.New(p), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	h := backend.New(p)
+	if os.Getenv("RAPTOR_SIMULATION") == "true" && os.Getenv("RAPTOR_FIXTURE_FILE") != "" {
+		h.Catalog.Infra = adapters.FixtureInfra{Path: os.Getenv("RAPTOR_FIXTURE_FILE")}
+	}
+	server := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("Raptor backend listening on %s", addr)
 	log.Fatal(server.ListenAndServe())
 }
