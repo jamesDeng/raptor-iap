@@ -14,6 +14,13 @@ class CheckpointRef:
 class Request:
  kind:str
  force_refresh:bool=False
+ application:dict|None=None
+ def __post_init__(self):
+  if type(self.force_refresh) is not bool:raise ValueError('InvalidRequest')
+  if self.kind=='app-question':
+   from tools.task_store.models import validate_application_request
+   object.__setattr__(self,'application',validate_application_request(self.application))
+  elif self.kind!='read-probe' or self.application is not None:raise ValueError('InvalidRequest')
 @dataclass(frozen=True)
 class Config:
  account_id:str

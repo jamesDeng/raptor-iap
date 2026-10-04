@@ -101,10 +101,18 @@ class Cloud:
 +""".replace('\n+','\n')
   try:
    sb=self.sandbox(identity,key);sb.commands.run('mkdir -m 700 -p /tmp/raptor-harness',timeout=20)
-   for name in ('archive.py','checkpoint.mjs','pi-adapter.mjs','runner.mjs','package.json','package-lock.json'):sb.files.write('/tmp/raptor-harness/'+name,(root/name).read_text())
+   for name in ('archive.py','checkpoint.mjs','pi-adapter.mjs','application-context.mjs','app-question.mjs','runner.mjs','package.json','package-lock.json'):sb.files.write('/tmp/raptor-harness/'+name,(root/name).read_text())
    sb.commands.run(command,timeout=180)
   except Exception:raise CloudError('SandboxPreparationFailed') from None
- def run_job(self,identity,job,key):
+ def _read_job_result(self,sb,name,phase,result_sink=None):
+  if result_sink is not None:
+   size=sb.commands.run('stat -c %s '+shlex.quote(name),timeout=10)
+   if getattr(size,'exit_code',0)!=0 or not size.stdout.strip().isdigit() or not 0<int(size.stdout.strip())<=65536:raise CloudError('InvalidRunnerResult')
+  data=sb.files.read(name)
+  if result_sink is not None and len(data.encode('utf-8'))>65536:raise CloudError('InvalidRunnerResult')
+  raw=json.loads(data)
+  return safe_result(result_sink.accept(raw) if result_sink else raw,self.cfg,phase)
+ def run_job(self,identity,job,key,*,result_sink=None):
   try:
    sb=self.sandbox(identity,key);generation=job['generation']
    if not re.fullmatch('[a-f0-9-]{36}',generation):raise ValueError()
@@ -113,15 +121,15 @@ class Cloud:
    sb.files.write(stem+'.json',json.dumps(job));sb.commands.run('chmod 600 '+shlex.quote(stem+'.json'),timeout=10)
    try:sb.commands.run('/tmp/node-v22.23.3-linux-x64/bin/node /tmp/raptor-harness/runner.mjs '+shlex.quote(stem+'.json')+' '+shlex.quote(stem+'-result.json'),timeout=self.cfg.model_seconds+45)
    except Exception:pass
-   raw=json.loads(sb.files.read(stem+'-result.json'));return safe_result(raw,self.cfg,job['phase'])
+   return self._read_job_result(sb,stem+'-result.json',job['phase'],result_sink)
   except Exception as e:
    if isinstance(e,CloudError):raise
    raise CloudError('RunnerOutcomeUnknown') from None
- def read_completed_result(self,identity,key,generation=None,phase='inference'):
+ def read_completed_result(self,identity,key,generation=None,phase='inference',*,result_sink=None):
   from e2b.exceptions import NotFoundException,SandboxNotFoundException
   if not generation:return None
   if not re.fullmatch('[a-f0-9-]{36}',generation):raise CloudError('InvalidJobReference')
-  try:return safe_result(json.loads(self.sandbox(identity,key).files.read('/tmp/raptor-harness/job-'+generation+'-result.json')),self.cfg,phase)
+  try:return self._read_job_result(self.sandbox(identity,key),'/tmp/raptor-harness/job-'+generation+'-result.json',phase,result_sink)
   except (NotFoundException,SandboxNotFoundException):return None
   except Exception:raise CloudError('RecoveryResultUnavailable') from None
  def terminate_and_confirm(self,identity,key):

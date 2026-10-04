@@ -114,6 +114,20 @@ def validate_submission(value):
     return dict(value)
 
 
+def validate_application_request(value):
+    exact(value, ('kind', 'question', 'snapshot', 'binding', 'model'))
+    if value['kind'] != 'app-question':
+        raise ValidationError()
+    snapshot = validate_snapshot(value['snapshot'])
+    exact(value['binding'], ('task_id', 'attempt_id', 'snapshot_sha256'))
+    binding = TaskBinding(**value['binding'])
+    validate_submission(dict(app_id=snapshot['app_id'], question=value['question'],
+                             model=value['model'], idempotency_key=binding.attempt_id))
+    if digest(snapshot) != binding.snapshot_sha256:
+        raise ValidationError()
+    return json.loads(canonical(value))
+
+
 @dataclass(frozen=True)
 class TaskBinding:
     task_id: str

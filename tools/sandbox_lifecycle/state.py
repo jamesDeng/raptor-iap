@@ -6,6 +6,7 @@ import fcntl,json,os,tempfile,re
 from .config import validate_checkpoint,checkpoint_shape
 from .contracts import validate_result,ERRORS
 FIELDS={'schema_version','fingerprint','phase','attempt_id','sandbox_id','key_id','key_name','key_expiry','pending','checkpoint','candidate','request_outcome','failure','result','refresh_result','job_generation','job_phase','cleanup_key_ids','persistence_error'}
+FIELDS.add('task_binding')
 PHASES={'idle','creating-key','creating','restoring','running','checkpointing','terminating','finished','blocked'}
 def safe_path(path):
  p=Path(path).absolute()
@@ -20,6 +21,12 @@ def validate_ledger(s):
   if k in s and (not isinstance(s[k],str) or not re.fullmatch('[a-zA-Z0-9_:./+-]{1,256}',s[k])):raise ValueError('InvalidLedger')
  if 'cleanup_key_ids' in s and (not isinstance(s['cleanup_key_ids'],list) or any(not isinstance(x,str) or not re.fullmatch('[a-zA-Z0-9-]{1,128}',x) for x in s['cleanup_key_ids'])):raise ValueError('InvalidLedger')
  if 'persistence_error' in s and type(s['persistence_error']) is not bool:raise ValueError('InvalidLedger')
+ if 'task_binding' in s:
+  from tools.task_store.models import TaskBinding
+  try:
+   binding=TaskBinding(**s['task_binding'])
+   if s.get('attempt_id')!=binding.attempt_id:raise ValueError()
+  except (ValueError,TypeError):raise ValueError('InvalidLedger') from None
  for key,values in [('failure',ERRORS),('request_outcome',{'completed','failed','unknown'}),('pending',{'key','sandbox'}),('job_phase',{'restore','refresh','inference'})]:
   if key in s and s[key] not in values:raise ValueError('InvalidLedger')
  for key in ('checkpoint','candidate'):

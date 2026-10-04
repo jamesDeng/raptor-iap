@@ -7,6 +7,8 @@ from .config import validate_checkpoint
 from .state import account_lock, load_ledger, save_ledger
 from .cloud import CloudError, safe_result
 from .contracts import ERRORS, inference_outcome
+from tools.task_store.models import TaskBinding
+from .task_results import TaskResultSink
 
 
 def error_code(error):
@@ -138,8 +140,11 @@ def recover_locked(cfg, path, cloud, state):
             persist(state, path)
         if 'sandbox_id' in state:
             key = new_key(state, path, cloud, handles)
+            options = {}
+            if 'task_binding' in state and state.get('job_phase') == 'inference':
+                options['result_sink'] = TaskResultSink(path.parent, TaskBinding(**state['task_binding']))
             result = cloud.read_completed_result(state['sandbox_id'], key,
-                                                state.get('job_generation'), state.get('job_phase', 'inference'))
+                                                state.get('job_generation'), state.get('job_phase', 'inference'), **options)
             if result:
                 result = safe_result(result, cfg, state.get('job_phase', 'inference'))
                 remember_result(state, result)
@@ -181,7 +186,10 @@ def execute(cfg, request, ledger_path, cloud):
         if state['phase'] == 'blocked':
             return output(state)
         state = {k: v for k, v in state.items() if k in ('schema_version', 'fingerprint', 'checkpoint')}
-        state.update(phase='idle', attempt_id=str(uuid.uuid4()), request_outcome='unknown')
+        binding = TaskBinding(**request.application['binding']) if request.application else None
+        state.update(phase='idle', attempt_id=binding.attempt_id if binding else str(uuid.uuid4()), request_outcome='unknown')
+        if binding:
+            state['task_binding'] = asdict(binding)
         persist(state, path)  # Before any new external resource exists.
         handles = {}
         passed = False
@@ -203,7 +211,11 @@ def execute(cfg, request, ledger_path, cloud):
                 job = {'phase': phase, 'generation': state['job_generation'], 'reference': state['checkpoint'],
                        'limits': {'model_seconds': cfg.model_seconds, 'max_turns': cfg.max_turns,
                                   'max_output_tokens': cfg.max_output_tokens}}
-                result = safe_result(cloud.run_job(state['sandbox_id'], job, key), cfg, phase)
+                options = {}
+                if binding and phase == 'inference':
+                    job['request'] = request.application
+                    options['result_sink'] = TaskResultSink(path.parent, binding)
+                result = safe_result(cloud.run_job(state['sandbox_id'], job, key, **options), cfg, phase)
                 remember_result(state, result)
                 persist(state, path)
                 if phase != 'restore':
