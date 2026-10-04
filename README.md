@@ -1,5 +1,9 @@
 # Raptor Infra Ops Agent POC
 
+The new [local Go platform](docs/setup/go-platform-local.md) adds separate Raptor and Gateway PostgreSQL schemas, catalog/environment management, validated request forms, saved progress, bound human approvals, official MCP access, GitHub review/merge signals, pinned skills versions and parallel restart targets. Its runtime and provider adapters are explicitly **simulated**. It does not prove cloud deployment, real Pi restoration or zero failed application operations. See the [local acceptance receipt](docs/setup/go-platform-local-acceptance.md).
+
+The existing Python/SQLite and sandbox-verification slice below remains separate and unchanged.
+
 The first connected Raptor slice lets one local owner register application context, submit natural-language questions, and inspect durable task history. A separate gateway runs each task through Pi in an Aliyun Singapore sandbox, retrieves a bound private answer, saves an encrypted OSS credential checkpoint, and confirms compute/control-key cleanup.
 
 Start with [the local Raptor guide](docs/setup/raptor-local.md). Context is manually declared; planned resources are not live infrastructure. This slice has no deployment, restart, live discovery or infrastructure-changing tools. ACK/Argo CD, PostgreSQL RDS, ECS/PgCat replacement and the zero-failed-operations test remain future work.
