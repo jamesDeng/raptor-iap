@@ -16,6 +16,7 @@ type RaptorClient interface {
 	Context(context.Context, string) (ExecutionInput, error)
 }
 type Worker struct {
+	Clock   Clock
 	Store   *Store
 	Runtime Runtime
 	Raptor  RaptorClient
@@ -41,7 +42,12 @@ func (w *Worker) RunNext(ctx context.Context) error {
 	if _, e = w.Store.Pool.Exec(ctx, "UPDATE gateway.executions SET input=$2,applied_skills=$3 WHERE request_id=$1", x.RequestID, b, in.Skills); e != nil {
 		return e
 	}
-	h, e := w.Runtime.Start(ctx, in)
+	var h RuntimeHandle
+	if x.Checkpoint.Path != "" {
+		h, e = w.Runtime.Restore(ctx, in, x.Checkpoint)
+	} else {
+		h, e = w.Runtime.Start(ctx, in)
+	}
 	if e != nil {
 		return w.Store.BlockRecovery(ctx, x.RequestID)
 	}

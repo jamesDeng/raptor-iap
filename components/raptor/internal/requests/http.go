@@ -8,6 +8,17 @@ import (
 )
 
 func (s *Service) Register(m *http.ServeMux, a *auth.Service) {
+	m.Handle("POST /api/v1/requests/{id}/actions", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Action       string `json:"action"`
+			Instructions string `json:"instructions"`
+		}
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		e := s.Action(r.Context(), r.PathValue("id"), in.Action, in.Instructions)
+		httpx.Result(w, 200, map[string]bool{"accepted": e == nil}, e)
+	})))
 	m.Handle("GET /api/v1/operation-schemas", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { httpx.Write(w, 200, Schemas()) })))
 	m.Handle("POST /api/v1/requests", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in domain.RequestInput

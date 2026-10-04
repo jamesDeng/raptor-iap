@@ -50,6 +50,16 @@ func main() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
 			for range ticker.C {
+				if worker.DrainSignals(ctx) != nil {
+					log.Print("signal processing requires attention")
+				}
+				var held *string
+				var owner *string
+				if s.Pool.QueryRow(ctx, "SELECT request_id::text,owner FROM gateway.runtime_slot WHERE id=1").Scan(&held, &owner) == nil && held != nil && owner != nil && *owner == worker.Owner {
+					if worker.ExpireApproval(ctx, *held) != nil {
+						log.Print("approval wait requires attention")
+					}
+				}
 				if worker.RunNext(ctx) != nil {
 					log.Print("simulated worker encountered unavailable dependency")
 				}

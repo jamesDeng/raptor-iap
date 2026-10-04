@@ -10,6 +10,18 @@ import (
 
 func New(s *execution.Store, user, password string) http.Handler {
 	m := http.NewServeMux()
+	m.HandleFunc("POST /v1/requests/{id}/signals", func(w http.ResponseWriter, r *http.Request) {
+		var v execution.Signal
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
+		d.DisallowUnknownFields()
+		if d.Decode(&v) != nil {
+			write(w, 400, map[string]string{"error": "InvalidInput"})
+			return
+		}
+		v.RequestID = r.PathValue("id")
+		e := s.DeliverSignal(r.Context(), v)
+		result(w, map[string]bool{"accepted": e == nil}, e)
+	})
 	m.HandleFunc("PUT /v1/requests/{id}", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			RequestID string `json:"requestId"`
