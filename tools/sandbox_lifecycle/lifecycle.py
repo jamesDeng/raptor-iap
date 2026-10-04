@@ -169,6 +169,7 @@ def recover_locked(cfg, path, cloud, state):
             select_candidate(state, path)
         state['phase'] = 'finished'
         state.pop('failure', None)
+        state.pop('persistence_error', None)
         persist(state, path)
         return output(state, True)
     except Exception as error:
@@ -178,64 +179,86 @@ def recover_locked(cfg, path, cloud, state):
 
 def execute(cfg, request, ledger_path, cloud):
     with locked_path(cfg, ledger_path) as path:
-        state = load_ledger(path, cfg)
-        if any(k in state for k in ('sandbox_id', 'key_id', 'cleanup_key_ids', 'pending')):
-            recovered = recover_locked(cfg, path, cloud, state)
-            if not recovered['passed']:
-                return recovered
-        if state['phase'] == 'blocked':
-            return output(state)
-        state = {k: v for k, v in state.items() if k in ('schema_version', 'fingerprint', 'checkpoint')}
-        binding = TaskBinding(**request.application['binding']) if request.application else None
-        state.update(phase='idle', attempt_id=binding.attempt_id if binding else str(uuid.uuid4()), request_outcome='unknown')
-        if binding:
-            state['task_binding'] = asdict(binding)
-        persist(state, path)  # Before any new external resource exists.
-        handles = {}
+        return _execute_locked(cfg, request, path, cloud)
+
+
+def _execute_locked(cfg, request, path, cloud, *, binding=None, observer=None):
+    def observe(stage):
+        if observer is not None:
+            try:
+                observer(stage)
+            except Exception:
+                raise CloudError('TaskPersistenceFailed') from None
+
+    state = load_ledger(path, cfg)
+    if any(k in state for k in ('sandbox_id', 'key_id', 'cleanup_key_ids', 'pending')):
+        recovered = recover_locked(cfg, path, cloud, state)
+        if not recovered['passed']:
+            return recovered
+    if state['phase'] == 'blocked':
+        return output(state)
+    state = {k: v for k, v in state.items() if k in ('schema_version', 'fingerprint', 'checkpoint')}
+    request_binding = TaskBinding(**request.application['binding']) if request.application else None
+    if binding is not None and binding != request_binding:
+        raise CloudError('TaskBindingMismatch')
+    binding = request_binding
+    state.update(phase='idle', attempt_id=binding.attempt_id if binding else str(uuid.uuid4()), request_outcome='unknown')
+    if binding:
+        state['task_binding'] = asdict(binding)
+    persist(state, path)  # Before any new external resource exists.
+    handles = {}
+    passed = False
+    try:
+        observe('starting')
+        cloud.assert_storage()
+        cloud.verify_checkpoint(validate_checkpoint(state['checkpoint'], cfg, True))
+        key = new_key(state, path, cloud, handles)
+        state.update(phase='creating', pending='sandbox')
+        persist(state, path)
+        state['sandbox_id'] = cloud.create_sandbox(state['attempt_id'], key)
+        state.pop('pending')
+        persist(state, path)
+        cloud.prepare(state['sandbox_id'], key)
+        phases = ['restore'] + (['refresh'] if request.force_refresh else []) + ['inference']
+        for phase in phases:
+            state.update(phase='restoring' if phase == 'restore' else 'running',
+                         job_generation=str(uuid.uuid4()), job_phase=phase)
+            persist(state, path)
+            observe('restoring-credentials' if phase == 'restore' else 'asking-agent')
+            job = {'phase': phase, 'generation': state['job_generation'], 'reference': state['checkpoint'],
+                   'limits': {'model_seconds': cfg.model_seconds, 'max_turns': cfg.max_turns,
+                              'max_output_tokens': cfg.max_output_tokens}}
+            options = {}
+            if binding and phase == 'inference':
+                job['request'] = request.application
+                options['result_sink'] = TaskResultSink(path.parent, binding)
+            result = safe_result(cloud.run_job(state['sandbox_id'], job, key, **options), cfg, phase)
+            remember_result(state, result)
+            persist(state, path)
+            if phase != 'restore':
+                state['phase'] = 'checkpointing'
+                persist(state, path)
+                observe('saving-checkpoint')
+                publish(state, path, cloud, result, cfg)
+            if not result['passed']:
+                raise CloudError(result.get('error', 'ModelFailed'))
+        passed = True
+    except Exception as error:
+        record_failure(state, path, error)
+    try:
+        observe('cleaning-up')
+    except Exception as error:
+        record_failure(state, path, error)
         passed = False
-        try:
-            cloud.assert_storage()
-            cloud.verify_checkpoint(validate_checkpoint(state['checkpoint'], cfg, True))
-            key = new_key(state, path, cloud, handles)
-            state.update(phase='creating', pending='sandbox')
-            persist(state, path)
-            state['sandbox_id'] = cloud.create_sandbox(state['attempt_id'], key)
-            state.pop('pending')
-            persist(state, path)
-            cloud.prepare(state['sandbox_id'], key)
-            phases = ['restore'] + (['refresh'] if request.force_refresh else []) + ['inference']
-            for phase in phases:
-                state.update(phase='restoring' if phase == 'restore' else 'running',
-                             job_generation=str(uuid.uuid4()), job_phase=phase)
-                persist(state, path)
-                job = {'phase': phase, 'generation': state['job_generation'], 'reference': state['checkpoint'],
-                       'limits': {'model_seconds': cfg.model_seconds, 'max_turns': cfg.max_turns,
-                                  'max_output_tokens': cfg.max_output_tokens}}
-                options = {}
-                if binding and phase == 'inference':
-                    job['request'] = request.application
-                    options['result_sink'] = TaskResultSink(path.parent, binding)
-                result = safe_result(cloud.run_job(state['sandbox_id'], job, key, **options), cfg, phase)
-                remember_result(state, result)
-                persist(state, path)
-                if phase != 'restore':
-                    state['phase'] = 'checkpointing'
-                    persist(state, path)
-                    publish(state, path, cloud, result, cfg)
-                if not result['passed']:
-                    raise CloudError(result.get('error', 'ModelFailed'))
-            passed = True
-        except Exception as error:
-            record_failure(state, path, error)
-        try:
-            cleanup(state, path, cloud, handles.get('key'))
-        except Exception as error:
-            record_failure(state, path, error)
-            return output(state)
-        state['phase'] = 'blocked' if 'pending' in state else 'finished'
-        if not best_effort_persist(state, path):
-            record_failure(state, path, CloudError('LedgerPersistenceFailed'))
-        return output(state, passed and 'failure' not in state and state['phase'] == 'finished')
+    try:
+        cleanup(state, path, cloud, handles.get('key'))
+    except Exception as error:
+        record_failure(state, path, error)
+        return output(state)
+    state['phase'] = 'blocked' if 'pending' in state else 'finished'
+    if not best_effort_persist(state, path):
+        record_failure(state, path, CloudError('LedgerPersistenceFailed'))
+    return output(state, passed and 'failure' not in state and state['phase'] == 'finished')
 
 
 def recover(cfg, ledger_path, cloud):

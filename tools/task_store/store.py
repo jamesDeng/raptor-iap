@@ -254,7 +254,6 @@ class Store:
             if report.overall == 'blocked':
                 gate = dict(binding=asdict(binding), error=report.error)
                 db.execute('UPDATE dispatch_gate SET value=? WHERE id=1', (canonical(gate).decode(),))
-            db.execute("UPDATE recovery_requests SET state='finished' WHERE binding=?", (canonical(asdict(binding)).decode(),))
 
     def unfinished(self):
         with self.connection() as db:
@@ -285,9 +284,22 @@ class Store:
             return TaskBinding(**json.loads(row['binding']))
 
     def clear_gate(self, binding):
+        self.finish_recovery(binding, cleared=True)
+
+    def gate(self):
         with self.connection() as db:
-            self._bound(db, binding)
+            value = db.execute('SELECT value FROM dispatch_gate WHERE id=1').fetchone()[0]
+            return json.loads(value) if value else None
+
+    def finish_recovery(self, binding, *, cleared):
+        with self.connection() as db:
+            if binding:
+                self._bound(db, binding)
             gate = db.execute('SELECT value FROM dispatch_gate WHERE id=1').fetchone()[0]
-            if gate is not None and json.loads(gate)['binding'] != asdict(binding):
+            expected = asdict(binding) if binding else None
+            if gate is not None and json.loads(gate)['binding'] != expected:
                 raise Conflict()
-            db.execute('UPDATE dispatch_gate SET value=NULL WHERE id=1')
+            if cleared:
+                db.execute('UPDATE dispatch_gate SET value=NULL WHERE id=1')
+            if binding:
+                db.execute("UPDATE recovery_requests SET state='finished' WHERE binding=?", (canonical(expected).decode(),))
