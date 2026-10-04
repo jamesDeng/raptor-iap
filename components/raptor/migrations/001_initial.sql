@@ -1,0 +1,19 @@
+CREATE SCHEMA IF NOT EXISTS raptor AUTHORIZATION raptor_owner;
+REVOKE ALL ON SCHEMA raptor FROM PUBLIC;
+CREATE TABLE IF NOT EXISTS raptor.users(id uuid PRIMARY KEY, username text UNIQUE NOT NULL, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('admin','user')));
+CREATE TABLE IF NOT EXISTS raptor.sessions(token_hash text PRIMARY KEY, user_id uuid NOT NULL REFERENCES raptor.users(id), csrf_hash text NOT NULL, expires_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS raptor.objects(id uuid PRIMARY KEY, kind text NOT NULL CHECK(kind IN ('application','database','db-proxy')), code text NOT NULL, name text NOT NULL, description text NOT NULL DEFAULT '', UNIQUE(kind,code));
+CREATE TABLE IF NOT EXISTS raptor.environment_groups(code text PRIMARY KEY, name text NOT NULL);
+CREATE TABLE IF NOT EXISTS raptor.environments(code text PRIMARY KEY, group_code text NOT NULL REFERENCES raptor.environment_groups(code), stage text NOT NULL, config jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS raptor.requests(id uuid PRIMARY KEY, creator_id uuid NOT NULL, idempotency_key text NOT NULL, input_hash text NOT NULL, definition jsonb NOT NULL, schema_hash text NOT NULL, status text NOT NULL DEFAULT 'queued', created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(creator_id,idempotency_key));
+CREATE TABLE IF NOT EXISTS raptor.targets(request_id uuid NOT NULL REFERENCES raptor.requests(id), target_key text NOT NULL, target jsonb NOT NULL, state text NOT NULL DEFAULT 'queued', details jsonb NOT NULL DEFAULT '{}', PRIMARY KEY(request_id,target_key));
+CREATE TABLE IF NOT EXISTS raptor.approvals(id uuid PRIMARY KEY, request_id uuid NOT NULL REFERENCES raptor.requests(id), action_id text NOT NULL, binding jsonb NOT NULL, state text NOT NULL DEFAULT 'pending', guidance jsonb NOT NULL DEFAULT '{}', decided_by uuid, UNIQUE(request_id,action_id));
+CREATE TABLE IF NOT EXISTS raptor.pull_requests(repository text NOT NULL, number integer NOT NULL CHECK(number>0), request_id uuid NOT NULL REFERENCES raptor.requests(id), url text NOT NULL, head_sha text NOT NULL, PRIMARY KEY(repository,number));
+CREATE TABLE IF NOT EXISTS raptor.skills_changes(id bigserial PRIMARY KEY, request_id uuid NOT NULL REFERENCES raptor.requests(id), actor_id uuid NOT NULL, old_version jsonb NOT NULL, new_version jsonb NOT NULL, strategy text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS raptor.outbox(id uuid PRIMARY KEY, topic text NOT NULL, entity_id uuid NOT NULL REFERENCES raptor.requests(id), payload jsonb NOT NULL, delivered boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS raptor.events(sequence bigserial PRIMARY KEY, request_id uuid NOT NULL REFERENCES raptor.requests(id), kind text NOT NULL, summary text NOT NULL, details jsonb NOT NULL DEFAULT '{}', evidence_mode text NOT NULL, occurred_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS raptor.webhook_deliveries(id text PRIMARY KEY, event_type text NOT NULL, payload jsonb NOT NULL, processed boolean NOT NULL DEFAULT false);
+GRANT USAGE ON SCHEMA raptor TO raptor_app;
+GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA raptor TO raptor_app;
+GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA raptor TO raptor_app;
+
