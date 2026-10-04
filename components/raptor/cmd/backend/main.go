@@ -76,6 +76,16 @@ func main() {
 	h.Mux.Handle("POST /webhooks/github", h.GitHub.Handler(os.Getenv("GITHUB_WEBHOOK_SECRET")))
 	if os.Getenv("RAPTOR_SIMULATION") == "true" && os.Getenv("RAPTOR_FIXTURE_FILE") != "" {
 		h.Catalog.Infra = adapters.FixtureInfra{Path: os.Getenv("RAPTOR_FIXTURE_FILE")}
+		commands := &adapters.SimulatedCommands{}
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				if h.Requests.RunDirectPending(ctx, commands) != nil {
+					log.Print("simulated direct execution requires attention")
+				}
+			}
+		}()
 	}
 	server := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("Raptor backend listening on %s", addr)

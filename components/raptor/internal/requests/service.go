@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"time"
 )
 
 type GatewayClient interface {
@@ -18,6 +19,7 @@ type Service struct {
 	Pool          *pgxpool.Pool
 	Catalog       *catalog.Service
 	ResolveSkills func(context.Context, domain.SkillsVersion) (domain.SkillsVersion, error)
+	RestartNow    func() time.Time
 }
 
 func NewService(p *pgxpool.Pool, c *catalog.Service) *Service { return &Service{Pool: p, Catalog: c} }
