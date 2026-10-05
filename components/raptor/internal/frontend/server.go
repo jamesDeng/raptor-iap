@@ -1,0 +1,35 @@
+package frontend
+
+import (
+	"fmt"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
+	"github.com/jamesDeng/raptor-iap/components/raptor/web"
+	"io/fs"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strings"
+)
+
+func NewHandler(backendURL string) (http.Handler, error) {
+	u, e := url.Parse(backendURL)
+	if e != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, fmt.Errorf("invalid backend")
+	}
+	proxy := httputil.NewSingleHostReverseProxy(u)
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) { httpx.Error(w, 503, "Unavailable") }
+	files, e := fs.Sub(web.Files, "poc")
+	if e != nil {
+		return nil, e
+	}
+	static := http.FileServer(http.FS(files))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			proxy.ServeHTTP(w, r)
+			return
+		}
+		static.ServeHTTP(w, r)
+	}), nil
+}
