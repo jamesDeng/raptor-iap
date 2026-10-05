@@ -19,3 +19,11 @@ The identity workflow also uses pinned Terraform to initialize/read the exact rd
 This is a first-time bootstrap check: after foundation deployment, it intentionally fails rather than using a data-only fixture against populated state. Remove/replace that step with a populated-state read check at that stage.
 
 Review fixes: inspect all saved-plan sections recursively for managed resources, including prior state and drift. Require a fresh UUID output marker in each saved refresh-only plan and verify that marker in remote state after apply, so reruns must prove an actual state write. This writes state metadata only and makes no cloud infrastructure change.
+
+## Protected initial foundation plan
+
+`rdev-live-plan.yml` is a manual, main-only job behind `rdev.ali-apply`. It shares the `rdev.ali-state` concurrency group with state verification. It obtains temporary OIDC credentials for the apply role, generates a private plan, and checks the reviewed creation-only shape: 10 cloud resources and two local guards, the selected worker/RDS sizes, private API/database settings and protection settings. It performs no apply and publishes only a sanitized summary and source SHA. Raw state, plan and provider logs remain temporary and are removed when the runner exits.
+
+The initial guard intentionally rejects updates, replacements, deletes, incomplete/deferred plans, drift and unexpected managed resources. After partial provisioning, this job will reject the changed plan: reconcile retained state and build a separately reviewed continuation rather than bypassing it. A passing plan proves the role can read and use state locking; it does not verify cloud creation authorization or runtime health.
+
+The owner approved the initial creation/read/follow-up policies on 2026-10-05. Independent RAM readback verified exactly five Custom policy attachments (the two existing read/state policies plus those three), retaining explicit kubeconfig/attach-script/trigger denies. The bootstrap follow-up grant temporarily covers account resources in Singapore for tagging/protection/DAS changes, including protection disabling. Narrow it to owned IDs after creation. RDS CreateDBInstance restricts engine/version/class/storage but does not have a verified region IAM condition. No resource deletion, resizing, broad PassRole or RAM administration was added.

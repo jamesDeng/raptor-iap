@@ -57,3 +57,11 @@ Ruling: use HighPerformance Tablestore in Singapore because the official regiona
 ### Live state-bootstrap plan — 2026-10-05
 
 Using existing private STS credentials, Terraform produced a saved plan outside Git: four cloud creates (OSS bucket, bucket ACL, HighPerformance OTS instance, lock table) and one local account-guard resource; zero updates/deletes. Applied=false. Private inputs/plan/log have restricted permissions. Sandbox sizing independently queried (2 vCPU/2 GiB/15 GiB), bounded sandbox/FC/API estimates documented. Full foundation apply remains gated on live inventory, source integration and finalized deployment policy.
+
+### Protected initial planning slice — 2026-10-05
+
+PR11 merged at d8949c65d222216a51da7de66a8f4199a867b4ea after both CI jobs and two local mocked contracts passed. It omits deprecated ACK certificate fields from state, preserving explicit credential API denies. Final: minor (deferred): the contract error text broadly mentions credentials although the assertion specifically covers deprecated certificate_authority fields.
+
+The owner explicitly approved three initial deployment policies; exact documents and final five-policy attachment set were independently verified. No cloud apply occurred. This slice implements the protected initial live-plan job from the approved foundation plan. Added seven guard tests; first run failed because the new guard did not exist, then all20 rdev tests passed. The guard also accepted the actual private operator-generated plan: 10 cloud creates and two local guards, no updates/deletes.
+
+Ruling: keep this job plan-only until remaining preflight and deployment execution are ready — testing the actual OIDC role is independent of cloud provisioning — cost if wrong: an additional workflow run, no compute purchase. No raw artifacts are published.
