@@ -20,4 +20,9 @@ run "restricted_planning_identity" {
     condition     = alltrue([for s in jsondecode(alicloud_ram_policy.plan.policy_document).Statement : alltrue([for a in s.Action : can(regex(":(Describe|Get|List)", a))])])
     error_message = "Planning role must not contain cloud mutation permissions."
   }
+  assert {
+    condition     = anytrue([for s in jsondecode(alicloud_ram_policy.plan.policy_document).Statement : s.Effect == "Deny" && contains(s.Action, "cs:DescribeClusterUserKubeconfig") && contains(s.Action, "cs:DescribeClusterV2UserKubeconfig") && contains(s.Action, "cs:DescribeClusterAttachScripts") && contains(s.Action, "cs:GetKubernetesTrigger")])
+    error_message = "Planning role must explicitly deny kubeconfig credential retrieval."
+  }
+
 }

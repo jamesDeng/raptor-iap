@@ -41,6 +41,10 @@ resource "alicloud_ram_policy" "plan" {
       Effect   = "Allow"
       Action   = ["ecs:Describe*", "vpc:Describe*", "rds:Describe*", "cs:Describe*", "cs:Get*", "slb:Describe*", "ram:GetRole", "ram:ListRoles", "ram:ListPoliciesForRole", "sts:GetCallerIdentity"]
       Resource = "*"
+      }, {
+      Effect   = "Deny"
+      Action   = ["cs:DescribeClusterUserKubeconfig", "cs:DescribeClusterV2UserKubeconfig", "cs:DescribeClusterAttachScripts", "cs:GetKubernetesTrigger"]
+      Resource = "*"
     }]
   })
 }

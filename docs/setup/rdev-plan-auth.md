@@ -18,3 +18,5 @@ Sources:
 - https://www.alibabacloud.com/help/en/ram/manage-an-oidc-idp
 
 The approved initial identity was created via Aliyun CLI and verified through independent read APIs. The Terraform module is the source definition but has not been imported into a live identity-bootstrap state. Before running this module against the account, import the existing provider, role, custom policy and attachment into protected bootstrap state; inspect a no-change plan. Do not apply it blindly or recreate existing identities.
+
+The planning policy explicitly denies ACK kubeconfig retrieval, cluster attach scripts and Kubernetes trigger details. These exceptions prevent broad metadata wildcards from retrieving credentials or bootstrap material. The live default policy was narrowed and read back on 2026-10-05.
