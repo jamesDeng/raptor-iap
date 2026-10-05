@@ -89,3 +89,11 @@ Owner accepted RMB146.76 bounded72-hour estimate including RMB2 uncertainty rese
 Regression first failed because missing NAT role did not trip the guard. Added documented role to required names/regex and mocked complete inventory; all three Terraform contracts and34 Python tests pass. Separate account service-linked-role authorization is prepared, not executed. Do not rerun the initial creation-only gate against this partial state: reconcile and review a fresh continuation plan. Existing resources may incur charges before the successful72-hour acceptance window.
 
 Source: https://www.alibabacloud.com/help/zh/nat-gateway/security-and-compliance/service-linked-role-1
+
+### Controlled continuation — 2026-10-05
+
+Owner explicitly requested completion of ACK/networking and live overnight stop/start verification. Existing seven IDs are pinned in rdev-preserved-resources.json. Continuation permits their exact no-op records plus five missing creates; no update, delete or replacement allowed. Parent values must match the owned preserved IDs or remain unknown for new resources. All cloud resources must use the Singapore provider. Initial mode remains creation-only.
+
+Ruling: accept only observed pinned-resource null-to-empty refresh normalization for RDS template_id_list, EIP security_protection_types and vSwitch tags — provider refresh returns empty collections for earlier null state — cost if wrong: an unrecognized semantic change is stopped; no API update is permitted. Subnet ownership is established by exact state IDs and the owned VPC relationship because these existing subnets have no tags; VPC/EIP/RDS tags remain required.
+
+Regression tests first failed, then52 tests and actionlint passed. Guard independently accepts the real saved continuation plan: five cloud creates, seven unchanged, zero updates/deletes. Existing encrypted-recovery/source/budget/concurrency/environment protection remains in use. Live continuation and overnight mutations not yet performed.
