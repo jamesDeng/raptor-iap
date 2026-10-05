@@ -49,3 +49,7 @@ Fresh review identified credential retrieval within ACK Describe wildcards. Trea
 ### Live GitHub OIDC verification — 2026-10-05
 
 PR7 merged at `85d0056ac208eb58eb0d2207e5e8383dac8af6e4`. Initial STS exchange failed because the role used a legacy name-only subject while this repository emits immutable owner/repository IDs. Corrected the exact subject using the GitHub OIDC settings API, retaining issuer, audience and main-only environment restrictions. Retry passed both temporary credential exchange and read-only Terraform account discovery: https://github.com/jamesDeng/raptor-iap/actions/runs/37288472296/attempts/2 . No foundation resources were applied.
+
+### State bootstrap preparation — 2026-10-05
+
+Ruling: use HighPerformance Tablestore in Singapore because the official regional table lists Capacity as unsupported. No reserved throughput or search indexes; verify zero live throughput after creation. Cost if wrong: bootstrap fails or requires a new regional choice; never silently fall back to another region. Contract observed RED (Capacity) then GREEN (HighPerformance). Separate bootstrap root initialized/validated without cloud apply. Storage/checkpoint 1 CNY allowance is supported by explicit conservative 0.85 CNY scenario; broader price gate remains incomplete. Permission matrix is a candidate, not an installed or proven least-privilege apply policy.

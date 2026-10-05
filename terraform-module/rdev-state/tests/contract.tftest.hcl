@@ -9,6 +9,10 @@ run "protected_state" {
     lock_instance_name = "raptor-tf-lock"
   }
   assert {
+    condition     = alicloud_ots_instance.lock.instance_type == "HighPerformance"
+    error_message = "Singapore lock store must use supported HighPerformance type."
+  }
+  assert {
     condition     = alicloud_oss_bucket_acl.state.acl == "private" && alicloud_oss_bucket.state.force_destroy == false
     error_message = "State must be private and protected from nonempty deletion."
   }
