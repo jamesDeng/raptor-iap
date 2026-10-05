@@ -62,6 +62,7 @@ resource "alicloud_ram_role_policy_attachment" "invoke" {
   policy_type = "Custom"
 }
 resource "alicloud_api_gateway_group" "read" {
+  instance_id = var.gateway_instance_id
   depends_on  = [terraform_data.account_guard]
   name        = var.name
   description = "Temporary Infra API authenticated read probe"

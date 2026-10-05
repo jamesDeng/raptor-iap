@@ -20,3 +20,4 @@ variable "trigger_url" {
     error_message = "Protected FC3 HTTPS trigger URL required."
   }
 }
+variable "gateway_instance_id" { type = string }

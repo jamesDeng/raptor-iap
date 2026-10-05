@@ -2,6 +2,7 @@ mock_provider "alicloud" {
  mock_data "alicloud_account" { defaults = { id = "1234567890123456" } }
 }
 variables {
+ gateway_instance_id = "shared-fixture"
   account_id = "1234567890123456"
   name = "raptor-read-test"
   function_name = "raptor-read-test"
