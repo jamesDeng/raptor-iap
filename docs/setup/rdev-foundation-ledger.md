@@ -1,6 +1,6 @@
 # Foundation execution ledger
 
-2026-10-05: Approved native execution. Branch feat/rdev-foundation based on 5d4d9b4. Native worktree registration unavailable because the calling project root is not a Git repo; reused established ignored manual-worktree location. PR5/6 still open; no merge authorized.
+2026-10-05: Approved native execution. Branch feat/rdev-foundation based on 5d4d9b4. Native worktree registration unavailable because the calling project root is not a Git repo; reused established ignored manual-worktree location. PR5/6 were open at branch creation; subsequently explicitly authorized and merged.
 
 Ruling: prepare foundation from PR6 but block release apply until source integration is resolved. This preserves public GitOps desired state and avoids silently deploying unmerged platform code.
 
@@ -8,4 +8,24 @@ Verification: five offline preflight tests pass; Raptor HTTP adapter and MCP bas
 
 Ruling: gateway main currently has only simulation worker wiring; do not advertise live Pi agent execution from cloud deployment. The later runtime integration task must wire the real adapter before claiming end-to-end agent acceptance.
 
-Remaining: complete price/permission evidence and remote state; live ACK version check; source integration decision; Helm/Argo CD manifests and image build verification; cloud apply and live acceptance. No cloud resources created.
+Remaining: complete price/permission evidence and remote state; live ACK version check; refresh integrated source; Helm/Argo CD manifests and image build verification; cloud apply and live acceptance. No cloud resources created.
+
+2026-10-05 integration receipt: GitHub independently confirmed PR5 merge b90785cc64d1e960e92322d723c3bb161ba7b0b2 and PR6 merge 5ea09b21e224bf4cd3fc9d7fdcb3240ce08dd92c after fresh Go race/vet, 25 harness tests and 114 Python tests. Local origin/main remains stale; do not claim foundation branch incorporates the merge yet.
+
+2026-10-05 prerequisite check: RAM GetRole confirmed EntityNotExist.Role for AliyunCSDefaultRole. ACK version discovery remains blocked by this prerequisite. Official ACK roles documentation identifies default and managed-cluster roles plus networking/storage add-on roles. These are cloud service permissions, separate from agent runtime credentials. No role or cluster was created by this check.
+
+2026-10-05 authorized prerequisite result: created AliyunCSDefaultRole and AliyunCSManagedKubernetesRole with official cs.aliyuncs.com trust and corresponding System policies. Independently verified both policy attachments. Read-only creatable version discovery succeeds in Singapore: 1.36.2-aliyun.1, 1.35.7-aliyun.1, 1.34.10-aliyun.1; all list Flannel support. No cluster created.
+
+Integration: fetched origin/main at 5ea09b21e224bf4cd3fc9d7fdcb3240ce08dd92c and merged into foundation branch without conflicts.
+
+Authorization boundary: automatic approval review rejected the initial six-role batch; narrowing to two verified core roles succeeded. After confirming official role definitions and all four missing roles, review still rejected networking/CSI batch because exact permission scope was not explicitly approved. No networking/CSI roles created. Pending exact authorization: AliyunCSManagedNetworkRole, AliyunCSManagedCsiRole, AliyunCSManagedCsiProvisionerRole, AliyunCSManagedCsiPluginRole and their corresponding System policies. These service roles are account prerequisites and must not be destroyed with the POC environment.
+
+2026-10-05 exact authorization completed: user explicitly approved the four named networking/CSI roles and corresponding System policies. Created all four and independently verified each policy attachment. No optional logging/ARMS/diagnostic/autoscaling roles enabled. Missing RDS role independently confirmed: AliyunServiceRoleForRdsPgsqlOnEcs. No RDS role created; exact security authorization pending.
+
+2026-10-05 PostgreSQL prerequisite completed: user approved AliyunServiceRoleForRdsPgsqlOnEcs. Created through RDS CreateServiceLinkedRole in Singapore; independently verified its name and AliyunServiceRolePolicyForRdsPgsqlOnEcs attachment. Official PostgreSQL service name is pgsql-onecs.rds.aliyuncs.com, distinct from MySQL.
+
+Task 3 preparation: added build-only platform image workflow and offline packaging/fail-closed smoke script. No image publication/deployment in this workflow. Local shell syntax, whitespace and five preflight tests pass. Docker is unavailable locally; container smoke checks remain unverified until CI.
+
+Ruling: prepare image validation while pricing/remote state blocks apply — independent source work reduces the wait — cost if wrong: CI packaging may require revision, with no cloud spending.
+
+Verification: all five Go service binaries compile with GOOS=linux GOARCH=amd64 CGO_ENABLED=0. This verifies compilation, not container/runtime acceptance. Added read-only Terraform account-role guard (no role creation/deletion in environment state). New missing-role contract failed before implementation and passes afterward; terraform validate passes and both mocked contract runs pass. Cloud apply remains blocked by complete cost evidence and remote-state/workflow setup.

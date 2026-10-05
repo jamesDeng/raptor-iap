@@ -10,4 +10,6 @@ Terraform environment lives in infra-terraform/environments/rdev.ali. Do not app
 
 Raptor image contains frontend/backend/open-api/admin binaries: choose the entry point explicitly for each deployment. Gateway has its own image. Both run as non-root; container environment must set bind addresses to 0.0.0.0 because local-development defaults bind loopback. Pi and Infra API remain in external sandbox and serverless runtimes.
 
-PR5 and PR6 were open at implementation start. Foundation branch based on PR6 is for preparation only until release integration is authorized.
+PR5 and PR6 were explicitly authorized and merged. Foundation branch now incorporates origin/main at 5ea09b21e224bf4cd3fc9d7fdcb3240ce08dd92c.
+
+ACK prerequisites: the default, managed-cluster, network and three CSI roles have been created with official service trust and independently verified System policy attachments. They are account-level service prerequisites, not agent permissions or POC teardown resources. Singapore version discovery is verified; select an explicitly available version in the private provisioning inputs. The PostgreSQL service-linked role and standard policy are now created and independently verified. No ACK/RDS instance has been provisioned.

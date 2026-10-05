@@ -14,7 +14,7 @@ resource "alicloud_vpc" "env" {
   vpc_name   = "raptor-rdev"
   cidr_block = "10.70.0.0/16"
   tags       = local.tags
-  depends_on = [terraform_data.account_guard]
+  depends_on = [terraform_data.account_guard, terraform_data.service_role_guard]
 }
 resource "alicloud_vswitch" "workers" {
   vpc_id       = alicloud_vpc.env.id
