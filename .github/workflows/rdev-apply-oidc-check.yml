@@ -3,6 +3,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: rdev.ali-state
+  cancel-in-progress: false
 jobs:
   verify:
     if: github.ref == 'refs/heads/main'
@@ -54,3 +57,9 @@ jobs:
             exit 1
           fi
           echo 'Temporary OIDC credentials verified by read-only account discovery.'
+      - name: Verify first-time remote state and locking
+        env:
+          TF_IN_AUTOMATION: 'true'
+          RDEV_STATE_BUCKET: ${{ vars.RDEV_STATE_BUCKET }}
+          RDEV_LOCK_ENDPOINT: ${{ vars.RDEV_LOCK_ENDPOINT }}
+        run: python3 scripts/rdev/state_access.py

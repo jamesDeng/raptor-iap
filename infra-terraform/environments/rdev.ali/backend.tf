@@ -3,7 +3,8 @@ terraform {
   # Credentials must come from the execution environment, never this block.
   backend "oss" {
     region  = "ap-southeast-1"
-    key     = "rdev.ali/terraform.tfstate"
+    prefix  = "rdev.ali"
+    key     = "terraform.tfstate"
     acl     = "private"
     encrypt = true
   }
