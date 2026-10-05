@@ -45,3 +45,7 @@ Ruling: establish a read-only planning identity before an apply identity — obt
 ### Planning permission review — 2026-10-05
 
 Fresh review identified credential retrieval within ACK Describe wildcards. Treated as an important mismatch with metadata-only intent and resolved with four explicit denies (both kubeconfig APIs, attach scripts, trigger details). Existing grants were unchanged; the live default custom policy was read back and verified. No kubeconfig was retrieved. GitHub OIDC exchange still awaits the main-only verification workflow; no ACK/RDS foundation has been provisioned.
+
+### Live GitHub OIDC verification — 2026-10-05
+
+PR7 merged at `85d0056ac208eb58eb0d2207e5e8383dac8af6e4`. Initial STS exchange failed because the role used a legacy name-only subject while this repository emits immutable owner/repository IDs. Corrected the exact subject using the GitHub OIDC settings API, retaining issuer, audience and main-only environment restrictions. Retry passed both temporary credential exchange and read-only Terraform account discovery: https://github.com/jamesDeng/raptor-iap/actions/runs/37288472296/attempts/2 . No foundation resources were applied.

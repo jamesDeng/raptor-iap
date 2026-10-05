@@ -13,7 +13,7 @@ run "restricted_planning_identity" {
     fingerprints = ["1111111111111111111111111111111111111111"]
   }
   assert {
-    condition     = jsondecode(alicloud_ram_role.plan.assume_role_policy_document).Statement[0].Condition.StringEquals["oidc:sub"] == "repo:jamesDeng/raptor-iap:environment:rdev.ali-plan"
+    condition     = jsondecode(alicloud_ram_role.plan.assume_role_policy_document).Statement[0].Condition.StringEquals["oidc:sub"] == "repo:jamesDeng@4443650/raptor-iap@1397422754:environment:rdev.ali-plan"
     error_message = "Trust must bind the exact repo environment."
   }
   assert {
