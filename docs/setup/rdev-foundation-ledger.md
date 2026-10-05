@@ -81,3 +81,11 @@ Ruling: use owner-public-key-encrypted GitHub recovery artifacts rather than bro
 Ruling: bound Terraform execution to45minutes with graceful interruption/recovery reserves — fit the55minute job and3600second session — cost if wrong: slow but otherwise valid provisioning can stop partially and require reconciliation, without an automatic retry.
 
 Final: minor (deferred): verify cloud-provider binding for VPC and EIP as well as resources with parent references. Current reviewed configuration uses the expected provider; ownership policy scope remains documented.
+
+### Partial initial provisioning — 2026-10-05
+
+Owner accepted RMB146.76 bounded72-hour estimate including RMB2 uncertainty reserve despite incomplete FC/logging inventory. PR13 merged at684884a07d5058c86b6ce089b711867cd25db13c. Protected run37321712857 failed at Enhanced NAT creation with NoPermission.CreateServiceLinkedRole. Independent GetRole confirms AliyunServiceRoleForNatgw absent; prior prerequisite list omitted it. RDS is Running; VPC is Available. Remote state preserves five cloud resources (VPC, two vSwitches, EIP, PostgreSQL) and two local guards. ACK and worker remain absent. Encrypted recovery artifact uploaded and locally decrypted; no plaintext recovery published.
+
+Regression first failed because missing NAT role did not trip the guard. Added documented role to required names/regex and mocked complete inventory; all three Terraform contracts and34 Python tests pass. Separate account service-linked-role authorization is prepared, not executed. Do not rerun the initial creation-only gate against this partial state: reconcile and review a fresh continuation plan. Existing resources may incur charges before the successful72-hour acceptance window.
+
+Source: https://www.alibabacloud.com/help/zh/nat-gateway/security-and-compliance/service-linked-role-1

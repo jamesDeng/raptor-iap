@@ -1,6 +1,6 @@
 mock_provider "alicloud" {
   mock_data "alicloud_ram_roles" {
-    defaults = { names = ["AliyunCSDefaultRole", "AliyunCSManagedKubernetesRole", "AliyunCSManagedNetworkRole", "AliyunCSManagedCsiRole", "AliyunCSManagedCsiProvisionerRole", "AliyunCSManagedCsiPluginRole", "AliyunServiceRoleForRdsPgsqlOnEcs"] }
+    defaults = { names = ["AliyunCSDefaultRole", "AliyunCSManagedKubernetesRole", "AliyunCSManagedNetworkRole", "AliyunCSManagedCsiRole", "AliyunCSManagedCsiProvisionerRole", "AliyunCSManagedCsiPluginRole", "AliyunServiceRoleForRdsPgsqlOnEcs", "AliyunServiceRoleForNatgw"] }
   }
   mock_data "alicloud_account" {
     defaults = { id = "1234567890123456" }
@@ -38,6 +38,19 @@ run "missing_service_roles" {
   override_data {
     target = data.alicloud_ram_roles.prerequisites
     values = { names = [] }
+  }
+  expect_failures = [terraform_data.service_role_guard]
+}
+
+run "missing_nat_service_role" {
+  command = plan
+  variables {
+    account_id = "1234567890123456"
+    kubernetes_version = "1.35.7-aliyun.1"
+  }
+  override_data {
+    target = data.alicloud_ram_roles.prerequisites
+    values = { names = ["AliyunCSDefaultRole", "AliyunCSManagedKubernetesRole", "AliyunCSManagedNetworkRole", "AliyunCSManagedCsiRole", "AliyunCSManagedCsiProvisionerRole", "AliyunCSManagedCsiPluginRole", "AliyunServiceRoleForRdsPgsqlOnEcs"] }
   }
   expect_failures = [terraform_data.service_role_guard]
 }
