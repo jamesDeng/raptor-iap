@@ -17,6 +17,10 @@ run "bounded_foundation" {
     error_message = "Cluster must be Basic with private API access."
   }
   assert {
+    condition     = alicloud_cs_managed_kubernetes.cluster.skip_set_certificate_authority == true
+    error_message = "Environment state must not retain ACK client credentials."
+  }
+  assert {
     condition     = alicloud_cs_kubernetes_node_pool.platform.desired_size == "1" && length(alicloud_cs_kubernetes_node_pool.platform.instance_types) == 1 && contains(alicloud_cs_kubernetes_node_pool.platform.instance_types, "ecs.e-c1m2.xlarge")
     error_message = "One approved four-core worker only."
   }

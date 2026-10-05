@@ -57,17 +57,18 @@ resource "alicloud_snat_entry" "workers" {
   depends_on        = [alicloud_eip_association.outbound]
 }
 resource "alicloud_cs_managed_kubernetes" "cluster" {
-  name                 = "raptor-rdev"
-  version              = var.kubernetes_version
-  cluster_spec         = "ack.standard"
-  profile              = "Default"
-  vswitch_ids          = [alicloud_vswitch.workers.id]
-  new_nat_gateway      = false
-  slb_internet_enabled = false
-  pod_cidr             = "10.72.0.0/16"
-  service_cidr         = "10.73.0.0/16"
-  deletion_protection  = true
-  tags                 = local.tags
+  name                           = "raptor-rdev"
+  version                        = var.kubernetes_version
+  cluster_spec                   = "ack.standard"
+  profile                        = "Default"
+  vswitch_ids                    = [alicloud_vswitch.workers.id]
+  new_nat_gateway                = false
+  slb_internet_enabled           = false
+  pod_cidr                       = "10.72.0.0/16"
+  service_cidr                   = "10.73.0.0/16"
+  deletion_protection            = true
+  skip_set_certificate_authority = true
+  tags                           = local.tags
   addons {
     name = "flannel"
   }
