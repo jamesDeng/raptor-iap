@@ -73,3 +73,11 @@ Final fresh-context review: no Critical/Important findings for this plan-only sl
 Branch feat/rdev-controlled-apply starts at34e3f90ff0750a44fc54912e355f1de5c8de0ef3. The prior protected deployment-role plan passed. Added malformed-entry/full-network/reference checks required before apply; new tests reproduced7 failures before implementation and all23 rdev tests passed afterward. Added current-budget/exact-source/one-apply gate; its first test run failed because the implementation did not exist, then all29 rdev tests and workflow lint passed. Actual private saved plan passes the stronger guard.
 
 Owner question pending: accept146.76CNY bounded scenario including2CNY uncertain/delayed-charge reserve despite incomplete FC/logging inventory. No dependent provisioning will proceed without the answer. Planned prices are complete; inventory remains explicitly incomplete. Initial apply is gated false while pending.
+
+Final review found two Important issues: TemporaryDirectory discarded errored.tfstate if remote persistence failed, and subprocess.run timeout killed Terraform while total allowed stages exceeded job/session budgets. One fix pass: test_real_main_failure_keeps_recovery_state reproduced deletion before wiring and passes afterward; encrypted recovery round-trip/tamper tests pass. Graceful SIGINT/no-kill/no-retry and slow-preparation tests observed RED before the helper existed, then passed. Whole suite34/34 and actionlint passed. No re-review loop.
+
+Ruling: use owner-public-key-encrypted GitHub recovery artifacts rather than broaden the OSS state policy — preserve failed-persistence state without an additional cloud grant — cost if wrong: lost private key or artifact upload failure requires inventory/state reconstruction. The private key is local/ignored, never committed.
+
+Ruling: bound Terraform execution to45minutes with graceful interruption/recovery reserves — fit the55minute job and3600second session — cost if wrong: slow but otherwise valid provisioning can stop partially and require reconciliation, without an automatic retry.
+
+Final: minor (deferred): verify cloud-provider binding for VPC and EIP as well as resources with parent references. Current reviewed configuration uses the expected provider; ownership policy scope remains documented.

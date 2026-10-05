@@ -24,6 +24,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Prepare encrypted recovery runtime
+        run: |
+          python3 -m venv "$RUNNER_TEMP/rdev-python"
+          "$RUNNER_TEMP/rdev-python/bin/python" -m pip install --disable-pip-version-check -r scripts/rdev/requirements-recovery.txt
       - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
         with:
           role-to-assume: ${{ vars.RDEV_APPLY_ROLE_ARN }}
@@ -42,4 +46,27 @@ jobs:
           RDEV_APPLY_ROLE_ARN: ${{ vars.RDEV_APPLY_ROLE_ARN }}
           RDEV_STATE_BUCKET: ${{ vars.RDEV_STATE_BUCKET }}
           RDEV_LOCK_ENDPOINT: ${{ vars.RDEV_LOCK_ENDPOINT }}
-        run: python3 scripts/rdev/initial_apply.py
+        run: '"$RUNNER_TEMP/rdev-python/bin/python" scripts/rdev/initial_apply.py'
+      - name: Preserve owner-encrypted recovery material
+        id: recovery
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rdev-encrypted-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rdev-recovery/recovery.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove private working files after encrypted upload
+        if: always() && steps.recovery.outcome == 'success' && steps.recovery.outputs['artifact-id'] != '' && env.RDEV_TERRAFORM_STILL_STOPPING != 'true'
+        run: |
+          python3 - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          value = os.environ.get('RDEV_WORK_DIRECTORY')
+          if value:
+              path = Path(value).resolve()
+              parent = Path(os.environ['RUNNER_TEMP']).resolve()
+              if path.parent != parent or not path.name.startswith('rdev-live-plan-'):
+                  raise ValueError('Unexpected private working directory')
+              shutil.rmtree(path)
+          PY

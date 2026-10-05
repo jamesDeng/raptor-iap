@@ -105,17 +105,27 @@ def main(provision=False):
         validate_release(evidence, sha, os.environ.get('RDEV_EXPECTED_SOURCE_SHA', ''))
     os.umask(0o077)
     repository = Path(__file__).resolve().parents[2]
-    with tempfile.TemporaryDirectory(prefix='rdev-live-plan-') as name:
+    if provision:
+        from recovery import durable_workdir
+        runner_temp = Path(os.environ['RUNNER_TEMP'])
+        public_key = Path(os.environ.get('RDEV_RECOVERY_PUBLIC_KEY', repository / 'docs/setup/rdev-recovery-public.pem'))
+        context = durable_workdir(public_key, runner_temp / 'rdev-recovery', sha, parent=runner_temp)
+    else:
+        context = tempfile.TemporaryDirectory(prefix='rdev-live-plan-')
+    with context as name:
         root = Path(name)
         directory = root / 'infra-terraform/environments/rdev.ali'
         shutil.copytree(repository / 'infra-terraform/environments/rdev.ali', directory, ignore=shutil.ignore_patterns('.terraform', '*.tfstate*', '*.tfplan', '*.tfvars'))
         shutil.copytree(repository / 'terraform-module/rdev-foundation', root / 'terraform-module/rdev-foundation', ignore=shutil.ignore_patterns('.terraform', '*.tfstate*', '*.tfplan', '*.tfvars'))
         (directory / 'terraform.tfvars.json').write_text(json.dumps({'account_id': role.group(1), 'kubernetes_version': '1.35.7-aliyun.1'}))
-        def run(args, timeout=600):
+        def run(args, timeout=180):
             result = subprocess.run(['terraform', '-chdir=' + str(directory)] + args, capture_output=True, text=True, timeout=timeout)
             if result.returncode:
                 raise ValueError('Protected planning failed at ' + args[0] + '; raw diagnostics withheld')
             return result.stdout
+        if provision:
+            from recovery import TerraformRunner
+            run = TerraformRunner(directory).run
         run(['init', '-input=false', '-lockfile=readonly', '-backend-config=bucket=' + bucket,
              '-backend-config=tablestore_endpoint=' + endpoint, '-backend-config=tablestore_table=terraform_lock'])
         run(['plan', '-input=false', '-no-color', '-lock-timeout=60s', '-out=foundation.tfplan'])

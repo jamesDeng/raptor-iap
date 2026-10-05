@@ -28,7 +28,9 @@ jobs:
           terraform_wrapper: false
       - name: Offline contracts and validation
         run: |
-          python3 -m unittest discover -s scripts/rdev -p 'test_*.py' -v
+          python3 -m venv "$RUNNER_TEMP/rdev-python"
+          "$RUNNER_TEMP/rdev-python/bin/python" -m pip install --disable-pip-version-check -r scripts/rdev/requirements-recovery.txt
+          "$RUNNER_TEMP/rdev-python/bin/python" -m unittest discover -s scripts/rdev -p 'test_*.py' -v
           terraform fmt -check -recursive terraform-module/rdev-foundation terraform-module/rdev-state terraform-module/rdev-plan-identity infra-terraform/environments/rdev.ali infra-terraform/environments/rdev-state-bootstrap
           for directory in terraform-module/rdev-foundation terraform-module/rdev-state terraform-module/rdev-plan-identity infra-terraform/environments/rdev.ali infra-terraform/environments/rdev-state-bootstrap; do
             terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly
