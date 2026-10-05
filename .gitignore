@@ -42,3 +42,6 @@ __pycache__/
 
 # Installed harness dependencies
 node_modules/
+
+# Private generated Infra API artifact/configuration
+components/infra-api/.build/
