@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-05T13:32:45.460504+00:00",
+  "checked_at": "2026-10-05T13:58:13.950934+00:00",
   "region": "ap-southeast-1",
   "worker_available": true,
   "available_balance_cny": 985.98,
@@ -14,7 +14,7 @@
   "estimated_total_cny": 146.76,
   "budget_cny": 150,
   "whole_poc_budget_cny": 1000,
-  "bounded_cost_owner_approved": false,
+  "bounded_cost_owner_approved": true,
   "inventory_complete": false,
   "uncertainty_reserve_cny": 2
 }
