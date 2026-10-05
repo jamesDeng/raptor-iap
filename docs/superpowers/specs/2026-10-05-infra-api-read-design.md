@@ -1,6 +1,6 @@
 # Infra API: authenticated read integration
 
-Date: 2026-10-05. Status: proposed implementation specification, awaiting user review. Source: current user go-ahead and the agreed whole-POC decisions recorded in `working/design/2026-10-04-infra-api-design.md` in the recovery workspace. This document establishes no implemented endpoint or deployed cloud resource.
+Date: 2026-10-05. Status: approved by the user’s subsequent “go ahead” on 2026-10-05; implementation plan review is next. Source: current user go-ahead and the agreed whole-POC decisions recorded in `working/design/2026-10-04-infra-api-design.md` in the recovery workspace. This document establishes no implemented endpoint or deployed cloud resource.
 
 ## Goal and scope
 
