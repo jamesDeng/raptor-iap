@@ -45,7 +45,7 @@ run "missing_service_roles" {
 run "missing_nat_service_role" {
   command = plan
   variables {
-    account_id = "1234567890123456"
+    account_id         = "1234567890123456"
     kubernetes_version = "1.35.7-aliyun.1"
   }
   override_data {
