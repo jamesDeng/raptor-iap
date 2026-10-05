@@ -1,7 +1,13 @@
-name: Rdev initial foundation apply
+name: Rdev foundation apply
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Initial provisioning or pinned partial-state continuation
+        type: choice
+        options: [initial, continuation]
+        default: initial
+        required: true
       expected_source_sha:
         description: Exact reviewed main commit to provision
         required: true
@@ -42,6 +48,7 @@ jobs:
       - name: Validate current evidence, inspect plan, and apply once
         env:
           TF_IN_AUTOMATION: 'true'
+          RDEV_APPLY_MODE: ${{ inputs.mode }}
           RDEV_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
           RDEV_APPLY_ROLE_ARN: ${{ vars.RDEV_APPLY_ROLE_ARN }}
           RDEV_STATE_BUCKET: ${{ vars.RDEV_STATE_BUCKET }}

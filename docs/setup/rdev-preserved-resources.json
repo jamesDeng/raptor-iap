@@ -1,0 +1,9 @@
+{
+  "alicloud_db_instance.platform": "pgm-t4n389ymwx7otro7",
+  "alicloud_eip_address.outbound": "eip-t4nwjbcu2996jjadd0dmt",
+  "alicloud_vpc.env": "vpc-t4n4fi6r1a7bi6n93ftq3",
+  "alicloud_vswitch.database": "vsw-t4nue6mxwlg14zq8ouua5",
+  "alicloud_vswitch.workers": "vsw-t4nop9qf6v46gw2sa8l7d",
+  "terraform_data.account_guard": "4a5e730c-4a73-1467-a901-8aa7a4378347",
+  "terraform_data.service_role_guard": "79f1a247-72b9-79cc-a04d-7c35ed0220bb"
+}

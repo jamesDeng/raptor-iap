@@ -36,9 +36,34 @@ PARENT_REFERENCES = {
 }
 
 
-def validate_plan(plan, account):
+def benign_refresh(drift, pins):
+    allowed = {'alicloud_db_instance.platform': ('template_id_list', []),
+               'alicloud_eip_address.outbound': ('security_protection_types', []),
+               'alicloud_vswitch.workers': ('tags', {}),
+               'alicloud_vswitch.database': ('tags', {})}
+    if not isinstance(drift, list):
+        return False
+    for row in drift:
+        key = row['address'].removeprefix('module.foundation.')
+        if key not in allowed or key not in pins or row.get('mode') != 'managed':
+            return False
+        c = row['change']; before = c['before']; after = c['after']
+        field, empty = allowed[key]
+        if c['actions'] != ['update'] or before.get('id') != pins[key] or after.get('id') != pins[key]:
+            return False
+        if before.get(field) is not None or after.get(field) != empty or set(before) != set(after):
+            return False
+        if any(before[k] != after[k] for k in before if k != field):
+            return False
+    return True
+
+
+def validate_plan(plan, account, preserved=None):
     try:
-        if not isinstance(plan, dict) or plan.get('errored') or plan.get('complete') is not True or plan.get('deferred_changes') or plan.get('resource_drift'):
+        if preserved is not None and (set(preserved) != {'alicloud_vpc.env', 'alicloud_vswitch.workers', 'alicloud_vswitch.database', 'alicloud_eip_address.outbound', 'alicloud_db_instance.platform', 'terraform_data.account_guard', 'terraform_data.service_role_guard'} or any(not isinstance(v, str) or not v for v in preserved.values())):
+            raise ValueError()
+        pins = preserved or {}
+        if not isinstance(plan, dict) or plan.get('errored') or plan.get('complete') is not True or plan.get('deferred_changes') or (plan.get('resource_drift') and not (preserved is not None and benign_refresh(plan['resource_drift'], pins))):
             raise ValueError()
         if plan['variables']['account_id']['value'] != account or plan['variables']['kubernetes_version']['value'] != '1.35.7-aliyun.1':
             raise ValueError()
@@ -53,6 +78,9 @@ def validate_plan(plan, account):
         configured = {r['address']: r for r in config_resources if r['mode'] == 'managed'}
         if set(configured) != set(EXPECTED):
             raise ValueError()
+        for address, resource in configured.items():
+            if address.startswith('alicloud_') and resource['provider_config_key'] != 'alicloud':
+                raise ValueError()
         for address, fields in PARENT_REFERENCES.items():
             resource = configured[address]
             if resource['provider_config_key'] != 'alicloud':
@@ -68,20 +96,32 @@ def validate_plan(plan, account):
         managed = [r for r in changes if r.get('mode') == 'managed']
         if len(managed) != len(EXPECTED) or {r['address'] for r in managed} != expected_addresses:
             raise ValueError()
+        by_key = {r['address'][len('module.foundation.'):]: r['change'] for r in managed}
         for resource in managed:
             key = resource['address'][len('module.foundation.') :]
             change = resource['change']
-            if resource['type'] != key.split('.')[0] or change['actions'] != ['create']:
+            if resource['type'] != key.split('.')[0] or change['actions'] != (['no-op'] if key in pins else ['create']):
                 raise ValueError()
             after = change['after']
             if not isinstance(after, dict):
                 raise ValueError()
-            for field in PARENT_REFERENCES.get(key, {}):
-                if change.get('after_unknown', {}).get(field) is not True or after.get(field) is not None:
+            if key in pins:
+                if after.get('id') != pins[key] or change.get('before') != after:
+                    raise ValueError()
+                if key in ('alicloud_vpc.env', 'alicloud_eip_address.outbound', 'alicloud_db_instance.platform') and any(after.get('tags', {}).get(k) != v for k, v in {'Project':'raptor-iap', 'Environment':'rdev.ali', 'Owner':'rdev-foundation'}.items()):
+                    raise ValueError()
+            for field, ref in PARENT_REFERENCES.get(key, {}).items():
+                parent, attribute = ref.rsplit('.', 1)
+                if parent in pins:
+                    value = by_key[parent]['after'][attribute]
+                    expected = [value] if field == 'vswitch_ids' else value
+                    if value is None or after.get(field) != expected or change.get('after_unknown', {}).get(field) not in ((False, None, [False]) if field == 'vswitch_ids' else (False, None)):
+                        raise ValueError()
+                elif change.get('after_unknown', {}).get(field) is not True or after.get(field) is not None:
                     raise ValueError()
             if any(after.get(field) != value for field, value in EXPECTED[key].items()):
                 raise ValueError()
-        return {'passed': True, 'cloud_creates': 10, 'local_guards': 2, 'updates': 0, 'deletes': 0, 'apply_executed': False}
+        return {'passed': True, 'cloud_creates': sum(k.startswith('alicloud_') and k not in pins for k in EXPECTED), 'local_guards': sum(k.startswith('terraform_data') and k not in pins for k in EXPECTED), 'unchanged': len(pins), 'updates': 0, 'deletes': 0, 'apply_executed': False}
     except (KeyError, TypeError, AttributeError, ValueError):
         raise ValueError('Plan does not match the reviewed initial foundation') from None
 
@@ -97,6 +137,9 @@ def main(provision=False):
     endpoint = os.environ.get('RDEV_LOCK_ENDPOINT')
     if bucket != 'raptor-iap-tfstate-sg-200743' or endpoint != 'https://raptor-tf-lock.ap-southeast-1.ots.aliyuncs.com':
         raise ValueError('Expected backend configuration is missing')
+    mode = os.environ.get('RDEV_APPLY_MODE', 'initial')
+    if mode not in ('initial', 'continuation'):
+        raise ValueError('Unknown apply mode')
     evidence = None
     if provision:
         from initial_apply import validate_release
@@ -129,10 +172,15 @@ def main(provision=False):
         run(['init', '-input=false', '-lockfile=readonly', '-backend-config=bucket=' + bucket,
              '-backend-config=tablestore_endpoint=' + endpoint, '-backend-config=tablestore_table=terraform_lock'])
         run(['plan', '-input=false', '-no-color', '-lock-timeout=60s', '-out=foundation.tfplan'])
-        summary = validate_plan(json.loads(run(['show', '-json', 'foundation.tfplan'])), role.group(1))
+        plan = json.loads(run(['show', '-json', 'foundation.tfplan']))
+        if mode == 'continuation':
+            pins = json.loads((repository / 'docs/setup/rdev-preserved-resources.json').read_text())
+            summary = validate_plan(plan, role.group(1), preserved=pins)
+        else:
+            summary = validate_plan(plan, role.group(1))
         if provision:
             from initial_apply import apply_saved_plan
-            print(json.dumps({'event': 'initial_apply_started', 'source_sha': sha, 'apply_started_at': datetime.now(timezone.utc).isoformat(), 'estimated_total_cny': evidence['estimated_total_cny']}))
+            print(json.dumps({'event': mode + '_apply_started', 'source_sha': sha, 'apply_started_at': datetime.now(timezone.utc).isoformat(), 'estimated_total_cny': evidence['estimated_total_cny']}))
             apply_saved_plan(run, evidence, sha, os.environ.get('RDEV_EXPECTED_SOURCE_SHA', ''))
             state = json.loads(run(['state', 'pull']))
             managed = [r for r in state.get('resources', []) if r.get('mode') == 'managed']
@@ -142,12 +190,12 @@ def main(provision=False):
             summary.update(apply_executed=True, terraform_apply_passed=True, managed_resources=12,
                            provisioning_completed_at=started.isoformat(), review_due_at=(started + timedelta(hours=72)).isoformat(),
                            runtime_acceptance_passed=False)
-        summary.update(source_sha=sha, region='ap-southeast-1', identity='raptor-iap-rdev-apply', raw_artifacts_published=False)
+        summary.update(mode=mode, source_sha=sha, region='ap-southeast-1', identity='raptor-iap-rdev-apply', raw_artifacts_published=False)
         print(json.dumps(summary))
         path = os.environ.get('GITHUB_STEP_SUMMARY')
         if path:
             with Path(path).open('a') as output:
-                output.write('### Initial foundation ' + ('apply' if provision else 'plan') + '\n\nSource: `' + sha + '`\n\n10 cloud creates; 2 local guards; 0 updates/deletes. Raw plan/state/logs withheld.\n\n')
+                output.write(f"### Foundation {mode} {'apply' if provision else 'plan'}\n\nSource: `{sha}`\n\n{summary['cloud_creates']} cloud creates; {summary['local_guards']} local guards; {summary['unchanged']} unchanged; 0 updates/deletes. Raw plan/state/logs withheld.\n\n")
                 if provision:
                     output.write('Terraform apply passed; independent cloud/runtime acceptance is still required. Review continuation or teardown by `' + summary['review_due_at'] + '`.\n')
                 else:
