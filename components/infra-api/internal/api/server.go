@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"raptor-iap/infra-api/internal/domain"
 	"strings"
 	"time"
@@ -67,7 +68,11 @@ func New(reader Reader, envs map[string]domain.Environment, username, password, 
 			fail(404, "NotFound")
 			return
 		}
-		q, e := r.URL.Query(), error(nil)
+		q, e := url.ParseQuery(r.URL.RawQuery)
+		if e != nil {
+			fail(400, "InvalidInput")
+			return
+		}
 		if len(r.URL.RawQuery) > 4096 {
 			fail(400, "InvalidInput")
 			return

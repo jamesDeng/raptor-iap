@@ -81,3 +81,9 @@ func TestDiscoveryErrors(t *testing.T) {
 		}
 	}
 }
+func TestMalformedQueryRejected(t *testing.T) {
+	w := call(t, fakeReader{}, "/v1/deployments?envCode=dev&kind=database&code=db&bad=%ZZ", []string{valid()})
+	if w.Code != 400 {
+		t.Fatalf("got %d", w.Code)
+	}
+}
