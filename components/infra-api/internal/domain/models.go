@@ -1,0 +1,39 @@
+package domain
+
+type Environment struct {
+	Code      string `json:"code"`
+	AccountID string `json:"accountId"`
+	Region    string `json:"region"`
+	ClusterID string `json:"clusterId,omitempty"`
+}
+type Target struct{ EnvCode, AppCode, ClusterID, Namespace, Name, UID string }
+type Deployment struct {
+	ResourceID   string `json:"resourceId"`
+	Kind         string `json:"kind"`
+	EnvCode      string `json:"envCode"`
+	ObjectCode   string `json:"objectCode"`
+	ClusterID    string `json:"clusterId,omitempty"`
+	Namespace    string `json:"namespace,omitempty"`
+	Name         string `json:"name"`
+	UID          string `json:"uid,omitempty"`
+	State        string `json:"state"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	TargetDBCode string `json:"target-db-code,omitempty"`
+	EvidenceMode string `json:"evidenceMode"`
+}
+type Pod struct {
+	Name  string `json:"name"`
+	UID   string `json:"uid"`
+	State string `json:"state"`
+	Ready bool   `json:"ready"`
+}
+type Status struct {
+	UID                string `json:"uid"`
+	Generation         int64  `json:"generation"`
+	ObservedGeneration int64  `json:"observedGeneration"`
+	Replicas           int    `json:"replicas"`
+	UpdatedReplicas    int    `json:"updatedReplicas"`
+	ReadyReplicas      int    `json:"readyReplicas"`
+	EvidenceMode       string `json:"evidenceMode"`
+	Pods               []Pod  `json:"pods"`
+}

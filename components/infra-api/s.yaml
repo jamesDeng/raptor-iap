@@ -1,0 +1,32 @@
+edition: 3.0.0
+name: raptor-infra-api-read
+access: ${env(INFRA_DEPLOY_PROFILE)}
+resources:
+  infra-api:
+    component: fc3@0.1.25
+    props:
+      region: ap-southeast-1
+      functionName: ${env(INFRA_FUNCTION_NAME)}
+      role: ${env(INFRA_READ_ROLE_ARN)}
+      runtime: custom.debian10
+      code: .build
+      memorySize: 512
+      timeout: 30
+      instanceConcurrency: 2
+      concurrencyConfig:
+        reservedConcurrency: 2
+      customRuntimeConfig:
+        command: ["./server"]
+        port: 9000
+      environmentVariables:
+        INFRA_LISTEN: "0.0.0.0:9000"
+        INFRA_SCOPE_FILE: "/code/scope.json"
+        INFRA_USERNAME: ${env(INFRA_USERNAME)}
+        INFRA_PASSWORD: ${env(INFRA_PASSWORD)}
+        INFRA_AUTH_HEADER: "X-Infra-Authorization"
+      triggers:
+        - triggerName: read-http
+          triggerType: http
+          triggerConfig:
+            authType: function
+            methods: [GET]
