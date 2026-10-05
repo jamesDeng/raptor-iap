@@ -24,3 +24,9 @@ Sources:
 - https://help.aliyun.com/en/tablestore/product-overview/billable-items-and-billing-methods/
 
 Do not set prices_complete=true based on the fixed subtotal. Refresh account balance/billed and unbilled costs before apply. Preserve sanitized quotes without credentials; never commit raw CLI configuration or billing exports.
+
+## Bounded test scenario (forecast assumptions, not verified usage)
+
+Provisioning candidate: fixed 115.20 + CLB 1 LCU per instance-hour (2 × 72 × 0.049 = 7.06) + combined public egress 10 GB (7.50 at 0.75/GB) + NAT total processed traffic 20 GiB (6.00 at 0.30/GiB) + sandbox runtime allowance 4.00 + FC/API calls allowance 2.00 + OSS/checkpoint/Tablestore allowance 1.00 + hour-rounding allowance 2.00 = **144.76**, leaving approximately **5.24** headroom. These usage assumptions are not enforced cloud limits. The storage/locking allowance needs regional price verification; do not mark the cost gate complete yet. Avoid load testing, prolonged sandbox sessions or repeated image downloads in this initial window.
+
+Billing check: China-site billing endpoint business.aliyuncs.com with region cn-hangzhou reported available balance 986.00 CNY and October billed total 14.00 CNY (domain). Delayed/unbilled usage may not appear yet. Initial calls using the Singapore billing endpoint failed due to site mismatch; corrected endpoint succeeded.

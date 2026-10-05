@@ -35,3 +35,7 @@ Task 2 preparation: added separate protected remote-state bootstrap module (priv
 Cost quote: ECS DescribePrice for 20 GiB cloud_essd PL1 disk returned CNY0.03344/hour, or 2.40768/72h. Fixed forecast is approximately CNY115.20; usage/storage/locking assumptions and current cumulative billing remain incomplete. Preserve prices_complete=false until resolved.
 
 Ruling: remote-state bootstrap is separate and protected from environment teardown — avoid losing the state needed to reconcile partial provisioning — cost if wrong: small ongoing state storage fees require explicit later cleanup after backing up state.
+
+Planning identity preparation: proposed GitHub OIDC trust with exact repo/environment subject, paired with a read-only cloud metadata policy. New contract failed before implementation; validates and passes after deterministic mock ARN correction. Actual identity/environment configuration requires security approval and has not occurred. Account-wide read visibility is documented explicitly; no state object reads, state lock writes or infrastructure mutations included.
+
+Ruling: establish a read-only planning identity before an apply identity — obtain real provider-plan evidence without granting premature cloud write permissions — cost if wrong: one additional role and a separate later apply-permission review. Forecast scenario is 144.76 CNY but storage/locking unit-price verification is pending; prices_complete remains false.

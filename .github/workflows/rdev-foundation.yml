@@ -2,10 +2,10 @@ name: Rdev foundation checks
 on:
   pull_request:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev.ali/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml']
+    paths: ['infra-terraform/environments/rdev.ali/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'terraform-module/rdev-plan-identity/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml']
   push:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev.ali/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml']
+    paths: ['infra-terraform/environments/rdev.ali/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'terraform-module/rdev-plan-identity/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,10 +29,11 @@ jobs:
       - name: Offline contracts and validation
         run: |
           python3 -m unittest discover -s scripts/rdev -p 'test_*.py' -v
-          terraform fmt -check -recursive terraform-module/rdev-foundation terraform-module/rdev-state infra-terraform/environments/rdev.ali
-          for directory in terraform-module/rdev-foundation terraform-module/rdev-state infra-terraform/environments/rdev.ali; do
+          terraform fmt -check -recursive terraform-module/rdev-foundation terraform-module/rdev-state terraform-module/rdev-plan-identity infra-terraform/environments/rdev.ali
+          for directory in terraform-module/rdev-foundation terraform-module/rdev-state terraform-module/rdev-plan-identity infra-terraform/environments/rdev.ali; do
             terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly
             terraform -chdir="$directory" validate
           done
           terraform -chdir=terraform-module/rdev-foundation test
           terraform -chdir=terraform-module/rdev-state test
+          terraform -chdir=terraform-module/rdev-plan-identity test
