@@ -11,3 +11,11 @@ The manually dispatched rdev-apply-oidc-check workflow runs only on main. It ver
 The initial creation policy was accepted by native RAM CreatePolicy and independently read back with zero attachments. Numeric condition values must use string encoding. This is policy acceptance, not live creation authorization or an assurance that all provider follow-up calls will succeed. Cloud creation awaits preflight and saved-plan review.
 
 NAT deletion protection scope was resolved using the official AliyunNATGatewayFullAccess policy and live GetPolicyVersion readback: vpc:DeletionProtection authorizes natgateway resources. Future follow-up policy should use the actual NAT ID. Source: https://help.aliyun.com/zh/ram/developer-reference/aliyunnatgatewayfullaccess .
+
+## First-time state check
+
+The identity workflow also uses pinned Terraform to initialize/read the exact rdev backend, inspect a refresh-only saved plan, and persist only empty/data-only state. It refuses existing managed resources and never provisions foundation infrastructure. Plans/state/errors remain in a restricted temporary directory and are removed at completion. Normal backend locking runs during plan/apply; a separate contention test is not claimed. All future environment jobs must share concurrency group rdev.ali-state.
+
+This is a first-time bootstrap check: after foundation deployment, it intentionally fails rather than using a data-only fixture against populated state. Remove/replace that step with a populated-state read check at that stage.
+
+Review fixes: inspect all saved-plan sections recursively for managed resources, including prior state and drift. Require a fresh UUID output marker in each saved refresh-only plan and verify that marker in remote state after apply, so reruns must prove an actual state write. This writes state metadata only and makes no cloud infrastructure change.
