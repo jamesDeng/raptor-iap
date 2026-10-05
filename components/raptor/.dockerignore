@@ -1,0 +1,5 @@
+.git
+.raptor-local
+__pycache__
+*.py
+*.test
