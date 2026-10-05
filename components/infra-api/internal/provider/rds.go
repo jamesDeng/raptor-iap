@@ -7,6 +7,7 @@ import (
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	ess "github.com/alibabacloud-go/ess-20220222/v2/client"
 	rds "github.com/alibabacloud-go/rds-20140815/v11/client"
+	"github.com/alibabacloud-go/tea/dara"
 	"github.com/alibabacloud-go/tea/tea"
 	"raptor-iap/infra-api/internal/domain"
 )
@@ -24,7 +25,7 @@ func cloudPages(config func(string) *openapi.Config) func(context.Context, domai
 			if e != nil {
 				return page{}, e
 			}
-			r, e := c.DescribeScalingGroupsWithContext(ctx, &ess.DescribeScalingGroupsRequest{RegionId: tea.String(env.Region), PageNumber: tea.Int32(int32(n)), PageSize: tea.Int32(100), Tags: []*ess.DescribeScalingGroupsRequestTags{{Key: tea.String("env"), Value: tea.String(env.Code)}, {Key: tea.String("db-proxy-code"), Value: tea.String(code)}}}, nil)
+			r, e := c.DescribeScalingGroupsWithContext(ctx, &ess.DescribeScalingGroupsRequest{RegionId: tea.String(env.Region), PageNumber: tea.Int32(int32(n)), PageSize: tea.Int32(50), Tags: []*ess.DescribeScalingGroupsRequestTags{{Key: tea.String("env"), Value: tea.String(env.Code)}, {Key: tea.String("db-proxy-code"), Value: tea.String(code)}}}, &dara.RuntimeOptions{})
 			if e != nil {
 				return page{}, e
 			}

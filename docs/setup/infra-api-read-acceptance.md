@@ -11,3 +11,7 @@ Real read-only preflight through the existing OAuth profile verified STS identit
 Pending: owned HTTPS domain/certificate, selected-edition account quote, protected FC deployment, positive/negative live sandbox probes and actual cloud cleanup receipt. ACK discovery/status acceptance also awaits the later Terraform foundation. The temporary-resource ownership and probe classifiers are tested locally; there is no fabricated live success receipt.
 
 Final local gate before independent review: all three Go modules pass race tests and vet; 114 existing Python tests, 25 harness tests, 2 probe tests and 2 mocked Terraform runs pass; both Terraform configurations validate and whitespace checks pass. No remote CI or live Infra API acceptance has run.
+
+Additional bounded live evidence: the built Go service on the local Mac used temporary credentials to call actual Aliyun STS successfully. Missing and incorrect Basic credentials were rejected. This created no cloud resources and does not prove sandbox, gateway or FC connectivity.
+
+The single final review found ESS page size and missing function-wide concurrency limits; both were corrected. Actual SDK transport tests additionally exposed and fixed nil runtime options in ESS and ACK calls.

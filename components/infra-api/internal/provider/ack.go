@@ -5,6 +5,7 @@ import (
 	"errors"
 	cs "github.com/alibabacloud-go/cs-20151215/v5/client"
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
+	"github.com/alibabacloud-go/tea/dara"
 	"github.com/alibabacloud-go/tea/tea"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -21,7 +22,7 @@ func cloudKube(config func(string) *openapi.Config) kubeFactory {
 		if e != nil {
 			return nil, e
 		}
-		r, e := c.DescribeClusterUserKubeconfigWithContext(ctx, tea.String(env.ClusterID), &cs.DescribeClusterUserKubeconfigRequest{TemporaryDurationMinutes: tea.Int64(15)}, nil, nil)
+		r, e := c.DescribeClusterUserKubeconfigWithContext(ctx, tea.String(env.ClusterID), &cs.DescribeClusterUserKubeconfigRequest{TemporaryDurationMinutes: tea.Int64(15)}, nil, &dara.RuntimeOptions{})
 		if e != nil {
 			return nil, e
 		}
