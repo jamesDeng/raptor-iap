@@ -1,6 +1,6 @@
 # Proposed GitHub planning identity
 
-Status: prepared and tested offline; not created or authorized in Aliyun/GitHub.
+Status: explicitly authorized and created in Aliyun/GitHub. Trust, sole attached read-only policy and main-only environment branch restriction independently verified. Actual GitHub STS exchange is still untested; run the manual main-only rdev-oidc-check workflow after integration.
 
 Create an OIDC provider named `raptor-iap-github`, trusting `https://token.actions.githubusercontent.com` with audience `sts.aliyuncs.com`. Independently verify its current CA certificate fingerprints at setup time. Do not copy a stale example fingerprint.
 
@@ -16,3 +16,5 @@ Sources:
 - https://github.com/aliyun/configure-aliyun-credentials-action
 - https://www.alibabacloud.com/help/en/ram/user-guide/create-a-ram-role-for-a-trusted-idp
 - https://www.alibabacloud.com/help/en/ram/manage-an-oidc-idp
+
+The approved initial identity was created via Aliyun CLI and verified through independent read APIs. The Terraform module is the source definition but has not been imported into a live identity-bootstrap state. Before running this module against the account, import the existing provider, role, custom policy and attachment into protected bootstrap state; inspect a no-change plan. Do not apply it blindly or recreate existing identities.
