@@ -45,3 +45,15 @@ Ruling: establish a read-only planning identity before an apply identity — obt
 ### Planning permission review — 2026-10-05
 
 Fresh review identified credential retrieval within ACK Describe wildcards. Treated as an important mismatch with metadata-only intent and resolved with four explicit denies (both kubeconfig APIs, attach scripts, trigger details). Existing grants were unchanged; the live default custom policy was read back and verified. No kubeconfig was retrieved. GitHub OIDC exchange still awaits the main-only verification workflow; no ACK/RDS foundation has been provisioned.
+
+### Live GitHub OIDC verification — 2026-10-05
+
+PR7 merged at `85d0056ac208eb58eb0d2207e5e8383dac8af6e4`. Initial STS exchange failed because the role used a legacy name-only subject while this repository emits immutable owner/repository IDs. Corrected the exact subject using the GitHub OIDC settings API, retaining issuer, audience and main-only environment restrictions. Retry passed both temporary credential exchange and read-only Terraform account discovery: https://github.com/jamesDeng/raptor-iap/actions/runs/37288472296/attempts/2 . No foundation resources were applied.
+
+### State bootstrap preparation — 2026-10-05
+
+Ruling: use HighPerformance Tablestore in Singapore because the official regional table lists Capacity as unsupported. No reserved throughput or search indexes; verify zero live throughput after creation. Cost if wrong: bootstrap fails or requires a new regional choice; never silently fall back to another region. Contract observed RED (Capacity) then GREEN (HighPerformance). Separate bootstrap root initialized/validated without cloud apply. Storage/checkpoint 1 CNY allowance is supported by explicit conservative 0.85 CNY scenario; broader price gate remains incomplete. Permission matrix is a candidate, not an installed or proven least-privilege apply policy.
+
+### Live state-bootstrap plan — 2026-10-05
+
+Using existing private STS credentials, Terraform produced a saved plan outside Git: four cloud creates (OSS bucket, bucket ACL, HighPerformance OTS instance, lock table) and one local account-guard resource; zero updates/deletes. Applied=false. Private inputs/plan/log have restricted permissions. Sandbox sizing independently queried (2 vCPU/2 GiB/15 GiB), bounded sandbox/FC/API estimates documented. Full foundation apply remains gated on live inventory, source integration and finalized deployment policy.

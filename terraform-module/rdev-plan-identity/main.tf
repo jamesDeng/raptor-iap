@@ -27,7 +27,7 @@ resource "alicloud_ram_role" "plan" {
       Condition = { StringEquals = {
         "oidc:iss" = "https://token.actions.githubusercontent.com"
         "oidc:aud" = "sts.aliyuncs.com"
-        "oidc:sub" = "repo:jamesDeng/raptor-iap:environment:rdev.ali-plan"
+        "oidc:sub" = "repo:jamesDeng@4443650/raptor-iap@1397422754:environment:rdev.ali-plan"
       } }
     }]
   })

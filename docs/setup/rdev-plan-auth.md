@@ -4,7 +4,7 @@ Status: explicitly authorized and created in Aliyun/GitHub. Trust, sole attached
 
 Create an OIDC provider named `raptor-iap-github`, trusting `https://token.actions.githubusercontent.com` with audience `sts.aliyuncs.com`. Independently verify its current CA certificate fingerprints at setup time. Do not copy a stale example fingerprint.
 
-Create role `raptor-iap-rdev-plan` and attach custom policy `raptor-iap-rdev-plan-read`. Trust binds the exact subject `repo:jamesDeng/raptor-iap:environment:rdev.ali-plan`, issuer and audience. Configure the GitHub environment `rdev.ali-plan` to permit only branch `main`. Do not run this trusted job on PR source or use pull_request_target to execute PR scripts. Temporary session requests should be 1800 seconds; RAM role maximum is 3600.
+Create role `raptor-iap-rdev-plan` and attach custom policy `raptor-iap-rdev-plan-read`. Trust binds the exact subject `repo:jamesDeng@4443650/raptor-iap@1397422754:environment:rdev.ali-plan`, issuer and audience. Configure the GitHub environment `rdev.ali-plan` to permit only branch `main`. Do not run this trusted job on PR source or use pull_request_target to execute PR scripts. Temporary session requests should be 1800 seconds; RAM role maximum is 3600.
 
 The policy allows cloud metadata reads: ECS/VPC/RDS/SLB Describe operations, ACK Get/Describe operations, RAM GetRole/ListRoles/ListPoliciesForRole and STS GetCallerIdentity. Resource `*` permits account-wide metadata visibility for these reads; it is not restricted to POC object IDs. The role cannot create, modify or delete infrastructure, grant IAM permissions, read OSS state objects or change state locks.
 
@@ -20,3 +20,5 @@ Sources:
 The approved initial identity was created via Aliyun CLI and verified through independent read APIs. The Terraform module is the source definition but has not been imported into a live identity-bootstrap state. Before running this module against the account, import the existing provider, role, custom policy and attachment into protected bootstrap state; inspect a no-change plan. Do not apply it blindly or recreate existing identities.
 
 The planning policy explicitly denies ACK kubeconfig retrieval, cluster attach scripts and Kubernetes trigger details. These exceptions prevent broad metadata wildcards from retrieving credentials or bootstrap material. The live default policy was narrowed and read back on 2026-10-05.
+
+GitHub repository OIDC settings report `use_immutable_subject=true`. The initial live exchange rejected the legacy name-only subject. The corrected subject includes owner ID 4443650 and repository ID 1397422754, as specified in https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims.

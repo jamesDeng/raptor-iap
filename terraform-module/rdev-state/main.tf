@@ -25,7 +25,7 @@ resource "alicloud_oss_bucket" "state" {
 resource "alicloud_ots_instance" "lock" {
   name          = var.lock_instance_name
   depends_on    = [terraform_data.account_guard]
-  instance_type = "Capacity"
+  instance_type = "HighPerformance"
   description   = "Terraform state locks for raptor-iap"
   tags          = { Project = "raptor-iap", Owner = "rdev-state" }
   lifecycle {
