@@ -1,0 +1,72 @@
+name: Rdev initial foundation apply
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: Exact reviewed main commit to provision
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: rdev.ali-state
+  cancel-in-progress: false
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/main'
+    environment: rdev.ali-apply
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare encrypted recovery runtime
+        run: |
+          python3 -m venv "$RUNNER_TEMP/rdev-python"
+          "$RUNNER_TEMP/rdev-python/bin/python" -m pip install --disable-pip-version-check -r scripts/rdev/requirements-recovery.txt
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.RDEV_APPLY_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-expiration: 3600
+          role-session-name: rdev-foundation-apply
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Validate current evidence, inspect plan, and apply once
+        env:
+          TF_IN_AUTOMATION: 'true'
+          RDEV_EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          RDEV_APPLY_ROLE_ARN: ${{ vars.RDEV_APPLY_ROLE_ARN }}
+          RDEV_STATE_BUCKET: ${{ vars.RDEV_STATE_BUCKET }}
+          RDEV_LOCK_ENDPOINT: ${{ vars.RDEV_LOCK_ENDPOINT }}
+        run: '"$RUNNER_TEMP/rdev-python/bin/python" scripts/rdev/initial_apply.py'
+      - name: Preserve owner-encrypted recovery material
+        id: recovery
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rdev-encrypted-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rdev-recovery/recovery.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove private working files after encrypted upload
+        if: always() && steps.recovery.outcome == 'success' && steps.recovery.outputs['artifact-id'] != '' && env.RDEV_TERRAFORM_STILL_STOPPING != 'true'
+        run: |
+          python3 - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          value = os.environ.get('RDEV_WORK_DIRECTORY')
+          if value:
+              path = Path(value).resolve()
+              parent = Path(os.environ['RUNNER_TEMP']).resolve()
+              if path.parent != parent or not path.name.startswith('rdev-live-plan-'):
+                  raise ValueError('Unexpected private working directory')
+              shutil.rmtree(path)
+          PY
