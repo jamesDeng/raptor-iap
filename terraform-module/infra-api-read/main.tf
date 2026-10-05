@@ -92,14 +92,7 @@ resource "alicloud_api_gateway_api" "read" {
     arn_role           = alicloud_ram_role.invoke.arn
     timeout            = 30000
   }
-  request_parameters {
-    name         = "X-Infra-Authorization"
-    type         = "STRING"
-    required     = "OPTIONAL"
-    in           = "HEAD"
-    in_service   = "HEAD"
-    name_service = "X-Infra-Authorization"
-  }
+  # PASSTHROUGH forwards the caller header without a mapping declaration.
   stage_names = ["RELEASE"]
   depends_on  = [alicloud_ram_role_policy_attachment.invoke]
 }

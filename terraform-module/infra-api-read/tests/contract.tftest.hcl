@@ -19,8 +19,8 @@ run "read_only_contract" {
     error_message = "No wildcard action."
   }
   assert {
-    condition = one(alicloud_api_gateway_api.read["identity"].request_parameters).name == "X-Infra-Authorization"
-    error_message = "Dedicated caller header required."
+    condition = alltrue([for api in alicloud_api_gateway_api.read : api.request_config[0].mode == "PASSTHROUGH" && length(api.request_parameters) == 0])
+    error_message = "Pass-through routes must not declare mapped request parameters; the service authenticates the forwarded caller header."
   }
 }
 

@@ -41,3 +41,14 @@ Ruling: stack the new draft PR on feat/go-platform-local while PR5 remains unmer
 - Deferred minor items: none reported.
 
 Final post-fix gate: all three Go race/vet suites, 114 legacy Python, 25 harness, 2 probe and 2 Terraform mock runs passed. Both Terraform configurations and pinned FC3 schema validate; static Linux package rebuilt. No second review was performed.
+
+## Live integration follow-up
+
+The [2026-10-05 live receipt](infra-api-read-live-receipt.json) supersedes the earlier ingress/RAM/sandbox blockers. Both local and actual sandbox HTTPS identity/authentication probes passed. ACK and mutation acceptance remain deferred.
+
+- Gateway rejected PASSTHROUGH plus a header mapping. The contract regression failed, then passed after removing the mapping; live forwarding/authentication passed.
+- FC3 direct rejection uses native `Code` and ACS3 framing. A regression failed, then passed after the probe normalized the error and sent a shaped negative signature. Unknown errors and application-level 401 still cannot pass IAM acceptance.
+- Dedicated RAM deployment identity verified exact function read scope, then deployed with time-limited scoped actions. Its AccessKey, user and policy were deleted after testing.
+- Newer E2B SDK creation returned 405. Inventory was reconciled as empty before using the project's pinned 2.31.0 SDK; successful sandbox/key cleanup was confirmed.
+- Temporary function, APIs/group, roles/policies, domain binding and created CNAME were removed. Purchased domain/certificate and pre-existing shared gateway retained.
+- The native follow-up changes only Terraform ingress configuration, the acceptance probe and documentation; no second whole-branch review or implementation delegation was performed.

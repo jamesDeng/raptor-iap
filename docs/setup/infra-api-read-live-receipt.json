@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-05",
+  "region": "ap-southeast-1",
+  "status": "passed-and-temporary-resources-removed",
+  "functionSourceCommit": "4cc7d09cf6eaf9ffd13a7d03535890ebfe017ad4",
+  "gatewayEdition": "existing VPC_SHARED",
+  "hostnameUsed": "infra-api.raptor-iap.top",
+  "localProbe": {
+    "evidenceMode": "live",
+    "checks": {
+      "authenticatedLiveIdentity": true,
+      "missingCallerRejected": true,
+      "wrongCallerRejected": true,
+      "directIAMProtected": true
+    },
+    "passed": true,
+    "ackAcceptance": false
+  },
+  "sandboxProbe": {
+    "evidenceMode": "live",
+    "checks": {
+      "authenticatedLiveIdentity": true,
+      "missingCallerRejected": true,
+      "wrongCallerRejected": true,
+      "directIAMProtected": true
+    },
+    "passed": true,
+    "ackAcceptance": false
+  },
+  "sandboxSdkVersion": "2.31.0",
+  "runtime": {
+    "memoryMB": 512,
+    "timeoutSeconds": 30,
+    "httpMethods": [
+      "GET"
+    ],
+    "httpAuthentication": "function"
+  },
+  "deploymentIdentity": {
+    "type": "dedicated RAM user AccessKey",
+    "allowedFunction": "raptor-infra-read-probe",
+    "outOfScopeReadRejected": true,
+    "passRoleScope": "existing read execution role only",
+    "accessKeyDeleted": true,
+    "userDeleted": true,
+    "customPolicyDeleted": true
+  },
+  "cleanup": {
+    "functionRemoval": "confirmed by Serverless Devs",
+    "terraformManagedCloudResourcesRemaining": 0,
+    "gatewayDomainUnbound": true,
+    "createdCnameDeleted": true,
+    "sandboxTerminated": true,
+    "sandboxApiKeyDeleted": true,
+    "retained": [
+      "purchased domain registration",
+      "issued CAS certificate",
+      "pre-existing shared gateway",
+      "existing sandbox storage and OAuth checkpoints"
+    ],
+    "independentAbsenceChecks": [
+      "RAM deployer user",
+      "read role",
+      "invoke role",
+      "API gateway group"
+    ]
+  },
+  "billingSnapshot": {
+    "currency": "CNY",
+    "availableBalance": 986,
+    "currentSeptemberOctoberBilled": 14,
+    "delayedChargesPossible": true
+  },
+  "notVerified": [
+    "actual ACK Deployment discovery/status",
+    "RDS and ESS inventory against deployed tagged resources",
+    "restart/scaling mutations",
+    "zero failed application operations during node replacement"
+  ]
+}
