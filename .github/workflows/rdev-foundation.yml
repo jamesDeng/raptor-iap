@@ -1,0 +1,38 @@
+name: Rdev foundation checks
+on:
+  pull_request:
+    branches: [main]
+    paths: ['infra-terraform/environments/rdev.ali/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml']
+  push:
+    branches: [main]
+    paths: ['infra-terraform/environments/rdev.ali/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rdev-foundation-checks-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TF_IN_AUTOMATION: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Offline contracts and validation
+        run: |
+          python3 -m unittest discover -s scripts/rdev -p 'test_*.py' -v
+          terraform fmt -check -recursive terraform-module/rdev-foundation terraform-module/rdev-state infra-terraform/environments/rdev.ali
+          for directory in terraform-module/rdev-foundation terraform-module/rdev-state infra-terraform/environments/rdev.ali; do
+            terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly
+            terraform -chdir="$directory" validate
+          done
+          terraform -chdir=terraform-module/rdev-foundation test
+          terraform -chdir=terraform-module/rdev-state test
