@@ -1,0 +1,56 @@
+name: Rdev apply identity check
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    environment: rdev.ali-apply
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.RDEV_APPLY_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-expiration: 1800
+          role-session-name: rdev-apply-check
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Verify temporary credentials with read-only account discovery
+        shell: bash
+        env:
+          TF_IN_AUTOMATION: 'true'
+        run: |
+          set -euo pipefail
+          verification_dir=$(mktemp -d)
+          trap 'rm -rf "$verification_dir"' EXIT
+          cp terraform-module/rdev-foundation/.terraform.lock.hcl "$verification_dir/"
+          cat > "$verification_dir/main.tf" <<'TF'
+          terraform {
+            required_providers {
+              alicloud = { source = "aliyun/alicloud", version = "1.293.0" }
+            }
+          }
+          provider "alicloud" { region = "ap-southeast-1" }
+          data "alicloud_account" "current" {}
+          TF
+          if ! terraform -chdir="$verification_dir" init -backend=false -input=false -lockfile=readonly > "$verification_dir/init.log" 2>&1; then
+            echo 'Provider initialization failed; raw logs withheld.'
+            exit 1
+          fi
+          if ! terraform -chdir="$verification_dir" plan -input=false -no-color > "$verification_dir/plan.log" 2>&1; then
+            echo 'Read-only credential check failed; raw logs withheld.'
+            exit 1
+          fi
+          echo 'Temporary OIDC credentials verified by read-only account discovery.'
