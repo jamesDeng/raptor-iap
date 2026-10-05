@@ -48,7 +48,7 @@ class CLI:
         for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'):
             self.env.pop(key, None)
     def call(self, service, action, parameters=None):
-        args = ['aliyun', service, action, '--profile', self.profile, '--region', REGION]
+        args = ['aliyun', service, action, '--profile', self.profile, '--region', REGION, '--retry-count', '0']
         if service == 'cs':
             args.append(parameters['path'])
         else:
@@ -69,6 +69,18 @@ class CLI:
 
 def tags_match(tags):
     return all(tags.get(k) == v for k, v in TAGS.items())
+
+
+def automation_safe(pool, cluster):
+    management = pool.get('management', {})
+    upgrade = cluster.get('operation_policy', {}).get('cluster_auto_upgrade', {})
+    return (pool.get('auto_scaling', {}).get('enable') is False
+            and management.get('auto_repair') is False
+            and management.get('auto_vul_fix') is False
+            and management.get('auto_upgrade', False) is False
+            and management.get('upgrade_config', {}).get('auto_upgrade', False) is False
+            and management.get('drift_enabled', False) is False
+            and upgrade.get('enabled') is False)
 
 
 def collect(api, scope):
@@ -96,7 +108,10 @@ def collect(api, scope):
         pool = api.call('cs', 'GET', {'path':'/clusters/' + scope['cluster'] + '/nodepools/' + scope['pool']})
         if pool.get('nodepool_info', {}).get('nodepool_id') != scope['pool']:
             raise ValueError('Node pool identity differs')
-        safe = pool.get('auto_scaling', {}).get('enable') is False and pool.get('management', {}).get('enable') is False
+        cluster = api.call('cs', 'GET', {'path':'/clusters/' + scope['cluster']})
+        if cluster.get('cluster_id') != scope['cluster'] or cluster.get('region_id') != REGION or cluster.get('vpc_id') != scope['vpc']:
+            raise ValueError('Live cluster identity differs')
+        safe = automation_safe(pool, cluster)
         group_id = pool.get('scaling_group', {}).get('scaling_group_id')
         if not group_id:
             raise ValueError('Scaling-group identity is missing')
@@ -145,12 +160,20 @@ def execute_actions(actions, mutate, read, sleep=time.sleep, clock=time.monotoni
     for action in actions:
         mutate(action)  # Exactly one mutation. Never retry an uncertain outcome.
         deadline = clock() + timeout
+        last_status = None
         while True:
             status = read(action)
+            if status != last_status:
+                # Emit only known status enums, never arbitrary provider text.
+                label = status.get('status')
+                if label not in ('Running','Stopped','Starting','Stopping'):
+                    label = 'Transitioning'
+                print(json.dumps({'action':action['api'], 'status':label}), flush=True)
+                last_status = dict(status)
             if status.get('status') == action['desired']:
                 if action['api'] == 'StopInstance' and status.get('stopped_mode') != 'StopCharging':
                     raise ValueError('ECS stopped in standard mode; compute savings not confirmed')
-                print(json.dumps({'verified':action['api'], 'status':status['status']}))
+                print(json.dumps({'verified':action['api'], 'status':status['status']}), flush=True)
                 break
             if clock() >= deadline:
                 raise ValueError('Status polling timed out; inspect before running again')

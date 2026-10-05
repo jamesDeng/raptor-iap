@@ -73,3 +73,32 @@ class Discovery(unittest.TestCase):
         with patch('overnight.subprocess.run',return_value=subprocess.CompletedProcess([],1,'','{"error_code":"AccessDenied","message":"secret-token-value"}')):
             with self.assertRaisesRegex(ValueError,'AccessDenied') as e:CLI('test').call('rds','StopDBInstance')
             self.assertNotIn('secret-token-value',str(e.exception))
+
+class ReviewRegressions(unittest.TestCase):
+    def test_modern_independent_controls_not_legacy_master(self):
+        from overnight import automation_safe
+        pool={'auto_scaling':{'enable':False},'management':{'auto_repair':False,'auto_vul_fix':False}}
+        cluster={'operation_policy':{'cluster_auto_upgrade':{'enabled':False}}}
+        self.assertTrue(automation_safe(pool,cluster))
+        for feature in ('auto_repair','auto_vul_fix'):
+            p=copy.deepcopy(pool);p['management'].update(enable=False);p['management'][feature]=True
+            with self.subTest(feature=feature):self.assertFalse(automation_safe(p,cluster))
+        self.assertFalse(automation_safe(pool,{}))
+        self.assertFalse(automation_safe({'auto_scaling':{'enable':False},'management':{'enable':False}},cluster))
+        c=copy.deepcopy(cluster);c['operation_policy']['cluster_auto_upgrade']['enabled']=True
+        self.assertFalse(automation_safe(pool,c))
+    def test_cli_explicitly_disables_profile_retries(self):
+        from overnight import CLI
+        from unittest.mock import patch
+        import subprocess
+        with patch('overnight.subprocess.run',return_value=subprocess.CompletedProcess([],0,'{}','')) as run:
+            CLI('test').call('rds','StopDBInstance',{'DBInstanceId':'pgm-test'})
+            args=run.call_args.args[0]
+            self.assertIn('--retry-count',args)
+            self.assertEqual(args[args.index('--retry-count')+1],'0')
+    def test_poll_emits_intermediate_status(self):
+        import io
+        from contextlib import redirect_stdout
+        statuses=iter([{'status':'Stopping'},{'status':'Stopped','stopped_mode':'StopCharging'}]);out=io.StringIO()
+        with redirect_stdout(out):execute_actions(build_actions(inventory(),'sleep')[:1],lambda _:None,lambda _:next(statuses),sleep=lambda _:None)
+        self.assertIn('Stopping',out.getvalue())
