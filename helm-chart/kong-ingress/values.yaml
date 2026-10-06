@@ -39,7 +39,7 @@ ingress:
       annotations:
         service.beta.kubernetes.io/alibaba-cloud-loadbalancer-id: ""
         service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: internet
-        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-force-override-listeners: "false"
+        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-force-override-listeners: "true"
       http:
         enabled: false
       tls:
