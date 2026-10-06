@@ -2,10 +2,10 @@ name: Platform images
 on:
   pull_request:
     branches: [main]
-    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt']
+    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py']
   push:
     branches: [main]
-    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt']
+    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py']
   workflow_dispatch:
 permissions:
   contents: read
@@ -107,6 +107,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_release.py -v
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_bootstrap.py -v
+          "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p 'test_kong*.py' -v
   postgres14-acceptance:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

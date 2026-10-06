@@ -1,0 +1,28 @@
+# Requires the owned LB, reviewed controller permissions and valid TLS Secret.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rdev-kong
+  namespace: argocd
+spec:
+  project: rdev-kong
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kong-system
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+  sources:
+  - repoURL: https://github.com/jamesDeng/raptor-iap.git
+    targetRevision: main
+    path: helm-chart/kong-ingress
+    helm:
+      releaseName: kong
+      valueFiles:
+      - ../../infra-kubernetes/environments/rdev.ali/kong/values.yaml
+  - repoURL: https://github.com/jamesDeng/raptor-iap.git
+    targetRevision: main
+    path: infra-kubernetes/environments/rdev.ali/kong
+    directory:
+      include: routes.yaml

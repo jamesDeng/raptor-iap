@@ -1,0 +1,2 @@
+{{- $annotations := .Values.ingress.gateway.proxy.annotations -}}
+{{- $id := required "exact owned load balancer ID required; provision through Terraform first" (index $annotations "service.beta.kubernetes.io/alibaba-cloud-loadbalancer-id") -}}

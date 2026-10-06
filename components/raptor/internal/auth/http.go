@@ -71,7 +71,7 @@ func (s *Service) Register(m *http.ServeMux) {
 			httpx.Error(w, 401, "Unauthenticated")
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "raptor_session", Value: sess.Token, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: 28800})
+		http.SetCookie(w, &http.Cookie{Name: "raptor_session", Value: sess.Token, Path: "/", HttpOnly: true, Secure: s.secureCookies || r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: 28800})
 		u, _ := s.Authenticate(r.Context(), sess.Token)
 		httpx.Write(w, 200, map[string]any{"user": u, "csrf": sess.CSRF})
 	})
@@ -85,7 +85,7 @@ func (s *Service) Register(m *http.ServeMux) {
 			httpx.Error(w, 503, "Unavailable")
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "raptor_session", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: "raptor_session", Path: "/", HttpOnly: true, Secure: s.secureCookies || r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 		httpx.Write(w, 200, map[string]bool{"loggedOut": true})
 	})))
 	m.Handle("GET /api/v1/users", s.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

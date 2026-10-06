@@ -1,0 +1,51 @@
+# Publish only after certificate validation and authenticated platform acceptance.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: raptor-public-browser
+  namespace: raptor-system
+  annotations:
+    konghq.com/protocols: https
+    konghq.com/preserve-host: "true"
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: raptor-kong
+  tls:
+    - hosts: [raptor.rdev.raptor-iap.top]
+      secretName: raptor-public-tls
+  rules:
+    - host: raptor.rdev.raptor-iap.top
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: raptor-frontend, port: {number: 8870}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: raptor-public-api
+  namespace: raptor-system
+  annotations:
+    konghq.com/protocols: https
+    konghq.com/preserve-host: "true"
+    konghq.com/strip-path: "false"
+    konghq.com/read-timeout: "120000"
+spec:
+  ingressClassName: raptor-kong
+  tls:
+    - hosts: [api.rdev.raptor-iap.top]
+      secretName: raptor-public-tls
+  rules:
+    - host: api.rdev.raptor-iap.top
+      http:
+        paths:
+          - path: /mcp
+            pathType: Exact
+            backend:
+              service: {name: raptor-open-api, port: {number: 8872}}
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service: {name: raptor-open-api, port: {number: 8872}}
