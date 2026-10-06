@@ -33,15 +33,15 @@ run "wrong_account" {
 run "ack_only_contract" {
   command = plan
   variables {
-    ack_only = true
+    ack_only   = true
     cluster_id = "owned-cluster"
   }
   assert {
-    condition = toset(flatten([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s.Action])) == toset(["sts:GetCallerIdentity", "cs:DescribeClusterUserKubeconfig"])
+    condition     = toset(flatten([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s.Action])) == toset(["sts:GetCallerIdentity", "cs:DescribeClusterUserKubeconfig"])
     error_message = "ACK-only role must not acquire database, ESS, wildcard or mutation permissions."
   }
   assert {
-    condition = contains(jsondecode(alicloud_ram_policy.read.policy_document).Statement[1].Resource, "acs:cs:ap-southeast-1:1234567890123456:cluster/owned-cluster")
+    condition     = contains(jsondecode(alicloud_ram_policy.read.policy_document).Statement[1].Resource, "acs:cs:ap-southeast-1:1234567890123456:cluster/owned-cluster")
     error_message = "Kubeconfig access must be restricted to the selected cluster."
   }
 }
