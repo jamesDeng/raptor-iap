@@ -40,7 +40,8 @@ BASE_PINS = {'alicloud_vpc.env', 'alicloud_vswitch.workers', 'alicloud_vswitch.d
 
 
 def benign_refresh(drift, pins):
-    allowed = {'alicloud_db_instance.platform': {'template_id_list': (None, []), 'node_id': ('104323017', '104323589')},
+    allowed = {'alicloud_cs_managed_kubernetes.cluster': {'control_plane_log_components': (None, []), 'worker_vswitch_ids': (None, [])},
+               'alicloud_db_instance.platform': {'template_id_list': (None, []), 'node_id': ('104323017', '104323589')},
                'alicloud_eip_address.outbound': {'security_protection_types': (None, []), 'status': ('Available', 'InUse')},
                'alicloud_vswitch.workers': {'tags': (None, {})},
                'alicloud_vswitch.database': {'tags': (None, {})}}
