@@ -2,10 +2,10 @@ name: Platform images
 on:
   pull_request:
     branches: [main]
-    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml']
+    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt']
   push:
     branches: [main]
-    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml']
+    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt']
   workflow_dispatch:
 permissions:
   contents: read
@@ -37,3 +37,107 @@ jobs:
         env:
           COMPONENT: ${{ matrix.component }}
         run: scripts/rdev/check-platform-image.sh "platform-${COMPONENT}:check" "$COMPONENT"
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [build-check, release-contracts, postgres14-acceptance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - component: raptor
+            context: components/raptor
+          - component: gateway
+            context: components/agent-gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - name: Registry login
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+      - name: Publish tested source
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/jamesdeng/raptor-iap-${{ matrix.component }}:${{ github.sha }}
+      - name: Verify published digest packaging
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          image="ghcr.io/jamesdeng/raptor-iap-${COMPONENT}@${IMAGE_DIGEST}"
+          docker pull "$image"
+          scripts/rdev/check-platform-image.sh "$image" "$COMPONENT"
+      - name: Digest receipt
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          COMPONENT: ${{ matrix.component }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf '%s\n' "${COMPONENT}: ${IMAGE_DIGEST} source ${SOURCE_SHA}" >> "$GITHUB_STEP_SUMMARY"
+  release-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install pinned rendering tools
+        run: |
+          curl -fsSL https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz -o "$RUNNER_TEMP/helm.tar.gz"
+          curl -fsSL https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz.sha256sum -o "$RUNNER_TEMP/helm.sha256"
+          (cd "$RUNNER_TEMP"; sha256sum -c helm.sha256)
+          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
+          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/platform-python"
+          "$RUNNER_TEMP/platform-python/bin/python" -m pip install --disable-pip-version-check PyYAML==6.0.3
+      - name: Offline release checks
+        run: |
+          "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_release.py -v
+          "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_bootstrap.py -v
+  postgres14-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: dedicated-ci-fixture-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: dedicated-ci-fixture-only
+      PGDATABASE: postgres
+      POC_TEST_POSTGRES: 'true'
+      RAPTOR_TEST_BINARY: /tmp/raptor-test-backend
+      GATEWAY_TEST_BINARY: /tmp/raptor-test-gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Build migration executables
+        run: |
+          (cd components/raptor; go build -o "$RAPTOR_TEST_BINARY" ./cmd/backend)
+          (cd components/agent-gateway; go build -o "$GATEWAY_TEST_BINARY" ./cmd/gateway)
+      - name: Real PostgreSQL 14 bootstrap isolation and migration checks
+        run: python3 -m unittest discover -s scripts/rdev -p test_platform_postgres.py -v

@@ -99,6 +99,7 @@ resource "alicloud_db_instance" "platform" {
   zone_id                  = var.zone
   vpc_id                   = alicloud_vpc.env.id
   vswitch_id               = alicloud_vswitch.database.id
+  ssl_action               = "Open"
   security_ips             = ["10.70.1.0/24", "10.72.0.0/16"]
   storage_auto_scale       = "Disable"
   deletion_protection      = true

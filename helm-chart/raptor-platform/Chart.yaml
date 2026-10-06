@@ -1,0 +1,5 @@
+apiVersion: v2
+name: raptor-platform
+version: 0.1.0
+type: application
+description: Private Go Raptor and Gateway platform; live agent worker disabled
