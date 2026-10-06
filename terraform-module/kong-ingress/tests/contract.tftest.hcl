@@ -5,11 +5,11 @@ run "dedicated_public_proxy" {
     vswitch_id = "vsw-t4nop9qf6v46gw2sa8l7d"
   }
   assert {
-    condition = alicloud_slb_load_balancer.proxy.address_type == "internet" && alicloud_slb_load_balancer.proxy.instance_charge_type == "PayByCLCU"
+    condition     = alicloud_slb_load_balancer.proxy.address_type == "internet" && alicloud_slb_load_balancer.proxy.instance_charge_type == "PayByCLCU"
     error_message = "Dedicated public usage-billed CLB required."
   }
   assert {
-    condition = length(alicloud_alidns_record.public) == 0
+    condition     = length(alicloud_alidns_record.public) == 0
     error_message = "DNS publication must default off until HTTPS authentication passes."
   }
 }
