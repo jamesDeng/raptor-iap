@@ -74,3 +74,21 @@ class LiveComputedRefresh(unittest.TestCase):
         self.assertTrue(validate_plan(p,'123456',preserved=NETWORK_PINS)['passed'])
         p['resource_drift'][0]['change']['after']['node_id']='unexpected'
         with self.assertRaises(ValueError):validate_plan(p,'123456',preserved=NETWORK_PINS)
+
+CLUSTER_PINS={**NETWORK_PINS,'alicloud_cs_managed_kubernetes.cluster':'owned-cluster'}
+class WorkerOnlyContinuation(unittest.TestCase):
+    def test_preserved_cluster_only_worker_create(self):
+        p=continuation(CLUSTER_PINS);c=next(r['change'] for r in p['resource_changes'] if r['type']=='alicloud_cs_managed_kubernetes')
+        c['after']['addons']=[{'name':'flannel','config':'','version':'','disabled':False}];c['before']=copy.deepcopy(c['after'])
+        s=validate_plan(p,'123456',preserved=CLUSTER_PINS)
+        self.assertEqual((s['cloud_creates'],s['unchanged']),(1,11))
+        c['after']['addons'][0]['config']='unexpected';c['before']=copy.deepcopy(c['after'])
+        with self.assertRaises(ValueError):validate_plan(p,'123456',preserved=CLUSTER_PINS)
+
+class ClusterRefresh(unittest.TestCase):
+    def test_only_observed_cluster_empty_collection_refresh(self):
+        p=continuation(CLUSTER_PINS);key='alicloud_cs_managed_kubernetes.cluster'
+        p['resource_drift']=[{'address':'module.foundation.'+key,'mode':'managed','change':{'actions':['update'],'before':{'id':CLUSTER_PINS[key],'control_plane_log_components':None,'worker_vswitch_ids':None},'after':{'id':CLUSTER_PINS[key],'control_plane_log_components':[],'worker_vswitch_ids':[]}}}]
+        self.assertTrue(validate_plan(p,'123456',preserved=CLUSTER_PINS)['passed'])
+        p['resource_drift'][0]['change']['after']['worker_vswitch_ids']=['foreign']
+        with self.assertRaises(ValueError):validate_plan(p,'123456',preserved=CLUSTER_PINS)

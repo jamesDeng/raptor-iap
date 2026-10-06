@@ -1,4 +1,5 @@
 {
+  "alicloud_cs_managed_kubernetes.cluster": "c92787e953503492ea141a744c81498f1",
   "alicloud_db_instance.platform": "pgm-t4n389ymwx7otro7",
   "alicloud_eip_address.outbound": "eip-t4nwjbcu2996jjadd0dmt",
   "alicloud_eip_association.outbound": "eip-t4nwjbcu2996jjadd0dmt:ngw-t4nw36bb819r0d4hmwj6w",
