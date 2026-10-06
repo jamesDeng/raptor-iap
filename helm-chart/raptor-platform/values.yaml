@@ -1,0 +1,12 @@
+environment: rdev.ali
+images:
+  raptor: ''
+  gateway: ''
+repository:
+  revision: ''
+appCodes:
+  raptor-frontend: ''
+  raptor-backend: ''
+  raptor-open-api: ''
+  raptor-admin: ''
+  agent-gateway: ''

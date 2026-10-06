@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rdev-platform
+  namespace: argocd
+spec:
+  project: rdev-platform
+  source:
+    repoURL: https://github.com/jamesDeng/raptor-iap.git
+    targetRevision: main
+    path: helm-chart/raptor-platform
+    helm:
+      valueFiles: ['../../infra-kubernetes/environments/rdev.ali/values.yaml']
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: raptor-system
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
