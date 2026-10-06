@@ -2,10 +2,10 @@ name: Rdev foundation checks
 on:
   pull_request:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev.ali/**', 'infra-terraform/environments/rdev-state-bootstrap/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'terraform-module/rdev-plan-identity/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml']
+    paths: ['infra-terraform/environments/rdev.ali/**', 'infra-terraform/environments/rdev-state-bootstrap/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'terraform-module/rdev-plan-identity/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml', 'terraform-module/infra-api-read/**', 'infra-terraform/environments/rdev-infra-api/**']
   push:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev.ali/**', 'infra-terraform/environments/rdev-state-bootstrap/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'terraform-module/rdev-plan-identity/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml']
+    paths: ['infra-terraform/environments/rdev.ali/**', 'infra-terraform/environments/rdev-state-bootstrap/**', 'terraform-module/rdev-foundation/**', 'terraform-module/rdev-state/**', 'terraform-module/rdev-plan-identity/**', 'scripts/rdev/**', '.github/workflows/rdev-foundation.yml', 'terraform-module/infra-api-read/**', 'infra-terraform/environments/rdev-infra-api/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -31,11 +31,12 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/rdev-python"
           "$RUNNER_TEMP/rdev-python/bin/python" -m pip install --disable-pip-version-check -r scripts/rdev/requirements-recovery.txt
           "$RUNNER_TEMP/rdev-python/bin/python" -m unittest discover -s scripts/rdev -p 'test_*.py' -v
-          terraform fmt -check -recursive terraform-module/rdev-foundation terraform-module/rdev-state terraform-module/rdev-plan-identity infra-terraform/environments/rdev.ali infra-terraform/environments/rdev-state-bootstrap
-          for directory in terraform-module/rdev-foundation terraform-module/rdev-state terraform-module/rdev-plan-identity infra-terraform/environments/rdev.ali infra-terraform/environments/rdev-state-bootstrap; do
+          terraform fmt -check -recursive terraform-module/rdev-foundation terraform-module/rdev-state terraform-module/rdev-plan-identity infra-terraform/environments/rdev.ali infra-terraform/environments/rdev-state-bootstrap terraform-module/infra-api-read infra-terraform/environments/rdev-infra-api
+          for directory in terraform-module/rdev-foundation terraform-module/rdev-state terraform-module/rdev-plan-identity infra-terraform/environments/rdev.ali infra-terraform/environments/rdev-state-bootstrap terraform-module/infra-api-read infra-terraform/environments/rdev-infra-api; do
             terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly
             terraform -chdir="$directory" validate
           done
           terraform -chdir=terraform-module/rdev-foundation test
           terraform -chdir=terraform-module/rdev-state test
           terraform -chdir=terraform-module/rdev-plan-identity test
+          terraform -chdir=terraform-module/infra-api-read test

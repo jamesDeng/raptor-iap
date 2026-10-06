@@ -2,10 +2,10 @@ name: Platform images
 on:
   pull_request:
     branches: [main]
-    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py']
+    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py', 'components/infra-api/**', 'scripts/rdev/*infra_discovery*.py']
   push:
     branches: [main]
-    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py']
+    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py', 'components/infra-api/**', 'scripts/rdev/*infra_discovery*.py']
   workflow_dispatch:
 permissions:
   contents: read
@@ -108,6 +108,7 @@ jobs:
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_release.py -v
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_bootstrap.py -v
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p 'test_kong*.py' -v
+          "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_infra_discovery.py -v
   postgres14-acceptance:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -142,3 +143,20 @@ jobs:
           (cd components/agent-gateway; go build -o "$GATEWAY_TEST_BINARY" ./cmd/gateway)
       - name: Real PostgreSQL 14 bootstrap isolation and migration checks
         run: python3 -m unittest discover -s scripts/rdev -p test_platform_postgres.py -v
+
+  infra-read-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Infra API read regressions
+        working-directory: components/infra-api
+        run: |
+          go test -race ./...
+          go vet ./...

@@ -21,7 +21,9 @@ resource "terraform_data" "account_guard" {
 }
 provider "alicloud" { region = var.region }
 locals {
-  read_statements = concat([
+  read_statements = concat(var.ack_only ? [
+    { Effect = "Allow", Action = ["sts:GetCallerIdentity"], Resource = ["*"] }
+    ] : [
     { Effect = "Allow", Action = ["sts:GetCallerIdentity", "rds:DescribeDBInstances", "rds:DescribeTags"], Resource = ["*"] },
     { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:${var.region}:${var.account_id}:scalinggroup/*"] }
     ], var.cluster_id == "" ? [] : [
@@ -65,7 +67,7 @@ resource "alicloud_api_gateway_group" "read" {
   instance_id = var.gateway_instance_id
   depends_on  = [terraform_data.account_guard]
   name        = var.name
-  description = "Temporary Infra API authenticated read probe"
+  description = "Authenticated Infra API read service"
 }
 resource "alicloud_api_gateway_api" "read" {
   for_each    = local.routes

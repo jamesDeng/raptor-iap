@@ -22,7 +22,7 @@ func cloudKube(config func(string) *openapi.Config) kubeFactory {
 		if e != nil {
 			return nil, e
 		}
-		r, e := c.DescribeClusterUserKubeconfigWithContext(ctx, tea.String(env.ClusterID), &cs.DescribeClusterUserKubeconfigRequest{TemporaryDurationMinutes: tea.Int64(15)}, nil, &dara.RuntimeOptions{})
+		r, e := c.DescribeClusterUserKubeconfigWithContext(ctx, tea.String(env.ClusterID), &cs.DescribeClusterUserKubeconfigRequest{PrivateIpAddress: tea.Bool(true), TemporaryDurationMinutes: tea.Int64(15)}, nil, &dara.RuntimeOptions{})
 		if e != nil {
 			return nil, e
 		}

@@ -73,6 +73,15 @@ spec:
             - {name: RAPTOR_REPOSITORY, value: '/repo/source'}
             - {name: RAPTOR_PUBLIC_FRONTEND, value: {{ $.Values.publicFrontend | quote }}}
             - {name: RAPTOR_SECURE_COOKIES, value: {{ $.Values.secureCookies | quote }}}
+            {{ if and (eq $service.name "raptor-backend") $.Values.infraReader.secretName }}
+            - {name: INFRA_AUTH_HEADER, value: 'X-Infra-Authorization'}
+            - name: INFRA_USERNAME
+              valueFrom:
+                secretKeyRef: {name: {{ $.Values.infraReader.secretName | quote }}, key: INFRA_USERNAME}
+            - name: INFRA_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ $.Values.infraReader.secretName | quote }}, key: INFRA_PASSWORD}
+            {{ end }}
             - {name: RAPTOR_SIMULATION, value: 'false'}
             - {name: GATEWAY_SIMULATION, value: 'false'}
           {{ if or (eq $service.name "raptor-backend") (eq $service.name "raptor-open-api") (eq $service.name "agent-gateway") }}

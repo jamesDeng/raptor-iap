@@ -1,0 +1,103 @@
+{
+  "accountId": "1360282071200743",
+  "region": "ap-southeast-1",
+  "readRole": {
+    "name": "raptor-rdev-infra-read",
+    "trust": "fc.aliyuncs.com",
+    "policy": {
+      "Version": "1",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sts:GetCallerIdentity"
+          ],
+          "Resource": [
+            "*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cs:DescribeClusterUserKubeconfig"
+          ],
+          "Resource": [
+            "acs:cs:ap-southeast-1:1360282071200743:cluster/c92787e953503492ea141a744c81498f1"
+          ]
+        }
+      ]
+    }
+  },
+  "invokeRole": {
+    "name": "raptor-rdev-infra-invoke",
+    "trust": "apigateway.aliyuncs.com",
+    "policy": {
+      "Version": "1",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "fc:InvokeFunction"
+          ],
+          "Resource": [
+            "acs:fc:ap-southeast-1:1360282071200743:functions/raptor-rdev-infra-read",
+            "acs:fc:ap-southeast-1:1360282071200743:functions/raptor-rdev-infra-read/*"
+          ]
+        }
+      ]
+    }
+  },
+  "ackBinding": {
+    "clusterId": "c92787e953503492ea141a744c81498f1",
+    "role": "raptor-rdev-infra-discovery",
+    "subject": "Verified numeric RoleId of new read role",
+    "scope": "All namespaces; get/list Deployments, ReplicaSets, Pods only"
+  },
+  "network": {
+    "existingServiceLinkedRole": "AliyunServiceRoleForFC",
+    "newNetworkPermissions": false
+  },
+  "temporaryDeployer": {
+    "name": "raptor-rdev-infra-deploy",
+    "revokeAfterAcceptance": true,
+    "policy": {
+      "Version": "1",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "fc:CreateFunction",
+            "fc:GetFunction",
+            "fc:UpdateFunction",
+            "fc:GetConcurrencyConfig",
+            "fc:PutConcurrencyConfig"
+          ],
+          "Resource": [
+            "acs:fc:ap-southeast-1:1360282071200743:functions/raptor-rdev-infra-read"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "fc:CreateTrigger",
+            "fc:GetTrigger",
+            "fc:UpdateTrigger",
+            "fc:ListTriggers"
+          ],
+          "Resource": [
+            "acs:fc:ap-southeast-1:1360282071200743:functions/raptor-rdev-infra-read/triggers/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ram:PassRole"
+          ],
+          "Resource": [
+            "acs:ram::1360282071200743:role/raptor-rdev-infra-read"
+          ]
+        }
+      ]
+    }
+  }
+}
