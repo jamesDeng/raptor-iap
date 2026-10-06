@@ -61,7 +61,7 @@ def benign_refresh(drift, pins):
 
 def validate_plan(plan, account, preserved=None):
     try:
-        if preserved is not None and (set(preserved) not in (BASE_PINS, BASE_PINS | {'alicloud_nat_gateway.outbound', 'alicloud_eip_association.outbound', 'alicloud_snat_entry.workers'}) or any(not isinstance(v, str) or not v for v in preserved.values())):
+        if preserved is not None and (set(preserved) not in (BASE_PINS, BASE_PINS | {'alicloud_nat_gateway.outbound', 'alicloud_eip_association.outbound', 'alicloud_snat_entry.workers'}, BASE_PINS | {'alicloud_nat_gateway.outbound', 'alicloud_eip_association.outbound', 'alicloud_snat_entry.workers', 'alicloud_cs_managed_kubernetes.cluster'}) or any(not isinstance(v, str) or not v for v in preserved.values())):
             raise ValueError()
         pins = preserved or {}
         if not isinstance(plan, dict) or plan.get('errored') or plan.get('complete') is not True or plan.get('deferred_changes') or (plan.get('resource_drift') and not (preserved is not None and benign_refresh(plan['resource_drift'], pins))):
@@ -109,7 +109,7 @@ def validate_plan(plan, account, preserved=None):
             if key in pins:
                 if after.get('id') != pins[key] or change.get('before') != after:
                     raise ValueError()
-                if key in ('alicloud_vpc.env', 'alicloud_eip_address.outbound', 'alicloud_db_instance.platform', 'alicloud_nat_gateway.outbound') and any(after.get('tags', {}).get(k) != v for k, v in {'Project':'raptor-iap', 'Environment':'rdev.ali', 'Owner':'rdev-foundation'}.items()):
+                if key in ('alicloud_vpc.env', 'alicloud_eip_address.outbound', 'alicloud_db_instance.platform', 'alicloud_nat_gateway.outbound', 'alicloud_cs_managed_kubernetes.cluster') and any(after.get('tags', {}).get(k) != v for k, v in {'Project':'raptor-iap', 'Environment':'rdev.ali', 'Owner':'rdev-foundation'}.items()):
                     raise ValueError()
             for field, ref in PARENT_REFERENCES.get(key, {}).items():
                 parent, attribute = ref.rsplit('.', 1)
@@ -120,7 +120,10 @@ def validate_plan(plan, account, preserved=None):
                         raise ValueError()
                 elif change.get('after_unknown', {}).get(field) is not True or after.get(field) is not None:
                     raise ValueError()
-            if any(after.get(field) != value for field, value in EXPECTED[key].items()):
+            checked = dict(after)
+            if key == 'alicloud_cs_managed_kubernetes.cluster' and key in pins and checked.get('addons') == [{'name':'flannel', 'disabled':False, 'config':'', 'version':''}]:
+                checked['addons'] = EXPECTED[key]['addons']
+            if any(checked.get(field) != value for field, value in EXPECTED[key].items()):
                 raise ValueError()
         return {'passed': True, 'cloud_creates': sum(k.startswith('alicloud_') and k not in pins for k in EXPECTED), 'local_guards': sum(k.startswith('terraform_data') and k not in pins for k in EXPECTED), 'unchanged': len(pins), 'updates': 0, 'deletes': 0, 'apply_executed': False}
     except (KeyError, TypeError, AttributeError, ValueError):

@@ -1,6 +1,6 @@
 # Account service roles are authorized separately and are never POC teardown resources.
 locals {
-  required_service_roles = toset(["AliyunCSDefaultRole", "AliyunCSManagedKubernetesRole", "AliyunCSManagedNetworkRole", "AliyunCSManagedCsiRole", "AliyunCSManagedCsiProvisionerRole", "AliyunCSManagedCsiPluginRole", "AliyunServiceRoleForRdsPgsqlOnEcs", "AliyunServiceRoleForNatgw", "AliyunCSManagedLogRole", "AliyunCSManagedCmsRole", "AliyunCSServerlessKubernetesRole", "AliyunCSKubernetesAuditRole", "AliyunCSManagedArmsRole", "AliyunCISDefaultRole"])
+  required_service_roles = toset(["AliyunCSDefaultRole", "AliyunCSManagedKubernetesRole", "AliyunCSManagedNetworkRole", "AliyunCSManagedCsiRole", "AliyunCSManagedCsiProvisionerRole", "AliyunCSManagedCsiPluginRole", "AliyunServiceRoleForRdsPgsqlOnEcs", "AliyunServiceRoleForNatgw", "AliyunCSManagedLogRole", "AliyunCSManagedCmsRole", "AliyunCSServerlessKubernetesRole", "AliyunCSKubernetesAuditRole", "AliyunCSManagedArmsRole", "AliyunCISDefaultRole", "AliyunOOSLifecycleHook4CSRole"])
 }
 data "alicloud_ram_roles" "prerequisites" {
   name_regex = "^(${join("|", sort(tolist(local.required_service_roles)))})$"
