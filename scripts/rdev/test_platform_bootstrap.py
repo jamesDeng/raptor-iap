@@ -103,3 +103,15 @@ class PrivateProxyGuard(unittest.TestCase):
     e=dict(os.environ,PATH=d+':'+os.environ['PATH'],MOCK_WORKER=identity)
     r=subprocess.run(['bash',str(script),'preview'],env=e,capture_output=True,text=True);self.assertEqual(r.returncode,expected)
 if __name__=='__main__':unittest.main()
+
+class ReaderCluster(unittest.TestCase):
+ def test_bootstrap_uses_reader_cluster_field(self):
+  import json
+  m=Bootstrap().module()
+  with tempfile.TemporaryDirectory() as d:
+   root=pathlib.Path(d)/'kit';m.write_kit(root,Bootstrap().config())
+   doc=json.loads((root/'catalog-secrets.json').read_text())
+   import base64
+   sql=base64.b64decode(doc['items'][0]['data']['catalog.sql']).decode()
+   self.assertIn('"clusterId": "'+m.OWNED['cluster']+'"',sql)
+   self.assertIn('"terraformPath": "infra-terraform/environments/rdev.ali"',sql)

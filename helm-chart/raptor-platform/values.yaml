@@ -13,3 +13,7 @@ appCodes:
 # Explicit deployment policy, never inferred from untrusted forwarding headers.
 secureCookies: false
 publicFrontend: false
+
+# Optional private caller credentials; backend only, never chart-supplied values.
+infraReader:
+  secretName: ''

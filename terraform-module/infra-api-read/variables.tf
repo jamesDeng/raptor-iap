@@ -24,3 +24,13 @@ variable "gateway_instance_id" {
   type        = string
   description = "Existing Singapore VPC_SHARED instance; never purchase an instance in this slice."
 }
+
+variable "ack_only" {
+  type        = bool
+  default     = false
+  description = "Restrict application discovery to STS identity and the explicit ACK cluster."
+  validation {
+    condition     = !var.ack_only || var.cluster_id != ""
+    error_message = "ACK-only mode requires a cluster ID."
+  }
+}

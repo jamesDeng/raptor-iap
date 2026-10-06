@@ -76,7 +76,7 @@ COMMIT;
     bootstrap=[_secret('platform-db-admin',{'PGHOST':host,'PGPORT':'5432','PGUSER':'raptor_bootstrap','PGPASSWORD':passwords['admin'],'PGDATABASE':'postgres','PGSSLMODE':'require'}),_secret('platform-role-sql',{'roles.sql':sql}),_secret('platform-migrator',{'MIGRATION_DATABASE_URL':url('platform_migrator',passwords['migrator'])})]
     init=_job('platform-db-init',c['postgres_image'],['/bin/sh','-ec'],'platform-db-admin','platform-role-sql',['if psql -X -f /bootstrap/roles.sql > /tmp/bootstrap.log 2>&1; then echo database-initialized; else echo database-initialization-failed-inspect-private-log; exit 1; fi'])
     migrations=[_job('raptor-migrate',c['raptor_image'],['/usr/local/bin/backend'],'platform-migrator',args=['-migrate']),_job('gateway-migrate',c['gateway_image'],['/usr/local/bin/gateway'],'platform-migrator',args=['-migrate'])]
-    env_config={'cloud':'aliyun','cloudAccountId':c['account'],'region':c['region'],'ackClusterId':c['cluster'],'namespace':NAMESPACE,'terraformRepo':'https://github.com/jamesDeng/raptor-iap','terraformPath':'infra-terraform/environments/rdev.ali','k8sRepo':'https://github.com/jamesDeng/raptor-iap','k8sPath':'infra-kubernetes/environments/rdev.ali'}
+    env_config={'cloud':'aliyun','cloudAccountId':c['account'],'region':c['region'],'clusterId':c['cluster'],'namespace':NAMESPACE,'terraformRepo':'https://github.com/jamesDeng/raptor-iap','terraformPath':'infra-terraform/environments/rdev.ali','k8sRepo':'https://github.com/jamesDeng/raptor-iap','k8sPath':'infra-kubernetes/environments/rdev.ali'}
     names=('raptor-frontend','raptor-backend','raptor-open-api','raptor-admin','agent-gateway')
     sql_names=','.join("'"+n+"'" for n in names)
     catalog_sql=f'''\\set ON_ERROR_STOP on
