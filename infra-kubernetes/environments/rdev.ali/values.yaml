@@ -13,3 +13,6 @@ appCodes:
 
 secureCookies: true
 publicFrontend: true
+
+infraReader:
+  secretName: infra-reader-auth
