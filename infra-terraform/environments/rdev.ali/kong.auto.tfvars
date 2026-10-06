@@ -1,3 +1,3 @@
-# Preserve the provisioned Kong CLB. DNS publication follows live backend verification.
+# Preserve the provisioned Kong CLB and publish the two reviewed hostnames.
 enable_kong_ingress = true
-publish_kong_dns    = false
+publish_kong_dns    = true
