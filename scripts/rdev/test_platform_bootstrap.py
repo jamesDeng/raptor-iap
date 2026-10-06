@@ -91,4 +91,15 @@ class ReviewRegressions(unittest.TestCase):
    with self.assertRaises(ValueError) as caught:m.prepare_account(api,c,root,True)
    self.assertNotIn('DUMMY_SECRET',str(caught.exception));self.assertTrue((root/'account-create-receipt.json').exists())
 
+
+
+class PrivateProxyGuard(unittest.TestCase):
+ def test_guard_accepts_only_exact_owned_worker(self):
+  import subprocess,os
+  script=pathlib.Path(__file__).resolve().parent/'platform-bootstrap.sh'
+  with tempfile.TemporaryDirectory() as d:
+   mock=pathlib.Path(d)/'kubectl';mock.write_text('#!/bin/sh\nif [ "$1 $2" = "get nodes" ]; then printf "%s" "$MOCK_WORKER"; fi\n');mock.chmod(0o700)
+   for identity,expected in [('ap-southeast-1.i-t4nj1bitmcz7cuoch82h',0),('other',1),('ap-southeast-1.i-t4nj1bitmcz7cuoch82h another',1)]:
+    e=dict(os.environ,PATH=d+':'+os.environ['PATH'],MOCK_WORKER=identity)
+    r=subprocess.run(['bash',str(script),'preview'],env=e,capture_output=True,text=True);self.assertEqual(r.returncode,expected)
 if __name__=='__main__':unittest.main()

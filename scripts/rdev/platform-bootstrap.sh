@@ -6,9 +6,9 @@ stage=${1:-preview}
 kit=${2:-}
 confirmation=${3:-}
 case "$stage" in preview|verify|argocd|database|migrations|catalog|cleanup-bootstrap) ;; *) echo 'Unknown stage; stopped' >&2; exit 1 ;; esac
-expected_server='https://10.70.1.166:6443'
-actual_server=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-[[ "$actual_server" == "$expected_server" ]] || { echo 'Wrong Kubernetes endpoint; stopped' >&2; exit 1; }
+expected_worker='ap-southeast-1.i-t4nj1bitmcz7cuoch82h'
+actual_workers=$(kubectl get nodes -o jsonpath='{.items[*].spec.providerID}')
+[[ "$actual_workers" == "$expected_worker" ]] || { echo 'Wrong Kubernetes worker identity; stopped' >&2; exit 1; }
 kubectl wait --for=condition=Ready node/ap-southeast-1.10.70.1.169 --timeout=30s >/dev/null
 if [[ "$stage" == preview || "$stage" == verify ]]; then
   kubectl get nodes
