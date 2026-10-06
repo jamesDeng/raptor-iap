@@ -10,3 +10,7 @@ appCodes:
   raptor-open-api: ''
   raptor-admin: ''
   agent-gateway: ''
+
+# Public ingress requires an image containing the secure-cookie configuration.
+secureCookies: true
+publicFrontend: true

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"golang.org/x/crypto/bcrypt"
+	"os"
 	"strings"
 	"time"
 )
@@ -16,7 +17,10 @@ import (
 var ErrDenied = errors.New("access denied")
 var ErrInvalid = errors.New("invalid account input")
 
-type Service struct{ Pool *pgxpool.Pool }
+type Service struct {
+	Pool          *pgxpool.Pool
+	secureCookies bool
+}
 type Session struct {
 	Token string
 	CSRF  string
@@ -26,9 +30,11 @@ type Credentials struct {
 	Password string
 }
 
-func NewService(p *pgxpool.Pool) *Service { return &Service{p} }
-func digest(s string) string              { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
-func csrf(token string) string            { return digest(token + ":csrf") }
+func NewService(p *pgxpool.Pool) *Service {
+	return &Service{Pool: p, secureCookies: os.Getenv("RAPTOR_SECURE_COOKIES") == "true"}
+}
+func digest(s string) string   { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+func csrf(token string) string { return digest(token + ":csrf") }
 func randomToken() string {
 	var b [32]byte
 	if _, e := rand.Read(b[:]); e != nil {

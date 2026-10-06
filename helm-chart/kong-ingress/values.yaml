@@ -1,0 +1,46 @@
+ingress:
+  controller:
+    postgresql:
+      enabled: false
+    replicaCount: 1
+    ingressController:
+      watchNamespaces: [kong-system, raptor-system]
+      ingressClass: raptor-kong
+      ingressClassAnnotations:
+        ingressclass.kubernetes.io/is-default-class: "false"
+      image:
+        tag: "3.5.3"
+      admissionWebhook:
+        enabled: false
+      resources:
+        requests: {cpu: 100m, memory: 128Mi}
+        limits: {cpu: 500m, memory: 256Mi}
+  gateway:
+    postgresql:
+      enabled: false
+    replicaCount: 1
+    image:
+      repository: kong
+      tag: "3.9.3"
+    env:
+      database: "off"
+      nginx_worker_processes: "1"
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: 500m, memory: 512Mi}
+    admin:
+      enabled: true
+      type: ClusterIP
+      clusterIP: None
+    proxy:
+      type: LoadBalancer
+      annotations:
+        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-id: ""
+        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: internet
+        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-force-override-listeners: "false"
+      http:
+        enabled: false
+      tls:
+        enabled: true
+        servicePort: 443
+        containerPort: 8443

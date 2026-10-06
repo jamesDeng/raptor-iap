@@ -1,0 +1,6 @@
+dependencies:
+- name: ingress
+  repository: https://charts.konghq.com
+  version: 0.24.0
+digest: sha256:8af93e5fbcf2ff281dfc0e40a3b667f03fe2c54d61a0044bd0277d4912e7ed4a
+generated: "2026-10-06T12:24:22.773433+08:00"

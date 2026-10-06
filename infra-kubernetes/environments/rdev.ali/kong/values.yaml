@@ -1,0 +1,6 @@
+# Empty until the exact Terraform-owned public LB has been verified.
+ingress:
+  gateway:
+    proxy:
+      annotations:
+        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-id: ''
