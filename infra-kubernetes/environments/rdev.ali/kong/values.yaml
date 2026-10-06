@@ -1,6 +1,6 @@
-# Empty until the exact Terraform-owned public LB has been verified.
+# Verified Terraform-owned public CLB in Singapore; ACK owns its listeners.
 ingress:
   gateway:
     proxy:
       annotations:
-        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-id: ''
+        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-id: 'lb-t4ndhj5u0ga1wubfpb60p'
