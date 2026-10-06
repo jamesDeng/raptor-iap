@@ -22,6 +22,16 @@ class PostgreSQLBootstrap(unittest.TestCase):
    local=f'postgresql://{parsed.username}:{parsed.password}@{env["PGHOST"]}:{env.get("PGPORT","5432")}/raptor_platform?sslmode=disable&pool_max_conns=10'
    menv=dict(env,MIGRATION_DATABASE_URL=local)
    for binary in [os.environ['RAPTOR_TEST_BINARY'],os.environ['GATEWAY_TEST_BINARY']]:run([binary,'-migrate'],menv);run([binary,'-migrate'],menv)
+   runtime_secrets=json.loads((root/'runtime-secrets.json').read_text())['items']
+   for login,secret_name,url_key,own,other in [('raptor_runtime','raptor-runtime','RAPTOR_DATABASE_URL','raptor.objects','gateway.executions'),('gateway_runtime','gateway-runtime','GATEWAY_DATABASE_URL','gateway.executions','raptor.objects')]:
+    secret=next(x for x in runtime_secrets if x['metadata']['name']==secret_name)
+    credentials=urllib.parse.urlsplit(base64.b64decode(secret['data'][url_key]).decode())
+    runtime_env=dict(env,PGDATABASE='raptor_platform',PGUSER=credentials.username,PGPASSWORD=credentials.password)
+    run([psql,'-X','-v','ON_ERROR_STOP=1','-c',f'SELECT * FROM {own} LIMIT 0'],runtime_env)
+    for sql in [f'SELECT * FROM {other} LIMIT 0',f'INSERT INTO {other} SELECT * FROM {other} WHERE false','SET ROLE raptor_owner','SET ROLE gateway_owner','SET ROLE platform_migrator']:
+     self.assertNotEqual(run([psql,'-X','-v','ON_ERROR_STOP=1','-c',sql],runtime_env,ok=False).returncode,0)
+    for owner in ['raptor_owner','gateway_owner','platform_migrator']:
+     membership=run([psql,'-X','-Atc',f"SELECT pg_has_role(current_user,'{owner}','MEMBER')"],runtime_env).stdout.strip();self.assertEqual(membership,'f')
    for role,own,other in [('raptor_app','raptor.objects','gateway.executions'),('gateway_app','gateway.executions','raptor.objects')]:
     e=dict(env,PGDATABASE='raptor_platform');run([psql,'-X','-v','ON_ERROR_STOP=1','-c',f'SET ROLE {role}; SELECT * FROM {own} LIMIT 0'],e)
     denied=run([psql,'-X','-v','ON_ERROR_STOP=1','-c',f'SET ROLE {role}; SELECT * FROM {other} LIMIT 0'],e,ok=False);self.assertNotEqual(denied.returncode,0)

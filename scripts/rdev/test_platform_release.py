@@ -46,3 +46,9 @@ class Packaging(unittest.TestCase):
   app=yaml.safe_load(p.read_text());self.assertFalse(app['spec']['syncPolicy']['automated']['prune']);self.assertTrue(app['spec']['syncPolicy']['automated']['selfHeal'])
   self.assertEqual(app['spec']['source']['repoURL'],'https://github.com/jamesDeng/raptor-iap.git');self.assertEqual(app['spec']['source']['path'],'helm-chart/raptor-platform')
   project=yaml.safe_load((p.parent/'project.yaml').read_text());self.assertEqual(project['spec']['destinations'],[{'server':'https://kubernetes.default.svc','namespace':'raptor-system'}]);self.assertNotIn('*',project['spec']['sourceRepos'])
+
+class ReviewChecksum(unittest.TestCase):
+ def test_download_name_matches_upstream_checksum(self):
+  s=(ROOT/'.github/workflows/platform-images.yml').read_text()
+  self.assertIn('-o "$RUNNER_TEMP/helm-v4.3.0-linux-amd64.tar.gz"',s)
+  self.assertNotIn('"$RUNNER_TEMP/helm.tar.gz"',s)

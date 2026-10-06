@@ -41,7 +41,7 @@ def _job(name,image,command,secret,mount=None,args=None):
     if args:container['args']=args
     if mount:
         container['volumeMounts']=[{'name':'roles','mountPath':'/bootstrap','readOnly':True}];pod['volumes']=[{'name':'roles','secret':{'secretName':mount,'defaultMode':292}}]
-    return {'apiVersion':'batch/v1','kind':'Job','metadata':{'name':name,'namespace':NAMESPACE},'spec':{'backoffLimit':0,'activeDeadlineSeconds':180,'ttlSecondsAfterFinished':600,'template':{'spec':pod}}}
+    return {'apiVersion':'batch/v1','kind':'Job','metadata':{'name':name,'namespace':NAMESPACE},'spec':{'backoffLimit':0,'activeDeadlineSeconds':180,'template':{'spec':pod}}}
 
 def write_kit(directory,c):
     validate(c);directory=pathlib.Path(directory)
@@ -130,7 +130,8 @@ def prepare_account(api,c,directory,execute=False):
     fingerprint=hashlib.sha256(path.read_bytes()).hexdigest()
     fd=os.open(receipt,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
     with os.fdopen(fd,'w') as f:json.dump({'intent_started':True,'input_sha256':fingerprint,'database':c['database']},f)
-    result=api.call('rds','CreateAccount',account)
+    try:result=api.call('rds','CreateAccount',account)
+    except Exception:raise ValueError('Account submission outcome unknown; reconcile the private intent receipt without replay') from None
     receipt.write_text(json.dumps({'create_submitted':True,'input_sha256':fingerprint,'database':c['database'],'request_id':result.get('RequestId')}))
     return {'execute':True,'account_create_submitted':True,'secret_values_printed':False}
 

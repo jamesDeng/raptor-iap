@@ -73,4 +73,22 @@ class AccountPrepare(unittest.TestCase):
    with self.assertRaises(ValueError):m.prepare_account(api,c,root,True)
    self.assertEqual(api.writes,[])
 
+
+
+class ReviewRegressions(unittest.TestCase):
+ def test_jobs_preserve_reconciliation_evidence(self):
+  m=Bootstrap().module();j=m._job('check','image',['true'],'secret')
+  self.assertNotIn('ttlSecondsAfterFinished',j['spec'])
+ def test_create_timeout_is_sanitized_and_intent_retained(self):
+  import subprocess
+  m=Bootstrap().module();api=AccountPrepare.API();original=api.call
+  def call(service,action,parameters=None):
+   if action=='CreateAccount':raise subprocess.TimeoutExpired(['aliyun','--AccountPassword','DUMMY_SECRET'],60)
+   return original(service,action,parameters)
+  api.call=call
+  with tempfile.TemporaryDirectory() as d:
+   root=pathlib.Path(d)/'kit';c=Bootstrap().config();m.write_kit(root,c)
+   with self.assertRaises(ValueError) as caught:m.prepare_account(api,c,root,True)
+   self.assertNotIn('DUMMY_SECRET',str(caught.exception));self.assertTrue((root/'account-create-receipt.json').exists())
+
 if __name__=='__main__':unittest.main()

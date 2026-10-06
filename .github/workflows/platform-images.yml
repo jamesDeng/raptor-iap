@@ -96,10 +96,10 @@ jobs:
           persist-credentials: false
       - name: Install pinned rendering tools
         run: |
-          curl -fsSL https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz -o "$RUNNER_TEMP/helm.tar.gz"
+          curl -fsSL https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz -o "$RUNNER_TEMP/helm-v4.3.0-linux-amd64.tar.gz"
           curl -fsSL https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz.sha256sum -o "$RUNNER_TEMP/helm.sha256"
           (cd "$RUNNER_TEMP"; sha256sum -c helm.sha256)
-          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
+          tar -xzf "$RUNNER_TEMP/helm-v4.3.0-linux-amd64.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
           echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
           python3 -m venv "$RUNNER_TEMP/platform-python"
           "$RUNNER_TEMP/platform-python/bin/python" -m pip install --disable-pip-version-check PyYAML==6.0.3
