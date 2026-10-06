@@ -1,7 +1,7 @@
 resource "alicloud_slb_load_balancer" "proxy" {
-  load_balancer_name   = "raptor-rdev-kong"
-  address_type         = "internet"
-  vswitch_id           = var.vswitch_id
+  load_balancer_name = "raptor-rdev-kong"
+  address_type       = "internet"
+  # Internet CLB is not subnet-bound; ACK CCM registers the owned VPC worker.
   master_zone_id       = "ap-southeast-1a"
   slave_zone_id        = "ap-southeast-1b"
   instance_charge_type = "PayByCLCU"

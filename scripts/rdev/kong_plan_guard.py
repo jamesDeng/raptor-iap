@@ -15,7 +15,7 @@ def validate_plan(plan:dict,ownership:dict,cost_receipt:dict)->dict:
  total=c.get('estimated_72h_total');remaining=c.get('remaining_budget')
  if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<=0 for v in [total,remaining]) or total>remaining or remaining>1000:raise ValueError('POC budget exceeded or invalid')
  seen=set();creates=0
- expected={'address_type':'internet','vswitch_id':OWNED['vswitch_id'],'instance_charge_type':'PayByCLCU','internet_charge_type':'paybytraffic','master_zone_id':'ap-southeast-1a','slave_zone_id':'ap-southeast-1b','tags':{'Project':'raptor-iap','Environment':'rdev.ali','Owner':'kong-ingress'}}
+ expected={'address_type':'internet','vswitch_id':None,'instance_charge_type':'PayByCLCU','internet_charge_type':'paybytraffic','master_zone_id':'ap-southeast-1a','slave_zone_id':'ap-southeast-1b','tags':{'Project':'raptor-iap','Environment':'rdev.ali','Owner':'kong-ingress'}}
  existing=[r for r in plan.get('resource_changes',[]) if r.get('address')==LB and r['change']['actions']==['no-op']]
  def verified_destination():
   addr=ownership.get('public_address');lb_id=ownership.get('load_balancer_id')
