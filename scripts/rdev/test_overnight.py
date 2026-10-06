@@ -102,3 +102,17 @@ class ReviewRegressions(unittest.TestCase):
         statuses=iter([{'status':'Stopping'},{'status':'Stopped','stopped_mode':'StopCharging'}]);out=io.StringIO()
         with redirect_stdout(out):execute_actions(build_actions(inventory(),'sleep')[:1],lambda _:None,lambda _:next(statuses),sleep=lambda _:None)
         self.assertIn('Stopping',out.getvalue())
+
+class RDSLiveStatuses(unittest.TestCase):
+    def test_uppercase_stopped_can_wake_and_is_idempotent_for_sleep(self):
+        i=inventory();i['nodes']=[];i['database']['status']='STOPPED'
+        self.assertEqual([a['api'] for a in build_actions(i,'wake')],['StartDBInstance'])
+        self.assertEqual(build_actions(i,'sleep'),[])
+        for status in ('STARTING','STOPPING','unknown'):
+            i['database']['status']=status
+            with self.subTest(status=status),self.assertRaises(ValueError):build_actions(i,'wake')
+    def test_uppercase_terminal_status_finishes_poll_once(self):
+        a=build_actions(inventory(),'sleep')[-1];calls=[]
+        reads=iter([{'status':'STOPPING'},{'status':'STOPPED'}])
+        execute_actions([a],lambda x:calls.append(x),lambda _:next(reads),sleep=lambda _:None)
+        self.assertEqual(len(calls),1)

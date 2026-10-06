@@ -1,9 +1,9 @@
 {
-  "checked_at": "2026-10-05T14:50:28.497109+00:00",
+  "checked_at": "2026-10-06T00:57:21.975504+00:00",
   "region": "ap-southeast-1",
   "worker_available": true,
-  "available_balance_cny": 985.98,
-  "reported_pretax_cny": 14.02,
+  "available_balance_cny": 983.24,
+  "reported_pretax_cny": 16.76,
   "worker_cores": 4,
   "worker_memory_gb": 8,
   "worker_count": 1,
