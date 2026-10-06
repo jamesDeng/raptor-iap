@@ -16,6 +16,13 @@ def validate_plan(plan:dict,ownership:dict,cost_receipt:dict)->dict:
  if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<=0 for v in [total,remaining]) or total>remaining or remaining>1000:raise ValueError('POC budget exceeded or invalid')
  seen=set();creates=0
  expected={'address_type':'internet','vswitch_id':None,'instance_charge_type':'PayByCLCU','internet_charge_type':'paybytraffic','master_zone_id':'ap-southeast-1a','slave_zone_id':'ap-southeast-1b','tags':{'Project':'raptor-iap','Environment':'rdev.ali','Owner':'kong-ingress'}}
+ def matches_lb(after):
+  normalized=dict(after)
+  if normalized.get('vswitch_id')=='':normalized['vswitch_id']=None
+  if normalized.get('internet_charge_type')=='PayByTraffic':normalized['internet_charge_type']='paybytraffic'
+  normalized['tags']=dict(normalized.get('tags',{}))
+  if normalized['tags'].get('kubernetes.reused.by.user')=='true':normalized['tags'].pop('kubernetes.reused.by.user')
+  return all(normalized.get(k)==v for k,v in expected.items())
  existing=[r for r in plan.get('resource_changes',[]) if r.get('address')==LB and r['change']['actions']==['no-op']]
  def verified_destination():
   addr=ownership.get('public_address');lb_id=ownership.get('load_balancer_id')
@@ -23,7 +30,7 @@ def validate_plan(plan:dict,ownership:dict,cost_receipt:dict)->dict:
   except (ValueError,TypeError):raise ValueError('verified public address required') from None
   if ip.version!=4 or len(existing)!=1 or not lb_id:raise ValueError('verified existing LB required for DNS publication')
   r=existing[0];after=r['change'].get('after',{})
-  if r.get('type')!='alicloud_slb_load_balancer' or after.get('id')!=lb_id or after.get('address')!=addr or any(after.get(k)!=v for k,v in expected.items()):raise ValueError('existing LB ownership or address mismatch')
+  if r.get('type')!='alicloud_slb_load_balancer' or after.get('id')!=lb_id or after.get('address')!=addr or not matches_lb(after):raise ValueError('existing LB ownership or address mismatch')
   return addr
  for r in plan.get('resource_changes',[]):
   a=r['change']['actions']
@@ -32,7 +39,7 @@ def validate_plan(plan:dict,ownership:dict,cost_receipt:dict)->dict:
   if addr in seen or a!=['create'] or addr not in {LB,*DNS}:raise ValueError('unreviewed resource action')
   seen.add(addr);creates+=1
   if addr==LB:
-   if r.get('type')!='alicloud_slb_load_balancer' or any(after.get(k)!=v for k,v in expected.items()):raise ValueError('foreign or incorrect public load balancer')
+   if r.get('type')!='alicloud_slb_load_balancer' or not matches_lb(after):raise ValueError('foreign or incorrect public load balancer')
   elif r.get('type')!='alicloud_alidns_record' or after.get('domain_name')!='raptor-iap.top' or after.get('rr')!=DNS[addr] or after.get('type')!='A' or after.get('value')!=verified_destination():raise ValueError('foreign DNS record')
  if not creates:raise ValueError('empty creation plan')
  return {'creates':creates,'updates':0,'deletes':0}

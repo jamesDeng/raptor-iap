@@ -5,7 +5,7 @@ resource "alicloud_slb_load_balancer" "proxy" {
   master_zone_id       = "ap-southeast-1a"
   slave_zone_id        = "ap-southeast-1b"
   instance_charge_type = "PayByCLCU"
-  internet_charge_type = "paybytraffic"
+  internet_charge_type = "PayByTraffic"
   payment_type         = "PayAsYouGo"
   delete_protection    = "on"
   tags = {
@@ -13,7 +13,11 @@ resource "alicloud_slb_load_balancer" "proxy" {
     Environment = "rdev.ali"
     Owner       = "kong-ingress"
   }
-  lifecycle { prevent_destroy = true }
+  lifecycle {
+    prevent_destroy = true
+    # PayByCLCU reports its bandwidth ceiling; CCM adds the reuse marker.
+    ignore_changes = [bandwidth, tags["kubernetes.reused.by.user"]]
+  }
 }
 # ACK CCM owns the listener and backend groups. Do not declare them here.
 resource "alicloud_alidns_record" "public" {
