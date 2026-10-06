@@ -13,6 +13,8 @@ class KongIngress(unittest.TestCase):
   docs=[d for d in yaml.safe_load_all(p.stdout) if d]
   lbs=[d for d in docs if d['kind']=='Service' and d['spec'].get('type','ClusterIP')=='LoadBalancer']
   self.assertEqual(len(lbs),1)
+  self.assertEqual(lbs[0]['metadata']['annotations']['service.beta.kubernetes.io/alibaba-cloud-loadbalancer-force-override-listeners'],'true')
+  self.assertFalse(any(d['kind']=='Service' and 'manager' in d['metadata']['name'] for d in docs),'Kong Manager must not be exposed')
   self.assertEqual([p['port'] for p in lbs[0]['spec']['ports']],[443])
   self.assertEqual(lbs[0]['metadata']['annotations']['service.beta.kubernetes.io/alibaba-cloud-loadbalancer-id'],'lb-owned-fixture')
   for d in docs:

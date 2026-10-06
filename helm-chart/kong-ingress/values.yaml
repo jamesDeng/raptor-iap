@@ -28,6 +28,8 @@ ingress:
     resources:
       requests: {cpu: 100m, memory: 256Mi}
       limits: {cpu: 500m, memory: 512Mi}
+    manager:
+      enabled: false
     admin:
       enabled: true
       type: ClusterIP
@@ -37,7 +39,7 @@ ingress:
       annotations:
         service.beta.kubernetes.io/alibaba-cloud-loadbalancer-id: ""
         service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: internet
-        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-force-override-listeners: "false"
+        service.beta.kubernetes.io/alibaba-cloud-loadbalancer-force-override-listeners: "true"
       http:
         enabled: false
       tls:
