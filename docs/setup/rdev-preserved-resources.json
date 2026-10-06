@@ -1,6 +1,9 @@
 {
   "alicloud_db_instance.platform": "pgm-t4n389ymwx7otro7",
   "alicloud_eip_address.outbound": "eip-t4nwjbcu2996jjadd0dmt",
+  "alicloud_eip_association.outbound": "eip-t4nwjbcu2996jjadd0dmt:ngw-t4nw36bb819r0d4hmwj6w",
+  "alicloud_nat_gateway.outbound": "ngw-t4nw36bb819r0d4hmwj6w",
+  "alicloud_snat_entry.workers": "stb-t4n9hfywg6ymcwmpxpmi4:snat-t4n8qpiyx5hq49un4wz04",
   "alicloud_vpc.env": "vpc-t4n4fi6r1a7bi6n93ftq3",
   "alicloud_vswitch.database": "vsw-t4nue6mxwlg14zq8ouua5",
   "alicloud_vswitch.workers": "vsw-t4nop9qf6v46gw2sa8l7d",

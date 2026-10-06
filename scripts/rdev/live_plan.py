@@ -36,11 +36,14 @@ PARENT_REFERENCES = {
 }
 
 
+BASE_PINS = {'alicloud_vpc.env', 'alicloud_vswitch.workers', 'alicloud_vswitch.database', 'alicloud_eip_address.outbound', 'alicloud_db_instance.platform', 'terraform_data.account_guard', 'terraform_data.service_role_guard'}
+
+
 def benign_refresh(drift, pins):
-    allowed = {'alicloud_db_instance.platform': ('template_id_list', []),
-               'alicloud_eip_address.outbound': ('security_protection_types', []),
-               'alicloud_vswitch.workers': ('tags', {}),
-               'alicloud_vswitch.database': ('tags', {})}
+    allowed = {'alicloud_db_instance.platform': {'template_id_list': (None, []), 'node_id': ('104323017', '104323589')},
+               'alicloud_eip_address.outbound': {'security_protection_types': (None, []), 'status': ('Available', 'InUse')},
+               'alicloud_vswitch.workers': {'tags': (None, {})},
+               'alicloud_vswitch.database': {'tags': (None, {})}}
     if not isinstance(drift, list):
         return False
     for row in drift:
@@ -48,19 +51,17 @@ def benign_refresh(drift, pins):
         if key not in allowed or key not in pins or row.get('mode') != 'managed':
             return False
         c = row['change']; before = c['before']; after = c['after']
-        field, empty = allowed[key]
-        if c['actions'] != ['update'] or before.get('id') != pins[key] or after.get('id') != pins[key]:
+        if c['actions'] != ['update'] or before.get('id') != pins[key] or after.get('id') != pins[key] or set(before) != set(after):
             return False
-        if before.get(field) is not None or after.get(field) != empty or set(before) != set(after):
-            return False
-        if any(before[k] != after[k] for k in before if k != field):
+        changed = {k for k in before if before[k] != after[k]}
+        if not changed or any(k not in allowed[key] or (before[k], after[k]) != allowed[key][k] for k in changed):
             return False
     return True
 
 
 def validate_plan(plan, account, preserved=None):
     try:
-        if preserved is not None and (set(preserved) != {'alicloud_vpc.env', 'alicloud_vswitch.workers', 'alicloud_vswitch.database', 'alicloud_eip_address.outbound', 'alicloud_db_instance.platform', 'terraform_data.account_guard', 'terraform_data.service_role_guard'} or any(not isinstance(v, str) or not v for v in preserved.values())):
+        if preserved is not None and (set(preserved) not in (BASE_PINS, BASE_PINS | {'alicloud_nat_gateway.outbound', 'alicloud_eip_association.outbound', 'alicloud_snat_entry.workers'}) or any(not isinstance(v, str) or not v for v in preserved.values())):
             raise ValueError()
         pins = preserved or {}
         if not isinstance(plan, dict) or plan.get('errored') or plan.get('complete') is not True or plan.get('deferred_changes') or (plan.get('resource_drift') and not (preserved is not None and benign_refresh(plan['resource_drift'], pins))):
@@ -108,7 +109,7 @@ def validate_plan(plan, account, preserved=None):
             if key in pins:
                 if after.get('id') != pins[key] or change.get('before') != after:
                     raise ValueError()
-                if key in ('alicloud_vpc.env', 'alicloud_eip_address.outbound', 'alicloud_db_instance.platform') and any(after.get('tags', {}).get(k) != v for k, v in {'Project':'raptor-iap', 'Environment':'rdev.ali', 'Owner':'rdev-foundation'}.items()):
+                if key in ('alicloud_vpc.env', 'alicloud_eip_address.outbound', 'alicloud_db_instance.platform', 'alicloud_nat_gateway.outbound') and any(after.get('tags', {}).get(k) != v for k, v in {'Project':'raptor-iap', 'Environment':'rdev.ali', 'Owner':'rdev-foundation'}.items()):
                     raise ValueError()
             for field, ref in PARENT_REFERENCES.get(key, {}).items():
                 parent, attribute = ref.rsplit('.', 1)

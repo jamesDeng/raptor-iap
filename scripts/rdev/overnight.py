@@ -127,7 +127,11 @@ def collect(api, scope):
         if not tags_match(tags) or tags.get('ack.aliyun.com') != scope['cluster'] or tags.get('ack.alibabacloud.com/nodepool-id') != scope['pool'] or node.get('VpcAttributes', {}).get('VpcId') != scope['vpc'] or node.get('RegionId') != REGION or node.get('InstanceChargeType') != 'PostPaid' or node.get('InstanceType') != 'ecs.e-c1m2.xlarge':
             raise ValueError('Worker ownership or economical-mode prerequisites differ')
         nodes.append({'id':node['InstanceId'], 'status':node['Status'], 'stopped_mode':node.get('StoppedMode')})
-    return {'account':scope['account'], 'vpc':scope['vpc'], 'database':{'id':scope['database'],'status':db['DBInstanceStatus']}, 'nodes':nodes, 'safe_to_stop_nodes':safe}
+    return {'account':scope['account'], 'vpc':scope['vpc'], 'database':{'id':scope['database'],'status':rds_status(db['DBInstanceStatus'])}, 'nodes':nodes, 'safe_to_stop_nodes':safe}
+
+
+def rds_status(status):
+    return {'STOPPED':'Stopped', 'STOPPING':'Stopping', 'STARTING':'Starting'}.get(status, status)
 
 
 def build_actions(inventory, mode):
@@ -135,7 +139,7 @@ def build_actions(inventory, mode):
         raise ValueError('Expected sleep or wake')
     if mode == 'sleep' and inventory['nodes'] and not inventory['safe_to_stop_nodes']:
         raise ValueError('ACK automation or ESS health checks could replace stopped workers; no changes made')
-    db = inventory['database']
+    db = {**inventory['database'], 'status':rds_status(inventory['database']['status'])}
     actions = []
     for n in inventory['nodes']:
         if n['status'] not in ('Running','Stopped'):
@@ -162,7 +166,9 @@ def execute_actions(actions, mutate, read, sleep=time.sleep, clock=time.monotoni
         deadline = clock() + timeout
         last_status = None
         while True:
-            status = read(action)
+            status = dict(read(action))
+            if action['service'] == 'rds':
+                status['status'] = rds_status(status.get('status'))
             if status != last_status:
                 # Emit only known status enums, never arbitrary provider text.
                 label = status.get('status')
