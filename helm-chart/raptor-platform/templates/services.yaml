@@ -71,6 +71,7 @@ spec:
             - {name: RAPTOR_OPEN_API_URL, value: 'http://raptor-open-api:8872'}
             - {name: GATEWAY_URL, value: 'http://agent-gateway:8874'}
             - {name: RAPTOR_REPOSITORY, value: '/repo/source'}
+            - {name: RAPTOR_PUBLIC_FRONTEND, value: {{ $.Values.publicFrontend | quote }}}
             - {name: RAPTOR_SECURE_COOKIES, value: {{ $.Values.secureCookies | quote }}}
             - {name: RAPTOR_SIMULATION, value: 'false'}
             - {name: GATEWAY_SIMULATION, value: 'false'}

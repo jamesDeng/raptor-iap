@@ -38,7 +38,7 @@ class Routes(unittest.TestCase):
   p=ROOT/'infra-kubernetes/environments/rdev.ali/kong/routes.yaml'
   self.assertTrue(p.exists(),'Kong routes missing')
   docs=[d for d in yaml.safe_load_all(p.read_text()) if d]
-  routes=[d for d in docs if d['kind']=='Ingress']
+  routes=[d for d in docs if d['kind']=='Ingress' and d['metadata']['name'].startswith('raptor-public-')]
   self.assertEqual(len(routes),2)
   expected={'raptor.rdev.raptor-iap.top':'raptor-frontend','api.rdev.raptor-iap.top':'raptor-open-api'}
   for r in routes:
@@ -48,6 +48,10 @@ class Routes(unittest.TestCase):
    rule=r['spec']['rules'][0];host=rule['host'];self.assertIn(host,expected)
    self.assertEqual(r['spec']['tls'][0]['hosts'],[host])
    for path in rule['http']['paths']:self.assertEqual(path['backend']['service']['name'],expected[host])
+  blocked=[d for d in docs if d['kind']=='Ingress' and d['metadata']['name'].startswith('raptor-private-')]
+  self.assertEqual(len(blocked),2)
+  for r in blocked:self.assertEqual(r['metadata']['annotations']['konghq.com/plugins'],'private-management-only')
+  plugin=next(d for d in docs if d['kind']=='KongPlugin');self.assertEqual(plugin['plugin'],'request-termination');self.assertEqual(plugin['config']['status_code'],403)
   api=next(r for r in routes if r['spec']['rules'][0]['host'].startswith('api.'))
   self.assertEqual([p['path'] for p in api['spec']['rules'][0]['http']['paths']],['/mcp','/v1'])
   project=yaml.safe_load((p.parent/'project.yaml').read_text())

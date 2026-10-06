@@ -12,3 +12,4 @@ appCodes:
   agent-gateway: ''
 # Explicit deployment policy, never inferred from untrusted forwarding headers.
 secureCookies: false
+publicFrontend: false

@@ -49,3 +49,64 @@ spec:
             pathType: Prefix
             backend:
               service: {name: raptor-open-api, port: {number: 8872}}
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: private-management-only
+  namespace: raptor-system
+plugin: request-termination
+config:
+  status_code: 403
+  message: PrivateManagementRequired
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: raptor-private-user-management
+  namespace: raptor-system
+  annotations:
+    konghq.com/protocols: https
+    konghq.com/plugins: private-management-only
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: raptor-kong
+  tls:
+    - hosts: [raptor.rdev.raptor-iap.top]
+      secretName: raptor-public-tls
+  rules:
+    - host: raptor.rdev.raptor-iap.top
+      http:
+        paths:
+          - path: /api/v1/users
+            pathType: Prefix
+            backend:
+              service: {name: raptor-frontend, port: {number: 8870}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: raptor-private-environment-management
+  namespace: raptor-system
+  annotations:
+    konghq.com/protocols: https
+    konghq.com/plugins: private-management-only
+    konghq.com/methods: POST,PATCH,PUT,DELETE
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: raptor-kong
+  tls:
+    - hosts: [raptor.rdev.raptor-iap.top]
+      secretName: raptor-public-tls
+  rules:
+    - host: raptor.rdev.raptor-iap.top
+      http:
+        paths:
+          - path: /api/v1/environments
+            pathType: Prefix
+            backend:
+              service: {name: raptor-frontend, port: {number: 8870}}
+          - path: /api/v1/environment-groups
+            pathType: Prefix
+            backend:
+              service: {name: raptor-frontend, port: {number: 8870}}

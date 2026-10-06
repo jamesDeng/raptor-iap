@@ -13,3 +13,4 @@ appCodes:
 
 # Public ingress requires an image containing the secure-cookie configuration.
 secureCookies: true
+publicFrontend: true

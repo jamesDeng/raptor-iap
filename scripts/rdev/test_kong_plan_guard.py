@@ -25,4 +25,14 @@ class Guard(unittest.TestCase):
   for extra in [copy.deepcopy(plan()['resource_changes'][0]),{'address':'module.foundation.any','change':{'actions':['delete']}}]:
    p=plan();p['resource_changes'].append(extra)
    with self.assertRaises(ValueError):self.guard(p)
+ def test_dns_requires_verified_owned_lb_destination(self):
+  row={'address':'module.kong_ingress[0].alicloud_alidns_record.public["raptor.rdev"]','type':'alicloud_alidns_record','change':{'actions':['create'],'after':{'domain_name':'raptor-iap.top','rr':'raptor.rdev','type':'A','value':'203.0.113.42'}}}
+  with self.assertRaises(ValueError):self.guard({'resource_changes':[row]})
+ def test_verified_staged_dns_publication(self):
+  lb=plan()['resource_changes'][0];lb['change']['actions']=['no-op'];lb['change']['after'].update(id='lb-verified',address='203.0.113.7')
+  dns={'address':'module.kong_ingress[0].alicloud_alidns_record.public["raptor.rdev"]','type':'alicloud_alidns_record','change':{'actions':['create'],'after':{'domain_name':'raptor-iap.top','rr':'raptor.rdev','type':'A','value':'203.0.113.7'}}}
+  o=dict(OWN,load_balancer_id='lb-verified',public_address='203.0.113.7')
+  self.assertEqual(self.guard({'resource_changes':[lb,dns]},o=o)['creates'],1)
+  dns['change']['after']['value']='203.0.113.42'
+  with self.assertRaises(ValueError):self.guard({'resource_changes':[lb,dns]},o=o)
 if __name__=='__main__':unittest.main()
