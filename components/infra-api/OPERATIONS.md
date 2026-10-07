@@ -1,6 +1,6 @@
 # Runtime operations integration contract
 
-Status: local implementation only. `cmd/server` still uses read-only `api.New`. No operation route is deployed and no cloud permission or shared configuration changed.
+Status: local implementation only. `cmd/server` defaults to read-only `api.New`; `INFRA_ENABLE_RESTART=true` enables only Deployment restart through both HTTP and MCP. No operation route is deployed and no cloud permission or shared configuration changed.
 
 ## Current POC authentication decision
 
@@ -53,3 +53,7 @@ Local unit and HTTP/MCP tests use provider fixtures. Live acceptance, cloud appl
 ## Review limitation
 
 One minor review finding is deferred: proxy policy `IdentityChanged`/`ScopeMismatch` errors currently become `ProviderUnavailable` in transport error mapping. Calls still refuse without mutation, but corrective diagnostics are less precise. Durable concurrent claim semantics and actual cloud backend behavior cannot be verified until those external adapters exist.
+
+## Restart startup wiring
+
+Set `INFRA_ENABLE_RESTART=true` only in a centrally reviewed deployment configuration. Missing/false retains the existing read-only startup; invalid boolean configuration refuses startup. Restart mode uses the existing Basic username/password and configured auth header, validates resources in the provider, exposes the three read tools plus `deployment_restart`, and rejects proxy command routes. Signed request context is not required. Request IDs remain correlation inputs rather than proof of request-specific authorization. No shared function configuration, role, API Gateway route or ACK RBAC was changed by this local wiring.

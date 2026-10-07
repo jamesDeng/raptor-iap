@@ -52,6 +52,9 @@ func newMCPHandler(op operations) http.Handler {
 	visibility, canListCommands := op.authorizer.(CommandToolVisibility)
 	if op.commander != nil && canListCommands && visibility.ExposeCommands() {
 		for _, spec := range commandSpecs {
+			if filter, ok := op.authorizer.(interface{ VisibleCommand(string) bool }); ok && !filter.VisibleCommand(spec.path) {
+				continue
+			}
 			server.AddTool(&mcp.Tool{Name: spec.name, Description: "Execute one request-authorized infrastructure command", InputSchema: commandSchema(spec.sample)}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				data, e := op.command(ctx, spec.path, r.Params.Arguments)
 				if e != nil {

@@ -4,9 +4,9 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"raptor-iap/infra-api/internal/api"
 	"raptor-iap/infra-api/internal/provider"
 	"raptor-iap/infra-api/internal/scope"
+	"strconv"
 	"time"
 )
 
@@ -23,7 +23,14 @@ func main() {
 	if e != nil {
 		log.Fatal("credential provider unavailable")
 	}
-	h, e := api.New(reader, envs, os.Getenv("INFRA_USERNAME"), os.Getenv("INFRA_PASSWORD"), header)
+	enableRestart := false
+	if value := os.Getenv("INFRA_ENABLE_RESTART"); value != "" {
+		enableRestart, e = strconv.ParseBool(value)
+		if e != nil {
+			log.Fatal("invalid restart configuration")
+		}
+	}
+	h, e := buildHandler(reader, envs, os.Getenv("INFRA_USERNAME"), os.Getenv("INFRA_PASSWORD"), header, enableRestart)
 	if e != nil {
 		log.Fatal("authentication configuration unavailable")
 	}
