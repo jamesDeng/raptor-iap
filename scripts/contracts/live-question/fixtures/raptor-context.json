@@ -1,0 +1,35 @@
+{
+  "definition": {
+    "type": "agent",
+    "model": "gpt-5.6-luna",
+    "object": {
+      "kind": "application",
+      "code": "app"
+    },
+    "envCode": "rdev.ali",
+    "operations": [
+      {
+        "name": "application.question",
+        "parameters": {
+          "question": "Is gateway healthy?"
+        }
+      }
+    ],
+    "skills": {
+      "tag": "v1",
+      "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "definitionSha256": "dbeefa76459a8ddf5971e194c05aa1f1f6960a36057addadd9820d3073be9a4e",
+  "environment": {
+    "code": "rdev.ali",
+    "config": {
+      "ackClusterId": "cluster"
+    }
+  },
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  "skills": {
+    "tag": "v1",
+    "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

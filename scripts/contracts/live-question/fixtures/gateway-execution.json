@@ -1,0 +1,110 @@
+{
+  "runtimeMode": "live",
+  "stage": "",
+  "result": {
+    "requestId": "11111111-1111-4111-8111-111111111111",
+    "attemptId": "22222222-2222-4222-8222-222222222222",
+    "selectedModel": "gpt-5.6-luna",
+    "actualModel": "gpt-5.6-luna",
+    "answer": "Application is ready at this observation.",
+    "evidence": [
+      {
+        "server": "raptor",
+        "tool": "request_get",
+        "observedAt": "2026-10-07T00:00:00Z",
+        "evidenceMode": "catalog",
+        "identity": {
+          "requestId": "11111111-1111-4111-8111-111111111111",
+          "envCode": "rdev.ali",
+          "objectCode": "app"
+        },
+        "state": {
+          "available": true
+        }
+      },
+      {
+        "server": "infra",
+        "tool": "cloud_identity_get",
+        "observedAt": "2026-10-07T00:00:00Z",
+        "evidenceMode": "live",
+        "identity": {
+          "envCode": "rdev.ali"
+        },
+        "state": {
+          "accountMatches": true
+        }
+      },
+      {
+        "server": "infra",
+        "tool": "deployments_list",
+        "observedAt": "2026-10-07T00:00:00Z",
+        "evidenceMode": "live",
+        "identity": {
+          "envCode": "rdev.ali",
+          "objectCode": "app",
+          "clusterId": "cluster",
+          "namespace": "ns",
+          "name": "gateway",
+          "uid": "uid"
+        },
+        "state": {
+          "state": "1/1 ready"
+        }
+      },
+      {
+        "server": "infra",
+        "tool": "deployment_status_get",
+        "observedAt": "2026-10-07T00:00:00Z",
+        "evidenceMode": "live",
+        "identity": {
+          "envCode": "rdev.ali",
+          "objectCode": "app",
+          "clusterId": "cluster",
+          "namespace": "ns",
+          "name": "gateway",
+          "uid": "uid"
+        },
+        "state": {
+          "readyReplicas": 1
+        }
+      }
+    ],
+    "usage": [
+      {
+        "input": 100,
+        "output": 20,
+        "totalTokens": 120
+      }
+    ],
+    "generatedAt": "2026-10-07T00:00:00Z"
+  },
+  "checkpointStatus": "verified",
+  "cleanupStatus": {
+    "sandboxAbsent": true,
+    "keyAbsent": true,
+    "accessRevoked": true
+  },
+  "requestId": "11111111-1111-4111-8111-111111111111",
+  "status": "completed",
+  "attemptId": "22222222-2222-4222-8222-222222222222",
+  "input": {
+    "requestId": "",
+    "definition": null,
+    "environment": null,
+    "skills": {
+      "tag": "",
+      "commitSha": ""
+    }
+  },
+  "appliedSkills": {
+    "tag": "",
+    "commitSha": ""
+  },
+  "checkpoint": {
+    "path": "",
+    "requestId": ""
+  },
+  "cleanup": "confirmed",
+  "recoveryNeeded": false,
+  "updatedAt": "2026-10-07T00:00:00Z"
+}
