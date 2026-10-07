@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"io"
 	"net/http"
 	"net/url"
 )
@@ -25,8 +28,8 @@ func newMCPHandler(op operations) http.Handler {
 			props[field] = map[string]any{"type": "string", "minLength": 1, "maxLength": 256}
 		}
 		server.AddTool(&mcp.Tool{Name: spec.name, Description: spec.description, InputSchema: map[string]any{"type": "object", "properties": props, "required": spec.fields, "additionalProperties": false}}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			var args map[string]string
-			if len(r.Params.Arguments) > 8192 || json.Unmarshal(r.Params.Arguments, &args) != nil {
+			args, decodeErr := decodeSelectors(r.Params.Arguments)
+			if decodeErr != nil {
 				return mcpFailure("InvalidInput"), nil
 			}
 			q := url.Values{}
@@ -49,4 +52,47 @@ func newMCPHandler(op operations) http.Handler {
 }
 func mcpFailure(code string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: code}}}
+}
+
+// Decode incrementally: encoding/json's map decoder silently accepts duplicates.
+func decodeSelectors(raw json.RawMessage) (map[string]string, error) {
+	if len(raw) > 8192 {
+		return nil, errors.New("InvalidInput")
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	token, e := d.Token()
+	if e != nil || token != json.Delim('{') {
+		return nil, errors.New("InvalidInput")
+	}
+	args := map[string]string{}
+	for d.More() {
+		token, e = d.Token()
+		if e != nil {
+			return nil, e
+		}
+		key, ok := token.(string)
+		if !ok {
+			return nil, errors.New("InvalidInput")
+		}
+		if _, exists := args[key]; exists {
+			return nil, errors.New("InvalidInput")
+		}
+		var value any
+		if e = d.Decode(&value); e != nil {
+			return nil, e
+		}
+		text, ok := value.(string)
+		if !ok {
+			return nil, errors.New("InvalidInput")
+		}
+		args[key] = text
+	}
+	if _, e = d.Token(); e != nil {
+		return nil, e
+	}
+	var trailing any
+	if e = d.Decode(&trailing); e != io.EOF {
+		return nil, errors.New("InvalidInput")
+	}
+	return args, nil
 }

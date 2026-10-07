@@ -144,3 +144,15 @@ func TestMCPAuthenticationPrecedesProtocol(t *testing.T) {
 		t.Fatal("auth reached provider")
 	}
 }
+
+func TestMCPDuplicateSelectorsRejected(t *testing.T) {
+	f := &observedReader{}
+	s, ctx := mcpSession(t, f)
+	r, e := s.CallTool(ctx, &mcp.CallToolParams{Name: "cloud_identity_get", Arguments: json.RawMessage(`{"envCode":"other","envCode":"dev"}`)})
+	if e == nil && !r.IsError {
+		t.Fatal("duplicate selectors accepted")
+	}
+	if f.calls.Load() != 0 {
+		t.Fatal("duplicates reached provider")
+	}
+}
