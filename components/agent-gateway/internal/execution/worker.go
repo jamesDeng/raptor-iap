@@ -121,6 +121,13 @@ func (s *Store) Release(ctx context.Context, id, owner, status string, checkpoin
 		return e
 	}
 	defer tx.Rollback(ctx)
+	var mode string
+	if e = tx.QueryRow(ctx, "SELECT runtime_mode FROM gateway.executions WHERE request_id=$1", id).Scan(&mode); e != nil {
+		return e
+	}
+	if mode == "live" {
+		return ErrInvalid
+	}
 	var current, heldBy *string
 	if e = tx.QueryRow(ctx, "SELECT request_id::text,owner FROM gateway.runtime_slot WHERE id=1 FOR UPDATE").Scan(&current, &heldBy); e != nil {
 		return e

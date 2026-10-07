@@ -19,9 +19,9 @@ type Store struct {
 
 func (s *Store) Get(ctx context.Context, id string) (Execution, error) {
 	var x Execution
-	var input, skills, checkpoint []byte
+	var input, skills, checkpoint, result []byte
 	var attempt *string
-	e := s.Pool.QueryRow(ctx, "SELECT request_id::text,status,attempt_id::text,input,applied_skills,checkpoint,cleanup,recovery_needed,updated_at FROM gateway.executions WHERE request_id=$1", id).Scan(&x.RequestID, &x.Status, &attempt, &input, &skills, &checkpoint, &x.Cleanup, &x.RecoveryNeeded, &x.UpdatedAt)
+	e := s.Pool.QueryRow(ctx, "SELECT request_id::text,status,attempt_id::text,input,applied_skills,checkpoint,cleanup,recovery_needed,updated_at,runtime_mode,stage,result,checkpoint_status,cleanup_status,failure_code FROM gateway.executions WHERE request_id=$1", id).Scan(&x.RequestID, &x.Status, &attempt, &input, &skills, &checkpoint, &x.Cleanup, &x.RecoveryNeeded, &x.UpdatedAt, &x.RuntimeMode, &x.Stage, &result, &x.CheckpointStatus, &x.CleanupStatus, &x.FailureCode)
 	if e != nil {
 		return x, e
 	}
@@ -31,6 +31,11 @@ func (s *Store) Get(ctx context.Context, id string) (Execution, error) {
 	json.Unmarshal(input, &x.Input)
 	json.Unmarshal(skills, &x.AppliedSkills)
 	json.Unmarshal(checkpoint, &x.Checkpoint)
+	if len(result) > 0 {
+		if err := json.Unmarshal(result, &x.Result); err != nil {
+			return x, ErrUnavailable
+		}
+	}
 	return x, nil
 }
 func (s *Store) Receive(ctx context.Context, id string) (Execution, error) {
@@ -123,7 +128,7 @@ func (s *Store) AppendEvent(ctx context.Context, v ProgressEvent) error {
 	return tx.Commit(ctx)
 }
 func (s *Store) Events(ctx context.Context, id string, after int64) ([]ProgressEvent, error) {
-	rows, e := s.Pool.Query(ctx, "SELECT payload FROM gateway.events WHERE request_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 200", id, after)
+	rows, e := s.Pool.Query(ctx, "SELECT payload FROM gateway.events WHERE request_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 101", id, after)
 	if e != nil {
 		return nil, e
 	}

@@ -18,12 +18,14 @@ func Migrate(ctx context.Context, p *pgxpool.Pool) error {
 	if _, err = tx.Exec(ctx, "SET LOCAL ROLE gateway_owner"); err != nil {
 		return err
 	}
-	b, err := migrations.Files.ReadFile("001_initial.sql")
-	if err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, string(b)); err != nil {
-		return err
+	for _, name := range []string{"001_initial.sql", "002_live_runtime.sql"} {
+		b, readErr := migrations.Files.ReadFile(name)
+		if readErr != nil {
+			return readErr
+		}
+		if _, err = tx.Exec(ctx, string(b)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
