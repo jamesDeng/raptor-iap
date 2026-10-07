@@ -11,7 +11,7 @@ import (
 )
 
 func TestAttemptAccessRejectsBroadenedBindingAndRedirect(t *testing.T) {
-	b := AttemptBinding{RequestID: NewID(), AttemptID: NewID(), Operation: "application.question", ObjectKind: "application", ObjectCode: "gateway", EnvCode: "rdev.ali", SkillsCommit: strings.Repeat("a", 40), Model: "gpt-5.6-luna"}
+	b := AttemptBinding{DefinitionSHA256: strings.Repeat("a", 64), ClusterID: "cluster", RequestID: NewID(), AttemptID: NewID(), Operation: "application.question", ObjectKind: "application", ObjectCode: "gateway", EnvCode: "rdev.ali", SkillsCommit: strings.Repeat("a", 40), Model: "gpt-5.6-luna"}
 	expires := time.Now().Add(time.Minute)
 	mode := "valid"
 	calls := 0
@@ -30,6 +30,7 @@ func TestAttemptAccessRejectsBroadenedBindingAndRedirect(t *testing.T) {
 		if mode == "broadened" {
 			binding.EnvCode = "other"
 		}
+		w.WriteHeader(201)
 		json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"credential": strings.Repeat("q", 32), "expiresAt": expires, "binding": binding, "raptorMcpUrl": "https://raptor.invalid/mcp", "infraMcpUrl": "https://infra.invalid/mcp"}})
 	}))
 	defer s.Close()

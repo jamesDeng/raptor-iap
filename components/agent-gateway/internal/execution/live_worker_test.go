@@ -58,10 +58,11 @@ func workerFixture(t *testing.T) (*LiveWorker, *Execution, *liveDriver, *liveAcc
 	s := testStore(t)
 	id := NewID()
 	s.Receive(context.Background(), id)
-	definition, _ := json.Marshal(map[string]any{"operation": "application.question", "object": map[string]string{"kind": "application", "code": "app"}, "envCode": "rdev.ali", "parameters": map[string]string{"question": "Is gateway healthy?", "model": "gpt-5.6-luna"}})
+	in := producerInput(t)
+	in.RequestID = id
 	driver := &liveDriver{cleanup: true}
 	access := &liveAccess{}
-	w := &LiveWorker{Store: s, Owner: "owner", Lease: &fixtureLease{valid: true}, Runtime: driver, Access: access, Raptor: questionRaptor{ExecutionInput{RequestID: id, Definition: definition, Skills: SkillsVersion{Tag: "v1", CommitSHA: "0123456789012345678901234567890123456789"}}}, Bootstrap: verifiedCheckpoint()}
+	w := &LiveWorker{Store: s, Owner: "owner", Lease: &fixtureLease{valid: true}, Runtime: driver, Access: access, Raptor: questionRaptor{in}, Bootstrap: verifiedCheckpoint()}
 	x, _ := s.Get(context.Background(), id)
 	return w, &x, driver, access
 }

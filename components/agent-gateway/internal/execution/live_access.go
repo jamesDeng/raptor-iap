@@ -31,7 +31,7 @@ func (c HTTPRaptor) Issue(ctx context.Context, b AttemptBinding, hash string, ex
 		return out, ErrUnavailable
 	}
 	v := envelope.Data
-	if v.Binding != b || len(v.Credential) < 32 || len(v.Credential) > 4096 || v.ExpiresAt.Before(time.Now()) || v.ExpiresAt.After(expires) {
+	if v.Binding != b || v.Binding.DefinitionSHA256 != hash || len(v.Credential) < 32 || len(v.Credential) > 4096 || v.ExpiresAt.Before(time.Now()) || v.ExpiresAt.After(expires) {
 		return out, ErrUnavailable
 	}
 	return AgentAccess{Credential: v.Credential, ExpiresAt: v.ExpiresAt, Binding: v.Binding, RaptorMcpURL: v.RaptorMcpURL, InfraMcpURL: v.InfraMcpURL}, nil
@@ -57,7 +57,7 @@ func (c HTTPRaptor) accessCall(ctx context.Context, method, route string, body [
 		return nil, ErrUnavailable
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 && resp.StatusCode != 204 {
+	if (method == "POST" && resp.StatusCode != 201) || (method == "DELETE" && resp.StatusCode != 200 && resp.StatusCode != 204) {
 		return nil, ErrUnavailable
 	}
 	raw, e := io.ReadAll(io.LimitReader(resp.Body, 65537))

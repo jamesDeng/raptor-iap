@@ -8,14 +8,16 @@ import (
 )
 
 type AttemptBinding struct {
-	RequestID    string `json:"requestId"`
-	AttemptID    string `json:"attemptId"`
-	Operation    string `json:"operation"`
-	ObjectKind   string `json:"objectKind"`
-	ObjectCode   string `json:"objectCode"`
-	EnvCode      string `json:"envCode"`
-	SkillsCommit string `json:"skillsCommit"`
-	Model        string `json:"model"`
+	DefinitionSHA256 string `json:"definitionSha256,omitempty"`
+	ClusterID        string `json:"clusterId,omitempty"`
+	RequestID        string `json:"requestId"`
+	AttemptID        string `json:"attemptId"`
+	Operation        string `json:"operation"`
+	ObjectKind       string `json:"objectKind"`
+	ObjectCode       string `json:"objectCode"`
+	EnvCode          string `json:"envCode"`
+	SkillsCommit     string `json:"skillsCommit"`
+	Model            string `json:"model"`
 }
 type RuntimeIntent struct {
 	Kind string `json:"kind"`

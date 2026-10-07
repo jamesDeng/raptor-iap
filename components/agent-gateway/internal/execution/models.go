@@ -22,10 +22,11 @@ type SkillsVersion struct {
 	CommitSHA string `json:"commitSha"`
 }
 type ExecutionInput struct {
-	RequestID   string          `json:"requestId"`
-	Definition  json.RawMessage `json:"definition"`
-	Environment json.RawMessage `json:"environment"`
-	Skills      SkillsVersion   `json:"skills"`
+	RequestID        string          `json:"requestId"`
+	DefinitionSHA256 string          `json:"definitionSha256,omitempty"`
+	Definition       json.RawMessage `json:"definition"`
+	Environment      json.RawMessage `json:"environment"`
+	Skills           SkillsVersion   `json:"skills"`
 }
 type Execution struct {
 	RuntimeMode      string          `json:"runtimeMode"`

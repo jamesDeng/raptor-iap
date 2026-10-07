@@ -78,24 +78,46 @@ func (w *LiveWorker) authorized(ctx context.Context) error {
 }
 func ParseLiveQuestion(in ExecutionInput, attempt string) (AttemptBinding, string, string, error) {
 	var d struct {
-		Operation  string                           `json:"operation"`
-		Object     struct{ Kind, Code string }      `json:"object"`
-		EnvCode    string                           `json:"envCode"`
-		Parameters struct{ Question, Model string } `json:"parameters"`
+		Type       string                      `json:"type"`
+		Model      string                      `json:"model"`
+		Object     struct{ Kind, Code string } `json:"object"`
+		EnvCode    string                      `json:"envCode"`
+		Operations []struct {
+			Name       string                     `json:"name"`
+			Parameters map[string]json.RawMessage `json:"parameters"`
+		} `json:"operations"`
+		Skills SkillsVersion `json:"skills"`
 	}
-	if json.Unmarshal(in.Definition, &d) != nil || d.Parameters.Question == "" || !utf8.ValidString(d.Parameters.Question) || utf8.RuneCountInString(d.Parameters.Question) > 2000 || len(d.Parameters.Question) > 8192 {
+	var env struct {
+		Config struct {
+			ClusterID string `json:"ackClusterId"`
+		} `json:"config"`
+	}
+	if json.Unmarshal(in.Definition, &d) != nil || json.Unmarshal(in.Environment, &env) != nil || d.Type != "agent" || len(d.Operations) != 1 || d.Skills != in.Skills || env.Config.ClusterID == "" {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
-	b := AttemptBinding{RequestID: in.RequestID, AttemptID: attempt, Operation: d.Operation, ObjectKind: d.Object.Kind, ObjectCode: d.Object.Code, EnvCode: d.EnvCode, SkillsCommit: in.Skills.CommitSHA, Model: d.Parameters.Model}
+	var question string
+	if len(d.Operations[0].Parameters) != 1 || json.Unmarshal(d.Operations[0].Parameters["question"], &question) != nil || question == "" || !utf8.ValidString(question) || utf8.RuneCountInString(question) > 2000 || len(question) > 8192 {
+		return AttemptBinding{}, "", "", ErrInvalid
+	}
+	var canonical any
+	if json.Unmarshal(in.Definition, &canonical) != nil {
+		return AttemptBinding{}, "", "", ErrInvalid
+	}
+	raw, e := json.Marshal(canonical)
+	if e != nil {
+		return AttemptBinding{}, "", "", ErrInvalid
+	}
+	sum := sha256.Sum256(raw)
+	hash := hex.EncodeToString(sum[:])
+	if !shaPattern.MatchString(in.DefinitionSHA256) || hash != in.DefinitionSHA256 {
+		return AttemptBinding{}, "", "", ErrInvalid
+	}
+	b := AttemptBinding{RequestID: in.RequestID, AttemptID: attempt, Operation: d.Operations[0].Name, ObjectKind: d.Object.Kind, ObjectCode: d.Object.Code, EnvCode: d.EnvCode, SkillsCommit: in.Skills.CommitSHA, Model: d.Model, DefinitionSHA256: hash, ClusterID: env.Config.ClusterID}
 	if !b.valid() {
 		return b, "", "", ErrInvalid
 	}
-	raw, e := json.Marshal(in)
-	if e != nil {
-		return b, "", "", ErrInvalid
-	}
-	hash := sha256.Sum256(raw)
-	return b, d.Parameters.Question, hex.EncodeToString(hash[:]), nil
+	return b, question, hash, nil
 }
 func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e := w.authorized(ctx); e != nil {
