@@ -5,7 +5,7 @@ class Publication(unittest.TestCase):
   w=yaml.load((ROOT/'.github/workflows/platform-images.yml').read_text(),Loader=yaml.BaseLoader)
   self.assertIn('publish',w['jobs'])
   j=w['jobs']['publish'];self.assertIn("github.event_name != 'pull_request'",j['if']);self.assertIn("github.ref == 'refs/heads/main'",j['if'])
-  self.assertEqual(j['needs'],['build-check','release-contracts','postgres14-acceptance']);self.assertEqual(j['permissions']['packages'],'write')
+  self.assertEqual(j['needs'],['build-check','release-contracts','postgres14-acceptance','infra-read-tests','harness-tests']);self.assertEqual(j['permissions']['packages'],'write')
   text=yaml.dump(j);self.assertIn('GITHUB_TOKEN',text);self.assertNotIn('GHCR_TOKEN',text);self.assertIn('linux/amd64',text)
   build=w['jobs']['build-check'];self.assertNotIn('write',yaml.dump(build.get('permissions',{})))
   self.assertEqual(w['permissions'],{'contents':'read'})

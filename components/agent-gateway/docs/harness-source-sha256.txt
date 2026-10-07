@@ -7,7 +7,7 @@
 ee214b77a2944f9e7b7c7d45d054832b66dbfd23f3ad1bbd6cd858b31092034c  ../agent-harness/pi-adapter.mjs
 49895a049756cf76157f41ea397b59324b08a817981689a8eb541eba1eadb9d8  ../agent-harness/runner.mjs
 fb7c7867113cd33351baacc3cbbaa1a6d6c0ac301b5bd2fd0842301e0e366993  ../agent-harness/progress.mjs
-fbe7bc47ced08abf8ffaf4bc4a4b8abc7943297420fa45f83997993af5a28eda  ../agent-harness/live-contract.mjs
+0c483e8fef85e90d2d0b9b30bef5ad1a29df80c66bbaa08bdb9505c43b4e1f21  ../agent-harness/live-contract.mjs
 3cf5de8bdd5fd827cf3285f64efa4525142ad86b7ad208d1dc3af95ca7e8c39b  ../agent-harness/live-runner.mjs
 4e7a25de6902163403f06281d109abbac545513b4a4916d6878dde635140b920  ../agent-harness/live-question.mjs
-040ccb5904d4bb42c86e657e383418a77e296232fdd76f81552a69fa984ecc9f  ../agent-harness/mcp-runtime.mjs
+7ab2e9b7f11b1ca56028f9a599232769c4fe4b2b2f4b2d8e74e1d12810600a50  ../agent-harness/mcp-runtime.mjs

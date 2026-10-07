@@ -6,7 +6,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sandbox-compat ./cmd/sandbox-compat
 FROM alpine:3.23
 RUN apk add --no-cache ca-certificates git && addgroup -g 10001 app && adduser -D -u 10001 -G app app
 COPY --from=build /out/ /usr/local/bin/

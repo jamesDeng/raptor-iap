@@ -17,3 +17,14 @@ publicFrontend: false
 # Optional private caller credentials; backend only, never chart-supplied values.
 infraReader:
   secretName: ''
+
+# Secret references only; private values are supplied outside Git.
+agentAccess:
+  secretName: ''
+  raptorMcpURL: https://api.rdev.raptor-iap.top/mcp
+  infraMcpURL: https://infra-api.raptor-iap.top/mcp
+gatewayLive:
+  enabled: false
+  serviceURL: ''
+  configSecretName: ''
+  controllerSecretName: ''

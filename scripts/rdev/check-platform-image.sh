@@ -5,7 +5,7 @@ image=${1:?image required}
 component=${2:?raptor or gateway required}
 case "$component" in
   raptor) binaries=(backend frontend open-api admin); required=backend ;;
-  gateway) binaries=(gateway); required=gateway ;;
+  gateway) binaries=(gateway sandbox-compat); required=gateway ;;
   *) exit 2 ;;
 esac
 user=$(docker image inspect --format '{{.Config.User}}' "$image")
@@ -17,6 +17,9 @@ done
 if docker run --rm --network none --entrypoint "/usr/local/bin/$required" "$image" > /dev/null 2>&1; then
   echo 'Database owner unexpectedly started without configuration' >&2
   exit 1
+fi
+if [[ "$component" == gateway ]]; then
+  docker run --rm --network none --entrypoint /bin/sh "$image" -ec 'for file in package.json package-lock.json live-runner.mjs live-contract.mjs mcp-runtime.mjs; do test -r "/opt/raptor-harness/$file"; done'
 fi
 if [[ "$component" == raptor ]]; then
   if docker run --rm --network none --entrypoint /usr/local/bin/open-api "$image" > /dev/null 2>&1; then
