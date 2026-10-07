@@ -64,7 +64,7 @@ func main() {
 	}
 	h.Skills.Source = skills.GitSource{Repository: os.Getenv("RAPTOR_REPOSITORY")}
 	if gatewayURL := os.Getenv("GATEWAY_URL"); gatewayURL != "" {
-		client := requests.HTTPGateway{BaseURL: gatewayURL, Username: os.Getenv("SERVICE_USERNAME"), Password: os.Getenv("SERVICE_PASSWORD")}
+		client := requests.HTTPGateway{BaseURL: gatewayURL, AllowClusterHTTP: os.Getenv("RAPTOR_CLUSTER_HTTP") == "true", Username: os.Getenv("SERVICE_USERNAME"), Password: os.Getenv("SERVICE_PASSWORD")}
 		h.Requests.Gateway = client
 		go func() {
 			ticker := time.NewTicker(time.Second)

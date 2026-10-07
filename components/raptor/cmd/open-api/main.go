@@ -17,7 +17,7 @@ func main() {
 	if base == "" {
 		base = "http://127.0.0.1:8871"
 	}
-	h, e := openapi.NewHandler(openapi.Client{BaseURL: base, Username: user, Password: password})
+	h, e := openapi.NewHandler(openapi.Client{BaseURL: base, AllowClusterHTTP: os.Getenv("RAPTOR_CLUSTER_HTTP") == "true", Username: user, Password: password})
 	if e != nil {
 		log.Fatal("backend configuration invalid")
 	}

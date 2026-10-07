@@ -247,3 +247,25 @@ func TestVerifiedCheckpointSurvivesCrashBeforeCleanup(t *testing.T) {
 		t.Fatal(got.CheckpointStatus)
 	}
 }
+
+func TestLateCancelAfterConfirmedCompletionIsIdempotent(t *testing.T) {
+	s, x, _ := liveAttempt(t)
+	ctx := context.Background()
+	if _, e := s.Pool.Exec(ctx, `UPDATE gateway.executions SET status='completed',cleanup_status='{"sandboxAbsent":true,"keyAbsent":true,"accessRevoked":true}',recovery_needed=false,checkpoint_status='verified',result='{"answer":"retained"}' WHERE request_id=$1`, x.RequestID); e != nil {
+		t.Fatal(e)
+	}
+	sig := Signal{ID: NewID(), RequestID: x.RequestID, Kind: "cancel", Payload: json.RawMessage(`{}`)}
+	for i := 0; i < 2; i++ {
+		if e := s.DeliverSignal(ctx, sig); e != nil {
+			t.Fatal("late cancellation stranded", e)
+		}
+	}
+	got, e := s.Get(ctx, x.RequestID)
+	var cleanup struct {
+		AccessRevoked bool `json:"accessRevoked"`
+	}
+	json.Unmarshal(got.CleanupStatus, &cleanup)
+	if e != nil || got.Status != "cancelled" || got.Result == nil || got.Result.Answer != "retained" || !cleanup.AccessRevoked {
+		t.Fatal("late cancel lost terminal evidence", e)
+	}
+}

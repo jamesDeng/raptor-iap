@@ -28,12 +28,24 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 	default:
 		return ErrInvalid
 	}
-	if mode == "live" && (status == "completed" || status == "failed" || status == "cancelled") {
-		var duplicate bool
-		if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway.signals WHERE id=$1)", v.ID).Scan(&duplicate); e != nil || !duplicate {
+
+	lateCancel := mode == "live" && (status == "completed" || status == "failed" || status == "cancelled")
+	if lateCancel {
+		var cleanup []byte
+		var recovery bool
+		if e = tx.QueryRow(ctx, "SELECT cleanup_status,recovery_needed FROM gateway.executions WHERE request_id=$1", v.RequestID).Scan(&cleanup, &recovery); e != nil {
+			return ErrUnavailable
+		}
+		var confirmed struct {
+			SandboxAbsent bool `json:"sandboxAbsent"`
+			KeyAbsent     bool `json:"keyAbsent"`
+			AccessRevoked bool `json:"accessRevoked"`
+		}
+		if json.Unmarshal(cleanup, &confirmed) != nil || recovery || !confirmed.SandboxAbsent || !confirmed.KeyAbsent || !confirmed.AccessRevoked {
 			return ErrInvalid
 		}
 	}
+
 	tag, e := tx.Exec(ctx, "INSERT INTO gateway.signals(id,request_id,kind,payload) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", v.ID, v.RequestID, v.Kind, v.Payload)
 	if e != nil {
 		return ErrUnavailable
@@ -51,6 +63,17 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 		bb, _ := json.Marshal(b)
 		if id != v.RequestID || kind != v.Kind || !bytes.Equal(aa, bb) {
 			return ErrInvalid
+		}
+	}
+	if lateCancel {
+		if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET status='cancelled',failure_code='Cancelled',updated_at=now() WHERE request_id=$1", v.RequestID); e != nil {
+			return ErrUnavailable
+		}
+		if _, e = tx.Exec(ctx, "UPDATE gateway.attempts SET state='cancelled' WHERE id=(SELECT attempt_id FROM gateway.executions WHERE request_id=$1)", v.RequestID); e != nil {
+			return ErrUnavailable
+		}
+		if _, e = tx.Exec(ctx, "UPDATE gateway.signals SET consumed=true WHERE id=$1", v.ID); e != nil {
+			return ErrUnavailable
 		}
 	}
 	return tx.Commit(ctx)

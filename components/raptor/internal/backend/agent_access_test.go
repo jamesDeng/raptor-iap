@@ -153,7 +153,7 @@ func TestOpaqueRotationExpiryAndRevocationTombstone(t *testing.T) {
 	s, r, hash := accessFixture(t)
 	ctx := context.Background()
 	attempt := domain.NewID()
-	expiry := time.Now().UTC().Add(5 * time.Minute)
+	expiry := time.Now().UTC().Truncate(time.Microsecond).Add(5 * time.Minute + 123*time.Nanosecond)
 	first := issued(t, s, r, hash, attempt, expiry)
 	second := issued(t, s, r, hash, attempt, expiry)
 	if first == second {

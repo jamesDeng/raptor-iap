@@ -93,3 +93,48 @@ func TestCancellationPendingRejectsConcurrentCompletion(t *testing.T) {
 		t.Fatal("concurrent completion defeated cancellation")
 	}
 }
+
+type lateCancelFixture struct{ liveFixture }
+
+func (f *lateCancelFixture) PutRequest(context.Context, string) error { return nil }
+func (f *lateCancelFixture) SendSignal(context.Context, string, json.RawMessage) error {
+	f.execution["status"] = "cancelled"
+	return nil
+}
+func TestActionDelayedOutboxProjectsLateCancelledAnswer(t *testing.T) {
+	s, _, u := setup(t)
+	ctx := context.Background()
+	raw, r := producerExecution(t)
+	_, e := s.Pool.Exec(ctx, `INSERT INTO raptor.objects(id,kind,code,name) VALUES($1,'application',$2,'fixture')`, domain.NewID(), r.Definition.Object.Code)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Use the existing fixture environment and preserve the producer's result identities.
+	r.Definition.EnvCode = "adev"
+	created, e := s.Create(ctx, u, "late-cancel", r.Definition)
+	if e != nil {
+		t.Fatal(e)
+	}
+	raw["requestId"] = created.ID
+	result := raw["result"].(map[string]any)
+	result["requestId"] = created.ID
+	for _, item := range result["evidence"].([]any) {
+		identity := item.(map[string]any)["identity"].(map[string]any)
+		identity["envCode"] = "adev"
+		if identity["requestId"] != nil {
+			identity["requestId"] = created.ID
+		}
+	}
+	f := &lateCancelFixture{liveFixture{execution: raw}}
+	s.Gateway = f
+	if e = s.Action(ctx, created.ID, "cancel", ""); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.DispatchPending(ctx, f); e != nil {
+		t.Fatal(e)
+	}
+	v, e := s.View(ctx, created.ID)
+	if e != nil || v.Request.Status != "cancelled" || v.CancellationPending || v.Execution["result"] == nil {
+		t.Fatal("late cancellation lost answer or remained pending", e)
+	}
+}

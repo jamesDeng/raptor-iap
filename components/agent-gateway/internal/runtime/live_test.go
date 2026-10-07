@@ -8,6 +8,9 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/testutil"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -121,5 +124,32 @@ func TestMixedMCPAuthentication(t *testing.T) {
 	}
 	if strings.Contains(string(job.Request), "fixture-only") || strings.Contains(string(job.Request), "opaque-fixture") {
 		t.Fatal("credential exposed as model input")
+	}
+}
+
+func TestPreparationAllowsActualCheckpointRestore(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(prepareCommand, "/tmp/raptor-", root+"/raptor-")
+	script = strings.ReplaceAll(script, `test "$(node --version)" = v22.23.3`, `true`)
+	if out, e := exec.Command("/bin/sh", "-ec", script).CombinedOutput(); e != nil {
+		t.Fatal(e, string(out))
+	}
+	helper, e := filepath.Abs("../../../agent-harness/archive.py")
+	if e != nil {
+		t.Fatal(e)
+	}
+	code := `import sys,importlib.util,json,pathlib
+spec=importlib.util.spec_from_file_location('archive',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+root=pathlib.Path(sys.argv[2]);source=root/'source';source.mkdir();(source/'sessions').mkdir();(source/'auth.json').write_text(json.dumps({'openai':{'type':'oauth','access':'fixture','refresh':'fixture','expires':1}}))
+archive=root/'fixture.tgz';receipt=m.pack_state(source,archive);m.restore_state(archive,root/'raptor-state',receipt['sha256'])
+`
+	if out, e := exec.Command("python3", "-c", code, helper, root).CombinedOutput(); e != nil {
+		t.Fatal(e, string(out))
+	}
+	if _, e := os.Stat(filepath.Join(root, "raptor-state", "auth.json")); e != nil {
+		t.Fatal(e)
 	}
 }

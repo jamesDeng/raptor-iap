@@ -88,6 +88,7 @@ spec:
           env:
             - name: {{ $service.addr }}
               value: {{ printf "0.0.0.0:%d" ($service.port | int) | quote }}
+            - {name: RAPTOR_CLUSTER_HTTP, value: 'true'}
             - {name: RAPTOR_BACKEND_URL, value: 'http://raptor-backend:8871'}
             - name: RAPTOR_OPEN_API_URL
               value: {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}{{ $.Values.gatewayLive.serviceURL | quote }}{{ else }}'http://raptor-open-api:8872'{{ end }}

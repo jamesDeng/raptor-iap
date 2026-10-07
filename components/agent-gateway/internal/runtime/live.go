@@ -205,6 +205,8 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	return h, nil
 }
 
+const prepareCommand = "umask 077; test \"$(node --version)\" = v22.23.3 && python3 --version >/dev/null && test ! -e /tmp/raptor-state && mkdir -p /tmp/raptor-harness /tmp/raptor-private && chmod 700 /tmp/raptor-harness /tmp/raptor-private"
+
 var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "mcp-runtime.mjs"}
 
 func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
@@ -213,7 +215,7 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	if e := n.intent(ctx, b, "prepare", b.AttemptID); e != nil {
 		return e
 	}
-	cmd, e := r.transport.StartCommand(ctx, r.sandbox, CommandSpec{Executable: "/bin/sh", Args: []string{"-c", "umask 077; test \"$(node --version)\" = v22.23.3 && python3 --version >/dev/null && mkdir -p /tmp/raptor-harness /tmp/raptor-state /tmp/raptor-private && chmod 700 /tmp/raptor-harness /tmp/raptor-state /tmp/raptor-private"}, Tag: "prepare-" + b.AttemptID, Deadline: 30 * time.Second})
+	cmd, e := r.transport.StartCommand(ctx, r.sandbox, CommandSpec{Executable: "/bin/sh", Args: []string{"-c", prepareCommand}, Tag: "prepare-" + b.AttemptID, Deadline: 30 * time.Second})
 	if e != nil {
 		return e
 	}

@@ -95,7 +95,7 @@ func question(def domain.RequestInput) bool {
 func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, error) {
 	var out Issued
 	now := s.now()
-	in.ExpiresAt = in.ExpiresAt.UTC()
+	in.ExpiresAt = in.ExpiresAt.UTC().Truncate(time.Microsecond)
 	if !uuid.MatchString(id) || !uuid.MatchString(in.AttemptID) || !in.ExpiresAt.After(now) || in.ExpiresAt.After(now.Add(600*time.Second)) {
 		return out, domain.ErrInvalid
 	}
