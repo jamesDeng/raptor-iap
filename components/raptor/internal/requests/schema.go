@@ -8,12 +8,17 @@ import (
 	operations "github.com/jamesDeng/raptor-iap/components/raptor/operation-schemas"
 	"math"
 	"reflect"
+	"strings"
+	"unicode/utf8"
 )
 
 type Field struct {
 	Type      string   `json:"type"`
 	Minimum   *float64 `json:"minimum,omitempty"`
 	MinLength int      `json:"minLength,omitempty"`
+	MaxLength int      `json:"maxLength,omitempty"`
+	MaxBytes  int      `json:"maxBytes,omitempty"`
+	Multiline bool     `json:"x-multiline,omitempty"`
 	Enum      []any    `json:"enum,omitempty"`
 	Default   any      `json:"default,omitempty"`
 }
@@ -71,6 +76,11 @@ func (s *Service) Validate(in domain.RequestInput) error {
 	if in.Type != "agent" || in.Object.Code == "" || in.Object.Kind == "" || in.EnvCode == "" || len(in.Operations) == 0 || len(in.Operations) > 8 || len(in.Targets) > 0 || in.Operation != "" {
 		return domain.ErrInvalid
 	}
+	for _, op := range in.Operations {
+		if op.Name == "application.question" && (len(in.Operations) != 1 || in.Model != "gpt-5.6-luna") {
+			return domain.ErrInvalid
+		}
+	}
 	schemas := Schemas()
 	for _, op := range in.Operations {
 		def, ok := schemas[op.Name]
@@ -90,7 +100,11 @@ func (s *Service) Validate(in domain.RequestInput) error {
 			switch field.Type {
 			case "string":
 				x, ok := v.(string)
-				if !ok || len(x) < field.MinLength || len(x) > 200 {
+				maxBytes := field.MaxBytes
+				if maxBytes == 0 {
+					maxBytes = 200
+				}
+				if !ok || !utf8.ValidString(x) || len(x) > maxBytes || utf8.RuneCountInString(x) < field.MinLength || (field.MaxLength > 0 && utf8.RuneCountInString(x) > field.MaxLength) || (field.Multiline && strings.TrimSpace(x) == "") {
 					return domain.ErrInvalid
 				}
 			case "integer":

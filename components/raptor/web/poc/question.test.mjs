@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {validateParameters,renderOperationForm,renderProgress} from './app.js';
+const schema={required:['question'],properties:{question:{type:'string',minLength:1,maxLength:2000,maxBytes:8192,'x-multiline':true}}};
+test('question uses Unicode code points and rejects whitespace/oversize',()=>{assert.deepEqual(validateParameters(schema,{question:'😀'.repeat(2000)}),[]);for(const question of ['  ','a'.repeat(2001)])assert.ok(validateParameters(schema,{question}).length);});
+function element(tag){return {tag,children:[],textContent:'',append(...children){this.children.push(...children)},replaceChildren(...children){this.children=children},addEventListener(){}}}
+function dom(){const hosts=new Map();global.document={createElement:element,getElementById(id){if(!hosts.has(id))hosts.set(id,element('div'));return hosts.get(id)}};return hosts}
+test('question renders as a multiline field',()=>{const hosts=dom();try{renderOperationForm(schema);assert.equal(hosts.get('operation-fields').children[0].children[0].tag,'textarea')}finally{delete global.document}});
+test('missing evidence is unverified rather than simulated',()=>{const hosts=dom();try{renderProgress([{kind:'progress',summary:'unknown'}]);assert.match(hosts.get('progress').children[0].children[0].textContent,/unverified/)}finally{delete global.document}});
+
+test('answer stays plain text and cleanup is independent',async()=>{const hosts=dom();try{const app=await import('./app.js');assert.equal(typeof app.renderExecutionResult,'function');app.renderExecutionResult({request:{definition:{model:'gpt-5.6-luna',operations:[{name:'application.question'}],skills:{tag:'selected'}}},executionAvailable:false,lastSuccessfulSyncAt:'2026-10-07T00:00:00Z',execution:{runtimeMode:'live',result:{answer:'<script>not executed</script>',actualModel:'gpt-5.6-luna'},checkpointStatus:'failed',cleanupStatus:'unknown'}});assert.equal(hosts.get('answer').textContent,'<script>not executed</script>');assert.match(hosts.get('lifecycle').textContent,/cleanup: unknown/i);assert.match(hosts.get('answer-identity').textContent,/Last saved/)}finally{delete global.document}});

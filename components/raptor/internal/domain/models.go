@@ -52,6 +52,7 @@ type RestartTarget struct {
 }
 type RequestInput struct {
 	Type       string          `json:"type"`
+	Model      string          `json:"model,omitempty"`
 	Object     ObjectRef       `json:"object"`
 	EnvCode    string          `json:"envCode"`
 	Operations []Operation     `json:"operations"`
@@ -81,6 +82,7 @@ type Approval struct {
 	Guidance  json.RawMessage `json:"guidance"`
 }
 type Event struct {
+	AttemptID    string          `json:"attemptId,omitempty"`
 	Sequence     int64           `json:"sequence"`
 	RequestID    string          `json:"requestId"`
 	Kind         string          `json:"kind"`

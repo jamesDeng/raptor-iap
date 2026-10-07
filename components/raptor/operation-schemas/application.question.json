@@ -1,0 +1,5 @@
+{
+ "x-operation":"application.question", "x-object-kind":"application", "type":"object",
+ "required":["question"], "additionalProperties":false,
+ "properties":{"question":{"type":"string","minLength":1,"maxLength":2000,"maxBytes":8192,"x-multiline":true}}
+}
