@@ -58,10 +58,12 @@ class BackendSecret(unittest.TestCase):
   for d in docs:
    c=d['spec']['template']['spec']['containers'][0];refs=[x['secretRef']['name'] for x in c.get('envFrom',[])]
    self.assertNotIn('infra-reader-auth',refs,'reader Secret must not overwrite unrelated environment variables')
-   keys={x['name']:x.get('valueFrom',{}).get('secretKeyRef',{}) for x in c.get('env',[]) if x['name'].startswith('INFRA_') and x['name']!='INFRA_AUTH_HEADER'}
+   keys={x['name']:x.get('valueFrom',{}).get('secretKeyRef',{}) for x in c.get('env',[]) if x['name'].startswith('INFRA_') and x['name'] not in {'INFRA_AUTH_HEADER','INFRA_AGENT_MCP_URL'}}
    self.assertEqual(set(keys),{'INFRA_USERNAME','INFRA_PASSWORD'} if d['metadata']['name']=='raptor-backend' else set())
    for key,ref in keys.items():self.assertEqual(ref,{'name':'infra-reader-auth','key':key})
    if d['metadata']['name']=='raptor-backend':
     self.assertIn('raptor-runtime',refs)
+    if any(x['name']=='INFRA_AGENT_MCP_URL' for x in c['env']):
+     self.assertEqual(next(x for x in c['env'] if x['name']=='INFRA_AGENT_MCP_URL'),{'name':'INFRA_AGENT_MCP_URL','value':'https://infra-api.raptor-iap.top/mcp'})
     self.assertEqual(next(x['value'] for x in c['env'] if x['name']=='INFRA_AUTH_HEADER'),'X-Infra-Authorization')
   self.assertNotIn('kind: Secret',r.stdout)
