@@ -11,7 +11,7 @@ class DiscoveryPackage(unittest.TestCase):
   self.assertEqual(p['vpcConfig']['vpcId'],'vpc-t4n4fi6r1a7bi6n93ftq3')
   self.assertEqual(p['vpcConfig']['vSwitchIds'],['vsw-t4nop9qf6v46gw2sa8l7d'])
   self.assertEqual(p['vpcConfig']['securityGroupId'],'${env(INFRA_SECURITY_GROUP_ID)}')
-  self.assertEqual(p['triggers'][0]['triggerConfig'],{'authType':'function','methods':['GET']})
+  self.assertEqual(p['triggers'][0]['triggerConfig'],{'authType':'function','methods':['GET','POST']})
   self.assertEqual(p['concurrencyConfig']['reservedConcurrency'],2)
   self.assertNotIn('provisionConfig',p)
   self.assertEqual(p['environmentVariables']['INFRA_AUTH_HEADER'],'X-Infra-Authorization')

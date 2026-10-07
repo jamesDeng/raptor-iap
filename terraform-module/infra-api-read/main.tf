@@ -113,16 +113,17 @@ resource "alicloud_api_gateway_api" "mcp" {
   }
   service_type = "FunctionCompute"
   fc_service_config {
-    function_version   = "3.0"
-    function_type      = "HttpTrigger"
-    region             = var.region
-    function_name      = var.function_name
-    function_base_url  = var.trigger_url
-    path               = "/mcp"
-    method             = "POST"
-    only_business_path = true
-    arn_role           = alicloud_ram_role.invoke.arn
-    timeout            = 30000
+    content_type_category = "CLIENT"
+    function_version      = "3.0"
+    function_type         = "HttpTrigger"
+    region                = var.region
+    function_name         = var.function_name
+    function_base_url     = var.trigger_url
+    path                  = "/mcp"
+    method                = "POST"
+    only_business_path    = true
+    arn_role              = alicloud_ram_role.invoke.arn
+    timeout               = 30000
   }
   stage_names = ["RELEASE"]
   depends_on  = [alicloud_ram_role_policy_attachment.invoke]

@@ -39,8 +39,8 @@ func TestMCPDeploymentBoundary(t *testing.T) {
 		t.Fatal(e)
 	}
 	s := string(b)
-	for _, v := range []string{`resource "alicloud_api_gateway_api" "mcp"`, `method   = "POST"`, `path     = "/mcp"`, `mode     = "PASSTHROUGH"`} {
-		if !strings.Contains(s, v) {
+	for _, v := range []string{`resource "alicloud_api_gateway_api" "mcp"`, `content_type_category = "CLIENT"`, `method   = "POST"`, `path     = "/mcp"`, `mode     = "PASSTHROUGH"`} {
+		if !strings.Contains(strings.Join(strings.Fields(s), " "), strings.Join(strings.Fields(v), " ")) {
 			t.Fatal("missing MCP route: " + v)
 		}
 	}
