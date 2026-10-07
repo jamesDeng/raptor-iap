@@ -16,3 +16,6 @@ publicFrontend: true
 
 infraReader:
   secretName: infra-reader-auth
+
+agentAccess:
+  secretName: raptor-agent-introspection
