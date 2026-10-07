@@ -22,7 +22,7 @@ type PublicExecution struct {
 	UpdatedAt        *time.Time           `json:"updatedAt,omitempty"`
 	Result           *PublicResult        `json:"result,omitempty"`
 	CheckpointStatus string               `json:"checkpointStatus,omitempty"`
-	CleanupStatus    string               `json:"cleanupStatus,omitempty"`
+	CleanupStatus    *PublicCleanup       `json:"cleanupStatus,omitempty"`
 	FailureCode      string               `json:"failureCode,omitempty"`
 	Cleanup          string               `json:"cleanup,omitempty"`
 }
@@ -34,11 +34,22 @@ type PublicResult struct {
 	Answer        string           `json:"answer"`
 	Evidence      []PublicEvidence `json:"evidence,omitempty"`
 	GeneratedAt   *time.Time       `json:"generatedAt,omitempty"`
-	Usage         *PublicUsage     `json:"usage,omitempty"`
+	Usage         []PublicUsage    `json:"usage,omitempty"`
 }
+type PublicCleanup struct {
+	SandboxAbsent bool `json:"sandboxAbsent"`
+	KeyAbsent     bool `json:"keyAbsent"`
+	AccessRevoked bool `json:"accessRevoked"`
+}
+
+func (c *PublicCleanup) confirmed() bool {
+	return c != nil && c.SandboxAbsent && c.KeyAbsent && c.AccessRevoked
+}
+
 type PublicUsage struct {
-	InputTokens  int64 `json:"inputTokens"`
-	OutputTokens int64 `json:"outputTokens"`
+	Input       int64 `json:"input"`
+	Output      int64 `json:"output"`
+	TotalTokens int64 `json:"totalTokens"`
 }
 type PublicEvidence struct {
 	Server       string           `json:"server"`
@@ -49,6 +60,7 @@ type PublicEvidence struct {
 	State        json.RawMessage  `json:"state"`
 }
 type EvidenceIdentity struct {
+	RequestID  string `json:"requestId,omitempty"`
 	EnvCode    string `json:"envCode,omitempty"`
 	ObjectCode string `json:"objectCode,omitempty"`
 	AppCode    string `json:"appCode,omitempty"`
@@ -105,33 +117,17 @@ func publicExecution(raw map[string]any, request domain.Request) (map[string]any
 			}
 		}
 	}
-	if isQuestion(request.Definition) && v.RuntimeMode == "live" && v.Status == "cancelled" && (v.CleanupStatus != "confirmed" || v.RecoveryNeeded) {
+	if isQuestion(request.Definition) && v.RuntimeMode == "live" && v.Result != nil && !validQuestionResult(v.Result, request) {
+		return nil, domain.ErrUnavailable
+	}
+	if isQuestion(request.Definition) && v.RuntimeMode == "live" && v.Status == "cancelled" && (!v.CleanupStatus.confirmed() || v.RecoveryNeeded) {
 		return nil, domain.ErrUnavailable
 	}
 	if isQuestion(request.Definition) && v.RuntimeMode == "live" && v.Status == "completed" {
-		if v.Result == nil || v.Result.ActualModel != request.Definition.Model || v.Result.SelectedModel != request.Definition.Model || v.CheckpointStatus != "verified" || v.CleanupStatus != "confirmed" || v.RecoveryNeeded {
+		if v.Result == nil || v.Result.ActualModel != request.Definition.Model || v.Result.SelectedModel != request.Definition.Model || v.CheckpointStatus != "verified" || !v.CleanupStatus.confirmed() || v.RecoveryNeeded {
 			return nil, domain.ErrUnavailable
 		}
-		contextRead, identityRead, discoveryRead, statusRead := false, false, false, false
-		for _, o := range v.Result.Evidence {
-			if o.Server == "raptor" && o.Tool == "request_get" && o.EvidenceMode == "live" && !o.ObservedAt.IsZero() && o.Identity.EnvCode == request.Definition.EnvCode && o.Identity.ObjectCode == request.Definition.Object.Code {
-				contextRead = true
-			}
-			if o.Server != "infra" || o.EvidenceMode != "live" || o.ObservedAt.IsZero() {
-				continue
-			}
-			switch o.Tool {
-			case "cloud_identity_get":
-				identityRead = true
-			case "deployments_list":
-				discoveryRead = true
-			case "deployment_status_get":
-				statusRead = o.Identity.EnvCode == request.Definition.EnvCode && o.Identity.AppCode == request.Definition.Object.Code && o.Identity.ClusterID != "" && o.Identity.Namespace != "" && o.Identity.Name != "" && o.Identity.UID != ""
-			}
-		}
-		if !contextRead || !identityRead || !discoveryRead || !statusRead {
-			return nil, domain.ErrUnavailable
-		}
+
 	}
 	b, _ = json.Marshal(v)
 	var out map[string]any
@@ -196,6 +192,12 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 			return old, &oldSync, false, nil
 		}
 	}
+	if control == "cancel_requested" && candidate["status"] == "completed" {
+		if old != nil {
+			return old, &oldSync, false, nil
+		}
+		return nil, nil, false, nil
+	}
 	body, e := json.Marshal(candidate)
 	if e != nil {
 		return nil, nil, false, domain.ErrUnavailable
@@ -214,4 +216,86 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 		return nil, nil, false, domain.ErrUnavailable
 	}
 	return candidate, &synced, true, nil
+}
+
+func validQuestionResult(r *PublicResult, request domain.Request) bool {
+	if r.ActualModel != request.Definition.Model || r.SelectedModel != request.Definition.Model || r.GeneratedAt == nil || r.GeneratedAt.IsZero() {
+		return false
+	}
+	var input, output, total int64
+	const max int64 = 9007199254740991
+	for _, u := range r.Usage {
+		if u.Input < 0 || u.Output < 0 || u.TotalTokens < 0 || u.Input > max-input || u.Output > max-output || u.TotalTokens > max-total {
+			return false
+		}
+		input += u.Input
+		output += u.Output
+		total += u.TotalTokens
+	}
+	contextRead, identityRead, discoveryRead, statusRead := false, false, false, false
+	discovered := map[EvidenceIdentity]bool{}
+	for _, o := range r.Evidence {
+		if o.Server == "infra" && o.Tool == "deployments_list" {
+			id := o.Identity
+			if id.ObjectCode == "" {
+				id.ObjectCode = id.AppCode
+			}
+			id.AppCode = ""
+			discovered[id] = true
+		}
+	}
+	for _, o := range r.Evidence {
+		if o.ObservedAt.IsZero() {
+			return false
+		}
+		id := o.Identity
+		if id.EnvCode != request.Definition.EnvCode {
+			return false
+		}
+		if o.Server == "raptor" {
+			if o.EvidenceMode != "catalog" || id.RequestID != request.ID || id.ObjectCode != request.Definition.Object.Code {
+				return false
+			}
+			switch o.Tool {
+			case "request_get":
+				contextRead = true
+			case "environment_get", "object_get":
+			default:
+				return false
+			}
+			continue
+		}
+		if o.Server != "infra" || o.EvidenceMode != "live" {
+			return false
+		}
+		if o.Tool == "cloud_identity_get" {
+			var st struct {
+				AccountMatches bool `json:"accountMatches"`
+			}
+			if json.Unmarshal(o.State, &st) != nil || !st.AccountMatches {
+				return false
+			}
+			identityRead = true
+			continue
+		}
+		if id.ObjectCode == "" {
+			id.ObjectCode = id.AppCode
+		}
+		id.AppCode = ""
+		if id.ObjectCode != request.Definition.Object.Code || id.ClusterID == "" || id.Namespace == "" || id.Name == "" || id.UID == "" {
+			return false
+		}
+		switch o.Tool {
+		case "deployments_list":
+			discoveryRead = true
+		case "deployment_status_get":
+			if !discovered[id] {
+				return false
+			}
+			statusRead = true
+		default:
+			return false
+		}
+	}
+	return contextRead && identityRead && discoveryRead && statusRead
 }

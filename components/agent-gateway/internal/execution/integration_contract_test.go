@@ -89,4 +89,74 @@ func TestIssueAcceptsCreatedAndRejectsForeignBinding(t *testing.T) {
 	}
 }
 
-func TestCanonicalQuestionRejectsConflictingContext(t *testing.T){for _,which:=range []string{"none","two","model","skills","hash","request","environment"}{t.Run(which,func(t *testing.T){in:=producerInput(t);var d map[string]any;json.Unmarshal(in.Definition,&d);switch which{case "none":d["operations"]=[]any{};case "two":d["operations"]=append(d["operations"].([]any),d["operations"].([]any)[0]);case "model":d["model"]="other";case "skills":in.Skills.CommitSHA="other";case "hash":in.DefinitionSHA256="bad";case "request":in.RequestID="";case "environment":in.Environment=json.RawMessage(`{}`)};in.Definition,_=json.Marshal(d);if _,_,_,e:=ParseLiveQuestion(in,"attempt");e==nil{t.Fatal("conflicting context accepted")}})}}
+func TestCanonicalQuestionRejectsConflictingContext(t *testing.T) {
+	for _, which := range []string{"none", "two", "model", "skills", "hash", "request", "environment"} {
+		t.Run(which, func(t *testing.T) {
+			in := producerInput(t)
+			var d map[string]any
+			json.Unmarshal(in.Definition, &d)
+			switch which {
+			case "none":
+				d["operations"] = []any{}
+			case "two":
+				d["operations"] = append(d["operations"].([]any), d["operations"].([]any)[0])
+			case "model":
+				d["model"] = "other"
+			case "skills":
+				in.Skills.CommitSHA = "other"
+			case "hash":
+				in.DefinitionSHA256 = "bad"
+			case "request":
+				in.RequestID = ""
+			case "environment":
+				in.Environment = json.RawMessage(`{}`)
+			}
+			in.Definition, _ = json.Marshal(d)
+			if _, _, _, e := ParseLiveQuestion(in, "attempt"); e == nil {
+				t.Fatal("conflicting context accepted")
+			}
+		})
+	}
+}
+
+func TestLiveResultEvidenceBound(t *testing.T) {
+	var v struct{ Result LiveResult }
+	json.Unmarshal(producerFixture(t, "gateway-execution.json"), &v)
+	var access struct {
+		Data struct{ Binding AttemptBinding }
+	}
+	json.Unmarshal(producerFixture(t, "raptor-access.json"), &access)
+	for len(v.Result.Evidence) < 33 {
+		v.Result.Evidence = append(v.Result.Evidence, v.Result.Evidence[0])
+	}
+	if ValidateLiveResult(v.Result, access.Data.Binding) == nil {
+		t.Fatal("33 evidence entries accepted")
+	}
+}
+
+func TestLiveResultRejectsBadUsageAndConfiguredCluster(t *testing.T) {
+	for _, which := range []string{"usage", "cluster", "oversized"} {
+		t.Run(which, func(t *testing.T) {
+			var v struct{ Result LiveResult }
+			json.Unmarshal(producerFixture(t, "gateway-execution.json"), &v)
+			var access struct {
+				Data struct{ Binding AttemptBinding }
+			}
+			json.Unmarshal(producerFixture(t, "raptor-access.json"), &access)
+			if which == "oversized" {
+				v.Result.Usage[0].Input = 9007199254740992
+			} else if which == "usage" {
+				v.Result.Usage[0].Input = -1
+			} else {
+				for i := range v.Result.Evidence {
+					if v.Result.Evidence[i].Identity.ClusterID != "" {
+						v.Result.Evidence[i].Identity.ClusterID = "foreign"
+					}
+				}
+			}
+			if ValidateLiveResult(v.Result, access.Data.Binding) == nil {
+				t.Fatal("invalid usage/configured cluster accepted")
+			}
+		})
+	}
+}

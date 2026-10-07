@@ -113,7 +113,7 @@ func (c VerifiedCheckpoint) valid() bool {
 }
 func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 	raw, e := json.Marshal(r)
-	if e != nil || len(raw) > 65536 || containsSensitive(string(raw), known) || !b.valid() || r.RequestID != b.RequestID || r.AttemptID != b.AttemptID || r.SelectedModel != b.Model || r.ActualModel != b.Model || strings.TrimSpace(r.Answer) == "" || len(r.Answer) > 16384 || r.GeneratedAt.IsZero() || len(r.Evidence) > 64 {
+	if e != nil || len(raw) > 65536 || containsSensitive(string(raw), known) || !b.valid() || r.RequestID != b.RequestID || r.AttemptID != b.AttemptID || r.SelectedModel != b.Model || r.ActualModel != b.Model || strings.TrimSpace(r.Answer) == "" || len(r.Answer) > 16384 || r.GeneratedAt.IsZero() || len(r.Evidence) > 32 {
 		return ErrInvalid
 	}
 	seen := map[string]bool{}
@@ -140,7 +140,7 @@ func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 				}
 			} else {
 				id := v.Identity
-				if id.ObjectCode != b.ObjectCode || id.ClusterID == "" || id.Namespace == "" || id.Name == "" || id.UID == "" {
+				if id.ObjectCode != b.ObjectCode || (b.ClusterID != "" && id.ClusterID != b.ClusterID) || id.ClusterID == "" || id.Namespace == "" || id.Name == "" || id.UID == "" {
 					return ErrInvalid
 				}
 				if v.Tool == "deployments_list" {
@@ -160,10 +160,15 @@ func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 			return ErrInvalid
 		}
 	}
+	var input, output, total int64
+	const max int64 = 9007199254740991
 	for _, u := range r.Usage {
-		if u.Input < 0 || u.Output < 0 || u.TotalTokens < 0 {
+		if u.Input < 0 || u.Output < 0 || u.TotalTokens < 0 || u.Input > max-input || u.Output > max-output || u.TotalTokens > max-total {
 			return ErrInvalid
 		}
+		input += u.Input
+		output += u.Output
+		total += u.TotalTokens
 	}
 	return nil
 }

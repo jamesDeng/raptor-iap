@@ -119,17 +119,11 @@ func TestCancelledLiveQuestionNeedsConfirmedCleanup(t *testing.T) {
 	}
 }
 func TestLiveQuestionSuccessCarriesBoundEvidence(t *testing.T) {
-	r := domain.Request{ID: "request", Definition: questionInput(t, "health?", "gpt-5.6-luna")}
-	identity := map[string]any{"envCode": "rdev.ali", "appCode": "existing", "clusterId": "cluster", "namespace": "ns", "name": "app", "uid": "uid"}
-	evidence := []any{map[string]any{"server": "raptor", "tool": "request_get", "evidenceMode": "live", "observedAt": "2026-10-07T01:00:00Z", "identity": map[string]any{"envCode": "rdev.ali", "objectCode": "existing"}}}
-	for _, tool := range []string{"cloud_identity_get", "deployments_list", "deployment_status_get"} {
-		evidence = append(evidence, map[string]any{"server": "infra", "tool": tool, "observedAt": "2026-10-07T01:00:00Z", "evidenceMode": "live", "identity": identity, "state": map[string]any{"readyReplicas": 0}})
-	}
-	raw := map[string]any{"requestId": "request", "attemptId": "attempt", "status": "completed", "runtimeMode": "live", "checkpointStatus": "verified", "cleanupStatus": "confirmed", "result": map[string]any{"requestId": "request", "attemptId": "attempt", "answer": "The deployment is unhealthy at the observation time.", "actualModel": "gpt-5.6-luna", "selectedModel": "gpt-5.6-luna", "evidence": evidence}}
+	raw, r := producerExecution(t)
 	if _, e := publicExecution(raw, r); e != nil {
-		t.Fatal("grounded unhealthy observation rejected", e)
+		t.Fatal(e)
 	}
-	identity["uid"] = ""
+	raw["result"].(map[string]any)["evidence"].([]any)[3].(map[string]any)["identity"].(map[string]any)["uid"] = ""
 	if _, e := publicExecution(raw, r); e == nil {
 		t.Fatal("missing UID accepted")
 	}
