@@ -57,3 +57,9 @@ One minor review finding is deferred: proxy policy `IdentityChanged`/`ScopeMisma
 ## Restart startup wiring
 
 Set `INFRA_ENABLE_RESTART=true` only in a centrally reviewed deployment configuration. Missing/false retains the existing read-only startup; invalid boolean configuration refuses startup. Restart mode uses the existing Basic username/password and configured auth header, validates resources in the provider, exposes the three read tools plus `deployment_restart`, and rejects proxy command routes. Signed request context is not required. Request IDs remain correlation inputs rather than proof of request-specific authorization. No shared function configuration, role, API Gateway route or ACK RBAC was changed by this local wiring.
+
+## Deployment preparation assets
+
+`terraform-module/infra-api-operations` adds only the restart HTTP route to the supplied existing group/function using the supplied existing invocation role; it creates no new role, group, function or grant and leaves `infra-api-read` unchanged. `s.rdev-restart.yaml` is a separate explicit opt-in FC configuration. Neither asset is automatically deployed.
+
+`scripts/restart_rbac.py` renders a review-only namespaced Role/RoleBinding for one exact Deployment and a centrally verified numeric ACK RAM RoleId. It grants only get/patch and never calls kubectl/ACK. Verify the actual role subject before reviewing/applying its output; no guessed subject or broad mutation role is used. This follows ACK's separation of RAM access and Kubernetes authorization and namespace-scoped binding guidance: [official ACK RBAC documentation](https://help.aliyun.com/en/ack/ack-managed-and-ack-dedicated/user-guide/grant-rbac-permissions-to-ram-users-or-ram-roles).
