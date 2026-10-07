@@ -1,0 +1,14 @@
+ALTER TABLE gateway.executions ADD COLUMN IF NOT EXISTS runtime_mode text NOT NULL DEFAULT 'simulated';
+ALTER TABLE gateway.executions ADD COLUMN IF NOT EXISTS stage text NOT NULL DEFAULT '';
+ALTER TABLE gateway.executions ADD COLUMN IF NOT EXISTS result jsonb;
+ALTER TABLE gateway.executions ADD COLUMN IF NOT EXISTS checkpoint_status text NOT NULL DEFAULT 'pending';
+ALTER TABLE gateway.executions ADD COLUMN IF NOT EXISTS cleanup_status jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE gateway.executions ADD COLUMN IF NOT EXISTS failure_code text NOT NULL DEFAULT '';
+ALTER TABLE gateway.attempts ADD COLUMN IF NOT EXISTS binding jsonb;
+ALTER TABLE gateway.attempts ADD COLUMN IF NOT EXISTS definition_sha256 text;
+ALTER TABLE gateway.attempts ADD COLUMN IF NOT EXISTS live_result jsonb;
+ALTER TABLE gateway.attempts ADD COLUMN IF NOT EXISTS verified_checkpoint jsonb;
+CREATE TABLE IF NOT EXISTS gateway.runtime_intents(attempt_id uuid NOT NULL REFERENCES gateway.attempts(id),kind text NOT NULL,name text NOT NULL,resource_id text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(attempt_id,kind));
+CREATE TABLE IF NOT EXISTS gateway.runtime_events(attempt_id uuid NOT NULL REFERENCES gateway.attempts(id),runtime_sequence bigint NOT NULL,payload jsonb NOT NULL,PRIMARY KEY(attempt_id,runtime_sequence));
+CREATE TABLE IF NOT EXISTS gateway.selected_checkpoint(id integer PRIMARY KEY CHECK(id=1),reference jsonb NOT NULL,attempt_id uuid REFERENCES gateway.attempts(id),updated_at timestamptz NOT NULL DEFAULT now());
+GRANT SELECT,INSERT,UPDATE,DELETE ON gateway.runtime_intents,gateway.runtime_events,gateway.selected_checkpoint TO gateway_app;

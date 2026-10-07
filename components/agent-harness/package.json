@@ -1,1 +1,1 @@
-{"name":"raptor-iap-agent-harness","version":"0.1.0","private":true,"type":"module","engines":{"node":">=22.19.0"},"dependencies":{"@earendil-works/pi-coding-agent":"0.99.2"}}
+{"name":"raptor-iap-agent-harness","version":"0.1.0","private":true,"type":"module","engines":{"node":">=22.19.0"},"dependencies":{"@earendil-works/pi-coding-agent":"0.99.2","@earendil-works/pi-mcp":"0.99.2"}}

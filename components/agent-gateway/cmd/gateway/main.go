@@ -40,7 +40,11 @@ func main() {
 	if user == "" || password == "" {
 		log.Fatal("service authentication required")
 	}
-	s := &execution.Store{Pool: p, KnownSecrets: []string{password}}
+	mode, e := runtimeadapter.RuntimeMode(os.Getenv("GATEWAY_RUNTIME_MODE"), os.Getenv("GATEWAY_SIMULATION"))
+	if e != nil {
+		log.Fatal("runtime mode conflict or invalid configuration")
+	}
+	s := &execution.Store{Pool: p, KnownSecrets: []string{password}, RuntimeMode: mode}
 	if path := os.Getenv("GATEWAY_REDACTION_VALUES_FILE"); path != "" {
 		info, e := os.Stat(path)
 		if e != nil || info.Mode().Perm()&0077 != 0 {
@@ -53,7 +57,7 @@ func main() {
 		}
 		s.KnownSecrets = append(s.KnownSecrets, values...)
 	}
-	if os.Getenv("GATEWAY_SIMULATION") == "true" {
+	if mode == "simulated" {
 		release, e := s.AcquireWorker(ctx)
 		if e != nil {
 			log.Fatal("another worker is active or worker lock unavailable")
@@ -84,6 +88,57 @@ func main() {
 				}
 				if worker.RunNext(ctx) != nil {
 					log.Print("simulated worker encountered unavailable dependency")
+				}
+			}
+		}()
+	}
+
+	if mode == "live" {
+		var config runtimeadapter.LiveConfig
+		var credential runtimeadapter.ControllerCredential
+		if runtimeadapter.ReadPrivateJSON(os.Getenv("GATEWAY_LIVE_CONFIG_FILE"), &config) != nil || runtimeadapter.ReadPrivateJSON(os.Getenv("GATEWAY_CONTROLLER_CREDENTIAL_FILE"), &credential) != nil {
+			log.Fatal("private live configuration required")
+		}
+		s.KnownSecrets = append(s.KnownSecrets, config.RedactionValues()...)
+		management, verifier, e := runtimeadapter.NewCloudClients(config, credential)
+		if e != nil {
+			log.Fatal("live configuration invalid")
+		}
+		preflight, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if management.Preflight(preflight, config) != nil {
+			cancel()
+			log.Fatal("existing volume preflight failed")
+		}
+		bootstrap, e := verifier.VerifyCheckpoint(preflight, config.BootstrapCheckpoint)
+		cancel()
+		if e != nil {
+			log.Fatal("bootstrap checkpoint verification failed")
+		}
+		lease, e := s.AcquireLiveWorker(ctx)
+		if e != nil {
+			log.Fatal("exclusive live worker unavailable")
+		}
+		defer lease.Close()
+		owner := execution.NewID()
+		raptor := execution.HTTPRaptor{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
+		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease}
+		worker := &execution.LiveWorker{Store: s, Owner: owner, Lease: lease, Runtime: adapter, Access: raptor, Raptor: raptor, Bootstrap: bootstrap}
+		if worker.Reconcile(ctx) != nil {
+			log.Fatal("live reconciliation requires attention")
+		}
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				if !lease.Valid(ctx) {
+					log.Print("live worker ownership lost; dispatch stopped")
+					return
+				}
+				if worker.RunActive(ctx) != nil {
+					log.Print("live active attempt requires attention")
+				}
+				if worker.RunNext(ctx) != nil {
+					log.Print("live worker dependency unavailable")
 				}
 			}
 		}()

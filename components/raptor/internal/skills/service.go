@@ -43,6 +43,11 @@ func (s *Service) Change(ctx context.Context, user domain.User, id string, in Sk
 	if json.Unmarshal(body, &definition) != nil || definition.Type != "agent" {
 		return domain.ErrInvalid
 	}
+	for _, op := range definition.Operations {
+		if op.Name == "application.question" {
+			return domain.ErrInvalid
+		}
+	}
 	old, _ := json.Marshal(definition.Skills)
 	next, _ := json.Marshal(version)
 	definition.Skills = version

@@ -22,21 +22,28 @@ type SkillsVersion struct {
 	CommitSHA string `json:"commitSha"`
 }
 type ExecutionInput struct {
-	RequestID   string          `json:"requestId"`
-	Definition  json.RawMessage `json:"definition"`
-	Environment json.RawMessage `json:"environment"`
-	Skills      SkillsVersion   `json:"skills"`
+	RequestID        string          `json:"requestId"`
+	DefinitionSHA256 string          `json:"definitionSha256,omitempty"`
+	Definition       json.RawMessage `json:"definition"`
+	Environment      json.RawMessage `json:"environment"`
+	Skills           SkillsVersion   `json:"skills"`
 }
 type Execution struct {
-	RequestID      string         `json:"requestId"`
-	Status         string         `json:"status"`
-	AttemptID      string         `json:"attemptId"`
-	Input          ExecutionInput `json:"input"`
-	AppliedSkills  SkillsVersion  `json:"appliedSkills"`
-	Checkpoint     CheckpointRef  `json:"checkpoint"`
-	Cleanup        string         `json:"cleanup"`
-	RecoveryNeeded bool           `json:"recoveryNeeded"`
-	UpdatedAt      time.Time      `json:"updatedAt"`
+	RuntimeMode      string          `json:"runtimeMode"`
+	Stage            string          `json:"stage"`
+	Result           *LiveResult     `json:"result,omitempty"`
+	CheckpointStatus string          `json:"checkpointStatus"`
+	CleanupStatus    json.RawMessage `json:"cleanupStatus"`
+	FailureCode      string          `json:"failureCode,omitempty"`
+	RequestID        string          `json:"requestId"`
+	Status           string          `json:"status"`
+	AttemptID        string          `json:"attemptId"`
+	Input            ExecutionInput  `json:"input"`
+	AppliedSkills    SkillsVersion   `json:"appliedSkills"`
+	Checkpoint       CheckpointRef   `json:"checkpoint"`
+	Cleanup          string          `json:"cleanup"`
+	RecoveryNeeded   bool            `json:"recoveryNeeded"`
+	UpdatedAt        time.Time       `json:"updatedAt"`
 }
 type ProgressEvent struct {
 	EventID      string          `json:"eventId"`

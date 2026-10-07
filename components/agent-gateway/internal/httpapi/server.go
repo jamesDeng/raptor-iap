@@ -51,7 +51,19 @@ func New(s *execution.Store, user, password string) http.Handler {
 			return
 		}
 		v, e := s.Events(r.Context(), r.PathValue("id"), after)
-		result(w, v, e)
+		if e != nil {
+			result(w, nil, e)
+			return
+		}
+		more := len(v) > 100
+		if more {
+			v = v[:100]
+		}
+		next := after
+		if len(v) > 0 {
+			next = v[len(v)-1].Sequence
+		}
+		write(w, 200, map[string]any{"data": v, "nextAfter": next, "hasMore": more})
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()

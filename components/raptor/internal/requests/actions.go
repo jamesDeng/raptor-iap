@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 )
 
@@ -17,12 +18,32 @@ func (s *Service) Action(ctx context.Context, id, action, instructions string) e
 		return domain.ErrUnavailable
 	}
 	defer tx.Rollback(ctx)
-	var status, kind string
-	if e = tx.QueryRow(ctx, "SELECT status,definition->>'type' FROM raptor.requests WHERE id=$1 FOR UPDATE", id).Scan(&status, &kind); e != nil {
+	var status, kind, control string
+	var definition []byte
+	if e = tx.QueryRow(ctx, "SELECT status,definition->>'type',definition,control_state FROM raptor.requests WHERE id=$1 FOR UPDATE", id).Scan(&status, &kind, &definition, &control); e != nil {
 		return domain.ErrNotFound
 	}
 	if status == "completed" || status == "cancelled" {
 		return domain.ErrConflict
+	}
+	var input domain.RequestInput
+	if json.Unmarshal(definition, &input) != nil {
+		return domain.ErrUnavailable
+	}
+	if isQuestion(input) {
+		if action != "cancel" {
+			return domain.ErrInvalid
+		}
+		if control == "cancel_requested" {
+			return tx.Commit(ctx)
+		}
+		if e = QueueSignal(ctx, tx, id, "cancel", map[string]string{}); e != nil {
+			return domain.ErrUnavailable
+		}
+		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET control_state='cancel_requested' WHERE id=$1", id); e != nil {
+			return domain.ErrUnavailable
+		}
+		return tx.Commit(ctx)
 	}
 	if kind == "direct" {
 		next := map[string]string{"block": "blocked", "cancel": "cancelled", "continue": "queued"}[action]

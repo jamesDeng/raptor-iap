@@ -15,13 +15,15 @@ var ErrInvalid = errors.New("InvalidInput")
 type Store struct {
 	Pool         *pgxpool.Pool
 	KnownSecrets []string
+	RuntimeMode  string
+	liveLease    *LiveLease
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Execution, error) {
 	var x Execution
-	var input, skills, checkpoint []byte
+	var input, skills, checkpoint, result []byte
 	var attempt *string
-	e := s.Pool.QueryRow(ctx, "SELECT request_id::text,status,attempt_id::text,input,applied_skills,checkpoint,cleanup,recovery_needed,updated_at FROM gateway.executions WHERE request_id=$1", id).Scan(&x.RequestID, &x.Status, &attempt, &input, &skills, &checkpoint, &x.Cleanup, &x.RecoveryNeeded, &x.UpdatedAt)
+	e := s.Pool.QueryRow(ctx, "SELECT request_id::text,status,attempt_id::text,input,applied_skills,checkpoint,cleanup,recovery_needed,updated_at,runtime_mode,stage,result,checkpoint_status,cleanup_status,failure_code FROM gateway.executions WHERE request_id=$1", id).Scan(&x.RequestID, &x.Status, &attempt, &input, &skills, &checkpoint, &x.Cleanup, &x.RecoveryNeeded, &x.UpdatedAt, &x.RuntimeMode, &x.Stage, &result, &x.CheckpointStatus, &x.CleanupStatus, &x.FailureCode)
 	if e != nil {
 		return x, e
 	}
@@ -31,19 +33,42 @@ func (s *Store) Get(ctx context.Context, id string) (Execution, error) {
 	json.Unmarshal(input, &x.Input)
 	json.Unmarshal(skills, &x.AppliedSkills)
 	json.Unmarshal(checkpoint, &x.Checkpoint)
+	if len(result) > 0 {
+		if err := json.Unmarshal(result, &x.Result); err != nil {
+			return x, ErrUnavailable
+		}
+	}
 	return x, nil
 }
 func (s *Store) Receive(ctx context.Context, id string) (Execution, error) {
-	if _, e := s.Pool.Exec(ctx, "INSERT INTO gateway.executions(request_id) VALUES($1) ON CONFLICT DO NOTHING", id); e != nil {
+	mode := s.RuntimeMode
+	if mode == "" {
+		mode = "simulated"
+	}
+	if _, e := s.Pool.Exec(ctx, "INSERT INTO gateway.executions(request_id,runtime_mode) VALUES($1,$2) ON CONFLICT DO NOTHING", id, mode); e != nil {
 		return Execution{}, ErrInvalid
 	}
 	return s.Get(ctx, id)
 }
 func (s *Store) ClaimNext(ctx context.Context, owner string) (*Execution, error) {
+	return s.claimNext(ctx, owner, "", false)
+}
+
+// ClaimForRequest is for the explicitly selected compatibility request only.
+func (s *Store) ClaimForRequest(ctx context.Context, owner, request string) (*Execution, error) {
+	if request == "" {
+		return nil, ErrInvalid
+	}
+	return s.claimNext(ctx, owner, request, true)
+}
+func (s *Store) ClaimLiveNext(ctx context.Context, owner string) (*Execution, error) {
+	return s.claimNext(ctx, owner, "", true)
+}
+func (s *Store) claimNext(ctx context.Context, owner, expected string, live bool) (*Execution, error) {
 	if owner == "" {
 		return nil, ErrInvalid
 	}
-	tx, e := s.Pool.Begin(ctx)
+	tx, e := s.beginLive(ctx)
 	if e != nil {
 		return nil, e
 	}
@@ -63,6 +88,14 @@ func (s *Store) ClaimNext(ctx context.Context, owner string) (*Execution, error)
 	}
 	if e != nil {
 		return nil, e
+	}
+	if expected != "" && id != expected {
+		return nil, ErrInvalid
+	}
+	if live {
+		if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET runtime_mode='live',stage='preparing' WHERE request_id=$1", id); e != nil {
+			return nil, e
+		}
 	}
 	attempt := NewID()
 	if _, e = tx.Exec(ctx, "UPDATE gateway.runtime_slot SET request_id=$1,owner=$2,unresolved=true WHERE id=1", id, owner); e != nil {
@@ -123,7 +156,7 @@ func (s *Store) AppendEvent(ctx context.Context, v ProgressEvent) error {
 	return tx.Commit(ctx)
 }
 func (s *Store) Events(ctx context.Context, id string, after int64) ([]ProgressEvent, error) {
-	rows, e := s.Pool.Query(ctx, "SELECT payload FROM gateway.events WHERE request_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 200", id, after)
+	rows, e := s.Pool.Query(ctx, "SELECT payload FROM gateway.events WHERE request_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 101", id, after)
 	if e != nil {
 		return nil, e
 	}

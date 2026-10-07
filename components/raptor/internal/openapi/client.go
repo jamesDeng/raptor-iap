@@ -5,20 +5,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/transportpolicy"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
 
-type Client struct{ BaseURL, Username, Password string }
+type Client struct {
+	BaseURL, Username, Password string
+	AllowClusterHTTP            bool
+}
 
 func (c Client) Call(ctx context.Context, method, path string, body any) (map[string]any, error) {
-	u, e := url.Parse(c.BaseURL)
-	if e != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"))) {
+	if !transportpolicy.Allowed(c.BaseURL, "http://raptor-backend:8871", c.AllowClusterHTTP) {
 		return nil, errors.New("invalid backend")
 	}
+
 	b, e := json.Marshal(body)
 	if e != nil {
 		return nil, errors.New("InvalidInput")

@@ -1,3 +1,9 @@
+{{- if .Values.gatewayLive.enabled -}}
+{{- required "gatewayLive.configSecretName required" .Values.gatewayLive.configSecretName | quote | trunc 0 -}}
+{{- required "gatewayLive.controllerSecretName required" .Values.gatewayLive.controllerSecretName | quote | trunc 0 -}}
+{{- required "agentAccess.secretName required for live runtime" .Values.agentAccess.secretName | quote | trunc 0 -}}
+{{- if not (regexMatch "^https://[^/?#]+$" .Values.gatewayLive.serviceURL) }}{{ fail "gatewayLive.serviceURL must use HTTPS" }}{{ end -}}
+{{- end -}}
 {{- $revision := required "repository.revision must be a reviewed commit" .Values.repository.revision -}}
 {{- if not (regexMatch "^[a-f0-9]{40}$" $revision) }}{{ fail "invalid repository revision" }}{{ end -}}
 {{- range $name, $image := .Values.images -}}
@@ -58,6 +64,21 @@ spec:
             - {name: repository, mountPath: /repo}
             - {name: temporary, mountPath: /tmp}
       {{ end }}
+      {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
+      initContainers:
+        - name: live-private-files
+          image: {{ $.Values.images.gateway | quote }}
+          command: ["/bin/sh", "-ec"]
+          args: ["umask 077; install -m 0600 /live-config-source/config.json /live-private/config.json; install -m 0600 /live-controller-source/credential.json /live-private/credential.json"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: live-config-source, mountPath: /live-config-source, readOnly: true}
+            - {name: live-controller-source, mountPath: /live-controller-source, readOnly: true}
+            - {name: live-private, mountPath: /live-private}
+      {{ end }}
       containers:
         - name: {{ $service.name }}
           image: {{ if eq $service.name "agent-gateway" }}{{ $.Values.images.gateway | quote }}{{ else }}{{ $.Values.images.raptor | quote }}{{ end }}
@@ -67,8 +88,10 @@ spec:
           env:
             - name: {{ $service.addr }}
               value: {{ printf "0.0.0.0:%d" ($service.port | int) | quote }}
+            - {name: RAPTOR_CLUSTER_HTTP, value: 'true'}
             - {name: RAPTOR_BACKEND_URL, value: 'http://raptor-backend:8871'}
-            - {name: RAPTOR_OPEN_API_URL, value: 'http://raptor-open-api:8872'}
+            - name: RAPTOR_OPEN_API_URL
+              value: {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}{{ $.Values.gatewayLive.serviceURL | quote }}{{ else }}'http://raptor-open-api:8872'{{ end }}
             - {name: GATEWAY_URL, value: 'http://agent-gateway:8874'}
             - {name: RAPTOR_REPOSITORY, value: '/repo/source'}
             - {name: RAPTOR_PUBLIC_FRONTEND, value: {{ $.Values.publicFrontend | quote }}}
@@ -84,6 +107,22 @@ spec:
             {{ end }}
             - {name: RAPTOR_SIMULATION, value: 'false'}
             - {name: GATEWAY_SIMULATION, value: 'false'}
+            {{ if eq $service.name "agent-gateway" }}
+            - name: GATEWAY_RUNTIME_MODE
+              value: {{ if $.Values.gatewayLive.enabled }}'live'{{ else }}'disabled'{{ end }}
+            {{ if $.Values.gatewayLive.enabled }}
+            - {name: GATEWAY_LIVE_CONFIG_FILE, value: '/run/raptor/live/config.json'}
+            - {name: GATEWAY_CONTROLLER_CREDENTIAL_FILE, value: '/run/raptor/live/credential.json'}
+            {{ end }}
+            {{ end }}
+            {{ if and (or (eq $service.name "raptor-backend") (eq $service.name "raptor-open-api")) $.Values.agentAccess.secretName }}
+            - name: AGENT_INTROSPECTION_USERNAME
+              valueFrom: {secretKeyRef: {name: {{ $.Values.agentAccess.secretName | quote }}, key: AGENT_INTROSPECTION_USERNAME}}
+            - name: AGENT_INTROSPECTION_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ $.Values.agentAccess.secretName | quote }}, key: AGENT_INTROSPECTION_PASSWORD}}
+            - {name: RAPTOR_AGENT_MCP_URL, value: {{ $.Values.agentAccess.raptorMcpURL | quote }}}
+            - {name: INFRA_AGENT_MCP_URL, value: {{ $.Values.agentAccess.infraMcpURL | quote }}}
+            {{ end }}
           {{ if or (eq $service.name "raptor-backend") (eq $service.name "raptor-open-api") (eq $service.name "agent-gateway") }}
           envFrom:
             - secretRef:
@@ -106,10 +145,21 @@ spec:
             limits: {cpu: 300m, memory: 256Mi}
           volumeMounts:
             - {name: temporary, mountPath: /tmp}
+            {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
+            - {name: live-private, mountPath: /run/raptor/live, readOnly: true}
+            {{ end }}
             {{ if eq $service.name "raptor-backend" }}
             - {name: repository, mountPath: /repo, readOnly: true}
             {{ end }}
       volumes:
+        {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
+        - name: live-private
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        - name: live-config-source
+          secret: {secretName: {{ $.Values.gatewayLive.configSecretName | quote }}, defaultMode: 0440}
+        - name: live-controller-source
+          secret: {secretName: {{ $.Values.gatewayLive.controllerSecretName | quote }}, defaultMode: 0440}
+        {{ end }}
         - name: temporary
           emptyDir: {sizeLimit: 64Mi}
         {{ if eq $service.name "raptor-backend" }}

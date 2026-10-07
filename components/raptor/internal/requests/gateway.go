@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/transportpolicy"
 	"io"
 	"net/http"
 	"net/url"
@@ -16,13 +17,14 @@ import (
 type HTTPGateway struct {
 	BaseURL, Username, Password string
 	Client                      *http.Client
+	AllowClusterHTTP            bool
 }
 
 func (g HTTPGateway) read(ctx context.Context, path string, out any) error {
-	u, e := url.Parse(g.BaseURL)
-	if e != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"))) || g.Username == "" || g.Password == "" {
+	if !transportpolicy.Allowed(g.BaseURL, "http://agent-gateway:8874", g.AllowClusterHTTP) || g.Username == "" || g.Password == "" {
 		return domain.ErrUnavailable
 	}
+
 	r, e := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(g.BaseURL, "/")+path, nil)
 	if e != nil {
 		return domain.ErrUnavailable
@@ -58,10 +60,10 @@ func (g HTTPGateway) Progress(ctx context.Context, id string, after int64) ([]Ga
 }
 
 func (g HTTPGateway) send(ctx context.Context, method, path string, body any) error {
-	u, e := url.Parse(g.BaseURL)
-	if e != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"))) {
+	if !transportpolicy.Allowed(g.BaseURL, "http://agent-gateway:8874", g.AllowClusterHTTP) {
 		return domain.ErrInvalid
 	}
+
 	if g.Username == "" || g.Password == "" {
 		return domain.ErrUnavailable
 	}

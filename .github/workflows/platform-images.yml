@@ -2,10 +2,10 @@ name: Platform images
 on:
   pull_request:
     branches: [main]
-    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py', 'components/infra-api/**', 'scripts/rdev/*infra_discovery*.py']
+    paths: ['components/raptor/**', 'components/agent-gateway/**', 'components/agent-harness/**', 'scripts/contracts/**', 'scripts/rdev/test_platform_live.py', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py', 'components/infra-api/**', 'scripts/rdev/*infra_discovery*.py']
   push:
     branches: [main]
-    paths: ['components/raptor/**', 'components/agent-gateway/**', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py', 'components/infra-api/**', 'scripts/rdev/*infra_discovery*.py']
+    paths: ['components/raptor/**', 'components/agent-gateway/**', 'components/agent-harness/**', 'scripts/contracts/**', 'scripts/rdev/test_platform_live.py', 'scripts/rdev/check-platform-image.sh', '.github/workflows/platform-images.yml', 'helm-chart/**', 'infra-kubernetes/**', 'scripts/rdev/test_platform*.py', 'scripts/rdev/platform*', 'scripts/rdev/requirements-recovery.txt', 'scripts/rdev/test_kong*.py', 'scripts/rdev/kong_plan_guard.py', 'components/infra-api/**', 'scripts/rdev/*infra_discovery*.py']
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,6 +29,8 @@ jobs:
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
+          build-contexts: |
+            agent-harness=components/agent-harness
           platforms: linux/amd64
           load: true
           push: false
@@ -39,7 +41,7 @@ jobs:
         run: scripts/rdev/check-platform-image.sh "platform-${COMPONENT}:check" "$COMPONENT"
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: [build-check, release-contracts, postgres14-acceptance]
+    needs: [build-check, release-contracts, postgres14-acceptance, infra-read-tests, harness-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -67,6 +69,8 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
         with:
           context: ${{ matrix.context }}
+          build-contexts: |
+            agent-harness=components/agent-harness
           platforms: linux/amd64
           push: true
           tags: ghcr.io/jamesdeng/raptor-iap-${{ matrix.component }}:${{ github.sha }}
@@ -106,6 +110,7 @@ jobs:
       - name: Offline release checks
         run: |
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_release.py -v
+          "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_live.py -v
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_platform_bootstrap.py -v
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p 'test_kong*.py' -v
           "$RUNNER_TEMP/platform-python/bin/python" -m unittest discover -s scripts/rdev -p test_infra_discovery.py -v
@@ -127,6 +132,7 @@ jobs:
       PGPASSWORD: dedicated-ci-fixture-only
       PGDATABASE: postgres
       POC_TEST_POSTGRES: 'true'
+      TEST_DATABASE_URL: postgres://postgres:dedicated-ci-fixture-only@127.0.0.1:5432/postgres?sslmode=disable
       RAPTOR_TEST_BINARY: /tmp/raptor-test-backend
       GATEWAY_TEST_BINARY: /tmp/raptor-test-gateway
     steps:
@@ -143,6 +149,10 @@ jobs:
           (cd components/agent-gateway; go build -o "$GATEWAY_TEST_BINARY" ./cmd/gateway)
       - name: Real PostgreSQL 14 bootstrap isolation and migration checks
         run: python3 -m unittest discover -s scripts/rdev -p test_platform_postgres.py -v
+      - name: Integrated Go contracts and persistence regressions
+        run: |
+          (cd components/raptor; go test ./...; go vet ./...)
+          (cd components/agent-gateway; go test ./...; go vet ./...)
 
   infra-read-tests:
     runs-on: ubuntu-24.04
@@ -160,3 +170,19 @@ jobs:
         run: |
           go test -race ./...
           go vet ./...
+
+  harness-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.23.3'
+      - name: Install pinned harness dependencies
+        working-directory: components/agent-harness
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Harness and request page contracts
+        run: node --test components/agent-harness/*.test.mjs components/raptor/web/poc/*test.mjs tests/harness/go-platform-web.test.mjs
