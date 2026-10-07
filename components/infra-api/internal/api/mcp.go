@@ -48,6 +48,23 @@ func newMCPHandler(op operations) http.Handler {
 			return &mcp.CallToolResult{StructuredContent: envelope, Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil
 		})
 	}
+	// Only explicitly configured command servers expose mutation tools.
+	if op.commander != nil && op.authorizer != nil {
+		for _, spec := range commandSpecs {
+			server.AddTool(&mcp.Tool{Name: spec.name, Description: "Execute one request-authorized infrastructure command", InputSchema: commandSchema(spec.sample)}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				data, e := op.command(ctx, spec.path, r.Params.Arguments)
+				if e != nil {
+					return mcpFailure(e.Error()), nil
+				}
+				envelope := map[string]any{"data": data}
+				b, e := json.Marshal(envelope)
+				if e != nil {
+					return mcpFailure("ProviderUnavailable"), nil
+				}
+				return &mcp.CallToolResult{StructuredContent: envelope, Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil
+			})
+		}
+	}
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 }
 func mcpFailure(code string) *mcp.CallToolResult {
