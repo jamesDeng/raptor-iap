@@ -15,6 +15,7 @@ var ErrInvalid = errors.New("InvalidInput")
 type Store struct {
 	Pool         *pgxpool.Pool
 	KnownSecrets []string
+	RuntimeMode  string
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Execution, error) {
@@ -39,12 +40,27 @@ func (s *Store) Get(ctx context.Context, id string) (Execution, error) {
 	return x, nil
 }
 func (s *Store) Receive(ctx context.Context, id string) (Execution, error) {
-	if _, e := s.Pool.Exec(ctx, "INSERT INTO gateway.executions(request_id) VALUES($1) ON CONFLICT DO NOTHING", id); e != nil {
+	mode := s.RuntimeMode
+	if mode == "" {
+		mode = "simulated"
+	}
+	if _, e := s.Pool.Exec(ctx, "INSERT INTO gateway.executions(request_id,runtime_mode) VALUES($1,$2) ON CONFLICT DO NOTHING", id, mode); e != nil {
 		return Execution{}, ErrInvalid
 	}
 	return s.Get(ctx, id)
 }
 func (s *Store) ClaimNext(ctx context.Context, owner string) (*Execution, error) {
+	return s.claimNext(ctx, owner, "")
+}
+
+// ClaimForRequest is for the explicitly selected compatibility request only.
+func (s *Store) ClaimForRequest(ctx context.Context, owner, request string) (*Execution, error) {
+	if request == "" {
+		return nil, ErrInvalid
+	}
+	return s.claimNext(ctx, owner, request)
+}
+func (s *Store) claimNext(ctx context.Context, owner, expected string) (*Execution, error) {
 	if owner == "" {
 		return nil, ErrInvalid
 	}
@@ -68,6 +84,9 @@ func (s *Store) ClaimNext(ctx context.Context, owner string) (*Execution, error)
 	}
 	if e != nil {
 		return nil, e
+	}
+	if expected != "" && id != expected {
+		return nil, ErrInvalid
 	}
 	attempt := NewID()
 	if _, e = tx.Exec(ctx, "UPDATE gateway.runtime_slot SET request_id=$1,owner=$2,unresolved=true WHERE id=1", id, owner); e != nil {

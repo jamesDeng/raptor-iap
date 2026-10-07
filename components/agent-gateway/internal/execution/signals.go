@@ -11,6 +11,13 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 	if v.ID == "" || v.RequestID == "" || len(v.Payload) > 4096 || !json.Valid(v.Payload) {
 		return ErrInvalid
 	}
+	var mode string
+	if e := s.Pool.QueryRow(ctx, "SELECT runtime_mode FROM gateway.executions WHERE request_id=$1", v.RequestID).Scan(&mode); e != nil {
+		return ErrInvalid
+	}
+	if mode == "live" && v.Kind != "cancel" {
+		return ErrInvalid
+	}
 	switch v.Kind {
 	case "cancel", "block", "interrupt", "continue", "approval", "review", "merged", "skills", "pause":
 	default:

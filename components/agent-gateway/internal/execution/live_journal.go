@@ -239,7 +239,7 @@ func (s *Store) FinalizeLive(ctx context.Context, attempt, owner string, o LiveO
 		return ErrInvalid
 	}
 	switch o.FailureCode {
-	case "", "CheckpointFailed", "NeedsSignIn", "ModelFailed", "Timeout", "InvalidResult", "Interrupted", "Cancelled", "ProviderUnavailable", "PreparationFailed", "CleanupUnconfirmed":
+	case "", "CheckpointFailed", "NeedsSignIn", "ModelFailed", "Timeout", "InvalidResult", "Interrupted", "Cancelled", "ProviderUnavailable", "PreparationFailed", "CleanupUnconfirmed", "McpUnavailable", "ToolFailed", "TurnLimit", "MissingEvidence", "UnexpectedToolCatalog", "InvalidProgress", "InvalidEvidence", "RunnerFailed":
 	default:
 		return ErrInvalid
 	}

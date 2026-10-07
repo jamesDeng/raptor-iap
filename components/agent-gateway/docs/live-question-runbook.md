@@ -1,0 +1,68 @@
+# Gateway/Pi application.question rollout package
+
+## Status and ownership
+
+This branch implements an offline Gateway/Pi consumer slice. No cloud compatibility run, provider inference, deployment, RAM grant or shared merge was performed. Fixture `evidenceMode:live` exercises the wire contract; it is not independently observed cloud evidence. Existing PR29 MCP acceptance does not prove this agent slice.
+
+Changes are limited to Gateway and harness. Raptor access issuance/introspection/revocation, read-only MCP principals, Infra scope enforcement and observation fields, browser integration, Helm and shared build invocation remain coordinator dependencies. Do not enable live mode against the existing broad service MCP authentication.
+
+## Contracts required from other components
+
+1. Existing service-authenticated `GET /v1/requests/{requestId}/context` returns immutable definition `{operation:"application.question",object:{kind:"application",code},envCode,parameters:{question,model:"gpt-5.6-luna"}}` and pinned `skills.commitSha` (40 hex digits).
+2. Service-authenticated `POST /v1/requests/{requestId}/agent-access`, body `{attemptId,definitionSha256,expiresAt}`, returns `data` with opaque credential, bounded expiry, exact eight-field AttemptBinding, `raptorMcpUrl` and `infraMcpUrl`. URLs must equal configured endpoints. DELETE `/v1/requests/{requestId}/agent-access/{attemptId}` confirms idempotent revocation of every credential for the attempt.
+3. Raptor MCP accepts attempt bearer Authorization and exposes exactly request_get, environment_get and object_get. Infra accepts attempt bearer X-Infra-Authorization and exposes exactly cloud_identity_get, deployments_list and deployment_status_get. Both must enforce the bound request/environment/application/operation, expiry and revocation before reads. Introspection failure denies access. No mutation/resource/prompt/codemode tools for this principal.
+4. Infra evidence carries RFC3339 `observedAt`, `evidenceMode:"live"`, environment/application identity and full deployment cluster/namespace/name/UID. Status rediscovery must reject changed UID. Identity response supplies `accountMatches:true` after actual identity validation. Raptor context is catalog evidence.
+
+The definition fingerprint uses Go JSON encoding of the returned ExecutionInput, not an independently portable JSON canonicalization algorithm. Raptor stores/compares the exact supplied digest with its immutable dispatch snapshot; contract agreement is required before integration.
+
+## Runtime and credentials
+
+`GATEWAY_RUNTIME_MODE=disabled|simulated|live` is explicit. Unset mode is disabled unless legacy `GATEWAY_SIMULATION=true`; conflicting settings fail startup. New executions report configured mode; historical records retain their recorded mode.
+
+Live configuration file comes from proposed Secret `gateway-live-config`, key `config.json`, mounted as a private regular file (0600) at `/run/raptor/live/config.json`; set `GATEWAY_LIVE_CONFIG_FILE`. The controller credential comes from separate proposed Secret `gateway-live-controller`, key `credential.json`, at `/run/raptor/live/credential.json`; set `GATEWAY_CONTROLLER_CREDENTIAL_FILE`. The loader rejects symlinks, world/group permissions, unknown fields, trailing JSON and files over 64 KiB. Default Kubernetes projected Secret symlinks need a reviewed private-file delivery mechanism, such as a subPath regular file or init copy. Controller credential requires explicit temporary accessKeyId/accessKeySecret/securityToken; no profile discovery or sandbox injection. Rotation/restart procedure is coordinator-owned.
+
+Existing SERVICE_USERNAME/SERVICE_PASSWORD authenticate Gateway APIs and Raptor controller calls only. GATEWAY_DATABASE_URL is the Gateway role only; MIGRATION_DATABASE_URL is schema-owner migration only. No operator profile, RDS admin or Infra deployment credential enters the sandbox.
+
+LiveConfig JSON keys: accountId, region (ap-southeast-1), teamId, templateId, bucket, bucketPrefix, volumeName, volumeId, executionRoleArn, bootstrapCheckpoint, raptorMcpUrl, infraMcpUrl, harnessDir (`/opt/raptor-harness`). Bootstrap descriptor uses archiveKey/checksumKey/sha256/bytes/piVersion/encryption/verifiedAt. Startup independently verifies the archive, checksum, sizes and remote AES256 encryption; a supplied verifiedAt is not proof.
+
+Template prerequisites: existing Singapore sandbox team/template/OSS Volume; Node exactly 22.23.3 and Python3 available to user. Preparation fails if absent. Pi coding-agent and pi-mcp are pinned 0.99.2; npm ci uses the lockfile, with install scripts disabled. Harness files/config use umask 077. Attempt MCP credential/config/progress/logs live outside the auth archive root. The archive allowlists auth.json and session files; each request starts a fresh conversation. OAuth only, no API-key fallback.
+
+Limits: one leased worker and durable slot, 600-second overall attempt, sandbox TTL no more than 900 seconds, 90-second model call, three assistant turns, 1024 output tokens per response. Question <=2000 code points/8 KiB; answer <=16 KiB; terminal/progress <=64 KiB; checkpoint <=16 MiB. No inferred successful completion from answer existence.
+
+## Controller permission proposal (review before granting)
+
+This is an action/resource proposal, not an applied policy. The [FCSandbox RAM guide](https://www.alibabacloud.com/help/zh/functioncompute/configure-ram-user-permissions) documents Team-scoped API-key resources and explicitly says individual keys and individual sandbox IDs cannot be RAM scoped. E2B data-plane calls use a Team key, independently of controller RAM actions.
+
+| Principal | Actions consumed | Proposed resource | Remaining check |
+|---|---|---|---|
+| Gateway controller | fcsandbox:CreateApiKey, ListApiKeys, UpdateApiKey, DeleteApiKey | acs:fcsandbox:ap-southeast-1:ACCOUNT:teams/TEAM/apikeys/* and required collection ARN | Verify each operation's authorization table and list collection ARN with deny tests; no single-key RAM isolation |
+| Gateway controller | fcsandbox:GetVolume | acs:fcsandbox:ap-southeast-1:ACCOUNT:teams/TEAM/volumes/VOLUME | Verify existing Volume's account/team/role/bucket/prefix/endpoint/read-write status |
+| Gateway controller | oss:GetBucketEncryption | acs:oss:*:ACCOUNT:BUCKET | Verify bucket-level action support on existing role |
+| Gateway controller | oss:GetObject (including metadata HEAD) | acs:oss:*:ACCOUNT:BUCKET/PREFIX/* | Read-only remote verification, no controller archive write/delete |
+| Existing sandbox execution role | Existing OSS mount read/write permissions for PREFIX | Existing reviewed mount policy | Do not broaden/create here; verify mount does not expose other prefixes |
+| Ephemeral sandbox key | E2B create/connect/files/process/inventory/kill | Team key; application attempt metadata is software ownership filter | Template/individual sandbox scoping is not supplied by this adapter; cross-key same-Team recovery must be tested |
+
+No Team, template, Volume, quota or bucket creation permission is needed. Never substitute wildcard administrator access when a deny test fails. Proposed ephemeral keys expire within attempt deadline; reconciliation uses a separately journaled short-lived key and must confirm removal of every owned key.
+
+## Build and migration
+
+Apply additive migrations 001 and 002 through `gateway -migrate` using schema-owner credentials before deploying the app role. Migration scope is gateway schema only. Review SQL against the coordinator's migration ownership procedure.
+
+Gateway Dockerfile now consumes explicit BuildKit named context `agent-harness`. From components/agent-gateway: `docker build --build-context agent-harness=../agent-harness .`. Coordinator must add that context to the shared build invocation. Only an explicit source allowlist is copied; no node_modules, OAuth state, private config or logs. Docker was unavailable in this session: image build and immutable image digest are unverified. Coordinator builds, scans, records registry digest and deploys it; do not deploy a mutable tag or claim a digest from source hashes.
+
+## Offline evidence and limitations
+
+Gateway tests use disposable localhost PostgreSQL and TLS fixtures. They exercise intent fencing, binding immutability, contiguous/deduplicated events, bounded progress/terminal decoding, cleanup-blocked answer retention, lost lease, cancellation, restart without inference replay, known-ID inventory omission, encrypted remote checkpoint verification and native transport frames. Harness tests use actual pinned embedded Pi/MCP SDK with synthetic provider/transport fixtures, two fresh sessions and scoped catalogs. They perform no live provider/model network calls. Go vet passes. The compatibility CLI dry default reports zero cloud/model calls.
+
+These layered fixture tests do not prove vendor protocol compatibility, cross-key recovery, real OAuth refresh, a full deployed browser-to-Gateway-to-harness request, or live request/attempt authorization. The coordinator must verify those separately.
+
+## Authorized compatibility and acceptance procedure
+
+1. Review/freeze the shared contracts, policy proposal, private credential delivery, existing Volume/template and build context; record immutable image digest. Keep runtime disabled until server-side attempt scope is implemented and deny tests pass.
+2. Separately authorize cloud compatibility. CLI default `sandbox-compat` creates nothing. `sandbox-compat -execute -request-id UUID` requires the private config, Gateway-role database and Raptor service configuration. It exclusively leases the journal and consumes only the explicitly selected queued compatibility request; it refuses an unrelated earlier queued request or active slot. Create a dedicated compatibility request through the existing coordinator flow. No inference is launched. Its Gateway history ends failed/Interrupted because compatibility is not an answered application question; assess the sanitized compatibility report separately.
+3. Compatibility exercises key/create/connect/private file/fixed command/pinned runtime/remote encrypted OSS mount readback/termination/key absence. Inspect journal if interrupted. Probe object uses PREFIX/lifecycle/compat-ATTEMPT and is removed after verified readback; a crash may leave a harmless probe object requiring coordinator cleanup. Stop if new same-Team key cannot connect/terminate an old sandbox. Never launch a replacement while ownership is unresolved.
+4. After separate deployment authorization, enable live mode; verify GET execution and browser mode labels. Submit selected application question “Is agent-gateway healthy in rdev.ali?”. Capture progress before terminal, exact selected/actual model, catalog context, live identity/discovery/status time and UID, generated answer, verified encrypted remote checkpoint and confirmed sandbox/key/access cleanup.
+5. An unhealthy point-in-time answer is valid success. NeedsSignIn, missing/invalid evidence, changed UID, timeout, checkpoint failure and unknown cleanup must remain distinct. Cleanup uncertainty retains slot and marks blocked; answer remains visible separately.
+6. Submit a second request: fresh sandbox/conversation, renewable auth reused or truthful NeedsSignIn. Restart Gateway with old history and an authorized interrupted attempt. Confirm no inference replay and cleanup through a temporary reconciliation key. Capture costs/balance before and after using coordinator overnight procedure.
+
+No live acceptance success is claimed by this branch.

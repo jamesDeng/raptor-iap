@@ -22,8 +22,8 @@ export async function runJob(job,dependencies={}){
  return result;
 }
 async function main(){
- const input=process.argv[2],output=process.argv[3];let result;
- try{const job=JSON.parse(fs.readFileSync(input,'utf8'));const writer=job.phase==='live-inference'?new ProgressWriter(output.replace(/-result\.json$/,'-progress.jsonl')):null;result=await runJob(job,writer?{onProgress:event=>writer.append(event)}:{});}catch{result={passed:false,error:'InvalidJob'};}
- writeTerminal(output,result);process.exitCode=result.passed?0:1;
+ const input=process.argv[2],output=process.argv[3];let result,timer;const controller=new AbortController();
+ try{const job=JSON.parse(fs.readFileSync(input,'utf8'));const writer=job.phase==='live-inference'?new ProgressWriter(output.replace(/-result\.json$/,'-progress.jsonl')):null;if(writer){const cancel=output.replace(/-result\.json$/,'-cancel');const check=()=>{if(fs.existsSync(cancel))controller.abort();};check();timer=setInterval(check,200);}result=await runJob(job,writer?{onProgress:event=>writer.append(event),signal:controller.signal}:{});}catch{result={passed:false,error:'InvalidJob'};}
+ clearInterval(timer);writeTerminal(output,result);process.exitCode=result.passed?0:1;
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)await main();

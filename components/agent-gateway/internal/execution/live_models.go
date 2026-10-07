@@ -91,7 +91,7 @@ func (b AttemptBinding) valid() bool {
 	return b.RequestID != "" && b.AttemptID != "" && b.Operation == "application.question" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && b.Model == "gpt-5.6-luna"
 }
 func validJournalKind(k string) bool {
-	return k == "key" || k == "sandbox" || k == "command" || k == "access" || k == "checkpoint" || k == "terminate" || k == "revoke_key" || k == "revoke_access"
+	return k == "probe_cleanup" || k == "prepare" || k == "restore" || (strings.HasPrefix(k, "reconcile_key:") && journalName.MatchString(k)) || k == "key" || k == "sandbox" || k == "command" || k == "access" || k == "checkpoint" || k == "terminate" || k == "revoke_key" || k == "revoke_access"
 }
 func (c VerifiedCheckpoint) valid() bool {
 	if c.PiVersion != "0.99.2" || c.Encryption != "AES256" || c.VerifiedAt.IsZero() || !shaPattern.MatchString(c.SHA256) || c.Bytes < 1 || c.Bytes > 16*1024*1024 || !strings.HasSuffix(c.ArchiveKey, ".tgz") || c.ChecksumKey != strings.TrimSuffix(c.ArchiveKey, ".tgz")+".sha256" {

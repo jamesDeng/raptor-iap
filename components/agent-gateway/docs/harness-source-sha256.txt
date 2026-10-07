@@ -1,0 +1,2 @@
+137ac7bfc8fb3cd0b058d6bf89b6d7dd75c67d1afa48113fa027010d71620622  ../agent-harness/package.json
+863509f6c5202839bacbbab07292e80221bfb0c38aea2ae905c2a6b7587dafe6  ../agent-harness/package-lock.json

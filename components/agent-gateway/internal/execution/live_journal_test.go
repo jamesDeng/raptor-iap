@@ -171,3 +171,60 @@ func TestLiveCannotCompleteWithoutAnswer(t *testing.T) {
 		t.Fatal("empty completion accepted")
 	}
 }
+func TestLiveRejectsContinuationAndMutationSignals(t *testing.T) {
+	s, x, _ := liveAttempt(t)
+	for _, kind := range []string{"continue", "approval", "review", "merged", "skills", "pause", "interrupt"} {
+		if e := s.DeliverSignal(context.Background(), Signal{ID: kind, RequestID: x.RequestID, Kind: kind, Payload: json.RawMessage(`{}`)}); e == nil {
+			t.Fatal("unsupported live signal accepted", kind)
+		}
+	}
+}
+func TestLiveDriverLeaseLostConnectionCannotReacquire(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	lease, e := s.AcquireLiveWorker(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer lease.Close()
+	if !lease.Valid(ctx) {
+		t.Fatal("valid lease rejected")
+	}
+	other, e := s.AcquireLiveWorker(ctx)
+	if e == nil {
+		other.Close()
+		t.Fatal("second driver accepted")
+	}
+	lease.conn.Conn().Close(ctx)
+	if lease.Valid(ctx) {
+		t.Fatal("lost session lock accepted")
+	}
+}
+func TestLiveTerminalHarnessFailureCodesFinalize(t *testing.T) {
+	for _, code := range []string{"McpUnavailable", "ToolFailed", "TurnLimit", "MissingEvidence", "UnexpectedToolCatalog", "InvalidProgress", "InvalidEvidence", "RunnerFailed"} {
+		t.Run(code, func(t *testing.T) {
+			s, _, b := liveAttempt(t)
+			if e := s.FinalizeLive(context.Background(), b.AttemptID, "owner", LiveOutcome{Status: "failed", FailureCode: code, SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}); e != nil {
+				t.Fatal(e)
+			}
+		})
+	}
+}
+func TestCompatibilityClaimNeverConsumesUnrelatedRequest(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	first, selected := NewID(), NewID()
+	s.Receive(ctx, first)
+	s.Receive(ctx, selected)
+	if _, e := s.ClaimForRequest(ctx, "compat", selected); e != ErrInvalid {
+		t.Fatal(e)
+	}
+	x, e := s.Get(ctx, first)
+	if e != nil || x.Status != "queued" || x.AttemptID != "" {
+		t.Fatal("unrelated queue mutated", x, e)
+	}
+	id, _, e := s.ActiveOwner(ctx)
+	if e != nil || id != "" {
+		t.Fatal("slot changed", id, e)
+	}
+}
