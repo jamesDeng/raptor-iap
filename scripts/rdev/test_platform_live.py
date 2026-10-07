@@ -3,6 +3,7 @@ ROOT=pathlib.Path(__file__).resolve().parents[2]
 class LiveManifest(unittest.TestCase):
  def render(self,live):
   args=[os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
+  if not live:args+=['--set','gatewayLive.enabled=false']
   if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
  def test_default_disables_runtime(self):
@@ -13,5 +14,5 @@ class LiveManifest(unittest.TestCase):
    c=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']==name)['spec']['template']['spec']['containers'][0];env={v['name']:v for v in c['env']};self.assertEqual(env['AGENT_INTROSPECTION_PASSWORD']['valueFrom']['secretKeyRef']['name'],'raptor-agent-access')
   self.assertFalse(any(d and d.get('kind')=='Secret' for d in docs))
  def test_live_without_secret_refs_fails_closed(self):
-  p=subprocess.run([os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml'),'--set','gatewayLive.enabled=true'],capture_output=True,text=True);self.assertNotEqual(p.returncode,0)
+  p=subprocess.run([os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml'),'--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=','--set','gatewayLive.controllerSecretName='],capture_output=True,text=True);self.assertNotEqual(p.returncode,0)
 if __name__=='__main__':unittest.main()

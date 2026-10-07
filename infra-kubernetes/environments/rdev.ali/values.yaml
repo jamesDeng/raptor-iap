@@ -19,3 +19,9 @@ infraReader:
 
 agentAccess:
   secretName: raptor-agent-introspection
+
+gatewayLive:
+  enabled: true
+  serviceURL: https://api.rdev.raptor-iap.top
+  configSecretName: gateway-live-config
+  controllerSecretName: gateway-live-controller
