@@ -1,14 +1,18 @@
 package backend
 
 import (
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
 	githubservice "github.com/jamesDeng/raptor-iap/components/raptor/internal/github"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
 	"net/http"
+	"os"
 )
 
 func (s *Server) RegisterService(user, password string) {
+	access := &agentaccess.Service{Pool: s.Requests.Pool, RaptorMCPURL: os.Getenv("RAPTOR_AGENT_MCP_URL"), InfraMCPURL: os.Getenv("INFRA_AGENT_MCP_URL")}
+	access.Register(s.Mux, auth.Credentials{Username: user, Password: password}, auth.Credentials{Username: os.Getenv("AGENT_INTROSPECTION_USERNAME"), Password: os.Getenv("AGENT_INTROSPECTION_PASSWORD")})
 	wrap := func(pattern string, h http.HandlerFunc) {
 		s.Mux.Handle(pattern, auth.BasicAuth(h, auth.Credentials{Username: user, Password: password}))
 	}
@@ -36,8 +40,13 @@ func (s *Server) RegisterService(user, password string) {
 			httpx.Result(w, 200, nil, e)
 			return
 		}
+		fingerprint, hashError := agentaccess.Fingerprint(v.Definition)
+		if hashError != nil {
+			httpx.Error(w, 503, "Unavailable")
+			return
+		}
 		env, e := s.Catalog.GetEnvironment(r.Context(), v.Definition.EnvCode)
-		httpx.Result(w, 200, map[string]any{"requestId": v.ID, "definition": v.Definition, "environment": env, "skills": v.Definition.Skills}, e)
+		httpx.Result(w, 200, map[string]any{"requestId": v.ID, "definition": v.Definition, "environment": env, "skills": v.Definition.Skills, "definitionSha256": fingerprint}, e)
 	})
 	wrap("GET /v1/environments/{code}", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Catalog.GetEnvironment(r.Context(), r.PathValue("code"))
