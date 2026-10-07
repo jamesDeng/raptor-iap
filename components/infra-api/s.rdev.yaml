@@ -34,4 +34,4 @@ resources:
           triggerType: http
           triggerConfig:
             authType: function
-            methods: [GET]
+            methods: [GET, POST]

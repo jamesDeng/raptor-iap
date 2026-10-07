@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"raptor-iap/infra-api/internal/domain"
 	"strings"
-	"time"
 )
 
 type Reader interface {
@@ -28,6 +27,8 @@ func New(reader Reader, envs map[string]domain.Environment, username, password, 
 	for k, v := range envs {
 		scopes[k] = v
 	}
+	op := operations{reader: reader, scopes: scopes}
+	mcpHandler := newMCPHandler(op)
 	expected := sha256.Sum256([]byte(username + ":" + password))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -37,7 +38,7 @@ func New(reader Reader, envs map[string]domain.Environment, username, password, 
 			json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}})
 		}
 		send := func(data any) { json.NewEncoder(w).Encode(map[string]any{"data": data}) }
-		if r.Method != "GET" {
+		if r.URL.Path != "/mcp" && r.Method != "GET" {
 			fail(405, "MethodNotAllowed")
 			return
 		}
@@ -56,89 +57,22 @@ func New(reader Reader, envs map[string]domain.Environment, username, password, 
 			fail(401, "Unauthenticated")
 			return
 		}
-		var allowed []string
-		switch r.URL.Path {
-		case "/v1/cloud/identity":
-			allowed = []string{"envCode"}
-		case "/v1/deployments":
-			allowed = []string{"envCode", "kind", "code"}
-		case "/v1/deployment-status":
-			allowed = []string{"envCode", "appCode", "clusterId", "namespace", "name", "uid"}
-		default:
-			fail(404, "NotFound")
+		if r.URL.Path == "/mcp" {
+			mcpHandler.ServeHTTP(w, r)
 			return
 		}
 		q, e := url.ParseQuery(r.URL.RawQuery)
-		if e != nil {
+		if e != nil || len(r.URL.RawQuery) > 4096 {
 			fail(400, "InvalidInput")
 			return
 		}
-		if len(r.URL.RawQuery) > 4096 {
-			fail(400, "InvalidInput")
-			return
-		}
-		for k, v := range q {
-			found := false
-			for _, a := range allowed {
-				if k == a {
-					found = true
-				}
-			}
-			if !found || len(v) != 1 || len(v[0]) == 0 || len(v[0]) > 256 {
-				fail(400, "InvalidInput")
-				return
-			}
-		}
-		for _, a := range allowed {
-			if q.Get(a) == "" {
-				fail(400, "InvalidInput")
-				return
-			}
-		}
-		env, ok := scopes[q.Get("envCode")]
-		if !ok {
-			fail(403, "ScopeMismatch")
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-		defer cancel()
-		var data any
-		switch r.URL.Path {
-		case "/v1/cloud/identity":
-			var account string
-			account, e = reader.Identity(ctx, env)
-			if e == nil && account != env.AccountID {
-				e = domain.ErrScope
-			}
-			data = map[string]any{"envCode": env.Code, "accountMatches": true, "evidenceMode": "live"}
-		case "/v1/deployments":
-			kind := q.Get("kind")
-			if kind != "application" && kind != "database" && kind != "db-proxy" {
-				fail(400, "InvalidInput")
-				return
-			}
-			var rows []domain.Deployment
-			rows, e = reader.Deployments(ctx, env, kind, q.Get("code"))
-			if rows == nil {
-				rows = []domain.Deployment{}
-			}
-			data = rows
-		case "/v1/deployment-status":
-			data, e = reader.Status(ctx, env, domain.Target{EnvCode: env.Code, AppCode: q.Get("appCode"), ClusterID: q.Get("clusterId"), Namespace: q.Get("namespace"), Name: q.Get("name"), UID: q.Get("uid")})
-		}
+		data, e := op.execute(r.Context(), r.URL.Path, q)
 		if e != nil {
-			switch {
-			case errors.Is(e, domain.ErrScope):
-				fail(403, "ScopeMismatch")
-			case errors.Is(e, domain.ErrIdentity):
-				fail(409, "IdentityChanged")
-			case errors.Is(e, domain.ErrNotConfigured):
-				fail(503, "NotConfigured")
-			default:
-				fail(503, "ProviderUnavailable")
-			}
+			oe := e.(*operationError)
+			fail(oe.status, oe.code)
 			return
 		}
+
 		send(data)
 	}), nil
 }

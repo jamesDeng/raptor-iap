@@ -98,3 +98,33 @@ resource "alicloud_api_gateway_api" "read" {
   stage_names = ["RELEASE"]
   depends_on  = [alicloud_ram_role_policy_attachment.invoke]
 }
+
+# MCP uses stateless JSON POST, retaining the existing protected FC backend.
+resource "alicloud_api_gateway_api" "mcp" {
+  group_id    = alicloud_api_gateway_group.read.id
+  name        = "${var.name}-mcp"
+  description = "Authenticated read-only MCP"
+  auth_type   = "ANONYMOUS"
+  request_config {
+    protocol = "HTTPS"
+    method   = "POST"
+    path     = "/mcp"
+    mode     = "PASSTHROUGH"
+  }
+  service_type = "FunctionCompute"
+  fc_service_config {
+    content_type_category = "CLIENT"
+    function_version      = "3.0"
+    function_type         = "HttpTrigger"
+    region                = var.region
+    function_name         = var.function_name
+    function_base_url     = var.trigger_url
+    path                  = "/mcp"
+    method                = "POST"
+    only_business_path    = true
+    arn_role              = alicloud_ram_role.invoke.arn
+    timeout               = 30000
+  }
+  stage_names = ["RELEASE"]
+  depends_on  = [alicloud_ram_role_policy_attachment.invoke]
+}

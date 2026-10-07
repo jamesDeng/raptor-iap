@@ -23,3 +23,25 @@ func TestFC3PackageBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPDeploymentBoundary(t *testing.T) {
+	for _, path := range []string{"../../s.yaml", "../../s.rdev.yaml"} {
+		b, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if !strings.Contains(string(b), "methods: [GET, POST]") || !strings.Contains(string(b), "authType: function") {
+			t.Fatal("MCP requires protected POST trigger")
+		}
+	}
+	b, e := os.ReadFile("../../../../terraform-module/infra-api-read/main.tf")
+	if e != nil {
+		t.Fatal(e)
+	}
+	s := string(b)
+	for _, v := range []string{`resource "alicloud_api_gateway_api" "mcp"`, `content_type_category = "CLIENT"`, `method   = "POST"`, `path     = "/mcp"`, `mode     = "PASSTHROUGH"`} {
+		if !strings.Contains(strings.Join(strings.Fields(s), " "), strings.Join(strings.Fields(v), " ")) {
+			t.Fatal("missing MCP route: " + v)
+		}
+	}
+}
