@@ -40,10 +40,11 @@ type LiveObservation struct {
 }
 type LiveCleanup struct{ SandboxAbsent, KeyAbsent bool }
 type RecoveryRecord struct {
-	Binding  AttemptBinding
-	Intents  []RuntimeIntentRecord
-	Result   *LiveResult
-	Deadline time.Time
+	Binding    AttemptBinding
+	Intents    []RuntimeIntentRecord
+	Result     *LiveResult
+	Checkpoint VerifiedCheckpoint
+	Deadline   time.Time
 }
 type RuntimeIntentRecord struct{ Kind, Name, ResourceID string }
 type RecoveredRun struct {
@@ -100,7 +101,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e := w.authorized(ctx); e != nil {
 		return e
 	}
-	x, e := w.Store.ClaimNext(ctx, w.Owner)
+	x, e := w.Store.ClaimLiveNext(ctx, w.Owner)
 	if e != nil || x == nil {
 		return e
 	}
@@ -134,10 +135,10 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	}
 	access, e := w.Access.Issue(ctx, b, hash, record.Deadline)
 	if e != nil {
-		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "NeedsSignIn")
+		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
 	}
 	if access.ExpiresAt.Before(time.Now()) || access.ExpiresAt.After(record.Deadline) {
-		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "NeedsSignIn")
+		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
 	}
 	if e = w.authorized(ctx); e != nil {
 		return e
@@ -221,12 +222,21 @@ func (w *LiveWorker) finish(ctx context.Context, b AttemptBinding, h RuntimeHand
 	if checkpointErr != nil && status == "completed" {
 		status, code = "failed", "CheckpointFailed"
 	}
+
+	if checkpointErr == nil {
+		if e := w.Store.SaveLiveCheckpoint(ctx, b.AttemptID, w.Owner, checkpoint); e != nil {
+			return e
+		}
+	}
 	w.Store.SetLiveStage(ctx, b.AttemptID, w.Owner, "cleaning")
 	cleanup, stopErr := w.Runtime.Stop(ctx, h)
 	if e := w.authorized(ctx); e != nil {
 		return e
 	}
 	revokeErr := w.Access.Revoke(ctx, b)
+	if e := w.authorized(ctx); e != nil {
+		return e
+	}
 	if stopErr != nil || revokeErr != nil || !cleanup.SandboxAbsent || !cleanup.KeyAbsent {
 		if code == "" {
 			code = "CleanupUnconfirmed"
@@ -256,6 +266,9 @@ func (w *LiveWorker) Reconcile(ctx context.Context) error {
 		if e = w.Store.TakeOverLive(ctx, x.AttemptID, w.Owner); e != nil {
 			return e
 		}
+	}
+	if done, e := w.Store.ReconcileUnbound(ctx, x.AttemptID, w.Owner); e != nil || done {
+		return e
 	}
 	record, e := w.Store.RecoveryRecord(ctx, x.AttemptID)
 	if e != nil {

@@ -48,7 +48,7 @@ func (n *NativeLive) Compatibility(ctx context.Context, b execution.AttemptBindi
 	if n.intent(ctx, b, "key", "raptor-"+b.AttemptID) != nil {
 		return
 	}
-	key, e := n.Management.CreateKey(ctx, "raptor-"+b.AttemptID, deadline)
+	key, e := n.managementFor(b).CreateKey(ctx, "raptor-"+b.AttemptID, deadline)
 	if e != nil {
 		return
 	}
@@ -60,6 +60,7 @@ func (n *NativeLive) Compatibility(ctx context.Context, b execution.AttemptBindi
 	if e != nil {
 		return
 	}
+	r.transport.before = func(call context.Context) error { return n.fence(call, b.AttemptID) }
 	if n.intent(ctx, b, "sandbox", b.AttemptID) != nil {
 		return
 	}

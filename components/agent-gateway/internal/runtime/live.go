@@ -153,7 +153,7 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	if e := n.intent(ctx, b, "key", "raptor-"+b.AttemptID); e != nil {
 		return h, e
 	}
-	key, e := n.Management.CreateKey(ctx, "raptor-"+b.AttemptID, in.Deadline)
+	key, e := n.managementFor(b).CreateKey(ctx, "raptor-"+b.AttemptID, in.Deadline)
 	if e != nil {
 		return h, e
 	}
@@ -165,6 +165,7 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	if e != nil {
 		return h, e
 	}
+	r.transport.before = func(call context.Context) error { return n.fence(call, b.AttemptID) }
 	if e = n.intent(ctx, b, "sandbox", b.AttemptID); e != nil {
 		return h, e
 	}
@@ -380,11 +381,23 @@ func (n *NativeLive) cleanup(ctx context.Context, record execution.RecoveryRecor
 		if e := n.fence(ctx, b.AttemptID); e != nil {
 			return out, e
 		}
+		t.before = func(call context.Context) error { return n.fence(call, b.AttemptID) }
 		refs, e := t.InventorySandboxes(ctx, b.AttemptID)
 		if e != nil {
 			return out, e
 		}
 
+		// An empty inventory cannot resolve a create whose response was lost.
+		for _, intent := range record.Intents {
+			if intent.Kind == "sandbox" && intent.ResourceID == "" {
+				if len(refs) != 1 {
+					return out, ErrTerminationUnconfirmed
+				}
+				if e = n.resource(ctx, b, "sandbox", refs[0].ID); e != nil {
+					return out, e
+				}
+			}
+		}
 		found := map[string]bool{}
 		for _, ref := range refs {
 			found[ref.ID] = true
@@ -421,7 +434,7 @@ func (n *NativeLive) cleanup(ctx context.Context, record execution.RecoveryRecor
 	if e := n.intent(ctx, b, "revoke_key", b.AttemptID); e != nil {
 		return out, e
 	}
-	keys, e := n.Management.InventoryKeys(ctx)
+	keys, e := n.managementFor(b).InventoryKeys(ctx)
 	if e != nil {
 		return out, e
 	}
@@ -435,17 +448,33 @@ func (n *NativeLive) cleanup(ctx context.Context, record execution.RecoveryRecor
 			}
 		}
 	}
+	for _, intent := range record.Intents {
+		if (intent.Kind == "key" || strings.HasPrefix(intent.Kind, "reconcile_key:")) && intent.ResourceID == "" {
+			matches := []KeyInfo{}
+			for _, k := range keys {
+				if k.Name == intent.Name {
+					matches = append(matches, k)
+				}
+			}
+			if len(matches) != 1 {
+				return out, ErrKeyCleanupUnconfirmed
+			}
+			if e = n.resource(ctx, b, intent.Kind, matches[0].ID); e != nil {
+				return out, e
+			}
+		}
+	}
 	for _, k := range keys {
 		if names[k.Name] || ids[k.ID] {
 			if e = n.fence(ctx, b.AttemptID); e != nil {
 				return out, e
 			}
-			if e = n.Management.RevokeKey(ctx, k.ID); e != nil {
+			if e = n.managementFor(b).RevokeKey(ctx, k.ID); e != nil {
 				return out, e
 			}
 		}
 	}
-	keys, e = n.Management.InventoryKeys(ctx)
+	keys, e = n.managementFor(b).InventoryKeys(ctx)
 	if e != nil {
 		return out, e
 	}
@@ -458,7 +487,7 @@ func (n *NativeLive) cleanup(ctx context.Context, record execution.RecoveryRecor
 	return out, nil
 }
 func (n *NativeLive) Reconcile(ctx context.Context, record execution.RecoveryRecord) (execution.RecoveredRun, error) {
-	out := execution.RecoveredRun{Result: record.Result}
+	out := execution.RecoveredRun{Result: record.Result, Checkpoint: record.Checkpoint}
 	b := record.Binding
 	sandboxIntent := false
 	for _, i := range record.Intents {
@@ -472,7 +501,7 @@ func (n *NativeLive) Reconcile(ctx context.Context, record execution.RecoveryRec
 		if e := n.intent(ctx, b, kind, name); e != nil {
 			return out, e
 		}
-		key, e := n.Management.CreateKey(ctx, name, time.Now().Add(120*time.Second))
+		key, e := n.managementFor(b).CreateKey(ctx, name, time.Now().Add(120*time.Second))
 		if e != nil {
 			return out, e
 		}
@@ -483,6 +512,7 @@ func (n *NativeLive) Reconcile(ctx context.Context, record execution.RecoveryRec
 		if e != nil {
 			return out, e
 		}
+		t.before = func(call context.Context) error { return n.fence(call, b.AttemptID) }
 		refs, e := t.InventorySandboxes(ctx, b.AttemptID)
 		if e != nil {
 			return out, e
@@ -499,7 +529,10 @@ func (n *NativeLive) Reconcile(ctx context.Context, record execution.RecoveryRec
 					if e == nil {
 						out.Result = terminal.Result
 						c := terminal.Checkpoint
-						out.Checkpoint, _ = n.Verifier.VerifyCheckpoint(ctx, execution.VerifiedCheckpoint{ArchiveKey: c.ArchiveKey, ChecksumKey: c.ChecksumKey, SHA256: c.SHA256, Bytes: c.Bytes, PiVersion: c.PiVersion})
+						verified, err := n.Verifier.VerifyCheckpoint(ctx, execution.VerifiedCheckpoint{ArchiveKey: c.ArchiveKey, ChecksumKey: c.ChecksumKey, SHA256: c.SHA256, Bytes: c.Bytes, PiVersion: c.PiVersion})
+						if err == nil {
+							out.Checkpoint = verified
+						}
 					}
 				}
 			}
@@ -511,5 +544,14 @@ func (n *NativeLive) Reconcile(ctx context.Context, record execution.RecoveryRec
 		return out, e
 	}
 	out.Cleanup, e = n.cleanup(ctx, record, t)
+	if e == nil && out.Checkpoint.ArchiveKey != "" {
+		out.Checkpoint, e = n.Verifier.VerifyCheckpoint(ctx, out.Checkpoint)
+	}
 	return out, e
+}
+
+func (n *NativeLive) managementFor(b execution.AttemptBinding) Management {
+	m := n.Management
+	m.before = func(ctx context.Context) error { return n.fence(ctx, b.AttemptID) }
+	return m
 }

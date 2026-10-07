@@ -16,6 +16,7 @@ type Store struct {
 	Pool         *pgxpool.Pool
 	KnownSecrets []string
 	RuntimeMode  string
+	liveLease    *LiveLease
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Execution, error) {
@@ -50,7 +51,7 @@ func (s *Store) Receive(ctx context.Context, id string) (Execution, error) {
 	return s.Get(ctx, id)
 }
 func (s *Store) ClaimNext(ctx context.Context, owner string) (*Execution, error) {
-	return s.claimNext(ctx, owner, "")
+	return s.claimNext(ctx, owner, "", false)
 }
 
 // ClaimForRequest is for the explicitly selected compatibility request only.
@@ -58,13 +59,16 @@ func (s *Store) ClaimForRequest(ctx context.Context, owner, request string) (*Ex
 	if request == "" {
 		return nil, ErrInvalid
 	}
-	return s.claimNext(ctx, owner, request)
+	return s.claimNext(ctx, owner, request, true)
 }
-func (s *Store) claimNext(ctx context.Context, owner, expected string) (*Execution, error) {
+func (s *Store) ClaimLiveNext(ctx context.Context, owner string) (*Execution, error) {
+	return s.claimNext(ctx, owner, "", true)
+}
+func (s *Store) claimNext(ctx context.Context, owner, expected string, live bool) (*Execution, error) {
 	if owner == "" {
 		return nil, ErrInvalid
 	}
-	tx, e := s.Pool.Begin(ctx)
+	tx, e := s.beginLive(ctx)
 	if e != nil {
 		return nil, e
 	}
@@ -87,6 +91,11 @@ func (s *Store) claimNext(ctx context.Context, owner, expected string) (*Executi
 	}
 	if expected != "" && id != expected {
 		return nil, ErrInvalid
+	}
+	if live {
+		if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET runtime_mode='live',stage='preparing' WHERE request_id=$1", id); e != nil {
+			return nil, e
+		}
 	}
 	attempt := NewID()
 	if _, e = tx.Exec(ctx, "UPDATE gateway.runtime_slot SET request_id=$1,owner=$2,unresolved=true WHERE id=1", id, owner); e != nil {

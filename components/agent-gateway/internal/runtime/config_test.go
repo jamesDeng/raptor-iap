@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	fc "github.com/alibabacloud-go/fcsandbox-20260509/client"
+	"github.com/alibabacloud-go/tea/dara"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,5 +43,16 @@ func TestRuntimeModeExplicitAndConflictsFailClosed(t *testing.T) {
 		if (e != nil) != tc.bad || got != tc.want {
 			t.Fatal(tc, got, e)
 		}
+	}
+}
+func TestVolumeAcceptsExistingHTTPSOptionalMountShape(t *testing.T) {
+	c := LiveConfig{VolumeID: "volume", VolumeName: "auth", TeamID: "team", AccountID: "account", Bucket: "bucket", BucketPrefix: "auth", ExecutionRoleARN: "role"}
+	v := &fc.E2BVolume{VolumeID: dara.String(c.VolumeID), VolumeName: dara.String(c.VolumeName), TeamID: dara.String(c.TeamID), UserID: dara.String(c.AccountID), Status: dara.String("AVAILABLE"), StorageClass: dara.String("OSS"), OssVolumeConfig: &fc.OSSVolumeConfig{BucketName: dara.String(c.Bucket), BucketPath: dara.String("/auth"), Endpoint: dara.String("https://oss-ap-southeast-1.aliyuncs.com"), ReadOnly: dara.Bool(false)}}
+	if e := validateVolume(v, c); e != nil {
+		t.Fatal(e)
+	}
+	v.MountConfig = &fc.E2BVolumeMountConfig{Role: dara.String("wrong")}
+	if validateVolume(v, c) == nil {
+		t.Fatal("wrong role accepted")
 	}
 }

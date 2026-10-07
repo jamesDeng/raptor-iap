@@ -1,2 +1,13 @@
 137ac7bfc8fb3cd0b058d6bf89b6d7dd75c67d1afa48113fa027010d71620622  ../agent-harness/package.json
 863509f6c5202839bacbbab07292e80221bfb0c38aea2ae905c2a6b7587dafe6  ../agent-harness/package-lock.json
+1467ac7efeccb23035458ee1aeffa95937383bc652439e9ed9f4d18bd370931a  ../agent-harness/archive.py
+06b454e6cddefd9035b1245e446e4574df7760a4a52f04e1eab34a10a89114f1  ../agent-harness/application-context.mjs
+6b2d4bb1bc5db53811c24b097c48d6d95e098fc50800b4544d86e4decd4599f7  ../agent-harness/app-question.mjs
+550218fb54a0d9f0ab2b0cffa8b1398cf480ab1f1b2680abe2c797812d0ca947  ../agent-harness/checkpoint.mjs
+ee214b77a2944f9e7b7c7d45d054832b66dbfd23f3ad1bbd6cd858b31092034c  ../agent-harness/pi-adapter.mjs
+49895a049756cf76157f41ea397b59324b08a817981689a8eb541eba1eadb9d8  ../agent-harness/runner.mjs
+fb7c7867113cd33351baacc3cbbaa1a6d6c0ac301b5bd2fd0842301e0e366993  ../agent-harness/progress.mjs
+fbe7bc47ced08abf8ffaf4bc4a4b8abc7943297420fa45f83997993af5a28eda  ../agent-harness/live-contract.mjs
+3cf5de8bdd5fd827cf3285f64efa4525142ad86b7ad208d1dc3af95ca7e8c39b  ../agent-harness/live-runner.mjs
+4e7a25de6902163403f06281d109abbac545513b4a4916d6878dde635140b920  ../agent-harness/live-question.mjs
+040ccb5904d4bb42c86e657e383418a77e296232fdd76f81552a69fa984ecc9f  ../agent-harness/mcp-runtime.mjs

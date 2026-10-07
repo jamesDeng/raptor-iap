@@ -228,3 +228,22 @@ func TestCompatibilityClaimNeverConsumesUnrelatedRequest(t *testing.T) {
 		t.Fatal("slot changed", id, e)
 	}
 }
+func TestVerifiedCheckpointSurvivesCrashBeforeCleanup(t *testing.T) {
+	s, _, b := liveAttempt(t)
+	ctx := context.Background()
+	checkpoint := verifiedCheckpoint()
+	if e := s.SaveLiveCheckpoint(ctx, b.AttemptID, "owner", checkpoint); e != nil {
+		t.Fatal(e)
+	}
+	r, e := s.RecoveryRecord(ctx, b.AttemptID)
+	if e != nil || r.Checkpoint != checkpoint {
+		t.Fatal(r, e)
+	}
+	if e = s.FinalizeLive(ctx, b.AttemptID, "owner", LiveOutcome{Status: "failed", FailureCode: "Interrupted", SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}); e != nil {
+		t.Fatal(e)
+	}
+	got, _ := s.Get(ctx, b.RequestID)
+	if got.CheckpointStatus != "verified" {
+		t.Fatal(got.CheckpointStatus)
+	}
+}

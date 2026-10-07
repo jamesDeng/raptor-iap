@@ -27,6 +27,7 @@ var ErrFileNotFound = errors.New("RuntimeFileNotFound")
 var transportID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 type SandboxTransport struct {
+	before              func(context.Context) error
 	apiURL, domain, key string
 	client              *http.Client
 	envdFixtureURL      string
@@ -68,6 +69,11 @@ func NewSandboxTransport(api, domain, key string, rt http.RoundTripper) (*Sandbo
 	return &SandboxTransport{apiURL: api, domain: domain, key: key, client: &http.Client{Transport: rt, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 func (t *SandboxTransport) request(ctx context.Context, method, endpoint string, body []byte, headers http.Header) (*http.Response, error) {
+	if t.before != nil {
+		if e := t.before(ctx); e != nil {
+			return nil, e
+		}
+	}
 	r, e := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 	if e != nil {
 		return nil, ErrConfiguration
@@ -222,6 +228,11 @@ func readConnectFrame(r io.Reader) (byte, []byte, error) {
 	return h[0], b, nil
 }
 func (t *SandboxTransport) StartCommand(ctx context.Context, s SandboxRef, c CommandSpec) (CommandRef, error) {
+	if t.before != nil {
+		if e := t.before(ctx); e != nil {
+			return CommandRef{}, e
+		}
+	}
 	if c.Executable == "" || c.Deadline <= 0 || c.Deadline > 5*time.Minute || !transportID.MatchString(c.Tag) {
 		return CommandRef{}, ErrConfiguration
 	}

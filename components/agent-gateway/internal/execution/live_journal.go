@@ -12,7 +12,7 @@ import (
 // Lock the global slot first, consistently with ClaimNext. Every live mutation
 // checks both the durable attempt and current owner; ended attempts never write.
 func (s *Store) liveTx(ctx context.Context, attempt, owner string) (pgx.Tx, string, error) {
-	tx, e := s.Pool.Begin(ctx)
+	tx, e := s.beginLive(ctx)
 	if e != nil {
 		return nil, "", e
 	}
@@ -252,6 +252,29 @@ func (s *Store) FinalizeLive(ctx context.Context, attempt, owner string, o LiveO
 	if e != nil {
 		return e
 	}
+
+	var persisted []byte
+	var cancelled bool
+	if e = tx.QueryRow(ctx, "SELECT a.verified_checkpoint FROM gateway.attempts a WHERE a.id=$1", attempt).Scan(&persisted); e != nil {
+		return e
+	}
+	if !o.Checkpoint.valid() && len(persisted) > 0 {
+		if json.Unmarshal(persisted, &o.Checkpoint) != nil || !o.Checkpoint.valid() {
+			return ErrInvalid
+		}
+	}
+	// Serialize with accepted cancellation before resolving terminal status.
+	var locked string
+	if e = tx.QueryRow(ctx, "SELECT status FROM gateway.executions WHERE request_id=$1 FOR UPDATE", id).Scan(&locked); e != nil {
+		return e
+	}
+	if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway.signals WHERE request_id=$1 AND kind='cancel')", id).Scan(&cancelled); e != nil {
+		return e
+	}
+	if cancelled {
+		o.Status = "cancelled"
+		o.FailureCode = "Cancelled"
+	}
 	clean := o.SandboxAbsent && o.KeyAbsent && o.AccessRevoked
 	if o.Status == "completed" {
 		if !clean || !o.Checkpoint.valid() || o.FailureCode != "" {
@@ -295,6 +318,33 @@ func (s *Store) FinalizeLive(ctx context.Context, attempt, owner string, o LiveO
 		if _, e = tx.Exec(ctx, "UPDATE gateway.runtime_slot SET request_id=NULL,owner=NULL,unresolved=false WHERE id=1"); e != nil {
 			return e
 		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) SaveLiveCheckpoint(ctx context.Context, attempt, owner string, c VerifiedCheckpoint) error {
+	if !c.valid() {
+		return ErrInvalid
+	}
+	tx, _, e := s.liveTx(ctx, attempt, owner)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	var old []byte
+	if e = tx.QueryRow(ctx, "SELECT verified_checkpoint FROM gateway.attempts WHERE id=$1", attempt).Scan(&old); e != nil {
+		return e
+	}
+	if len(old) > 0 {
+		var previous VerifiedCheckpoint
+		if json.Unmarshal(old, &previous) != nil || previous != c {
+			return ErrInvalid
+		}
+		return tx.Commit(ctx)
+	}
+	raw, _ := json.Marshal(c)
+	if _, e = tx.Exec(ctx, "UPDATE gateway.attempts SET verified_checkpoint=$2 WHERE id=$1", attempt, raw); e != nil {
+		return e
 	}
 	return tx.Commit(ctx)
 }

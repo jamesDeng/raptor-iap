@@ -11,8 +11,13 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 	if v.ID == "" || v.RequestID == "" || len(v.Payload) > 4096 || !json.Valid(v.Payload) {
 		return ErrInvalid
 	}
-	var mode string
-	if e := s.Pool.QueryRow(ctx, "SELECT runtime_mode FROM gateway.executions WHERE request_id=$1", v.RequestID).Scan(&mode); e != nil {
+	tx, e := s.Pool.Begin(ctx)
+	if e != nil {
+		return ErrUnavailable
+	}
+	defer tx.Rollback(ctx)
+	var mode, status string
+	if e := tx.QueryRow(ctx, "SELECT runtime_mode,status FROM gateway.executions WHERE request_id=$1 FOR UPDATE", v.RequestID).Scan(&mode, &status); e != nil {
 		return ErrInvalid
 	}
 	if mode == "live" && v.Kind != "cancel" {
@@ -23,14 +28,20 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 	default:
 		return ErrInvalid
 	}
-	tag, e := s.Pool.Exec(ctx, "INSERT INTO gateway.signals(id,request_id,kind,payload) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", v.ID, v.RequestID, v.Kind, v.Payload)
+	if mode == "live" && (status == "completed" || status == "failed" || status == "cancelled") {
+		var duplicate bool
+		if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway.signals WHERE id=$1)", v.ID).Scan(&duplicate); e != nil || !duplicate {
+			return ErrInvalid
+		}
+	}
+	tag, e := tx.Exec(ctx, "INSERT INTO gateway.signals(id,request_id,kind,payload) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", v.ID, v.RequestID, v.Kind, v.Payload)
 	if e != nil {
 		return ErrUnavailable
 	}
 	if tag.RowsAffected() == 0 {
 		var id, kind string
 		var body []byte
-		if e = s.Pool.QueryRow(ctx, "SELECT request_id::text,kind,payload FROM gateway.signals WHERE id=$1", v.ID).Scan(&id, &kind, &body); e != nil {
+		if e = tx.QueryRow(ctx, "SELECT request_id::text,kind,payload FROM gateway.signals WHERE id=$1", v.ID).Scan(&id, &kind, &body); e != nil {
 			return e
 		}
 		var a, b any
@@ -42,7 +53,7 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 			return ErrInvalid
 		}
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 func (w *Worker) DrainSignals(ctx context.Context) error {
 	if e := w.reconcileOwnership(ctx); e != nil {

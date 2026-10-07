@@ -67,11 +67,11 @@ func (m Management) Preflight(ctx context.Context, c LiveConfig) error {
 	return validateVolume(r.Body.Volume, c)
 }
 func validateVolume(v *fc.E2BVolume, c LiveConfig) error {
-	if v == nil || dara.StringValue(v.VolumeID) != c.VolumeID || dara.StringValue(v.VolumeName) != c.VolumeName || dara.StringValue(v.TeamID) != c.TeamID || dara.StringValue(v.UserID) != c.AccountID || dara.StringValue(v.Status) != "AVAILABLE" || dara.StringValue(v.StorageClass) != "OSS" || v.OssVolumeConfig == nil || v.MountConfig == nil || dara.StringValue(v.MountConfig.Role) != c.ExecutionRoleARN {
+	if v == nil || dara.StringValue(v.VolumeID) != c.VolumeID || dara.StringValue(v.VolumeName) != c.VolumeName || dara.StringValue(v.TeamID) != c.TeamID || dara.StringValue(v.UserID) != c.AccountID || dara.StringValue(v.Status) != "AVAILABLE" || dara.StringValue(v.StorageClass) != "OSS" || v.OssVolumeConfig == nil || (v.MountConfig != nil && dara.StringValue(v.MountConfig.Role) != c.ExecutionRoleARN) {
 		return ErrConfiguration
 	}
 	o := v.OssVolumeConfig
-	if dara.StringValue(o.BucketName) != c.Bucket || strings.Trim(dara.StringValue(o.BucketPath), "/") != c.BucketPrefix || o.ReadOnly == nil || dara.BoolValue(o.ReadOnly) || dara.StringValue(o.Endpoint) != "oss-ap-southeast-1.aliyuncs.com" {
+	if dara.StringValue(o.BucketName) != c.Bucket || strings.Trim(dara.StringValue(o.BucketPath), "/") != c.BucketPrefix || o.ReadOnly == nil || dara.BoolValue(o.ReadOnly) || dara.StringValue(o.Endpoint) != "https://oss-ap-southeast-1.aliyuncs.com" {
 		return ErrConfiguration
 	}
 	return nil

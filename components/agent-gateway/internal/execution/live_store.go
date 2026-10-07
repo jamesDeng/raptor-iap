@@ -54,13 +54,18 @@ func (s *Store) LiveCancelled(ctx context.Context, id string) (bool, error) {
 }
 func (s *Store) RecoveryRecord(ctx context.Context, attempt string) (RecoveryRecord, error) {
 	var r RecoveryRecord
-	var binding, result []byte
+	var binding, result, checkpoint []byte
 	var started time.Time
-	if e := s.Pool.QueryRow(ctx, "SELECT binding,live_result,started_at FROM gateway.attempts WHERE id=$1", attempt).Scan(&binding, &result, &started); e != nil {
+	if e := s.Pool.QueryRow(ctx, "SELECT binding,live_result,verified_checkpoint,started_at FROM gateway.attempts WHERE id=$1", attempt).Scan(&binding, &result, &checkpoint, &started); e != nil {
 		return r, e
 	}
 	if json.Unmarshal(binding, &r.Binding) != nil || !r.Binding.valid() {
 		return r, ErrInvalid
+	}
+	if len(checkpoint) > 0 {
+		if json.Unmarshal(checkpoint, &r.Checkpoint) != nil || !r.Checkpoint.valid() {
+			return r, ErrInvalid
+		}
 	}
 	r.Deadline = started.Add(600 * time.Second)
 	if len(result) > 0 && json.Unmarshal(result, &r.Result) != nil {
@@ -105,7 +110,7 @@ func (s *Store) TakeOverLive(ctx context.Context, attempt, owner string) error {
 	if owner == "" {
 		return ErrInvalid
 	}
-	tx, e := s.Pool.Begin(ctx)
+	tx, e := s.beginLive(ctx)
 	if e != nil {
 		return e
 	}
@@ -158,4 +163,33 @@ func (s *Store) RejectLiveClaim(ctx context.Context, attempt, owner, code string
 		return e
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *Store) ReconcileUnbound(ctx context.Context, attempt, owner string) (bool, error) {
+	tx, id, e := s.liveTx(ctx, attempt, owner)
+	if e != nil {
+		return false, e
+	}
+	defer tx.Rollback(ctx)
+	var binding []byte
+	var intents int
+	if e = tx.QueryRow(ctx, "SELECT binding,(SELECT count(*) FROM gateway.runtime_intents WHERE attempt_id=$1) FROM gateway.attempts WHERE id=$1", attempt).Scan(&binding, &intents); e != nil {
+		return false, e
+	}
+	if len(binding) > 0 {
+		return false, nil
+	}
+	if intents != 0 {
+		return false, ErrUnavailable
+	}
+	if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET status='failed',stage='finished',failure_code='Interrupted',cleanup='confirmed',cleanup_status='{\"sandboxAbsent\":true,\"keyAbsent\":true,\"accessRevoked\":true}',recovery_needed=false WHERE request_id=$1", id); e != nil {
+		return false, e
+	}
+	if _, e = tx.Exec(ctx, "UPDATE gateway.attempts SET state='failed',ended_at=now() WHERE id=$1", attempt); e != nil {
+		return false, e
+	}
+	if _, e = tx.Exec(ctx, "UPDATE gateway.runtime_slot SET request_id=NULL,owner=NULL,unresolved=false WHERE id=1"); e != nil {
+		return false, e
+	}
+	return true, tx.Commit(ctx)
 }

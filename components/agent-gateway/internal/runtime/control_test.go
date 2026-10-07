@@ -61,3 +61,15 @@ func TestControlDeletionFailureDoesNotClaimAbsence(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestManagementLeaseCheckedBeforeEachMutation(t *testing.T) {
+	a := &keyAPI{}
+	m := Management{API: a, TeamID: "team", AccountID: "account", before: func(context.Context) error {
+		if a.pages > 0 {
+			return ErrRuntimeUnavailable
+		}
+		return nil
+	}}
+	if e := m.RevokeKey(context.Background(), "key-id"); e == nil || a.removed {
+		t.Fatal("continued after ownership loss", e)
+	}
+}

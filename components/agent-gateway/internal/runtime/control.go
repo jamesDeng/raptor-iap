@@ -29,6 +29,7 @@ type ManagementAPI interface {
 	DeleteApiKeyWithOptions(*string, *fc.DeleteApiKeyRequest, map[string]*string, *dara.RuntimeOptions) (*fc.DeleteApiKeyResponse, error)
 }
 type Management struct {
+	before            func(context.Context) error
 	API               ManagementAPI
 	Client            *fc.Client
 	TeamID, AccountID string
@@ -54,6 +55,13 @@ func (g guardedSDKHTTP) Call(r *http.Request, tr *http.Transport) (*http.Respons
 	return resp, nil
 }
 func (m Management) api(ctx context.Context) ManagementAPI {
+	api := m.rawAPI(ctx)
+	if m.before != nil && api != nil {
+		return fencedManagement{api: api, check: func() error { return m.before(ctx) }}
+	}
+	return api
+}
+func (m Management) rawAPI(ctx context.Context) ManagementAPI {
 	if m.Client != nil {
 		client := *m.Client
 		client.HttpClient = guardedSDKHTTP{ctx: ctx, origin: "fcsandbox.ap-southeast-1.aliyuncs.com"}
@@ -154,3 +162,33 @@ func (m Management) RevokeKey(ctx context.Context, id string) error {
 	return nil
 }
 func (k ControlKey) GoString() string { return fmt.Sprintf("[control key %s]", k.ID) }
+
+type fencedManagement struct {
+	api   ManagementAPI
+	check func() error
+}
+
+func (f fencedManagement) CreateApiKeyWithOptions(r *fc.CreateApiKeyRequest, h map[string]*string, o *dara.RuntimeOptions) (*fc.CreateApiKeyResponse, error) {
+	if e := f.check(); e != nil {
+		return nil, e
+	}
+	return f.api.CreateApiKeyWithOptions(r, h, o)
+}
+func (f fencedManagement) ListApiKeysWithOptions(r *fc.ListApiKeysRequest, h map[string]*string, o *dara.RuntimeOptions) (*fc.ListApiKeysResponse, error) {
+	if e := f.check(); e != nil {
+		return nil, e
+	}
+	return f.api.ListApiKeysWithOptions(r, h, o)
+}
+func (f fencedManagement) UpdateApiKeyWithOptions(id *string, r *fc.UpdateApiKeyRequest, h map[string]*string, o *dara.RuntimeOptions) (*fc.UpdateApiKeyResponse, error) {
+	if e := f.check(); e != nil {
+		return nil, e
+	}
+	return f.api.UpdateApiKeyWithOptions(id, r, h, o)
+}
+func (f fencedManagement) DeleteApiKeyWithOptions(id *string, r *fc.DeleteApiKeyRequest, h map[string]*string, o *dara.RuntimeOptions) (*fc.DeleteApiKeyResponse, error) {
+	if e := f.check(); e != nil {
+		return nil, e
+	}
+	return f.api.DeleteApiKeyWithOptions(id, r, h, o)
+}

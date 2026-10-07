@@ -89,3 +89,15 @@ func TestCleanupNoRuntimeResourcesRequiresNoCloudCall(t *testing.T) {
 		t.Fatal(out, e)
 	}
 }
+func TestUnknownCreateRemainsBlockedAfterEmptyInventory(t *testing.T) {
+	n, r := nativeJournal(t)
+	ctx := context.Background()
+	n.intent(ctx, r.Binding, "sandbox", r.Binding.AttemptID)
+	r, _ = n.Store.RecoveryRecord(ctx, r.Binding.AttemptID)
+	tr, close := fixtureTransport(t, func(w http.ResponseWriter, req *http.Request) { w.Write([]byte(`[]`)) })
+	defer close()
+	out, e := n.cleanup(ctx, r, tr)
+	if e == nil || out.SandboxAbsent {
+		t.Fatal("unresolved create released slot")
+	}
+}
