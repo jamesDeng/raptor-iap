@@ -153,3 +153,23 @@ archive=root/'fixture.tgz';receipt=m.pack_state(source,archive);m.restore_state(
 		t.Fatal(e)
 	}
 }
+
+func TestLiveJobAllowsTenTurnsWithoutIncreasingOtherLimits(t *testing.T) {
+	raw, err := liveJob(LiveConfig{}, execution.LiveStart{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job struct {
+		Limits struct {
+			MaxTurns        int `json:"max_turns"`
+			ModelSeconds    int `json:"model_seconds"`
+			MaxOutputTokens int `json:"max_output_tokens"`
+		} `json:"limits"`
+	}
+	if err := json.Unmarshal(raw, &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Limits.MaxTurns != 10 || job.Limits.ModelSeconds != 90 || job.Limits.MaxOutputTokens != 1024 {
+		t.Fatalf("unexpected limits: %+v", job.Limits)
+	}
+}

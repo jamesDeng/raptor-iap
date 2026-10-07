@@ -29,7 +29,7 @@ LiveConfig JSON keys: infraUsername, infraPassword, accountId, region (ap-southe
 
 Template prerequisites: existing Singapore sandbox team/template/OSS Volume; Node exactly 22.23.3 and Python3 available to user. Preparation fails if absent. Pi coding-agent and pi-mcp are pinned 0.99.2; npm ci uses the lockfile, with install scripts disabled. Harness files/config use umask 077. Attempt MCP credential/config/progress/logs live outside the auth archive root. The archive allowlists auth.json and session files; each request starts a fresh conversation. OAuth only, no API-key fallback.
 
-Limits: one leased worker and durable slot, 600-second overall attempt, sandbox TTL no more than 900 seconds, 90-second model call, three assistant turns, 1024 output tokens per response. Question <=2000 code points/8 KiB; answer <=16 KiB; terminal/progress <=64 KiB; checkpoint <=16 MiB. No inferred successful completion from answer existence.
+Limits: one leased worker and durable slot, 600-second overall attempt, sandbox TTL no more than 900 seconds, 90-second model call, ten assistant turns, 1024 output tokens per response. Question <=2000 code points/8 KiB; answer <=16 KiB; terminal/progress <=64 KiB; checkpoint <=16 MiB. No inferred successful completion from answer existence.
 
 ## Controller permission proposal (review before granting)
 
