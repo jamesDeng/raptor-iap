@@ -14,6 +14,7 @@ type backendFixture struct {
 	s            policy.ProxySnapshot
 	calls, reads int
 	change       bool
+	scaleErr     error
 }
 
 func (b *backendFixture) Snapshot(context.Context, domain.Environment, string) ([]policy.ProxySnapshot, error) {
@@ -26,7 +27,7 @@ func (b *backendFixture) Snapshot(context.Context, domain.Environment, string) (
 }
 func (b *backendFixture) Scale(context.Context, domain.Environment, string, int) (string, error) {
 	b.calls++
-	return "provider-request", nil
+	return "provider-request", b.scaleErr
 }
 func (b *backendFixture) Protect(context.Context, domain.Environment, string, []string, bool) error {
 	b.calls++
@@ -57,15 +58,20 @@ func (a *approvalFixture) Check(_ context.Context, b approval.Binding) (bool, er
 }
 
 type claimFixture struct {
-	calls   int
-	allowed bool
+	recordErr error
+	outcome   string
+	calls     int
+	allowed   bool
 }
 
 func (c *claimFixture) Claim(_ context.Context, b approval.Binding) (bool, error) {
 	c.calls++
 	return c.allowed, nil
 }
-func (c *claimFixture) Record(context.Context, approval.Binding, string, string) error { return nil }
+func (c *claimFixture) Record(_ context.Context, _ approval.Binding, outcome string, _ string) error {
+	c.outcome = outcome
+	return c.recordErr
+}
 func snapshot() policy.ProxySnapshot {
 	return policy.ProxySnapshot{EnvCode: "dev", ProxyCode: "p", GroupID: "g", Desired: 2, Min: 0, Max: 5, Nodes: []policy.Node{{ID: "i"}}}
 }
@@ -107,5 +113,46 @@ func TestScaleOutAndProtectionRequireNoApproval(t *testing.T) {
 	_, e = r.SetProtection(context.Background(), domain.Environment{Code: "dev"}, domain.ProtectionCommand{ProxyTarget: domain.ProxyTarget{RequestID: "r", EnvCode: "dev", ProxyCode: "p", GroupID: "g"}, InstanceIDs: []string{"foreign"}})
 	if e == nil || b.calls != 1 {
 		t.Fatal("foreign membership bypass")
+	}
+}
+
+func TestMetricsExpiringDuringClaimPreventSubmission(t *testing.T) {
+	b := &backendFixture{s: snapshot()}
+	a := &approvalFixture{allowed: true}
+	claim := &claimFixture{allowed: true}
+	clockCalls := 0
+	r := Runtime{Backend: b, Metrics: metricsFixture{}, Approval: a, Claims: claim, Now: func() time.Time {
+		clockCalls++
+		if clockCalls == 1 {
+			return time.Unix(1000, 0)
+		}
+		return time.Unix(1050, 0)
+	}}
+	_, e := r.Scale(context.Background(), domain.Environment{Code: "dev"}, domain.ScaleCommand{ProxyTarget: domain.ProxyTarget{RequestID: "r", EnvCode: "dev", ProxyCode: "p", GroupID: "g"}, ActionID: "action", DesiredCapacity: 1})
+	if e == nil || b.calls != 0 {
+		t.Fatalf("expired metric submitted: %v mutations=%d", e, b.calls)
+	}
+	if claim.outcome != "not_submitted" {
+		t.Fatal("claimed refusal was not recorded")
+	}
+}
+
+func TestSubmissionAndReceiptFailuresRemainUnknown(t *testing.T) {
+	for _, receiptFailure := range []bool{false, true} {
+		b := &backendFixture{s: snapshot()}
+		claim := &claimFixture{allowed: true}
+		if receiptFailure {
+			claim.recordErr = errors.New("receipt unavailable")
+		} else {
+			b.scaleErr = errors.New("lost acknowledgement")
+		}
+		r := Runtime{Backend: b, Metrics: metricsFixture{}, Approval: &approvalFixture{allowed: true}, Claims: claim, Now: func() time.Time { return time.Unix(1000, 0) }}
+		_, e := r.Scale(context.Background(), domain.Environment{Code: "dev"}, domain.ScaleCommand{ProxyTarget: domain.ProxyTarget{RequestID: "r", EnvCode: "dev", ProxyCode: "p", GroupID: "g"}, ActionID: "action", DesiredCapacity: 1})
+		if e == nil || e.Error() != "SubmissionUnknown" || b.calls != 1 {
+			t.Fatal(e, b.calls)
+		}
+		if !receiptFailure && claim.outcome != "unknown" {
+			t.Fatal("uncertain submission recorded as success")
+		}
 	}
 }

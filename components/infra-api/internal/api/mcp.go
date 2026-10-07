@@ -49,7 +49,8 @@ func newMCPHandler(op operations) http.Handler {
 		})
 	}
 	// Only explicitly configured command servers expose mutation tools.
-	if op.commander != nil && op.authorizer != nil {
+	visibility, canListCommands := op.authorizer.(CommandToolVisibility)
+	if op.commander != nil && canListCommands && visibility.ExposeCommands() {
 		for _, spec := range commandSpecs {
 			server.AddTool(&mcp.Tool{Name: spec.name, Description: "Execute one request-authorized infrastructure command", InputSchema: commandSchema(spec.sample)}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				data, e := op.command(ctx, spec.path, r.Params.Arguments)

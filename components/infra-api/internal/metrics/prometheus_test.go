@@ -78,3 +78,30 @@ func TestPrometheusRejectsUnsafeOrigin(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsQueriesUseOneFixedEvaluationTime(t *testing.T) {
+	evaluation := ""
+	calls := 0
+	client, _ := New("https://metrics.internal", &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		calls++
+		at := r.URL.Query().Get("time")
+		if at == "" {
+			t.Error("missing fixed evaluation time")
+		}
+		if calls == 1 {
+			evaluation = at
+		} else if at != evaluation {
+			t.Error("queries used different snapshots")
+		}
+		value := "0"
+		if strings.Contains(r.URL.Query().Get("query"), "observed_at_seconds") {
+			value = "1000"
+		}
+		body := fmt.Sprintf(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{"env_code":"dev","proxy_code":"p","ess_group_id":"g","ecs_instance_id":"i"},"value":[1000,%q]}]}}`, value)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})})
+	_, e := client.ConnectedClients(context.Background(), policy.ProxySnapshot{EnvCode: "dev", ProxyCode: "p", GroupID: "g", Nodes: []policy.Node{{ID: "i"}}})
+	if e != nil || calls != 2 {
+		t.Fatal(e, calls)
+	}
+}

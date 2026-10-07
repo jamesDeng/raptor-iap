@@ -110,3 +110,5 @@ func TestConfiguredAuthorizerAlsoRestrictsReadTools(t *testing.T) {
 		t.Fatalf("request read scope bypass: %d calls=%d", w.Code, f.calls.Load())
 	}
 }
+
+func (allowCommands) ExposeCommands() bool { return true }

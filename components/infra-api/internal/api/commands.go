@@ -25,6 +25,9 @@ type Authorizer interface {
 	Authorize(context.Context, string, string, any) error
 }
 
+// Visibility only controls the catalog; Authorize remains authoritative on calls.
+type CommandToolVisibility interface{ ExposeCommands() bool }
+
 type commandSpec struct {
 	name, path string
 	sample     any

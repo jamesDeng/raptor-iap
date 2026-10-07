@@ -40,9 +40,9 @@ type vector struct {
 	Value  []json.RawMessage `json:"value"`
 }
 
-func (c *Client) query(ctx context.Context, name string, s policy.ProxySnapshot) (map[string]float64, error) {
+func (c *Client) query(ctx context.Context, name string, s policy.ProxySnapshot, evaluation string) (map[string]float64, error) {
 	q := fmt.Sprintf(`%s{env_code=%s,proxy_code=%s,ess_group_id=%s,ecs_instance_id=~".+"}`, name, strconv.Quote(s.EnvCode), strconv.Quote(s.ProxyCode), strconv.Quote(s.GroupID))
-	request, e := http.NewRequestWithContext(ctx, "GET", c.origin+"/api/v1/query?"+url.Values{"query": {q}}.Encode(), nil)
+	request, e := http.NewRequestWithContext(ctx, "GET", c.origin+"/api/v1/query?"+url.Values{"query": {q}, "time": {evaluation}}.Encode(), nil)
 	if e != nil {
 		return nil, fail("MetricsUnavailable")
 	}
@@ -96,11 +96,12 @@ func (c *Client) query(ctx context.Context, name string, s policy.ProxySnapshot)
 func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) ([]policy.ClientObservation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	counts, e := c.query(ctx, "raptor_pgcat_connected_clients", s)
+	evaluation := time.Now().UTC().Format(time.RFC3339Nano)
+	counts, e := c.query(ctx, "raptor_pgcat_connected_clients", s, evaluation)
 	if e != nil {
 		return nil, e
 	}
-	observed, e := c.query(ctx, "raptor_pgcat_connected_clients_observed_at_seconds", s)
+	observed, e := c.query(ctx, "raptor_pgcat_connected_clients_observed_at_seconds", s, evaluation)
 	if e != nil {
 		return nil, e
 	}

@@ -64,3 +64,25 @@ func TestMutationMCPMatchesHTTPAndRejectsInvalidCalls(t *testing.T) {
 		t.Fatal("invalid calls reached provider")
 	}
 }
+
+func TestQuestionServerDoesNotExposeCommandCatalog(t *testing.T) {
+	a := QuestionAuthorizer{RequestID: "r", AttemptID: "a", EnvCode: "dev", AppCode: "app", Verify: func(context.Context, string) (QuestionScope, error) {
+		return QuestionScope{RequestID: "r", AttemptID: "a", EnvCode: "dev", AppCode: "app", Active: true}, nil
+	}}
+	h, e := NewWithCommands(fakeReader{}, map[string]domain.Environment{"dev": {Code: "dev"}}, "user", "secret", "X-Infra-Authorization", &commandFixture{}, a)
+	if e != nil {
+		t.Fatal(e)
+	}
+	server := httptest.NewServer(h)
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "question-test", Version: "1"}, nil)
+	session, e := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: mcpAuthTransport{}}, DisableStandaloneSSE: true}, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer session.Close()
+	list, e := session.ListTools(context.Background(), &mcp.ListToolsParams{})
+	if e != nil || len(list.Tools) != 3 {
+		t.Fatalf("question catalog widened: %v %v", list, e)
+	}
+}
