@@ -2,6 +2,10 @@
 
 Status: local implementation only. `cmd/server` still uses read-only `api.New`. No operation route is deployed and no cloud permission or shared configuration changed.
 
+## Current POC authentication decision
+
+Owner decision on October 7, 2026: retain HTTPS Basic Auth alone for the POC. Signed request context and per-attempt credentials are deferred future options, not integration prerequisites. Basic Auth identifies the service caller but does not prove per-request/object/attempt authorization. Keep provider account/environment/resource-identity checks and exact scale-in approval/metrics enforcement. Tool visibility is not an authorization boundary. This documentation update does not enable operations or deploy anything.
+
 ## Command transports and request authorization
 
 `api.NewWithCommands(reader, envs, username, password, authHeader, commander, authorizer)` adds typed shared HTTP/MCP dispatch. All mutations require an injected trusted authorizer. It receives authenticated Basic username, operation path and validated selectors; submitted requestId alone is never proof. Bodies reject unknown/duplicate keys, missing required fields, wrong scalar types, duplicate node IDs and sizes over 8 KiB. Injected authorization also applies to shared reads. Mutation MCP catalog exposure additionally requires `CommandToolVisibility.ExposeCommands()`; it controls visibility only, not call authorization.
@@ -38,7 +42,7 @@ Raptor client uses fixed HTTPS/Basic authentication and `POST /v1/approval-check
 
 ## Central integration dependencies
 
-- Choose request/attempt credential or signed-context verification for both servers, current cancellation/revocation and trusted Raptor direct-restart scope.
+- Basic Auth alone is selected for the POC. Do not require signed request context or per-attempt credentials to proceed. Preserve the injectable authorization boundary for a future request-scoped implementation.
 - Supply Raptor durable action claims/receipts, or explicitly choose the alternative replay-risk contract. Current runtime requires claims for scale-in.
 - Supply actual ESS/traffic Backend, immutable mappings, exporter coverage and provider health/draining semantics.
 - Choose cross-instance serialization/lock contract; one active sandbox does not serialize all callers.
