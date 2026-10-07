@@ -64,7 +64,7 @@ func (o operations) execute(ctx context.Context, path string, q url.Values) (any
 		if e == nil && account != env.AccountID {
 			e = domain.ErrScope
 		}
-		data = map[string]any{"envCode": env.Code, "accountMatches": true, "evidenceMode": "live"}
+		data = map[string]any{"envCode": env.Code, "accountMatches": true, "evidenceMode": "live", "observedAt": time.Now().UTC()}
 	case "/v1/deployments":
 		kind := q.Get("kind")
 		if kind != "application" && kind != "database" && kind != "db-proxy" {
@@ -75,9 +75,35 @@ func (o operations) execute(ctx context.Context, path string, q url.Values) (any
 		if rows == nil {
 			rows = []domain.Deployment{}
 		}
+
+		if e == nil {
+			now := time.Now().UTC()
+			for i := range rows {
+				if rows[i].EnvCode != env.Code || rows[i].ObjectCode != q.Get("code") {
+					e = domain.ErrScope
+					break
+				}
+				rows[i].ObservedAt = now
+			}
+		}
 		data = rows
 	case "/v1/deployment-status":
-		data, e = o.reader.Status(ctx, env, domain.Target{EnvCode: env.Code, AppCode: q.Get("appCode"), ClusterID: q.Get("clusterId"), Namespace: q.Get("namespace"), Name: q.Get("name"), UID: q.Get("uid")})
+		target := domain.Target{EnvCode: env.Code, AppCode: q.Get("appCode"), ClusterID: q.Get("clusterId"), Namespace: q.Get("namespace"), Name: q.Get("name"), UID: q.Get("uid")}
+		var status domain.Status
+		status, e = o.reader.Status(ctx, env, target)
+		if e == nil {
+			if status.UID != target.UID {
+				e = domain.ErrIdentity
+			} else {
+				status.EnvCode = target.EnvCode
+				status.ObjectCode = target.AppCode
+				status.ClusterID = target.ClusterID
+				status.Namespace = target.Namespace
+				status.Name = target.Name
+				status.ObservedAt = time.Now().UTC()
+			}
+		}
+		data = status
 	}
 	if e != nil {
 		switch {

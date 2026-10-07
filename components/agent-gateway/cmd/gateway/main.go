@@ -99,6 +99,7 @@ func main() {
 		if runtimeadapter.ReadPrivateJSON(os.Getenv("GATEWAY_LIVE_CONFIG_FILE"), &config) != nil || runtimeadapter.ReadPrivateJSON(os.Getenv("GATEWAY_CONTROLLER_CREDENTIAL_FILE"), &credential) != nil {
 			log.Fatal("private live configuration required")
 		}
+		s.KnownSecrets = append(s.KnownSecrets, config.RedactionValues()...)
 		management, verifier, e := runtimeadapter.NewCloudClients(config, credential)
 		if e != nil {
 			log.Fatal("live configuration invalid")

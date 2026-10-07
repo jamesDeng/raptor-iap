@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"io"
@@ -11,6 +12,8 @@ import (
 )
 
 type LiveConfig struct {
+	InfraUsername       string                       `json:"infraUsername"`
+	InfraPassword       string                       `json:"infraPassword"`
 	AccountID           string                       `json:"accountId"`
 	Region              string                       `json:"region"`
 	TeamID              string                       `json:"teamId"`
@@ -55,7 +58,7 @@ func ReadPrivateJSON(file string, value any) error {
 	return nil
 }
 func (c LiveConfig) Validate() error {
-	if c.Region != "ap-southeast-1" || !regexp.MustCompile(`^[0-9]{12,20}$`).MatchString(c.AccountID) || !transportID.MatchString(c.TeamID) || !transportID.MatchString(c.TemplateID) || !transportID.MatchString(c.VolumeID) || c.VolumeName == "" || c.Bucket == "" || c.BucketPrefix == "" || strings.HasPrefix(c.BucketPrefix, "/") || strings.Contains(c.BucketPrefix, "..") || !strings.HasPrefix(c.ExecutionRoleARN, "acs:ram::"+c.AccountID+":role/") || c.HarnessDir == "" {
+	if c.InfraUsername == "" || c.InfraPassword == "" || strings.Contains(c.InfraUsername, ":") || c.Region != "ap-southeast-1" || !regexp.MustCompile(`^[0-9]{12,20}$`).MatchString(c.AccountID) || !transportID.MatchString(c.TeamID) || !transportID.MatchString(c.TemplateID) || !transportID.MatchString(c.VolumeID) || c.VolumeName == "" || c.Bucket == "" || c.BucketPrefix == "" || strings.HasPrefix(c.BucketPrefix, "/") || strings.Contains(c.BucketPrefix, "..") || !strings.HasPrefix(c.ExecutionRoleARN, "acs:ram::"+c.AccountID+":role/") || c.HarnessDir == "" {
 		return ErrConfiguration
 	}
 	for _, endpoint := range []string{c.RaptorMcpURL, c.InfraMcpURL} {
@@ -65,4 +68,9 @@ func (c LiveConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (c LiveConfig) RedactionValues() []string {
+	combined := c.InfraUsername + ":" + c.InfraPassword
+	return []string{c.InfraPassword, combined, base64.StdEncoding.EncodeToString([]byte(combined))}
 }

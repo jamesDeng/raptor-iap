@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 type Environment struct {
 	Code      string `json:"code"`
 	AccountID string `json:"accountId"`
@@ -8,18 +10,19 @@ type Environment struct {
 }
 type Target struct{ EnvCode, AppCode, ClusterID, Namespace, Name, UID string }
 type Deployment struct {
-	ResourceID   string `json:"resourceId"`
-	Kind         string `json:"kind"`
-	EnvCode      string `json:"envCode"`
-	ObjectCode   string `json:"objectCode"`
-	ClusterID    string `json:"clusterId,omitempty"`
-	Namespace    string `json:"namespace,omitempty"`
-	Name         string `json:"name"`
-	UID          string `json:"uid,omitempty"`
-	State        string `json:"state"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	TargetDBCode string `json:"target-db-code,omitempty"`
-	EvidenceMode string `json:"evidenceMode"`
+	ObservedAt   time.Time `json:"observedAt"`
+	ResourceID   string    `json:"resourceId"`
+	Kind         string    `json:"kind"`
+	EnvCode      string    `json:"envCode"`
+	ObjectCode   string    `json:"objectCode"`
+	ClusterID    string    `json:"clusterId,omitempty"`
+	Namespace    string    `json:"namespace,omitempty"`
+	Name         string    `json:"name"`
+	UID          string    `json:"uid,omitempty"`
+	State        string    `json:"state"`
+	Endpoint     string    `json:"endpoint,omitempty"`
+	TargetDBCode string    `json:"target-db-code,omitempty"`
+	EvidenceMode string    `json:"evidenceMode"`
 }
 type Pod struct {
 	Name  string `json:"name"`
@@ -28,12 +31,18 @@ type Pod struct {
 	Ready bool   `json:"ready"`
 }
 type Status struct {
-	UID                string `json:"uid"`
-	Generation         int64  `json:"generation"`
-	ObservedGeneration int64  `json:"observedGeneration"`
-	Replicas           int    `json:"replicas"`
-	UpdatedReplicas    int    `json:"updatedReplicas"`
-	ReadyReplicas      int    `json:"readyReplicas"`
-	EvidenceMode       string `json:"evidenceMode"`
-	Pods               []Pod  `json:"pods"`
+	ObservedAt         time.Time `json:"observedAt"`
+	EnvCode            string    `json:"envCode"`
+	ObjectCode         string    `json:"objectCode"`
+	ClusterID          string    `json:"clusterId"`
+	Namespace          string    `json:"namespace"`
+	Name               string    `json:"name"`
+	UID                string    `json:"uid"`
+	Generation         int64     `json:"generation"`
+	ObservedGeneration int64     `json:"observedGeneration"`
+	Replicas           int       `json:"replicas"`
+	UpdatedReplicas    int       `json:"updatedReplicas"`
+	ReadyReplicas      int       `json:"readyReplicas"`
+	EvidenceMode       string    `json:"evidenceMode"`
+	Pods               []Pod     `json:"pods"`
 }

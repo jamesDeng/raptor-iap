@@ -56,3 +56,18 @@ func TestVolumeAcceptsExistingHTTPSOptionalMountShape(t *testing.T) {
 		t.Fatal("wrong role accepted")
 	}
 }
+
+func TestPrivateLiveConfigSeparatesInfraCredentials(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"accountId":"1360282071200743","region":"ap-southeast-1","teamId":"team","templateId":"template","bucket":"bucket","bucketPrefix":"auth","volumeName":"volume","volumeId":"volume","executionRoleArn":"acs:ram::1360282071200743:role/runtime","raptorMcpUrl":"https://raptor.fixture/mcp","infraMcpUrl":"https://infra.fixture/mcp","harnessDir":"/opt/raptor-harness","infraUsername":"reader","infraPassword":"fixture-only"}`
+	os.WriteFile(file, []byte(raw), 0600)
+	var c LiveConfig
+	if e := ReadPrivateJSON(file, &c); e != nil {
+		t.Fatal("separate Infra credentials not accepted", e)
+	}
+	if e := c.Validate(); e != nil {
+		t.Fatal(e)
+	}
+}
+
+func TestLiveConfigRejectsMissingInfraCredential(t *testing.T){file:=filepath.Join(t.TempDir(),"config.json");raw:=`{"accountId":"1360282071200743","region":"ap-southeast-1","teamId":"team","templateId":"template","bucket":"bucket","bucketPrefix":"auth","volumeName":"volume","volumeId":"volume","executionRoleArn":"acs:ram::1360282071200743:role/runtime","raptorMcpUrl":"https://raptor.fixture/mcp","infraMcpUrl":"https://infra.fixture/mcp","harnessDir":"/opt/raptor-harness"}`;os.WriteFile(file,[]byte(raw),0600);var c LiveConfig;ReadPrivateJSON(file,&c);if c.Validate()==nil{t.Fatal("missing Infra credential accepted")}}

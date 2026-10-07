@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"io"
@@ -260,8 +261,10 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	if e = cmd.Wait(); e != nil {
 		return e
 	}
-	token := "Bearer " + r.start.Access.Credential
-	job, _ := json.Marshal(map[string]any{"phase": "live-inference", "state_root": "/tmp/raptor-state", "private_root": "/tmp/raptor-private", "mount_root": "/mnt/oss", "prefix": n.Config.BucketPrefix, "generation": b.AttemptID, "request": map[string]any{"binding": b, "question": r.start.Question}, "limits": map[string]any{"model_seconds": 90, "max_turns": 3, "max_output_tokens": 1024}, "mcp": map[string]any{"raptor": map[string]any{"url": n.Config.RaptorMcpURL, "headers": map[string]string{"Authorization": token}}, "infra": map[string]any{"url": n.Config.InfraMcpURL, "headers": map[string]string{"X-Infra-Authorization": token}}}})
+	job, e := liveJob(n.Config, r.start)
+	if e != nil {
+		return e
+	}
 	if e = n.fence(ctx, b.AttemptID); e != nil {
 		return e
 	}
@@ -293,7 +296,7 @@ func (n *NativeLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor
 		if e != nil {
 			return out, e
 		}
-		terminal, e := decodeTerminal(raw, r.start.Binding, []string{r.key.value, r.start.Access.Credential})
+		terminal, e := decodeTerminal(raw, r.start.Binding, append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential))
 		if e != nil {
 			return out, e
 		}
@@ -554,4 +557,9 @@ func (n *NativeLive) managementFor(b execution.AttemptBinding) Management {
 	m := n.Management
 	m.before = func(ctx context.Context) error { return n.fence(ctx, b.AttemptID) }
 	return m
+}
+
+func liveJob(config LiveConfig, in execution.LiveStart) ([]byte, error) {
+	token := "Bearer " + in.Access.Credential
+	return json.Marshal(map[string]any{"phase": "live-inference", "state_root": "/tmp/raptor-state", "private_root": "/tmp/raptor-private", "mount_root": "/mnt/oss", "prefix": config.BucketPrefix, "generation": in.Binding.AttemptID, "request": map[string]any{"binding": in.Binding, "question": in.Question}, "limits": map[string]any{"model_seconds": 90, "max_turns": 3, "max_output_tokens": 1024}, "mcp": map[string]any{"raptor": map[string]any{"url": config.RaptorMcpURL, "headers": map[string]string{"Authorization": token}}, "infra": map[string]any{"url": config.InfraMcpURL, "headers": map[string]string{"X-Infra-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(config.InfraUsername+":"+config.InfraPassword))}}}})
 }

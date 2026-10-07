@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/testutil"
@@ -99,5 +101,25 @@ func TestUnknownCreateRemainsBlockedAfterEmptyInventory(t *testing.T) {
 	out, e := n.cleanup(ctx, r, tr)
 	if e == nil || out.SandboxAbsent {
 		t.Fatal("unresolved create released slot")
+	}
+}
+
+func TestMixedMCPAuthentication(t *testing.T) {
+	var c LiveConfig
+	json.Unmarshal([]byte(`{"raptorMcpUrl":"https://raptor.fixture/mcp","infraMcpUrl":"https://infra.fixture/mcp","infraUsername":"reader","infraPassword":"fixture-only"}`), &c)
+	raw, e := liveJob(c, execution.LiveStart{Access: execution.AgentAccess{Credential: "opaque-fixture"}, Binding: execution.AttemptBinding{RequestID: "request"}, Question: "healthy?"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	var job struct {
+		Request json.RawMessage
+		MCP     map[string]struct{ Headers map[string]string }
+	}
+	json.Unmarshal(raw, &job)
+	if job.MCP["raptor"].Headers["Authorization"] != "Bearer opaque-fixture" || job.MCP["infra"].Headers["X-Infra-Authorization"] != "Basic "+base64.StdEncoding.EncodeToString([]byte("reader:fixture-only")) {
+		t.Fatal("MCP authentication not separated")
+	}
+	if strings.Contains(string(job.Request), "fixture-only") || strings.Contains(string(job.Request), "opaque-fixture") {
+		t.Fatal("credential exposed as model input")
 	}
 }
