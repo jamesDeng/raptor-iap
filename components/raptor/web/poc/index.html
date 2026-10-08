@@ -1,10 +1,47 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Raptor · Infrastructure platform</title><link rel="stylesheet" href="/style.css"></head><body><a class="skip-link" href="#workspace">Skip to workspace</a>
-<aside><div class="brand-mark" aria-hidden="true">R</div><h1>Raptor</h1><p>Infrastructure platform</p><div class="nav-caption">WORKSPACE</div><nav aria-label="Main navigation"><button id="catalog-nav">Applications &amp; components</button><button id="requests-nav">Requests</button></nav><small><span class="sidebar-dot" aria-hidden="true"></span> Internal workspace</small></aside>
-<main id="workspace" tabindex="-1"><header><div class="header-title"><span class="eyebrow">DEVELOPER PLATFORM</span><strong>Infrastructure operations</strong></div><span id="identity">Sign in</span><label class="environment-control">Environment<select id="environment" aria-label="Environment"></select></label><button id="logout" class="secondary">Sign out</button></header><details class="notice"><summary>Execution &amp; evidence</summary><p>Execution mode and observation evidence are shown on each request. Approval, PR and skills-switch execution have simulated acceptance only. Restart evidence is reported per target; live execution requires server configuration.</p></details><p id="message" role="status" aria-live="polite"></p>
-<section id="login-panel"><p class="eyebrow">WELCOME TO RAPTOR</p><h2>Your infrastructure workspace</h2><p class="section-description">Sign in to manage applications, inspect deployments, and track operations.</p><form id="login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form></section>
-<section id="catalog-panel" hidden><p class="eyebrow">SERVICE CATALOG</p><h2>Applications &amp; components</h2><p class="section-description">Select a resource to view its deployments, dependencies, and requests.</p><form id="create-object"><select name="kind" aria-label="Resource type"><option value="application">Application</option><option value="database">Database</option><option value="db-proxy">DB proxy</option></select><input name="name" aria-label="Object name" placeholder="Name" required><button>Create catalog object</button><span>Creating an object does not deploy it.</span></form><div id="objects" aria-label="Catalog resources"></div>
-<section id="object-detail" hidden><h2 id="object-heading"></h2><div class="tabs" aria-label="Resource views"><button data-tab="overview">Overview</button><button data-tab="deployments">Deployments</button><button data-tab="dependencies">Dependencies</button><button data-tab="related">Requests</button></div><div id="detail"></div><h3>Run an agent operation</h3><p class="section-description">Choose an operation and review its inputs before submitting.</p><select id="operation" aria-label="Operation"></select><form id="operation-form"><div id="operation-fields"></div><label>Skills release<select id="request-skills"></select></label><label id="model-field" hidden>Model<select id="request-model"><option value="gpt-5.6-luna">gpt-5.6-luna</option></select></label><button>Submit agent request</button></form></section>
-<section><h3>Batch restart selection</h3><div id="basket"></div><button id="restart-submit">Apply parallel restarts</button><button id="restart-clear" class="secondary">Clear selection</button></section></section>
-<section id="requests-panel" hidden><p class="eyebrow">OPERATIONS</p><h2>Requests</h2><p class="section-description">Open a request to inspect its result, execution evidence, and saved progress.</p><div id="request-list"></div></section>
-<section id="request-panel" hidden><h2 id="request-heading">Request</h2><details class="request-definition"><summary>Request definition</summary><pre id="request-definition"></pre></details><div id="request-state"></div><section id="answer-panel" hidden><h3>Answer</h3><div id="answer"></div><div id="answer-identity"></div><div id="answer-evidence"></div></section><div id="lifecycle"></div><div id="target-results"></div><div id="approvals"></div><div class="controls"><button class="secondary" data-action="block">Block</button><button class="danger" data-action="cancel">Cancel</button><button data-action="continue">Continue</button><input id="instructions" placeholder="Instructions for continuation / denial" aria-label="Instructions"></div><form id="skills-change"><label>Skills version<select id="change-skills"></select></label><select name="strategy"><option value="next-pause">At next approval/review pause</option><option value="interrupt">Interrupt and restore with new skills</option></select><button>Change skills</button></form><h3>Saved progress</h3><p id="progress-availability"></p><div id="progress"></div></section>
-</main><script type="module" src="/app.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Raptor · Infrastructure platform</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<a class="skip-link" href="#workspace">Skip to workspace</a>
+<aside>
+  <div class="brand-mark" aria-hidden="true">R</div><h1>Raptor</h1><p>Infrastructure platform</p>
+  <div class="nav-caption">WORKSPACE</div>
+  <nav aria-label="Main navigation">
+    <div class="nav-group"><h2>Application</h2><button id="catalog-nav">List</button></div>
+    <div class="nav-group"><h2>Component</h2><button id="database-nav">Database</button><button id="proxy-nav">Database proxy</button></div>
+    <button id="requests-nav">Request</button>
+  </nav>
+  <small><span class="sidebar-dot" aria-hidden="true"></span> Internal workspace</small>
+</aside>
+<main id="workspace" tabindex="-1">
+  <header><div class="header-title"><span class="eyebrow">DEVELOPER PLATFORM</span><strong>Infrastructure operations</strong></div><span id="identity">Sign in</span><label class="environment-control">Environment<select id="environment" aria-label="Environment"></select></label><button id="logout" class="secondary">Sign out</button></header>
+  <details class="notice"><summary>Execution &amp; evidence</summary><p>Execution mode and observation evidence are shown on each request. Approval, PR and skills-switch execution have simulated acceptance only. Restart evidence is reported per target; live execution requires server configuration.</p></details>
+  <p id="message" role="status" aria-live="polite"></p>
+  <section id="login-panel"><p class="eyebrow">WELCOME TO RAPTOR</p><h2>Your infrastructure workspace</h2><p class="section-description">Sign in to manage applications, inspect deployments, and track operations.</p><form id="login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form></section>
+  <section id="catalog-panel" hidden>
+    <p id="catalog-eyebrow" class="eyebrow">APPLICATION</p><h2 id="catalog-heading">Application list</h2><p class="section-description">Open a resource to view its overview, deployments, dependencies, and requests.</p>
+    <form id="create-object"><input name="kind" type="hidden" value="application"><label id="create-name-label">Application name<input name="name" placeholder="Name" required></label><button id="create-object-submit">Create application</button><span>Creating a catalog object does not deploy it.</span></form>
+    <div id="objects" aria-label="Catalog resources"></div>
+  </section>
+  <section id="object-detail" hidden>
+    <button id="back-to-list" class="secondary back-link">← Application list</button>
+    <p id="object-kind" class="eyebrow"></p><h2 id="object-heading"></h2><p id="object-code" class="resource-code"></p>
+    <div class="tabs" aria-label="Resource views"><button data-tab="overview">Overview</button><button data-tab="deployments">Deployments</button><button data-tab="dependencies">Dependencies</button><button data-tab="related">Requests</button></div>
+    <div id="detail"></div>
+    <section class="agent-operation"><h3>Run an agent operation</h3><p class="section-description">Choose an operation and review its inputs before submitting.</p><select id="operation" aria-label="Operation"></select><form id="operation-form"><div id="operation-fields"></div><label>Skills release<select id="request-skills"></select></label><label id="model-field" hidden>Model<select id="request-model"><option value="gpt-5.6-luna">gpt-5.6-luna</option></select></label><button>Submit agent request</button></form></section>
+    <section id="restart-basket-panel"><h3>Batch restart selection</h3><div id="basket"></div><button id="restart-submit">Apply parallel restarts</button><button id="restart-clear" class="secondary">Clear selection</button></section>
+  </section>
+  <section id="requests-panel" hidden><p class="eyebrow">OPERATIONS</p><h2>Requests</h2><p class="section-description">Open a request to inspect its result, execution evidence, and saved progress.</p><div id="request-list"></div></section>
+  <section id="request-panel" hidden>
+    <button id="back-to-requests" class="secondary back-link">← Requests</button><p class="eyebrow">REQUEST</p><h2 id="request-heading">Request</h2>
+    <dl id="request-basics" class="metadata-grid"></dl><div id="request-state"></div>
+    <div class="controls"><button class="secondary" data-action="block">Block</button><button class="danger" data-action="cancel">Cancel</button><button data-action="continue">Continue</button><input id="instructions" placeholder="Instructions for continuation / denial" aria-label="Instructions"></div>
+    <div class="tabs" aria-label="Request views"><button data-request-tab="overview">Overview</button><button data-request-tab="result">Result</button><button data-request-tab="progress">Progress</button><button data-request-tab="approvals" hidden>Approvals</button></div>
+    <div id="request-overview" data-request-view="overview"><h3>Submitted operation</h3><div id="request-input"></div><dl id="request-config" class="metadata-grid"></dl><div id="lifecycle"></div><details class="request-definition"><summary>Request definition</summary><pre id="request-definition"></pre></details><form id="skills-change"><label>Skills version<select id="change-skills"></select></label><label>Apply change<select name="strategy"><option value="next-pause">At next approval/review pause</option><option value="interrupt">Interrupt and restore with new skills</option></select></label><button>Change skills</button></form></div>
+    <div id="request-result" data-request-view="result" hidden><p id="result-empty" class="section-description">No result is available yet. Check Progress for execution updates.</p><section id="answer-panel" hidden><h3>Answer</h3><div id="answer"></div><div id="answer-identity"></div><div id="answer-evidence"></div></section><div id="target-results"></div></div>
+    <div id="request-progress" data-request-view="progress" hidden><h3>Saved progress</h3><p id="progress-availability"></p><div id="progress"></div></div>
+    <div id="request-approvals" data-request-view="approvals" hidden><h3>Approvals</h3><div id="approvals"></div></div>
+  </section>
+</main>
+<script type="module" src="/app.js"></script>
+</body></html>

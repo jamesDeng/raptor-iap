@@ -15,7 +15,7 @@ test('structured cleanup and usage are readable on the request page',async()=>{c
 test('navigation follows the visible panel and resource tab',async()=>{
  const hosts=dom(),tabs=['overview','deployments'].map(tab=>({dataset:{tab},attributes:{},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]}}));
  document.querySelectorAll=()=>tabs;
- for(const id of ['catalog-nav','requests-nav'])Object.assign(document.getElementById(id),{attributes:{},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]}});
+ for(const id of ['catalog-nav','database-nav','proxy-nav','requests-nav'])Object.assign(document.getElementById(id),{attributes:{},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]}});
  try{
   const app=await import('./app.js');
   assert.equal(typeof app.updateNavigation,'function');
@@ -28,5 +28,14 @@ test('navigation follows the visible panel and resource tab',async()=>{
   assert.equal(hosts.get('catalog-nav').attributes['aria-current'],undefined);
   app.updateNavigation('login-panel','overview');
   assert.equal(hosts.get('requests-nav').attributes['aria-current'],undefined);
+ }finally{delete global.document}
+});
+
+test('progress shows the recorded event timestamp without inventing a missing one',()=>{
+ const hosts=dom();try{
+  renderProgress([{kind:'progress',summary:'saved',occurredAt:'2026-10-08T01:00:00Z'}]);
+  const time=hosts.get('progress').children[0].children.find(e=>e.tag==='time');
+  assert.ok(time);assert.equal(time.dateTime,'2026-10-08T01:00:00Z');
+  renderProgress([{kind:'progress',summary:'saved'}]);assert.equal(hosts.get('progress').children[0].children.some(e=>e.tag==='time'),false);
  }finally{delete global.document}
 });
