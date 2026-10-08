@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"io"
@@ -40,4 +41,14 @@ func (o OSSObjects) Read(ctx context.Context, key string) (io.ReadCloser, error)
 		return nil, ErrCheckpointVerification
 	}
 	return r, nil
+}
+
+func (o OSSObjects) Put(ctx context.Context, key string, data []byte) error {
+	if len(data) > 16*1024*1024 {
+		return ErrCheckpointVerification
+	}
+	if e := o.Bucket.PutObject(key, bytes.NewReader(data), oss.WithContext(ctx), oss.ServerSideEncryption("AES256")); e != nil {
+		return ErrCheckpointVerification
+	}
+	return nil
 }

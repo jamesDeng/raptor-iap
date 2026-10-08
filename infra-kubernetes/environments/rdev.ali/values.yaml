@@ -1,7 +1,7 @@
 environment: rdev.ali
 images:
   raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:97f86e5c5683ef94e84312dcb3bb0dc7512378c623589f7961ea6c4ee396db6d
-  gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:2b3698c428e7c0c1c037cc39fbd4c37037123964656cbf4b3d89ef17a173f22f
+  gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:fc633f7d52d86f4cbbe774e2dd5fa979871500e32f33abad5537fc8e1b421859
 repository:
   revision: 710c4ee3d6d3af565f911d5fd2f177c410787d12
 appCodes:
@@ -25,6 +25,7 @@ gatewayLive:
   serviceURL: https://api.rdev.raptor-iap.top
   configSecretName: gateway-live-config
   controllerSecretName: gateway-live-controller
+  axTLSSecretName: gateway-ax-client-tls
 
 # Validated Infra API route and two-target Kubernetes restart permission.
 directRestart:

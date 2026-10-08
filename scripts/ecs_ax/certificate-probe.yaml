@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ecs-ax-certificate-probe
+  namespace: ate-system
+spec:
+  restartPolicy: Never
+  containers:
+  - name: probe
+    image: alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+    command: [sh, -c, 'test -s /identity/credential.pem && test -s /identity/trust.pem && grep -q "BEGIN CERTIFICATE" /identity/credential.pem && echo projection-ok && sleep 600']
+    volumeMounts:
+    - name: identity
+      mountPath: /identity
+      readOnly: true
+  volumes:
+  - name: identity
+    projected:
+      sources:
+      - podCertificate:
+          signerName: podidentity.podcert.ate.dev/identity
+          keyType: ECDSAP256
+          credentialBundlePath: credential.pem
+      - clusterTrustBundle:
+          signerName: podidentity.podcert.ate.dev/identity
+          labelSelector:
+            matchLabels:
+              podcert.ate.dev/canarying: live
+          path: trust.pem

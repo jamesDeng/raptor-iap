@@ -122,7 +122,16 @@ func main() {
 		owner := execution.NewID()
 		raptor := execution.HTTPRaptor{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
 		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease}
-		worker := &execution.LiveWorker{Store: s, Owner: owner, Lease: lease, Runtime: adapter, Access: raptor, Raptor: raptor, Bootstrap: bootstrap}
+		backends := map[string]execution.LiveRuntime{"aliyun": adapter}
+		if config.AX != nil {
+			bridge, err := runtimeadapter.NewAXClient(*config.AX)
+			if err != nil {
+				log.Fatal("AX private transport configuration invalid")
+			}
+			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease}, Bridge: bridge}
+		}
+		router := &runtimeadapter.Providers{Default: config.Provider, Backends: backends, Store: s, Owner: owner, Lease: lease}
+		worker := &execution.LiveWorker{Store: s, Owner: owner, Lease: lease, Runtime: router, Access: raptor, Raptor: raptor, Bootstrap: bootstrap}
 		if worker.Reconcile(ctx) != nil {
 			log.Fatal("live reconciliation requires attention")
 		}

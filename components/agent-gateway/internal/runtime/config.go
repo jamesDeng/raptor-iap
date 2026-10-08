@@ -12,6 +12,8 @@ import (
 )
 
 type LiveConfig struct {
+	Provider            string                       `json:"provider,omitempty"`
+	AX                  *AXConfig                    `json:"ax,omitempty"`
 	InfraUsername       string                       `json:"infraUsername"`
 	InfraPassword       string                       `json:"infraPassword"`
 	AccountID           string                       `json:"accountId"`
@@ -58,6 +60,15 @@ func ReadPrivateJSON(file string, value any) error {
 	return nil
 }
 func (c LiveConfig) Validate() error {
+	if c.Provider != "" && !validProvider(c.Provider) {
+		return ErrConfiguration
+	}
+	if c.Provider == "ax" && c.AX == nil {
+		return ErrConfiguration
+	}
+	if c.AX != nil && validateAXEndpoint(c.AX.Endpoint) != nil {
+		return ErrConfiguration
+	}
 	if c.InfraUsername == "" || c.InfraPassword == "" || strings.Contains(c.InfraUsername, ":") || c.Region != "ap-southeast-1" || !regexp.MustCompile(`^[0-9]{12,20}$`).MatchString(c.AccountID) || !transportID.MatchString(c.TeamID) || !transportID.MatchString(c.TemplateID) || !transportID.MatchString(c.VolumeID) || c.VolumeName == "" || c.Bucket == "" || c.BucketPrefix == "" || strings.HasPrefix(c.BucketPrefix, "/") || strings.Contains(c.BucketPrefix, "..") || !strings.HasPrefix(c.ExecutionRoleARN, "acs:ram::"+c.AccountID+":role/") || c.HarnessDir == "" {
 		return ErrConfiguration
 	}
