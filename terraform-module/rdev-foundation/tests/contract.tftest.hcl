@@ -80,3 +80,16 @@ run "missing_oos_lifecycle_role" {
   }
   expect_failures = [terraform_data.service_role_guard]
 }
+
+run "rrsa_is_explicit" {
+  command = plan
+  variables {
+    enable_rrsa        = true
+    account_id         = "1234567890123456"
+    kubernetes_version = "1.35.7-aliyun.1"
+  }
+  assert {
+    condition     = alicloud_cs_managed_kubernetes.cluster.enable_rrsa == true
+    error_message = "RRSA must be enabled through the existing foundation cluster owner."
+  }
+}

@@ -1,0 +1,15 @@
+# Gateway RRSA execution ledger
+
+- 2026-10-08: user approved design and implementation plan; execution inline.
+- Pre-flight: runtime credential mode feeds Helm deployment; foundation RRSA metadata feeds gateway trust and Helm env. No interface conflicts identified.
+- Native worktree tool rejected parent recovery workspace (not a git repository); used ignored repository-local worktree feat/gateway-rrsa from c024b9c. Other worktrees untouched.
+- Task 1: initial feature tests RED (missing lockedCredential/OSS adapter); shared source, FC signing rotation, failure with no cloud request and one-call unknown outcome GREEN.
+- Task 1: actual OIDC STS fixture reads replacement projected token and returns new generation; OSS request signing also observes changed token. Concurrent accesses serialized.
+- Task 1: malformed upstream STS response without Expiration caused SDK panic (observed RED). SDK-boundary recovery now returns sanitized unavailable error (GREEN).
+- Task 1: complete runtime suite with local PostgreSQL17 and race detector passed. PostgreSQL14 compatibility remains covered by repository required CI, not this local run.
+- Task 1: Ruling: contain upstream malformed-response panic at credential SDK boundary — credentials-go1.4.5 dereferences absent Expiration; returning unavailable prevents process crash and request dispatch — cost if wrong: a provider defect is reported as dependency unavailable rather than a stack trace.
+- Provider schema1.293.0 confirms enable_rrsa optional bool and rrsa_metadata computed actual IdP ARN/name/issuer. Live ACK earlier inspection showed RRSA disabled.
+- Task 2: existing role, controller policy/attachment imported; existing checkpoint policy/attachment migrated from ecs-ax.ali to gateway.ali with private backups and preserved IDs. Original module.node resources removed from source state under lock, then imported at module.gateway addresses; no cloud deletion/recreation or apply during transfer.
+- Task 2: independently inspected gateway adoption plan: all six managed resource actions no-op; role_arn output no-op. Required no-change adoption verified before trust edits.
+- Task 3: foundation mock test observed RED for missing enable_rrsa behavior, then GREEN6/6; gateway IAM mock tests GREEN3/3. No live RRSA update applied yet.
+- Task 4: Helm RRSA render observed RED against required fixed Secret; GREEN8/8 after explicit token projection and conditional static Secret. No workloads deployed yet.

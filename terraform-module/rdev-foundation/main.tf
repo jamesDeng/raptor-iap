@@ -67,6 +67,7 @@ resource "alicloud_cs_managed_kubernetes" "cluster" {
   pod_cidr                       = "10.72.0.0/16"
   service_cidr                   = "10.73.0.0/16"
   deletion_protection            = true
+  enable_rrsa                    = var.enable_rrsa
   skip_set_certificate_authority = true
   tags                           = local.tags
   addons {

@@ -10,3 +10,5 @@ output "database_endpoint" {
 output "vpc_id" {
   value = alicloud_vpc.env.id
 }
+
+output "rrsa_metadata" { value = alicloud_cs_managed_kubernetes.cluster.rrsa_metadata }
