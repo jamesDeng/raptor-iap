@@ -5,7 +5,7 @@ class LiveManifest(unittest.TestCase):
   args=[os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
   if restart is not None:args+=['--set','directRestart.enabled='+str(restart).lower()]
   if not live:args+=['--set','gatewayLive.enabled=false']
-  if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
+  if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.credentialMode=static-sts','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
   if ax:args += ["--set","gatewayLive.axTLSSecretName=gateway-ax-client-tls"]
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
  def test_default_disables_runtime(self):
@@ -20,7 +20,7 @@ class LiveManifest(unittest.TestCase):
   for other in docs:
    if other and other.get('kind')=='Deployment' and other['metadata']['name']!='agent-gateway':self.assertFalse(any(v['name']=='ax-tls-source' for v in other['spec']['template']['spec'].get('volumes',[])))
  def test_live_without_secret_refs_fails_closed(self):
-  p=subprocess.run([os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml'),'--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=','--set','gatewayLive.controllerSecretName='],capture_output=True,text=True);self.assertNotEqual(p.returncode,0)
+  p=subprocess.run([os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml'),'--set','gatewayLive.enabled=true','--set','gatewayLive.credentialMode=static-sts','--set','gatewayLive.configSecretName=','--set','gatewayLive.controllerSecretName='],capture_output=True,text=True);self.assertNotEqual(p.returncode,0)
  def test_direct_restart_requires_opt_in(self):
   for enabled in [False,True]:
    docs=self.render(False,restart=enabled)
