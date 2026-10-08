@@ -35,3 +35,5 @@
 - Final: Ruling: retained ACK/Aliyun cleanup — preserve existing resources and Aliyun backend per current user scope — cost if wrong: ongoing idle resource charges.
 
 - Source integrity follow-up: CI reproduced platform-specific gzip/tar metadata differences. Canonical archive digest now covers sorted file paths, kinds, permission modes, symlink targets and all contents; transport metadata is excluded. Unsafe paths/entry kinds fail closed. Archive/patch corruption tests remain required.
+
+- Provenance acceptance: compared11,309deployed Substrate Go/module files to fixed upstream archive:0mismatches. Fresh verified AX archive plus patch and reviewed bridge overlays built successfully; immutable bridge0c463b5f33a3b04053a7e05d92427c38263070e7be38dc96ca9dd6d09efb2310. Latest branch CI AX/source-integrity and platform/storage/lifecycle checks passed. Synthetic trusted restore and exact cleanup passed after ingress isolation.
