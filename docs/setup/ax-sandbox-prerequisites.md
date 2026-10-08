@@ -1,0 +1,56 @@
+# ACK certificate compatibility gate
+
+Execution date: 2026-10-08. Migration remains incomplete until all gates pass.
+
+The exact Substrate revision is `ac41c06ee8929ee05159d679febab970a9e5cf4c`.
+Its PCR client (`cmd/podcertcontroller/internal/podcertificate/client.go`,
+`NewClient`) and CTB discovery (`internal/clustertrustbundle/client.go`,
+`Discover`) independently prefer certificates.k8s.io/v1 and fall back to
+v1beta1. v1alpha1 alone is insufficient for this revision.
+
+Sources:
+- https://github.com/agent-substrate/substrate/blob/ac41c06ee8929ee05159d679febab970a9e5cf4c/cmd/podcertcontroller/internal/podcertificate/client.go
+- https://github.com/agent-substrate/substrate/blob/ac41c06ee8929ee05159d679febab970a9e5cf4c/internal/clustertrustbundle/client.go
+- https://github.com/agent-substrate/substrate/blob/ac41c06ee8929ee05159d679febab970a9e5cf4c/manifests/ate-install/ate-controller.yaml
+
+Existing ACK raptor-rdev (cluster ID c92787e953503492ea141a744c81498f1),
+version 1.35.7-aliyun.1: a read-only Cloud Assistant invocation
+`t-sgp6zdva1z3eoe8` succeeded using the worker's kubelet identity. Discovery
+served only certificates.k8s.io/v1 CertificateSigningRequest, not PCR or CTB.
+Both v1beta1 and v1alpha1 resource-list requests returned NotFound. No existing
+cluster settings were changed. This does not decide the new target's APIs.
+
+The Singapore version API independently returned 1.36.2-aliyun.1 as creatable.
+The pinned Terraform1.293.0 managed-cluster schema has no certificate feature
+API toggle. The ACK1.36 release notes do not establish PCR/CTB enablement.
+Target discovery is required before adding worker capacity or installing AX.
+
+A readiness receipt must include both resources in supported versions plus
+successful approval, signing and kubelet projection checks. Missing evidence
+means not ready. scripts/ax_sandbox/preflight.py enforces that decision.
+
+## Minimal compatibility deployment costs
+
+The initial root creates one vSwitch and one ACK Basic control plane, no worker,
+new NAT, public API EIP, snapshot bucket or databases. ACK may create its managed
+private API load balancer/security resources; inventory those after creation.
+Account available balance readback was CNY918.38; this is not settled project
+spend. Existing resources continue their own billing.
+
+ACK Basic has no cluster management fee. China-site CLB documentation quotes
+CNY0.147 per instance-hour plus CNY0.049 per LCU-hour. For a conservative
+24-hour test assuming one private CLB and one LCU each hour:
+24 × (0.147 + 0.049) = CNY4.704. This is a forecast, not a cap or actual usage;
+retention extends costs. There is no public IP fee for a private CLB without EIP.
+State-store requests/storage also remain billable. Reserve CNY10 for this
+minimal compatibility stage; worker/storage pricing is deferred until ready.
+
+Sources:
+- https://www.alibabacloud.com/help/en/ack/ack-managed-and-ack-dedicated/product-overview/ack-pro-cluster-billing
+- https://help.aliyun.com/zh/slb/classic-load-balancer/product-overview/pay-as-you-go
+
+Private saved plan/state/logs are retained under the primary checkout's ignored
+.raptor-local/ax-sandbox. Backend prefix ax-sandbox.ali is distinct from rdev.ali;
+shared VPC is read through a data source and its owner/CIDR are checked. Terraform
+owns only the dedicated subnet and cluster in this stage. Do not install from
+this root without fresh saved-plan inspection and independent target discovery.
