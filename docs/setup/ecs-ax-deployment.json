@@ -38,7 +38,6 @@
   "real_question_e2e_verified": false,
   "gateway_default_provider": "aliyun",
   "blocked_on": [
-    "authorization for temporary nonadmin acceptance login",
     "existing gateway controller STS renewal through RAM identity",
     "GitOps candidate revision staging after prerequisites"
   ],
@@ -46,5 +45,9 @@
   "actor_arbitrary_external_host_denied_verified": true,
   "actor_private_router_request_denied_verified": true,
   "actor_private_worker_tls_denied_verified": true,
-  "gateway_candidate_rollback_verified": true
+  "gateway_candidate_rollback_verified": true,
+  "ordinary_test_user_authorized": true,
+  "ordinary_test_user_login_verified": true,
+  "ordinary_test_user_admin_route_denied_verified": true,
+  "ordinary_test_user_disabled_and_sessions_revoked_verified": true
 }
