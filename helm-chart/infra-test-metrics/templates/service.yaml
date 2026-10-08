@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Service
+metadata: {name: {{ .Release.Name }}-metrics}
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: {{ .Release.Name }}-metrics}
+  ports: [{name: http, port: 9090, targetPort: http}]

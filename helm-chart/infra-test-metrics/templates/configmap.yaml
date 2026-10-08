@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ .Release.Name }}-metrics}
+data:
+  recording-rules.yaml: |
+{{ .Files.Get "files/recording-rules.yaml" | indent 4 }}
+  prometheus.yml: |
+    global: {scrape_interval: 5s, evaluation_interval: 5s}
+    rule_files: [/config/recording-rules.yaml]
+    scrape_configs:
+      - job_name: pgcat
+        honor_labels: false
+        honor_timestamps: false
+        scrape_timeout: 3s
+        file_sd_configs:
+          - files: [/inventory/targets.json]
+            refresh_interval: 5s
+        relabel_configs:
+          - source_labels: [env]
+            regex: {{ .Values.environment | regexQuoteMeta | quote }}
+            action: keep
+          - source_labels: [db_proxy_code]
+            regex: {{ .Values.proxyCode | regexQuoteMeta | quote }}
+            action: keep
+          - source_labels: [target_db_code]
+            regex: {{ .Values.targetDbCode | regexQuoteMeta | quote }}
+            action: keep
+          - source_labels: [ecs_instance_id]
+            regex: '.+'
+            action: keep
+      - job_name: test-client
+        honor_labels: false
+        honor_timestamps: false
+        static_configs:
+          - targets: {{ .Values.clientTargets | toJson }}

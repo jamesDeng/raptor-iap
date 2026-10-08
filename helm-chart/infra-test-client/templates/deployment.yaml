@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-client
+  labels:
+    raptor.appcode: {{ .Values.appCode | quote }}
+    raptor.env: {{ .Values.environment | quote }}
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ .Release.Name }}-client}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Release.Name }}-client
+        raptor.appcode: {{ .Values.appCode | quote }}
+        raptor.env: {{ .Values.environment | quote }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532}
+      volumes:
+        - name: database
+          secret:
+            secretName: {{ .Values.dsnSecretName | quote }}
+            defaultMode: 0440
+      containers:
+        - name: client
+          image: {{ .Values.image | quote }}
+          env:
+            - {name: TEST_DB_DSN_FILE, value: /private-db/dsn}
+          ports: [{name: metrics, containerPort: 9090}]
+          volumeMounts: [{name: database, mountPath: /private-db, readOnly: true}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          readinessProbe: {httpGet: {path: /ready, port: metrics}, periodSeconds: 2}
+          livenessProbe: {httpGet: {path: /health, port: metrics}, periodSeconds: 10}
+          resources:
+{{ toYaml .Values.resources | indent 12 }}

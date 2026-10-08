@@ -1,0 +1,26 @@
+# Render privately with TOML escaping; credentials must never be committed.
+[general]
+host = "${BIND_ADDRESS}"
+port = 6432
+enable_prometheus_exporter = true
+prometheus_exporter_port = 9930
+connect_timeout = 5000
+shutdown_timeout = 60000
+idle_client_in_transaction_timeout = 0
+# Omit autoreload: the pinned release represents disabled as None, not zero.
+server_tls = true
+verify_server_certificate = true
+tls_certificate = "${CLIENT_TLS_CERT_PATH}"
+tls_private_key = "${CLIENT_TLS_KEY_PATH}"
+admin_username = "${ADMIN_USER}"
+admin_password = "${ADMIN_PASSWORD}"
+
+[pools.test]
+pool_mode = "transaction"
+[pools.test.users.0]
+username = "${APP_USER}"
+password = "${APP_PASSWORD}"
+pool_size = 16
+[pools.test.shards.0]
+database = "${TARGET_DATABASE}"
+servers = [["${TARGET_DB_HOST}", 5432, "primary"]]

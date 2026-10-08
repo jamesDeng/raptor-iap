@@ -1,0 +1,4 @@
+apiVersion: v2
+name: infra-test-metrics
+version: 0.1.0
+type: application

@@ -1,0 +1,7 @@
+{{- range $key := list "appCode" "environment" -}}
+{{- $code := required (printf "%s is required" $key) (index $.Values $key) -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$" $code) }}{{ fail "invalid catalog code" }}{{ end -}}
+{{- end -}}
+{{- $image := required "immutable image required" .Values.image -}}
+{{- if not (regexMatch "^[a-zA-Z0-9./_-]+@sha256:[a-f0-9]{64}$" $image) }}{{ fail "immutable image digest required" }}{{ end -}}
+{{- $secret := required "existing DSN Secret required" .Values.dsnSecretName -}}

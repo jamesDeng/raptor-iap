@@ -1,0 +1,11 @@
+# PgCat ECS / ESS module proposal
+
+Defines private NLB/TCP listener, server group, ESS group, NLB attachment and ECS launch configuration, with discovery tags on group and nodes. Baseline/minimum is two, maximum four. Runtime desired-capacity drift is narrowly ignored so Terraform cannot reset an in-progress replacement; centrally audit drift and require the final capacity two before permanent configuration apply. No entire-resource ignore, automatic import, direct instance delete or shared state modification.
+
+`bootstrap_reviewed=false` fails planning. A central-reviewed immutable ECS image must implement `/opt/raptor-pgcat/bootstrap --config /etc/raptor-pgcat/bootstrap.json`, verify the pinned revision, fetch only the selected secret reference through the already-reviewed existing ECS role, render private TLS/config files without logging them, prove backend DB connectivity and start PgCat/metrics. This executable and credential delivery are NOT implemented here. User data contains base64 JSON identity/endpoint/secret-reference metadata, never secret values. No RAM grants are created.
+
+Caller supplies existing private security group, VPC, ECS subnets and at least two verified Singapore NLB zones. Security group review must limit PgCat to clients/NLB and metrics to Prometheus. NLB health is currently TCP-only; new-node readiness additionally needs qualified SQL probes and client-metric coverage before replacement. TCP acceptance alone is insufficient proof of database readiness.
+
+`force_attach=false`; ESS auto-membership and manual deregistration reconciliation must be proved live before the replacement skill is enabled. Do not assume ESS leaves manually deregistered nodes detached or that provider NLB connection semantics match AWS. `connection_drain_enabled=false` is a proposed connection-preservation experiment. Secret delivery, image qualification, IAM/service roles, available SKUs, live routing and cost remain central review gates.
+
+Mocked Terraform tests and validation are configuration evidence only. No live plan/apply or resources are established by this module.
