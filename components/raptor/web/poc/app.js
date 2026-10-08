@@ -17,16 +17,23 @@ export function createProgressController({read,schedule=setTimeout,cancel=clearT
   async function poll(id,version){try{const result=await read(id,state.cursor);if(version!==epoch||id!==state.requestId)return;const known=new Set(state.events.map(e=>e.sequence));for(const event of result.events??[]){if(!known.has(event.sequence)){state.events.push(event);known.add(event.sequence);state.cursor=Math.max(state.cursor,event.sequence);}}state.unavailable=!!result.syncUnavailable;}catch{if(version!==epoch)return;state.unavailable=true;}if(version!==epoch)return;onChange(state);timer=schedule(()=>poll(id,version),2000);}
   return {state,async select(id){cancel(timer);epoch++;state.requestId=id;state.events=[];state.cursor=0;return poll(id,epoch);},close(){cancel(timer);epoch++;state.requestId=null;}};
 }
+let pageEpoch=0;
+export function setPageContext(document,page,kind,tab){
+ pageEpoch++;
+ document.getElementById('message').textContent='';
+ document.getElementById('execution-notice').hidden=!['request-panel','new-request-panel'].includes(page);
+ document.getElementById('restart-basket-panel').hidden=!(page==='object-detail'&&kind==='application'&&tab==='deployments');
+}
 export function setSessionView(document,signedIn){
  for(const id of ['platform-sidebar','workspace','workspace-skip'])document.getElementById(id).hidden=!signedIn;
  document.getElementById('login-page').hidden=signedIn;
  document.getElementById(signedIn?'workspace-feedback':'login-feedback').append(document.getElementById('message'));
 }
 let csrf='';
-export async function api(path,{method='GET',body,headers={}}={}){const response=await fetch('/api/v1'+path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...headers},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});const result=await response.json();if(!response.ok)throw new Error(result.error?.code??'Unavailable');return result.data;}
+export async function api(path,{method='GET',body,headers={}}={}){const epoch=pageEpoch;try{const response=await fetch('/api/v1'+path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...headers},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});const result=await response.json();if(!response.ok)throw new Error(result.error?.code??'Unavailable');return result.data;}catch(error){error.pageEpoch=epoch;throw error;}}
 function node(tag,text){const el=document.createElement(tag);if(text!==undefined)el.textContent=String(text);return el;}
 function button(text,fn){const el=node('button',text);el.type='button';el.addEventListener('click',()=>Promise.resolve(fn()).catch(showError));return el;}
-function showError(error){document.getElementById('message').textContent=error.message??'Unavailable';}
+export function showError(error){if(error.pageEpoch!==undefined&&error.pageEpoch!==pageEpoch)return;document.getElementById('message').textContent=error.message??'Unavailable';}
 export function renderOperationForm(schema){const host=document.getElementById('operation-fields');host.replaceChildren();for(const [name,field]of Object.entries(schema.properties??{})){const label=node('label',`${name}${schema.required?.includes(name)?' *':''}`);let input;if(field.enum){input=node('select');for(const value of field.enum){const option=node('option',value);option.value=value;input.append(option);}}else if(field['x-multiline']){input=node('textarea');input.rows=5;}else{input=node('input');input.type=field.type==='integer'?'number':'text';if(field.minimum!==undefined)input.min=field.minimum;if(field.type==='integer')input.step='1';}input.name=name;input.required=schema.required?.includes(name)??false;if(field.default!==undefined)input.value=field.default;label.append(input);host.append(label);}}
 export function renderProgress(events){const host=document.getElementById('progress');host.replaceChildren();for(const event of events){const row=node('div');row.className='event';row.append(node('strong',`${event.evidenceMode??'unverified'} · ${event.kind}`),node('p',event.summary));if(event.occurredAt){const time=node('time',new Date(event.occurredAt).toLocaleString());time.dateTime=event.occurredAt;row.append(time);}if(event.details&&Object.keys(event.details).length){const detail=node('details');detail.append(node('summary','Tool / event details'),node('pre',JSON.stringify(event.details,null,2)));row.append(detail);}host.append(row);}}
 export function renderExecutionResult(value){
@@ -67,7 +74,7 @@ export function updateNavigation(panel,tab,kind='application'){
 async function start(){
  const $=id=>document.getElementById(id);let objects=[],envs=[],releases=[],schemas={},selectedObject=null,requestId=null,currentTab='overview',catalogKind='application',requestTab=null,requestView=null,basket=[],viewEpoch=0,requestEpoch=0,pendingSubmission=null,requestResource=null,requestOrigin=null,requestTargets=[],activeRoute='';
  const progress=createProgressController({read:(id,cursor)=>api(`/requests/${encodeURIComponent(id)}/events?after=${cursor}`),onChange:state=>{renderProgress(state.events);$('progress-availability').textContent=state.unavailable?'Live sync unavailable; showing saved history':'Checking progress every two seconds';refreshRequest(state.requestId).catch(showError);}});
- function panel(name){setSessionView(document,name!=='login-panel');updateNavigation(name,currentTab,catalogKind);for(const id of ['catalog-panel','object-detail','requests-panel','request-panel','new-request-panel','login-panel'])$(id).hidden=id!==name;}
+ function panel(name){setPageContext(document,name,catalogKind,currentTab);setSessionView(document,name!=='login-panel');updateNavigation(name,currentTab,catalogKind);for(const id of ['catalog-panel','object-detail','requests-panel','request-panel','new-request-panel','login-panel'])$(id).hidden=id!==name;}
  function skillOptions(select){select.replaceChildren();for(const v of releases){const option=node('option',v.tag);option.value=v.tag;select.append(option);}}
  function pickedSkills(select){return releases.find(v=>v.tag===select.value)??{tag:'',commitSha:''};}
  function fillEnvironments(){const select=$('environment');select.replaceChildren();for(const [name,values]of groupEnvironments(envs)){const group=node('optgroup');group.label=name;for(const env of values){const option=node('option',`${env.code} · ${env.stage}`);option.value=env.code;group.append(option);}select.append(group);}}
@@ -82,7 +89,7 @@ async function start(){
  }
  function openCatalog(kind=catalogKind,replace=false){progress.close();requestId=null;requestEpoch++;viewEpoch++;selectedObject=null;catalogKind=kind;setRoute({catalog:kind},replace);currentTab='overview';renderCatalog();panel('catalog-panel');}
  function setRoute(values,replace=false){activeRoute=new URLSearchParams(values).toString();if(location.hash.slice(1)!==activeRoute){if(replace)history.replaceState(null,'','#'+activeRoute);else location.hash=activeRoute;}}
- async function openObject(object,tab='overview',replace=false){progress.close();requestId=null;requestEpoch++;viewEpoch++;selectedObject=object;catalogKind=object.kind;currentTab=tab;setRoute({object:object.id,tab,env:$('environment').value},replace);panel('object-detail');$('object-heading').textContent=object.name;$('object-kind').textContent=kindLabel();$('object-code').textContent=object.code;$('back-to-list').textContent='← '+kindLabel()+' list';$('restart-basket-panel').hidden=object.kind!=='application';$('new-request').disabled=!operationChoices(schemas,object.kind).length;await showDetail();}
+ async function openObject(object,tab='overview',replace=false){progress.close();requestId=null;requestEpoch++;viewEpoch++;selectedObject=object;catalogKind=object.kind;currentTab=tab;setRoute({object:object.id,tab,env:$('environment').value},replace);panel('object-detail');$('object-heading').textContent=object.name;$('object-kind').textContent=kindLabel();$('object-code').textContent=object.code;$('back-to-list').textContent='← '+kindLabel()+' list';$('new-request').disabled=!operationChoices(schemas,object.kind).length;await showDetail();}
  function openNewRequest(object,mode='agent',replace=false){
   if(!object)throw new Error('Choose a catalog resource first');
   requestOrigin={object,tab:currentTab,environment:$('environment').value};requestResource=object;requestTargets=mode==='restart'?structuredClone(basket):[];
@@ -106,7 +113,7 @@ async function start(){
   }
   if(route.id==='requests')await requestList(true);else openCatalog(['application','database','db-proxy'].includes(route.id)?route.id:'application',true);
  }
- async function showDetail(){const object=selectedObject;if(!object)return;const env=$('environment').value;const token=++viewEpoch;const host=$('detail');host.replaceChildren();
+ async function showDetail(){const object=selectedObject;if(!object)return;setPageContext(document,'object-detail',object.kind,currentTab);const env=$('environment').value;const token=++viewEpoch;const host=$('detail');host.replaceChildren();
   if(currentTab==='overview'){
    const layout=node('div');layout.className='overview-layout';const about=node('section'),context=node('section');
    about.append(node('h3','About'),node('p',object.description||'No description has been added.'));
