@@ -37,10 +37,19 @@ export function renderExecutionResult(value){
  for(const control of document.querySelectorAll?.('[data-action]')??[])control.hidden=restricted&&control.dataset.action!=='cancel';
  if($('skills-change'))$('skills-change').hidden=restricted;
 }
+export function updateNavigation(panel,tab){
+ for(const [id,active] of [['catalog-nav',panel==='catalog-panel'],['requests-nav',panel==='requests-panel'||panel==='request-panel']]){
+  const control=document.getElementById(id);
+  if(active)control.setAttribute('aria-current','page');else control.removeAttribute('aria-current');
+ }
+ for(const control of document.querySelectorAll('[data-tab]')){
+  if(control.dataset.tab===tab)control.setAttribute('aria-current','page');else control.removeAttribute('aria-current');
+ }
+}
 async function start(){
  const $=id=>document.getElementById(id);let objects=[],envs=[],releases=[],schemas={},selectedObject=null,requestId=null,currentTab='overview',basket=[],viewEpoch=0,requestEpoch=0,pendingSubmission=null;
  const progress=createProgressController({read:(id,cursor)=>api(`/requests/${encodeURIComponent(id)}/events?after=${cursor}`),onChange:state=>{renderProgress(state.events);$('progress-availability').textContent=state.unavailable?'Live sync unavailable; showing saved history':'Checking progress every two seconds';refreshRequest(state.requestId).catch(showError);}});
- function panel(name){for(const id of ['catalog-panel','requests-panel','request-panel','login-panel'])$(id).hidden=id!==name;}
+ function panel(name){updateNavigation(name,currentTab);for(const id of ['catalog-panel','requests-panel','request-panel','login-panel'])$(id).hidden=id!==name;}
  function skillOptions(select){select.replaceChildren();for(const v of releases){const option=node('option',v.tag);option.value=v.tag;select.append(option);}}
  function pickedSkills(select){return releases.find(v=>v.tag===select.value)??{tag:'',commitSha:''};}
  function fillEnvironments(){const select=$('environment');select.replaceChildren();for(const [name,values]of groupEnvironments(envs)){const group=node('optgroup');group.label=name;for(const env of values){const option=node('option',`${env.code} · ${env.stage}`);option.value=env.code;group.append(option);}select.append(group);}}
@@ -69,7 +78,7 @@ async function start(){
  $('login').addEventListener('submit',async e=>{e.preventDefault();try{const data=await api('/login',{method:'POST',body:Object.fromEntries(new FormData(e.target))});csrf=data.csrf;$('identity').textContent=data.user.username;await refreshCatalog();panel('catalog-panel');}catch(err){showError(err);}});
  $('logout').onclick=async()=>{try{await api('/logout',{method:'POST'});progress.close();csrf='';panel('login-panel');}catch(e){showError(e);}};
  $('catalog-nav').onclick=()=>{progress.close();requestId=null;panel('catalog-panel');};$('requests-nav').onclick=()=>requestList().catch(showError);$('environment').onchange=()=>showDetail().catch(showError);
- for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>{currentTab=b.dataset.tab;showDetail().catch(showError);};$('operation').onchange=()=>{renderOperationForm(schemas[$('operation').value]);$('model-field').hidden=$('operation').value!=='application.question';};
+ for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>{currentTab=b.dataset.tab;updateNavigation('catalog-panel',currentTab);showDetail().catch(showError);};$('operation').onchange=()=>{renderOperationForm(schemas[$('operation').value]);$('model-field').hidden=$('operation').value!=='application.question';};
  $('create-object').onsubmit=async e=>{e.preventDefault();try{const object=await api('/objects',{method:'POST',body:Object.fromEntries(new FormData(e.target))});await refreshCatalog();await openObject(object);}catch(err){showError(err);}};
  $('operation-form').onsubmit=async e=>{e.preventDefault();try{const name=$('operation').value,schema=schemas[name],parameters={};for(const input of $('operation-fields').querySelectorAll('input,select,textarea')){if(input.value==='')continue;parameters[input.name]=schema.properties[input.name].type==='integer'?Number(input.value):input.value;}const errors=validateParameters(schema,parameters);if(errors.length)throw new Error(errors.join('; '));await submit({type:'agent',object:{kind:selectedObject.kind,code:selectedObject.code},envCode:$('environment').value,operations:[{name,parameters}],skills:pickedSkills($('request-skills')),...(name==='application.question'?{model:$('request-model').value}:{})});}catch(err){showError(err);}};
  $('restart-submit').onclick=()=>{if(!basket.length){showError(new Error('Choose deployments first'));return;}submit({type:'direct',operation:'application.restart',targets:basket}).catch(showError);};$('restart-clear').onclick=()=>{basket=[];renderBasket();};
