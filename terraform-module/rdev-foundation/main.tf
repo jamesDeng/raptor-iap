@@ -104,5 +104,8 @@ resource "alicloud_db_instance" "platform" {
   security_ips             = ["10.70.1.0/24", "10.72.0.0/16"]
   storage_auto_scale       = "Disable"
   deletion_protection      = true
-  tags                     = local.tags
+  tags = merge(local.tags, var.platform_database_code == "" ? {} : {
+    env       = local.tags.Environment
+    "db-code" = var.platform_database_code
+  })
 }

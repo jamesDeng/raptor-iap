@@ -1,6 +1,11 @@
 variable "account_id" {
   type = string
 }
+variable "platform_database_code" {
+  type        = string
+  description = "Existing Raptor catalog code for the platform PostgreSQL instance."
+  default     = ""
+}
 variable "kubernetes_version" {
   type        = string
   description = "Version independently verified available in Singapore; no assumed default."
