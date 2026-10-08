@@ -12,7 +12,7 @@ variables {
 run "private_minimal_cluster" {
   command = plan
   assert {
-    condition     = alicloud_cs_managed_kubernetes.cluster.slb_internet_enabled == false && alicloud_cs_managed_kubernetes.cluster.new_nat_gateway == false
+    condition     = length(alicloud_eip_address.api) == 0 && alicloud_cs_managed_kubernetes.cluster.new_nat_gateway == false
     error_message = "Compatibility cluster must stay private and reuse outbound infrastructure."
   }
   assert {
@@ -31,4 +31,16 @@ run "wrong_account_rejected" {
   command = plan
   variables { account_id = "9999999999999999" }
   expect_failures = [terraform_data.account_guard]
+}
+
+run "authorized_public_api" {
+  command = plan
+  variables {
+    public_api_enabled = true
+    api_load_balancer_id = "lb-test"
+  }
+  assert {
+    condition = length(alicloud_eip_address.api) == 1 && alicloud_eip_association.api[0].instance_id == "lb-test" && alicloud_eip_association.api[0].instance_type == "SlbInstance"
+    error_message = "Explicit public API opt-in must enable the endpoint."
+  }
 }

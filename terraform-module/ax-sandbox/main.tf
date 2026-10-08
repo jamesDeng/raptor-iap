@@ -38,3 +38,20 @@ resource "alicloud_cs_managed_kubernetes" "cluster" {
   tags                           = local.tags
   addons { name = "flannel" }
 }
+
+# The pinned provider only applies slb_internet_enabled during cluster creation.
+# Manage the public endpoint explicitly for an existing CLB-backed cluster.
+resource "alicloud_eip_address" "api" {
+  count                = var.public_api_enabled ? 1 : 0
+  address_name         = "raptor-ax-api"
+  bandwidth            = "5"
+  internet_charge_type = "PayByTraffic"
+  payment_type         = "PayAsYouGo"
+  tags                 = local.tags
+}
+resource "alicloud_eip_association" "api" {
+  count         = var.public_api_enabled ? 1 : 0
+  allocation_id = alicloud_eip_address.api[0].id
+  instance_id   = var.api_load_balancer_id
+  instance_type = "SlbInstance"
+}

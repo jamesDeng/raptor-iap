@@ -13,7 +13,7 @@
   },
   "ax_installed": false,
   "migration_complete": false,
-  "certificate_gate": "pending explicit temporary credential transfer approval",
+  "certificate_gate": "failed: required PCR and CTB APIs not served",
   "existing_cluster_discovery": {
     "version": "1.35.7-aliyun.1",
     "podcertificaterequests": false,
@@ -25,10 +25,11 @@
   "retained_resources": [
     "dedicated ACK control plane",
     "dedicated subnet",
-    "ACK managed private API load balancer/security resources; exact subordinate inventory pending"
+    "ACK managed private API load balancer/security resources; exact subordinate inventory pending",
+    "public API EIP managed by Terraform"
   ],
   "cost_forecast_cny_24_hours": 4.704,
-  "cost_forecast_assumption": "one CLB, one LCU each hour; not actual usage or a cap",
+  "cost_forecast_assumption": "one CLB, one LCU each hour; not actual usage or a cap; excludes newly authorized EIP address and traffic charges",
   "no_sensitive_credential_transfer_performed": true,
   "environment": "rdev.ali",
   "terraform_root": "infra-terraform/environments/rdev.ali/ax-sandbox",
@@ -38,5 +39,36 @@
     "tag_only_updates": 2,
     "creates": 0,
     "deletes": 0
+  },
+  "target_certificate_discovery": {
+    "v1": {
+      "status": 200,
+      "resources": [
+        "certificatesigningrequests",
+        "certificatesigningrequests/approval",
+        "certificatesigningrequests/status"
+      ]
+    },
+    "v1beta1": {
+      "status": 404,
+      "resources": []
+    },
+    "v1alpha1": {
+      "status": 404,
+      "resources": []
+    }
+  },
+  "public_api": {
+    "terraform_apply_passed": true,
+    "eip_id": "eip-t4nqsqavymz5vr33u1n3g",
+    "public_endpoint": "https://47.237.23.118:6443",
+    "private_clb_id": "lb-t4n9rk0g7sfk5ocmghllb",
+    "local_tls_discovery_verified": true,
+    "tls_server_identity": "10.70.3.74",
+    "ack_metadata_public_endpoint": "empty after direct EIP association",
+    "bandwidth_mbps": 5,
+    "internet_charge_type": "PayByTraffic",
+    "authorization": "Current user explicitly allows public ACK API server",
+    "access_control": "Kubernetes client certificate authentication; CLB source-IP ACL not configured"
   }
 }
