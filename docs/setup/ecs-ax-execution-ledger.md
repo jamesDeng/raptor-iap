@@ -33,3 +33,5 @@
 - Final: Ruling: snapshot object garbage collection — remains separate from exact live actor/task deletion — cost if wrong: retained encrypted snapshot storage growth.
 - Final: Ruling: model/restart/release/cutover acceptance — remains a required deployment gate, not inferred from offline tests — cost if wrong: integration cannot be claimed complete.
 - Final: Ruling: retained ACK/Aliyun cleanup — preserve existing resources and Aliyun backend per current user scope — cost if wrong: ongoing idle resource charges.
+
+- Source integrity follow-up: CI reproduced platform-specific gzip/tar metadata differences. Canonical archive digest now covers sorted file paths, kinds, permission modes, symlink targets and all contents; transport metadata is excluded. Unsafe paths/entry kinds fail closed. Archive/patch corruption tests remain required.

@@ -5,8 +5,9 @@
   "go_version": "1.27.1",
   "patch": "substrate-v1-compat.patch",
   "source_sha256": {
-    "ecs-ax-upstream-ax.tar.gz": "3d835bc0e5f385dd23e0718fbf7439d6648bbbb8d877c80ee5399303d237181b",
-    "ecs-ax-substrate.tar.gz": "43eed08f931696baf9520a3542a5e27e025b8fc5a462d8b205d45d19be19d68b",
+    "ecs-ax-upstream-ax.tar.gz": "ec0b36dd520f86acd861ca4277d09a7c036af9ed5c2d4e72c72ada7b4f52a858",
+    "ecs-ax-substrate.tar.gz": "108ec140f99e57856b86134983732bef92ea84040e8b2a56882c847eca8a1d68",
     "substrate-v1-compat.patch": "4d525f8330a40a4ada54e8219365f6a3ba6a2d6abb367a486b8f00bd7ed07d9b"
-  }
+  },
+  "source_hash_format": "canonical-path-kind-mode-link-content-v1"
 }
