@@ -1,0 +1,20 @@
+{
+  "environment": "rdev.ali",
+  "region": "ap-southeast-1",
+  "terraform_root": "infra-terraform/environments/rdev.ali/ecs-ax",
+  "instance_id": "i-t4nj9k37b82g5a64x424",
+  "private_ip": "10.70.1.180",
+  "public_ip": "43.106.61.98",
+  "instance_type": "ecs.g7.xlarge",
+  "disk_gib": 120,
+  "disk_encrypted": true,
+  "kubernetes": "v1.37.0+k3s1",
+  "node_ready_verified": true,
+  "certificate_api_v1": {
+    "podcertificaterequests": true,
+    "clustertrustbundles": true
+  },
+  "ax_installed_verified": false,
+  "migration_complete": false,
+  "retained_ack": "c7de05cd5a9b84512925b1fc7a24e1bc9"
+}
