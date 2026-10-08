@@ -89,7 +89,7 @@ DO $$ BEGIN
  IF EXISTS (SELECT name FROM raptor.objects WHERE kind='application' AND name IN ({sql_names}) GROUP BY name HAVING count(*)>1) OR EXISTS (SELECT FROM raptor.objects WHERE kind='application' AND name IN ({sql_names}) AND description<>'Platform service created during rdev bootstrap') THEN RAISE EXCEPTION 'Catalog ownership conflict'; END IF;
 END $$;
 INSERT INTO raptor.objects(id,kind,code,name,description)
-SELECT gen_random_uuid(),'application',gen_random_uuid()::text,n.name,'Platform service created during rdev bootstrap' FROM unnest(ARRAY[{sql_names}]) AS n(name) WHERE NOT EXISTS (SELECT FROM raptor.objects o WHERE o.kind='application' AND o.name=n.name);
+SELECT gen_random_uuid(),'application',raptor.next_object_code('application'),n.name,'Platform service created during rdev bootstrap' FROM unnest(ARRAY[{sql_names}]) AS n(name) WHERE NOT EXISTS (SELECT FROM raptor.objects o WHERE o.kind='application' AND o.name=n.name);
 COMMIT;
 SELECT jsonb_object_agg(name,code) FROM raptor.objects WHERE kind='application' AND name IN ({sql_names});
 '''
