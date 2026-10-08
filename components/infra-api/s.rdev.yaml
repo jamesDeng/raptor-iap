@@ -24,7 +24,7 @@ resources:
         command: ["./server"]
         port: 9000
       environmentVariables:
-        INFRA_ENABLE_RESTART: "false"
+        INFRA_ENABLE_RESTART: "true"
         INFRA_LISTEN: "0.0.0.0:9000"
         INFRA_SCOPE_FILE: "/code/scope.json"
         INFRA_USERNAME: ${env(INFRA_USERNAME)}
