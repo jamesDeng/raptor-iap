@@ -70,5 +70,14 @@
     "internet_charge_type": "PayByTraffic",
     "authorization": "Current user explicitly allows public ACK API server",
     "access_control": "Kubernetes client certificate authentication; CLB source-IP ACL not configured"
+  },
+  "aliyun_support_ticket": {
+    "id": "000GJSBSH0",
+    "url": "https://smartservice.console.aliyun.com/service/chat?id=000GJSBSH0",
+    "submitted_at": "2026-10-08 12:21 Asia/Shanghai",
+    "status_observed": "assigned",
+    "category": "\u5bb9\u5668\u670d\u52a1 Kubernetes \u7248 ACK",
+    "purpose": "Confirm/enable native PCR, CTB and kubelet certificate/trust-bundle projection for AX/Substrate",
+    "credentials_disclosed": false
   }
 }
