@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-08",
+  "region": "ap-southeast-1",
+  "cluster_id": "c7de05cd5a9b84512925b1fc7a24e1bc9",
+  "cluster_name": "raptor-ax-sandbox",
+  "worker_subnet_id": "vsw-t4nn4krsmkia5omq8urik",
+  "version": "1.36.2-aliyun.1",
+  "terraform_apply_passed": true,
+  "independent_observation": {
+    "state": "running",
+    "size": 0,
+    "source": "ACK GET cluster detail during this execution; subsequent refresh requests failed transiently"
+  },
+  "ax_installed": false,
+  "migration_complete": false,
+  "certificate_gate": "pending explicit temporary credential transfer approval",
+  "existing_cluster_discovery": {
+    "version": "1.35.7-aliyun.1",
+    "podcertificaterequests": false,
+    "clustertrustbundles": false,
+    "cloud_assistant_invocation": "t-sgp6zdva1z3eoe8"
+  },
+  "private_backend_prefix": "ax-sandbox.ali",
+  "private_state_path": "primary checkout .raptor-local/ax-sandbox",
+  "retained_resources": [
+    "dedicated ACK control plane",
+    "dedicated subnet",
+    "ACK managed private API load balancer/security resources; exact subordinate inventory pending"
+  ],
+  "cost_forecast_cny_24_hours": 4.704,
+  "cost_forecast_assumption": "one CLB, one LCU each hour; not actual usage or a cap",
+  "no_sensitive_credential_transfer_performed": true
+}
