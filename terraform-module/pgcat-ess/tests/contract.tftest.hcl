@@ -18,7 +18,7 @@ variables {
   security_group_id   = "sg-fixture"
   image_id            = "image-fixture"
   instance_class      = "ecs.fixture"
-  secret_reference    = "secret-fixture-reference"
+  secret_reference    = "oss://fixture-bucket/fixture/config.json?versionId=fixture-version"
   execution_role_name = "reviewed-fixture-role"
   bootstrap_revision  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   bootstrap_reviewed  = true
@@ -26,7 +26,7 @@ variables {
 run "private_tagged_capacity" {
   command = plan
   assert {
-    condition = alicloud_ess_scaling_configuration.proxy.system_disk_encrypted == true && strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "systemctl start raptor-pgcat.service")
+    condition     = alicloud_ess_scaling_configuration.proxy.system_disk_encrypted == true && strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "systemctl start raptor-pgcat.service")
     error_message = "Encrypted disk and unprivileged service startup required."
   }
   assert {

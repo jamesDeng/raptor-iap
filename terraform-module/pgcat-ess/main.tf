@@ -81,7 +81,7 @@ resource "alicloud_ess_scaling_configuration" "proxy" {
   image_id                   = var.image_id
   instance_type              = var.instance_class
   security_group_id          = var.security_group_id
-  role_name                  = var.execution_role_name
+  role_name                  = module.config_iam.role_name
   internet_max_bandwidth_out = 0
   system_disk_category       = "cloud_essd"
   system_disk_size           = 20
@@ -104,4 +104,12 @@ resource "alicloud_ess_scaling_configuration" "proxy" {
  BOOT
   )
   depends_on = [alicloud_ess_server_group_attachment.proxy]
+}
+
+module "config_iam" {
+  source      = "./modules/config-iam"
+  account_id  = var.account_id
+  role_name   = var.execution_role_name
+  bucket_name = regex("^oss://([^/]+)/", var.secret_reference)[0]
+  object_key  = regex("^oss://[^/]+/([^?]+)\\?versionId=", var.secret_reference)[0]
 }

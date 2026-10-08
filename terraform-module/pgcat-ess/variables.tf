@@ -50,7 +50,10 @@ variable "security_group_id" { type = string }
 variable "image_id" { type = string }
 variable "instance_class" { type = string }
 variable "secret_reference" { type = string }
-variable "execution_role_name" { type = string }
+variable "execution_role_name" {
+  type        = string
+  description = "Name of the ECS role created and owned by this PgCat module, not an externally provisioned role."
+}
 variable "bootstrap_revision" {
   type = string
   validation {
