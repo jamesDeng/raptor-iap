@@ -1,0 +1,6 @@
+# Existing verified Raptor Pi0.99.2 release. Extend it with the AX guest daemon.
+FROM ghcr.io/jamesdeng/raptor-iap-pi@sha256:4fc6772c0577156f5722d7474e3e1ea30173496f63acf5253f35c7c512535289
+RUN apt-get update && apt-get install -y --no-install-recommends python3 procps openssh-client && rm -rf /var/lib/apt/lists/*
+COPY bin/linux_amd64/ax-task-runner /usr/local/bin/ax-task-runner
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/ax-task-runner"]

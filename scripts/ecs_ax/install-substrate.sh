@@ -5,6 +5,7 @@ set -euo pipefail
 install -d -m 700 /opt/raptor/substrate
 cd /opt/raptor/substrate
 tar --no-same-owner --warning=no-unknown-keyword -xzf /var/lib/raptor-ecs-ax/downloads/ecs-ax-substrate.tar.gz
+find . -name "._*" -type f -delete
 git init -q
 git add .
 git -c user.name=Raptor -c user.email=poc@localhost commit -qm 'Pinned upstream ac41c06ee8929ee05159d679febab970a9e5cf4c'

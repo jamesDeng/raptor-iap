@@ -35,6 +35,7 @@ resource "alicloud_security_group_rule" "private" {
   cidr_ip           = "10.70.0.0/16"
 }
 resource "alicloud_ecs_key_pair" "node" {
+  depends_on    = [terraform_data.guard]
   key_pair_name = "raptor-ecs-ax"
   public_key    = var.ssh_public_key
   tags          = local.tags

@@ -14,7 +14,17 @@
     "podcertificaterequests": true,
     "clustertrustbundles": true
   },
-  "ax_installed_verified": false,
+  "ax_installed_verified": true,
   "migration_complete": false,
-  "retained_ack": "c7de05cd5a9b84512925b1fc7a24e1bc9"
+  "retained_ack": "c7de05cd5a9b84512925b1fc7a24e1bc9",
+  "certificate_projection_verified": true,
+  "certificate_chain_verified": true,
+  "counter_suspend_resume_verified": true,
+  "pi_version_verified": "0.99.2",
+  "ax_workspace_suspend_resume_verified": true,
+  "persistent_stores_restart_verified": true,
+  "restart_observation": "First resume failed during PostgreSQL headless-service DNS gap; explicit resume of no-command probe after endpoint recovery succeeded. No model question replayed.",
+  "ax_worker_ip": "10.76.0.25",
+  "ax_server_image": "localhost:5001/ax-server@sha256:33f07b28d682bb174791b69ada261d516ce21106bab3e1384049349c781d8682",
+  "pi_image": "localhost:5001/ax-pi@sha256:e79f5b4bc13c6b10fb564921d92346e1b5c08bbd71405e365f6203bbfc143d99"
 }

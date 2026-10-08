@@ -22,7 +22,7 @@ index e91954e..bd59829 100644
  	name := req.GetActor().GetName()
  	m.revertedActors = append(m.revertedActors, name)
 diff --git a/internal/substrate/client.go b/internal/substrate/client.go
-index 7e65273..044352c 100644
+index 7e65273..3a64c09 100644
 --- a/internal/substrate/client.go
 +++ b/internal/substrate/client.go
 @@ -20,6 +20,7 @@ import (
@@ -33,7 +33,14 @@ index 7e65273..044352c 100644
  	"os"
  	"strings"
  	"time"
-@@ -245,7 +246,7 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string,
+@@ -240,12 +241,14 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string,
+ 			Name:     name,
+ 			Atespace: atespace,
+ 		},
++		// This deployment uses the dedicated AX worker pool.
++		WorkerSelector: &ateapipb.Selector{MatchLabels: map[string]string{"workload": "ax"}},
+ 		Containers: []*ateapipb.Container{{
+ 			Name:    "guest",
  			Image:   image,
  			Command: command,
  			Env:     envList,
@@ -42,7 +49,7 @@ index 7e65273..044352c 100644
  				HttpGet: &ateapipb.HTTPGetAction{
  					Path: "/readyz",
  					Port: 80,
-@@ -260,13 +261,10 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string,
+@@ -260,13 +263,10 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string,
  			Name:       "workspace",
  			DurableDir: &ateapipb.DurableDirVolumeSource{},
  		}},
@@ -57,7 +64,7 @@ index 7e65273..044352c 100644
  		},
  		SandboxConfig: &ateapipb.SandboxConfig{
  			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,
-@@ -388,7 +386,7 @@ func (c *Client) ResumeActor(ctx context.Context, atespace, actorName string) (*
+@@ -388,7 +388,7 @@ func (c *Client) ResumeActor(ctx context.Context, atespace, actorName string) (*
  	}
  	var workerIP string
  	if resp.Actor.Status != nil && resp.Actor.Status.WorkerAssignment != nil {
@@ -66,7 +73,7 @@ index 7e65273..044352c 100644
  	}
  	return resp.Actor, workerIP, nil
  }
-@@ -506,4 +504,24 @@ func (c *Client) DeleteActorTemplate(ctx context.Context, atespace, templateName
+@@ -506,4 +506,24 @@ func (c *Client) DeleteActorTemplate(ctx context.Context, atespace, templateName
  	return nil
  }
  
@@ -93,10 +100,10 @@ index 7e65273..044352c 100644
 +	return fallback
 +}
 diff --git a/internal/substrate/client_test.go b/internal/substrate/client_test.go
-index 2d88949..4500420 100644
+index 2d88949..d2b7b3a 100644
 --- a/internal/substrate/client_test.go
 +++ b/internal/substrate/client_test.go
-@@ -140,3 +140,18 @@ func TestClient_DeleteActor_PropagatesRPCError(t *testing.T) {
+@@ -140,3 +140,42 @@ func TestClient_DeleteActor_PropagatesRPCError(t *testing.T) {
  		t.Fatal("expected error, got nil")
  	}
  }
@@ -113,5 +120,29 @@ index 2d88949..4500420 100644
 +		if got := preferredWorkerIP(tc.ips); got != tc.want {
 +			t.Errorf("%v got %q want %q", tc.ips, got, tc.want)
 +		}
++	}
++}
++
++func TestBuildActorTemplateDataResumeContract(t *testing.T) {
++	tmpl := BuildActorTemplate("poc", "pi", "registry/pi@sha256:abc", nil, nil, "s3://ate-snapshots/poc")
++	if len(tmpl.Containers) != 1 || tmpl.Containers[0].GetWakeupProbe().GetHttpGet().GetPath() != "/readyz" {
++		t.Fatal("missing guest wakeup probe")
++	}
++	snapshot := tmpl.GetSnapshotConfig()
++	if snapshot.GetOnPause() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA || snapshot.GetOnCommit() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA {
++		t.Fatal("Pi must preserve durable data rather than process memory")
++	}
++	if snapshot.GetStorageLocation() != "s3://ate-snapshots/poc" {
++		t.Fatal("snapshot target changed")
++	}
++	if len(tmpl.Volumes) != 1 || tmpl.Volumes[0].GetDurableDir() == nil {
++		t.Fatal("workspace is not durable")
++	}
++}
++
++func TestBuildActorTemplateDedicatedWorkerPool(t *testing.T) {
++	tmpl := BuildActorTemplate("poc", "pi", "registry/pi", nil, nil, "gs://ate-snapshots/ax")
++	if tmpl.GetWorkerSelector().GetMatchLabels()["workload"] != "ax" {
++		t.Fatal("AX actor can select an unrelated worker pool")
 +	}
 +}

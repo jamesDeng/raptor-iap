@@ -17,3 +17,16 @@ run "single_persistent_node" {
     error_message = "SSH must be restricted and node belongs to rdev.ali."
   }
 }
+run "reject_ipv6_administrator_range" {
+  command = plan
+  variables { admin_cidr = "2001:db8::/32" }
+  expect_failures = [var.admin_cidr]
+}
+run "reject_wrong_account" {
+  command = plan
+  override_data {
+    target = data.alicloud_account.current
+    values = { id = "9999999999999999" }
+  }
+  expect_failures = [terraform_data.guard]
+}
