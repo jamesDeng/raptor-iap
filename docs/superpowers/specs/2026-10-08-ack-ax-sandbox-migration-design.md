@@ -1,7 +1,7 @@
 # Aliyun Sandbox to AX on ACK migration
 
 Date: 2026-10-08 (Asia/Shanghai).
-Status: migration direction approved; written design awaiting review.
+Status: migration direction and written design approved by the user.
 
 ## Goal and authorization
 
