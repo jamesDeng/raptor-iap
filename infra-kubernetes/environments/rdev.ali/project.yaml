@@ -12,3 +12,4 @@ spec:
   namespaceResourceWhitelist:
     - {group: apps, kind: Deployment}
     - {group: '', kind: Service}
+    - {group: '', kind: ServiceAccount}

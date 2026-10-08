@@ -52,3 +52,41 @@ class ReviewChecksum(unittest.TestCase):
   s=(ROOT/'.github/workflows/platform-images.yml').read_text()
   self.assertIn('-o "$RUNNER_TEMP/helm-v4.3.0-linux-amd64.tar.gz"',s)
   self.assertNotIn('"$RUNNER_TEMP/helm.tar.gz"',s)
+
+class RRSAPackaging(unittest.TestCase):
+ def render(self, mode, extra=()):
+  helm=os.environ.get('HELM',shutil.which('helm'))
+  if not helm:self.skipTest('Helm required; dedicated release CI renders RRSA')
+  args=[helm,'template','platform',str(ROOT/'helm-chart/raptor-platform'),'--namespace','raptor-system','--set','repository.revision='+'a'*40]
+  for image in ['raptor','gateway']:args+=['--set',f'images.{image}=ghcr.io/jamesdeng/raptor-iap-{image}@sha256:'+'b'*64]
+  for service in ['raptor-frontend','raptor-backend','raptor-open-api','raptor-admin','agent-gateway']:args+=['--set',f'appCodes.{service}=TEST-{service}']
+  for v in ['gatewayLive.enabled=true','gatewayLive.serviceURL=https://api.example','gatewayLive.configSecretName=live-config','agentAccess.secretName=agent-auth',f'gatewayLive.credentialMode={mode}']+list(extra):args+=['--set',v]
+  return subprocess.run(args,capture_output=True,text=True)
+ def test_rrsa_projects_only_gateway_and_omits_static_secret(self):
+  p=self.render('rrsa',['gatewayLive.rrsa.roleARN=acs:ram::1360282071200743:role/raptor-rdev-gateway-controller','gatewayLive.rrsa.providerARN=acs:ram::1360282071200743:oidc-provider/ack-rrsa-c92787e953503492ea141a744c81498f1'])
+  self.assertEqual(p.returncode,0,p.stderr);docs=[d for d in yaml.safe_load_all(p.stdout) if d]
+  sa=[d for d in docs if d['kind']=='ServiceAccount'];self.assertEqual([d['metadata']['name'] for d in sa],['agent-gateway'])
+  for d in docs:
+   if d['kind']!='Deployment':continue
+   pod=d['spec']['template']['spec'];self.assertFalse(pod['automountServiceAccountToken'])
+   projections=[v for v in pod['volumes'] if 'projected' in v]
+   if d['metadata']['name']=='agent-gateway':
+    self.assertEqual(d['spec']['strategy']['type'],'Recreate');self.assertEqual(d['spec']['replicas'],1);self.assertEqual(pod['serviceAccountName'],'agent-gateway')
+    self.assertEqual(projections[0]['projected']['sources'][0]['serviceAccountToken']['audience'],'sts.aliyuncs.com');self.assertEqual(projections[0]['projected']['sources'][0]['serviceAccountToken']['expirationSeconds'],3600)
+    env={e['name']:e.get('value') for e in pod['containers'][0]['env']};self.assertEqual(env['GATEWAY_CONTROLLER_CREDENTIAL_MODE'],'rrsa');self.assertNotIn('GATEWAY_CONTROLLER_CREDENTIAL_FILE',env)
+    self.assertFalse(any(v['name']=='live-controller-source' for v in pod['volumes']));self.assertNotIn('/live-controller-source/',pod['initContainers'][0]['args'][0])
+   else:self.assertEqual(projections,[])
+ def test_static_sts_keeps_secret(self):
+  p=self.render('static-sts',['gatewayLive.controllerSecretName=live-controller']);self.assertEqual(p.returncode,0,p.stderr)
+  d=next(d for d in yaml.safe_load_all(p.stdout) if d and d['kind']=='Deployment' and d['metadata']['name']=='agent-gateway');pod=d['spec']['template']['spec']
+  self.assertTrue(any(v['name']=='live-controller-source' for v in pod['volumes']))
+ def test_reject_unknown_missing_and_mixed_credentials(self):
+  for mode,extra in [('invalid',[]),('rrsa',[]),('rrsa',['gatewayLive.controllerSecretName=static']),('static-sts',[])]:
+   with self.subTest(mode=mode,extra=extra):self.assertNotEqual(self.render(mode,extra).returncode,0)
+
+class RRSAArgoPermissions(unittest.TestCase):
+ def test_gateway_serviceaccount_allowed_without_wildcards(self):
+  p=yaml.safe_load((ROOT/'infra-kubernetes/environments/rdev.ali/project.yaml').read_text())
+  self.assertIn({'group':'','kind':'ServiceAccount'},p['spec']['namespaceResourceWhitelist'])
+  self.assertNotIn({'group':'','kind':'Secret'},p['spec']['namespaceResourceWhitelist'])
+  self.assertNotIn('*',str(p['spec']['namespaceResourceWhitelist']))

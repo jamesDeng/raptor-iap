@@ -1,6 +1,12 @@
 {{- if .Values.gatewayLive.enabled -}}
 {{- required "gatewayLive.configSecretName required" .Values.gatewayLive.configSecretName | quote | trunc 0 -}}
+{{- if eq .Values.gatewayLive.credentialMode "static-sts" -}}
 {{- required "gatewayLive.controllerSecretName required" .Values.gatewayLive.controllerSecretName | quote | trunc 0 -}}
+{{- else if eq .Values.gatewayLive.credentialMode "rrsa" -}}
+{{- if .Values.gatewayLive.controllerSecretName }}{{ fail "RRSA cannot mount static controller credentials" }}{{ end -}}
+{{- required "gatewayLive.rrsa.roleARN required" .Values.gatewayLive.rrsa.roleARN | quote | trunc 0 -}}
+{{- required "gatewayLive.rrsa.providerARN required" .Values.gatewayLive.rrsa.providerARN | quote | trunc 0 -}}
+{{- else -}}{{ fail "invalid gatewayLive.credentialMode" }}{{- end -}}
 {{- required "agentAccess.secretName required for live runtime" .Values.agentAccess.secretName | quote | trunc 0 -}}
 {{- if not (regexMatch "^https://[^/?#]+$" .Values.gatewayLive.serviceURL) }}{{ fail "gatewayLive.serviceURL must use HTTPS" }}{{ end -}}
 {{- end -}}
@@ -23,6 +29,9 @@ metadata:
     raptor.env: {{ $.Values.environment | quote }}
 spec:
   replicas: 1
+  {{ if eq $service.name "agent-gateway" }}
+  strategy: {type: Recreate}
+  {{ end }}
   revisionHistoryLimit: 2
   selector:
     matchLabels:
@@ -35,6 +44,9 @@ spec:
         raptor.env: {{ $.Values.environment | quote }}
     spec:
       automountServiceAccountToken: false
+      {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled (eq $.Values.gatewayLive.credentialMode "rrsa") }}
+      serviceAccountName: agent-gateway
+      {{ end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -69,14 +81,16 @@ spec:
         - name: live-private-files
           image: {{ $.Values.images.gateway | quote }}
           command: ["/bin/sh", "-ec"]
-          args: ["umask 077; install -m 0600 /live-config-source/config.json /live-private/config.json; install -m 0600 /live-controller-source/credential.json /live-private/credential.json{{ if $.Values.gatewayLive.axTLSSecretName }}; install -m 0600 /ax-tls-source/ca.crt /live-private/ax-ca.crt; install -m 0600 /ax-tls-source/tls.crt /live-private/ax-client.crt; install -m 0600 /ax-tls-source/tls.key /live-private/ax-client.key{{ end }}"]
+          args: ["umask 077; install -m 0600 /live-config-source/config.json /live-private/config.json{{ if eq $.Values.gatewayLive.credentialMode "static-sts" }}; install -m 0600 /live-controller-source/credential.json /live-private/credential.json{{ end }}{{ if $.Values.gatewayLive.axTLSSecretName }}; install -m 0600 /ax-tls-source/ca.crt /live-private/ax-ca.crt; install -m 0600 /ax-tls-source/tls.crt /live-private/ax-client.crt; install -m 0600 /ax-tls-source/tls.key /live-private/ax-client.key{{ end }}"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: live-config-source, mountPath: /live-config-source, readOnly: true}
+            {{ if eq $.Values.gatewayLive.credentialMode "static-sts" }}
             - {name: live-controller-source, mountPath: /live-controller-source, readOnly: true}
+            {{ end }}
             - {name: live-private, mountPath: /live-private}
             {{ if $.Values.gatewayLive.axTLSSecretName }}
             - {name: ax-tls-source, mountPath: /ax-tls-source, readOnly: true}
@@ -118,7 +132,14 @@ spec:
               value: {{ if $.Values.gatewayLive.enabled }}'live'{{ else }}'disabled'{{ end }}
             {{ if $.Values.gatewayLive.enabled }}
             - {name: GATEWAY_LIVE_CONFIG_FILE, value: '/run/raptor/live/config.json'}
+            - {name: GATEWAY_CONTROLLER_CREDENTIAL_MODE, value: {{ $.Values.gatewayLive.credentialMode | quote }}}
+            {{ if eq $.Values.gatewayLive.credentialMode "static-sts" }}
             - {name: GATEWAY_CONTROLLER_CREDENTIAL_FILE, value: '/run/raptor/live/credential.json'}
+            {{ else }}
+            - {name: ALIBABA_CLOUD_ROLE_ARN, value: {{ $.Values.gatewayLive.rrsa.roleARN | quote }}}
+            - {name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN, value: {{ $.Values.gatewayLive.rrsa.providerARN | quote }}}
+            - {name: ALIBABA_CLOUD_OIDC_TOKEN_FILE, value: '/run/raptor/rrsa/token'}
+            {{ end }}
             {{ end }}
             {{ end }}
             {{ if and (or (eq $service.name "raptor-backend") (eq $service.name "raptor-open-api")) $.Values.agentAccess.secretName }}
@@ -153,6 +174,9 @@ spec:
             - {name: temporary, mountPath: /tmp}
             {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
             - {name: live-private, mountPath: /run/raptor/live, readOnly: true}
+            {{ if eq $.Values.gatewayLive.credentialMode "rrsa" }}
+            - {name: rrsa-token, mountPath: /run/raptor/rrsa, readOnly: true}
+            {{ end }}
             {{ end }}
             {{ if eq $service.name "raptor-backend" }}
             - {name: repository, mountPath: /repo, readOnly: true}
@@ -163,8 +187,19 @@ spec:
           emptyDir: {medium: Memory, sizeLimit: 1Mi}
         - name: live-config-source
           secret: {secretName: {{ $.Values.gatewayLive.configSecretName | quote }}, defaultMode: 0440}
+        {{ if eq $.Values.gatewayLive.credentialMode "static-sts" }}
         - name: live-controller-source
           secret: {secretName: {{ $.Values.gatewayLive.controllerSecretName | quote }}, defaultMode: 0440}
+        {{ else }}
+        - name: rrsa-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: sts.aliyuncs.com
+                  expirationSeconds: 3600
+                  path: token
+        {{ end }}
         {{ if $.Values.gatewayLive.axTLSSecretName }}
         - name: ax-tls-source
           secret: {secretName: {{ $.Values.gatewayLive.axTLSSecretName | quote }}, defaultMode: 0440}

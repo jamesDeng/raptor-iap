@@ -1,0 +1,24 @@
+# Gateway RRSA execution ledger
+
+- 2026-10-08: user approved design and implementation plan; execution inline.
+- Pre-flight: runtime credential mode feeds Helm deployment; foundation RRSA metadata feeds gateway trust and Helm env. No interface conflicts identified.
+- Native worktree tool rejected parent recovery workspace (not a git repository); used ignored repository-local worktree feat/gateway-rrsa from c024b9c. Other worktrees untouched.
+- Task 1: initial feature tests RED (missing lockedCredential/OSS adapter); shared source, FC signing rotation, failure with no cloud request and one-call unknown outcome GREEN.
+- Task 1: actual OIDC STS fixture reads replacement projected token and returns new generation; OSS request signing also observes changed token. Concurrent accesses serialized.
+- Task 1: malformed upstream STS response without Expiration caused SDK panic (observed RED). SDK-boundary recovery now returns sanitized unavailable error (GREEN).
+- Task 1: complete runtime suite with local PostgreSQL17 and race detector passed. PostgreSQL14 compatibility remains covered by repository required CI, not this local run.
+- Task 1: Ruling: contain upstream malformed-response panic at credential SDK boundary — credentials-go1.4.5 dereferences absent Expiration; returning unavailable prevents process crash and request dispatch — cost if wrong: a provider defect is reported as dependency unavailable rather than a stack trace.
+- Provider schema1.293.0 confirms enable_rrsa optional bool and rrsa_metadata computed actual IdP ARN/name/issuer. Live ACK earlier inspection showed RRSA disabled.
+- Task 2: existing role, controller policy/attachment imported; existing checkpoint policy/attachment migrated from ecs-ax.ali to gateway.ali with private backups and preserved IDs. Original module.node resources removed from source state under lock, then imported at module.gateway addresses; no cloud deletion/recreation or apply during transfer.
+- Task 2: independently inspected gateway adoption plan: all six managed resource actions no-op; role_arn output no-op. Required no-change adoption verified before trust edits.
+- Task 3: foundation mock test observed RED for missing enable_rrsa behavior, then GREEN6/6; gateway IAM mock tests GREEN3/3. No live RRSA update applied yet.
+- Task 4: Helm RRSA render observed RED against required fixed Secret; GREEN8/8 after explicit token projection and conditional static Secret. No workloads deployed yet.
+- Task 2: source ECS-AX post-migration saved plan verified zero managed changes. Destination gateway adoption saved plan likewise zero changes. Independent review inspected code but did not inspect private plans/state.
+- Task 3: foundation baseline saved plan zero managed changes. RRSA candidate saved plan changes only original cluster c92787e953503492ea141a744c81498f1 in place, enable_rrsa false→true; no replacement. Not applied because private ACK execution preflight is pending tunnel credential authorization.
+- Independent review: no Critical/Important code findings. Minor (deferred): rotation fixture replaces a regular file rather than kubelet ..data symlink; exact controller permission/issuer assertions are incomplete despite the module constructing the verified narrow documents.
+- Final: Ruling: live activation/deployment/expiry acceptance remain independent gates — implementation review cannot substitute for those observations — cost if wrong: falsely reporting operational completion.
+- Latest main d0e1d2d includes PR48 frontend release. Rebased cleanly without conflicts and preserved new Raptor image digest. Rdev Python suite101 passed (1 existing skip); Helm8 rendered tests passed.
+- Automatic approval review rejected use of existing ECS private key for root SSH tunnel, citing missing explicit credential authorization. Human authorization requested; no bypass attempted. Temporary ACK cert remains local and no kubeconfig was copied to worker.
+- Final: fixed material RAM trust action defect discovered by official documentation check after independent review — updated rrsa_exact_trust action assertion RED→GREEN, Terraform gateway3/3 passed. API remains AssumeRoleWithOIDC; RAM trust uses sts:AssumeRole with only Federated principal and exact issuer/audience/subject. No defective trust was applied.
+- Final: Ruling: correct the plan's sts:AssumeRoleWithOIDC trust action to sts:AssumeRole — official ACK RRSA trust examples and existing GitHub OIDC role agree — cost if wrong: STS federation could fail despite correct projection. Source: https://www.alibabacloud.com/help/en/ack/ack-managed-and-ack-dedicated/user-guide/use-rrsa-to-authorize-pods-to-access-different-cloud-services
+- PR49 created as draft and attached to this chat. Initial CI passed all running checks including PostgreSQL14 acceptance; final trust-action correction requires a fresh CI run. Live deployment/cross-expiry acceptance still pending.

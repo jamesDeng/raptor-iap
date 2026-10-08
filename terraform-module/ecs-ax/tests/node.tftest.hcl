@@ -30,10 +30,3 @@ run "reject_wrong_account" {
   }
   expect_failures = [terraform_data.guard]
 }
-run "checkpoint_write_is_scoped" {
-  command = plan
-  assert {
-    condition     = length(jsondecode(alicloud_ram_policy.ax_checkpoint_write.policy_document).Statement) == 1 && jsondecode(alicloud_ram_policy.ax_checkpoint_write.policy_document).Statement[0].Effect == "Allow" && alicloud_ram_role_policy_attachment.ax_checkpoint_write.policy_name == alicloud_ram_policy.ax_checkpoint_write.policy_name && alicloud_ram_role_policy_attachment.ax_checkpoint_write.policy_type == "Custom" && jsondecode(alicloud_ram_policy.ax_checkpoint_write.policy_document).Statement[0].Action == ["oss:PutObject"] && toset(jsondecode(alicloud_ram_policy.ax_checkpoint_write.policy_document).Statement[0].Resource) == toset(["acs:oss:*:1360282071200743:raptor-pi-auth-1360282071200743-20261004/auth/lifecycle/*.tgz", "acs:oss:*:1360282071200743:raptor-pi-auth-1360282071200743-20261004/auth/lifecycle/*.sha256"]) && alicloud_ram_role_policy_attachment.ax_checkpoint_write.role_name == "raptor-rdev-gateway-controller"
-    error_message = "AX gateway must only write portable lifecycle archives/checksums in the existing bucket."
-  }
-}

@@ -13,3 +13,8 @@ variable "zone" {
     error_message = "Only Singapore zones are allowed."
   }
 }
+
+variable "enable_rrsa" {
+  type    = bool
+  default = false
+}

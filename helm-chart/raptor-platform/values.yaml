@@ -27,6 +27,10 @@ gatewayLive:
   enabled: false
   serviceURL: ''
   configSecretName: ''
+  credentialMode: static-sts
+  rrsa:
+    roleARN: ''
+    providerARN: ''
   controllerSecretName: ''
   axTLSSecretName: ''
 

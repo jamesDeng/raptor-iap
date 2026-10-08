@@ -6,6 +6,7 @@ import (
 	fc "github.com/alibabacloud-go/fcsandbox-20260509/client"
 	"github.com/alibabacloud-go/tea/dara"
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
+	"github.com/aliyun/credentials-go/credentials"
 	"net/http"
 	"strings"
 	"time"
@@ -39,12 +40,22 @@ func NewCloudClients(c LiveConfig, credential ControllerCredential) (Management,
 	if c.Validate() != nil || credential.AccessKeyID == "" || credential.AccessKeySecret == "" || credential.SecurityToken == "" {
 		return Management{}, CheckpointVerifier{}, ErrConfiguration
 	}
-	client, e := fc.NewClient(&openapi.Config{AccessKeyId: dara.String(credential.AccessKeyID), AccessKeySecret: dara.String(credential.AccessKeySecret), SecurityToken: dara.String(credential.SecurityToken), RegionId: dara.String(c.Region), Endpoint: dara.String("fcsandbox.ap-southeast-1.aliyuncs.com"), Protocol: dara.String("HTTPS")})
+	source, e := credentials.NewCredential(&credentials.Config{Type: dara.String("sts"), AccessKeyId: dara.String(credential.AccessKeyID), AccessKeySecret: dara.String(credential.AccessKeySecret), SecurityToken: dara.String(credential.SecurityToken)})
+	if e != nil {
+		return Management{}, CheckpointVerifier{}, ErrConfiguration
+	}
+	return newCloudClients(c, &lockedCredential{source: source})
+}
+func newCloudClients(c LiveConfig, source *lockedCredential) (Management, CheckpointVerifier, error) {
+	if c.Validate() != nil || source == nil {
+		return Management{}, CheckpointVerifier{}, ErrConfiguration
+	}
+	client, e := fc.NewClient(&openapi.Config{Credential: source, RegionId: dara.String(c.Region), Endpoint: dara.String("fcsandbox.ap-southeast-1.aliyuncs.com"), Protocol: dara.String("HTTPS")})
 	if e != nil {
 		return Management{}, CheckpointVerifier{}, ErrConfiguration
 	}
 	host := c.Bucket + ".oss-ap-southeast-1.aliyuncs.com"
-	ossClient, e := oss.New("https://oss-ap-southeast-1.aliyuncs.com", credential.AccessKeyID, credential.AccessKeySecret, oss.SecurityToken(credential.SecurityToken), oss.HTTPClient(&http.Client{Transport: fixedOSS{host: host}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}))
+	ossClient, e := oss.New("https://oss-ap-southeast-1.aliyuncs.com", "", "", oss.SetCredentialsProvider(ossCredentialProvider{source: source}), oss.HTTPClient(&http.Client{Transport: fixedOSS{host: host}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}))
 	if e != nil {
 		return Management{}, CheckpointVerifier{}, ErrConfiguration
 	}
