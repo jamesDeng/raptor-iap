@@ -7,7 +7,7 @@ class PlanGuardTests(unittest.TestCase):
   spec=importlib.util.spec_from_file_location('guard',source);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
   changes=[]
   for address,action in actions.items():
-   after={'tags': tags or {'Project':'raptor-iap','Environment':'ax-sandbox.ali','Owner':'ax-sandbox'}}
+   after={'tags': tags or {'Project':'raptor-iap','Environment':'rdev.ali','Owner':'ax-sandbox'}}
    if address.endswith('cluster'): after.update(version='1.36.2-aliyun.1',new_nat_gateway=False,slb_internet_enabled=False,skip_set_certificate_authority=True,pod_cidr='10.74.0.0/16',service_cidr='10.75.0.0/16',cluster_spec='ack.standard')
    if address.endswith('workers'): after.update(vpc_id='vpc-owned',cidr_block='10.70.3.0/24',zone_id='ap-southeast-1a')
    changes.append({'mode':'managed','address':address,'change':{'actions':action,'after':after,'after_unknown':worker_unknown or {}}})

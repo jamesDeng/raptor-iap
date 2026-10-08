@@ -24,7 +24,7 @@ def inspect_plan(plan: dict, ownership: dict) -> dict:
         c=row.get('change',{});a=c.get('after',{});address=row.get('address','')
         if c.get('actions')!=['create']: reasons.append('not_creation_only')
         if '.alicloud_' in address:
-            if a.get('tags')!={'Project':'raptor-iap','Environment':'ax-sandbox.ali','Owner':'ax-sandbox'}: reasons.append('wrong_tags')
+            if a.get('tags')!={'Project':'raptor-iap','Environment':'rdev.ali','Owner':'ax-sandbox'}: reasons.append('wrong_tags')
         if address.endswith('.cluster'):
             values={'version':'1.36.2-aliyun.1','new_nat_gateway':False,'slb_internet_enabled':False,'skip_set_certificate_authority':True,'pod_cidr':'10.74.0.0/16','service_cidr':'10.75.0.0/16','cluster_spec':'ack.standard'}
             if any(a.get(k)!=v for k,v in values.items()): reasons.append('wrong_cluster')

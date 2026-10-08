@@ -54,3 +54,13 @@ Private saved plan/state/logs are retained under the primary checkout's ignored
 shared VPC is read through a data source and its owner/CIDR are checked. Terraform
 owns only the dedicated subnet and cluster in this stage. Do not install from
 this root without fresh saved-plan inspection and independent target discovery.
+
+## Environment correction
+
+The user clarified that this ACK belongs to the existing rdev.ali POC environment.
+Terraform now lives under infra-terraform/environments/rdev.ali/ax-sandbox/ and
+resource Environment tags are rdev.ali. A separate component state remains useful
+for isolating sandbox lifecycle. Its existing backend prefix ax-sandbox.ali is a
+legacy state identifier, not a new application environment; retaining it avoids
+losing ownership of already-created resources. Live tag reconciliation is tracked
+separately from this source correction.

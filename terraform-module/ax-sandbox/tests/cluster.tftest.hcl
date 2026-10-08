@@ -20,6 +20,13 @@ run "private_minimal_cluster" {
     error_message = "Version must be pinned and kubeconfig excluded."
   }
 }
+run "rdev_environment_tags" {
+  command = plan
+  assert {
+    condition     = alicloud_cs_managed_kubernetes.cluster.tags["Environment"] == "rdev.ali" && alicloud_vswitch.workers.tags["Environment"] == "rdev.ali"
+    error_message = "Sandbox cluster belongs to the existing rdev.ali environment."
+  }
+}
 run "wrong_account_rejected" {
   command = plan
   variables { account_id = "9999999999999999" }

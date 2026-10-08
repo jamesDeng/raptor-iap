@@ -83,7 +83,7 @@ silently switching architecture or replacing the certificate subsystem.
 
 ## Terraform and resource ownership
 
-Add a dedicated environment under `infra-terraform/environments/ax-sandbox.ali/`
+Add a dedicated environment under `infra-terraform/environments/rdev.ali/ax-sandbox/`
 and a reusable module under `terraform-module/ax-sandbox/`. Use the repository's
 pinned provider, account guard and remote-state locking patterns. The reviewed
 plan must identify exact creates/updates and verify account, Singapore region,

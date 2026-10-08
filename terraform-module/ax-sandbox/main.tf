@@ -1,7 +1,7 @@
 data "alicloud_account" "current" {}
 data "alicloud_vpcs" "platform" { ids = [var.vpc_id] }
 locals {
-  tags = { Project = "raptor-iap", Environment = "ax-sandbox.ali", Owner = "ax-sandbox" }
+  tags = { Project = "raptor-iap", Environment = "rdev.ali", Owner = "ax-sandbox" }
 }
 resource "terraform_data" "account_guard" {
   lifecycle {

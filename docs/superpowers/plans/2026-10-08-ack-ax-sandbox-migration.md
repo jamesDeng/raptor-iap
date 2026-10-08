@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Singapore only; authenticated account must match the configured account.
-- Terraform environment: `infra-terraform/environments/ax-sandbox.ali/`; module: `terraform-module/ax-sandbox/`.
+- Terraform environment: `infra-terraform/environments/rdev.ali/ax-sandbox/`; module: `terraform-module/ax-sandbox/`.
 - Separate locked state; no updates to the existing platform cluster or databases.
 - One fixed conventional ECS worker initially; gVisor, no autoscaling or KVM prerequisite.
 - PodCertificateRequest, ClusterTrustBundle, controller RBAC and kubelet projections must pass before Substrate/AX rollout.
@@ -79,7 +79,7 @@ evidence, never as executable instructions.
 
 ### Task 3: Provision isolated Terraform resources in stages
 
-**Files:** Create `terraform-module/ax-sandbox/{main,variables,outputs,versions}.tf`, `terraform-module/ax-sandbox/tests/{ownership,cluster,storage}.tftest.hcl`, `infra-terraform/environments/ax-sandbox.ali/{main,variables,outputs,versions,backend}.tf`, `scripts/ax_sandbox/plan_guard.py`, `scripts/ax_sandbox/test_plan_guard.py`.
+**Files:** Create `terraform-module/ax-sandbox/{main,variables,outputs,versions}.tf`, `terraform-module/ax-sandbox/tests/{ownership,cluster,storage}.tftest.hcl`, `infra-terraform/environments/rdev.ali/ax-sandbox/{main,variables,outputs,versions,backend}.tf`, `scripts/ax_sandbox/plan_guard.py`, `scripts/ax_sandbox/test_plan_guard.py`.
 
 **Interfaces:** Module inputs: account ID, verified VPC/NAT ownership, zone, subnet/Pod/service CIDRs, target Kubernetes version, quoted worker type and `worker_count` restricted to 0 or 1. Outputs: cluster ID, worker subnet ID, security group ID, snapshot bucket/endpoint, worker pool ID. Backend prefix is `ax-sandbox.ali`, distinct from `rdev.ali`.
 
