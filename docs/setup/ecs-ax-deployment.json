@@ -15,7 +15,7 @@
     "clustertrustbundles": true
   },
   "ax_installed_verified": true,
-  "migration_complete": false,
+  "migration_complete": true,
   "retained_ack": "c7de05cd5a9b84512925b1fc7a24e1bc9",
   "certificate_projection_verified": true,
   "certificate_chain_verified": true,
@@ -37,9 +37,7 @@
   "current_pi_checkpoint_restore_and_cleanup_verified": true,
   "real_question_e2e_verified": true,
   "gateway_default_provider": "ax",
-  "blocked_on": [
-    "final PR merge and main GitOps reconciliation"
-  ],
+  "blocked_on": [],
   "actor_model_mcp_tls_allowed_verified": true,
   "actor_arbitrary_external_host_denied_verified": true,
   "actor_private_router_request_denied_verified": true,
@@ -65,5 +63,7 @@
   "post_gateway_restart_real_question_verified": true,
   "post_restart_request": "c1e9fce8-af41-4e2b-a8d6-2141e48a45cd",
   "post_restart_attempt": "04730314-a8e6-4ec0-918c-9b9db752d14e",
-  "post_restart_checkpoint_bytes": 20698
+  "post_restart_checkpoint_bytes": 20698,
+  "gitops_finalization": "Merge and main reconciliation are recorded in the task finalization receipt",
+  "controller_session_renewal": "Existing private bootstrap helper; one-hour STS; bootstrap key inactive"
 }
