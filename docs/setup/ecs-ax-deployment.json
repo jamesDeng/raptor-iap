@@ -41,5 +41,10 @@
     "authorization for temporary nonadmin acceptance login",
     "existing gateway controller STS renewal through RAM identity",
     "GitOps candidate revision staging after prerequisites"
-  ]
+  ],
+  "actor_model_mcp_tls_allowed_verified": true,
+  "actor_arbitrary_external_host_denied_verified": true,
+  "actor_private_router_request_denied_verified": true,
+  "actor_private_worker_tls_denied_verified": true,
+  "gateway_candidate_rollback_verified": true
 }
