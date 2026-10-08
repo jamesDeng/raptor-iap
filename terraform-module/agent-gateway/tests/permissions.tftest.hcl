@@ -25,7 +25,7 @@ run "rrsa_exact_trust" {
     oidc_issuer       = "https://issuer.example/c92787e953503492ea141a744c81498f1"
   }
   assert {
-    condition     = length(jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement) == 1 && jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement[0].Action == "sts:AssumeRoleWithOIDC" && jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement[0].Condition.StringEquals["oidc:sub"] == "system:serviceaccount:raptor-system:agent-gateway" && jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement[0].Condition.StringEquals["oidc:aud"] == "sts.aliyuncs.com" && jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement[0].Principal.Federated == ["acs:ram::1360282071200743:oidc-provider/ack-rrsa-c92787e953503492ea141a744c81498f1"]
+    condition     = length(jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement) == 1 && jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement[0].Action == "sts:AssumeRole" && jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement[0].Condition.StringEquals["oidc:sub"] == "system:serviceaccount:raptor-system:agent-gateway" && jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement[0].Condition.StringEquals["oidc:aud"] == "sts.aliyuncs.com" && jsondecode(alicloud_ram_role.controller.assume_role_policy_document).Statement[0].Principal.Federated == ["acs:ram::1360282071200743:oidc-provider/ack-rrsa-c92787e953503492ea141a744c81498f1"]
     error_message = "RRSA must restrict principal, namespace, SA and audience with no bootstrap trust."
   }
 }

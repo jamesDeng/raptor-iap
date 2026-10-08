@@ -14,7 +14,7 @@ resource "terraform_data" "guard" {
 locals {
   role_name      = "raptor-rdev-gateway-controller"
   adoption_trust = { Version = "1", Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { RAM = ["acs:ram::${var.account_id}:root"] } }] }
-  rrsa_trust     = { Version = "1", Statement = [{ Effect = "Allow", Action = "sts:AssumeRoleWithOIDC", Principal = { Federated = [var.oidc_provider_arn] }, Condition = { StringEquals = { "oidc:iss" = var.oidc_issuer, "oidc:aud" = "sts.aliyuncs.com", "oidc:sub" = "system:serviceaccount:raptor-system:agent-gateway" } } }] }
+  rrsa_trust     = { Version = "1", Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { Federated = [var.oidc_provider_arn] }, Condition = { StringEquals = { "oidc:iss" = var.oidc_issuer, "oidc:aud" = "sts.aliyuncs.com", "oidc:sub" = "system:serviceaccount:raptor-system:agent-gateway" } } }] }
 }
 resource "alicloud_ram_role" "controller" {
   role_name                   = local.role_name

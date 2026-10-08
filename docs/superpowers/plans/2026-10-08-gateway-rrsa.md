@@ -65,7 +65,7 @@
 - [ ] Inspect installed Alibaba provider schema/docs for existing-cluster RRSA support and update behavior; pin the supported attribute (enable_rrsa if confirmed). Test default-disabled and explicitly enabled configs without cluster replacement.
 - [ ] Confirm remote foundation state resource ID matches the original ACK and obtain a clean baseline plan. Do not apply unrelated drift.
 - [ ] Enable RRSA in Terraform. Inspect saved plan: only bounded existing-cluster RRSA update; no replacements or credential/certificate values in state. Apply saved plan, wait for running, read actual provider-managed IdP ARN/issuer.
-- [ ] Change gateway role trust to only sts:AssumeRoleWithOIDC with exact Federated provider and StringEquals oidc:iss/oidc:aud/oidc:sub. Remove bootstrap AssumeRole trust after RRSA cutover plan is ready. Check any other users of this role before changing trust.
+- [ ] Change gateway role trust to only sts:AssumeRole (the RAM trust action for the AssumeRoleWithOIDC API) with exact Federated provider and StringEquals oidc:iss/oidc:aud/oidc:sub. Remove bootstrap AssumeRole trust after RRSA cutover plan is ready. Check any other users of this role before changing trust.
 - [ ] Verify trust plan changes only intended trust document, no permission broadening or replacement. Apply saved plan and record resource IDs. Verify wrong-subject/audience tests and terraform tests pass. Commit infrastructure task.
 
 ## Task 4: GitOps RRSA deployment and worker safety
