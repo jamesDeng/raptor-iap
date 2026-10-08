@@ -18,7 +18,8 @@ variable "stack" {
     proxy_vswitch_ids       = list(string)
     nlb_zones               = list(object({ zone_id = string, vswitch_id = string }))
     proxy_security_group_id = string
-    proxy_image_id          = string
+    proxy_image_id          = optional(string, "ubuntu_24_04_x64_20G_alibase_20260916.vhd")
+    proxy_container_image   = string
     proxy_instance_class    = string
     target_database         = string
     secret_reference        = string

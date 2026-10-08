@@ -30,6 +30,7 @@ module "proxy" {
   nlb_zones           = try(var.stack.nlb_zones, null)
   security_group_id   = try(var.stack.proxy_security_group_id, null)
   image_id            = try(var.stack.proxy_image_id, null)
+  container_image     = try(var.stack.proxy_container_image, null)
   instance_class      = try(var.stack.proxy_instance_class, null)
   secret_reference    = try(var.stack.secret_reference, null)
   execution_role_name = try(var.stack.execution_role_name, null)

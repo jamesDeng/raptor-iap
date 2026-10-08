@@ -16,7 +16,7 @@ variables {
   vswitch_ids         = ["vsw-fixture"]
   nlb_zones           = [{ zone_id = "ap-southeast-1a", vswitch_id = "vsw-a" }, { zone_id = "ap-southeast-1b", vswitch_id = "vsw-b" }]
   security_group_id   = "sg-fixture"
-  image_id            = "image-fixture"
+  container_image     = "ghcr.io/example/pgcat@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   instance_class      = "ecs.fixture"
   secret_reference    = "oss://fixture-bucket/fixture/config.json?versionId=fixture-version"
   execution_role_name = "reviewed-fixture-role"
@@ -26,8 +26,8 @@ variables {
 run "private_tagged_capacity" {
   command = plan
   assert {
-    condition     = alicloud_ess_scaling_configuration.proxy.system_disk_encrypted == true && strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "systemctl start raptor-pgcat.service")
-    error_message = "Encrypted disk and unprivileged service startup required."
+    condition     = alicloud_ess_scaling_configuration.proxy.system_disk_encrypted == true && strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "docker run -d") && strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "--restart unless-stopped") && !strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "test -x /opt/raptor-pgcat/bootstrap")
+    error_message = "Encrypted disk and Docker startup from a standard ECS image required."
   }
   assert {
     condition     = alicloud_ess_scaling_group.proxy.desired_capacity == 2 && alicloud_ess_scaling_group.proxy.max_size == 4 && alicloud_ess_scaling_group.proxy.min_size == 2
@@ -60,4 +60,10 @@ run "wrong_region" {
   command = plan
   variables { region = "cn-hangzhou" }
   expect_failures = [var.region]
+}
+
+run "mutable_container_rejected" {
+  command = plan
+  variables { container_image = "ghcr.io/example/pgcat:latest" }
+  expect_failures = [var.container_image]
 }

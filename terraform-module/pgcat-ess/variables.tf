@@ -47,7 +47,19 @@ variable "nlb_zones" {
   }
 }
 variable "security_group_id" { type = string }
-variable "image_id" { type = string }
+variable "image_id" {
+  type        = string
+  default     = "ubuntu_24_04_x64_20G_alibase_20260916.vhd"
+  description = "Standard Ubuntu ECS base image; no preinstalled PgCat required."
+}
+variable "container_image" {
+  type        = string
+  description = "Public PgCat/bootstrap container qualified and pinned by digest."
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9][a-zA-Z0-9./_-]*@sha256:[a-f0-9]{64}$", var.container_image))
+    error_message = "Container reference must be pinned by sha256 digest, without a mutable tag or credentials."
+  }
+}
 variable "instance_class" { type = string }
 variable "secret_reference" { type = string }
 variable "execution_role_name" {
@@ -66,6 +78,6 @@ variable "bootstrap_reviewed" {
   default = false
   validation {
     condition     = var.bootstrap_reviewed
-    error_message = "Secret delivery and immutable bootstrap image must be reviewed before this module can plan."
+    error_message = "Docker startup and role-backed secret delivery must be qualified before this module can plan."
   }
 }

@@ -90,19 +90,10 @@ resource "alicloud_ess_scaling_configuration" "proxy" {
   active                     = true
   enable                     = true
   tags                       = local.tags
-  user_data = base64encode(<<-BOOT
- #!/bin/sh
- set -eu
- umask 077
- install -d -m 0755 /etc/raptor-pgcat
- printf '%s' '${base64encode(local.bootstrap)}' | base64 -d > /etc/raptor-pgcat/bootstrap.json
- test -x /opt/raptor-pgcat/bootstrap
- chmod 0644 /etc/raptor-pgcat/bootstrap.json
- systemctl daemon-reload
- systemctl enable raptor-pgcat.service
- systemctl start raptor-pgcat.service
- BOOT
-  )
+  user_data = base64encode(templatefile("${path.module}/startup.sh.tftpl", {
+    metadata_b64    = base64encode(local.bootstrap)
+    container_image = var.container_image
+  }))
   depends_on = [alicloud_ess_server_group_attachment.proxy]
 }
 

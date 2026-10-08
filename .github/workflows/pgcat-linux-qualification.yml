@@ -2,8 +2,13 @@ name: PgCat Linux qualification
 on:
   pull_request:
     branches: [main]
-    paths: ['components/pgcat-bootstrap/**', 'components/test-client/**', 'test-assets/pgcat/**', '.github/workflows/pgcat-linux-qualification.yml']
+    paths: ['components/pgcat-bootstrap/**', 'components/test-client/**', 'test-assets/pgcat/**', 'terraform-module/pgcat-ess/**', 'infra-terraform/environments/rdev-test-pgcat/**', '.github/workflows/pgcat-linux-qualification.yml']
   workflow_dispatch:
+    inputs:
+      publish_container:
+        description: Publish the qualified PgCat runtime to GHCR from main
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -69,10 +74,38 @@ jobs:
           trap 'kill "$!" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:29930/metrics >/dev/null; then break; fi
+            test "$attempt" -lt 30 || exit 1
             sleep 1
           done
           cd components/test-client
           TEST_LOCAL_POSTGRES_DSN='postgres://fixture:synthetic-local-only@127.0.0.1:5432/fixture?sslmode=disable' TEST_LOCAL_PGCAT_DSN_FILE=/tmp/pgcat-fixture.dsn go test -race -v ./internal/traffic
+      - name: Qualify Docker runtime and fail-closed startup
+        run: |
+          docker build -f components/pgcat-bootstrap/packaging/Dockerfile -t pgcat-qualified:local qualification
+          set +e
+          docker run --rm --network host --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --tmpfs /var/lib/raptor-pgcat:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=65532,gid=65532 \
+            pgcat-qualified:local > /tmp/pgcat-bootstrap-negative.log 2>&1
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          grep -qx 'metadata_unreadable' /tmp/pgcat-bootstrap-negative.log
+          docker run -d --name pgcat-qualified --network host --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            -v /tmp/pgcat-fixture.toml:/fixture.toml:ro \
+            --entrypoint /opt/raptor-pgcat/pgcat pgcat-qualified:local /fixture.toml
+          trap 'docker rm -f pgcat-qualified >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:29930/metrics >/dev/null; then break; fi
+            test "$attempt" -lt 30 || exit 1
+            sleep 1
+          done
+          cd components/test-client
+          TEST_LOCAL_POSTGRES_DSN='postgres://fixture:synthetic-local-only@127.0.0.1:5432/fixture?sslmode=disable' TEST_LOCAL_PGCAT_DSN_FILE=/tmp/pgcat-fixture.dsn go test -race -v ./internal/traffic
+      - name: Save qualified Docker runtime
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_container
+        run: docker save pgcat-qualified:local -o qualification/pgcat-runtime.tar
       - name: Record artifact hashes
         run: |
           cd qualification
@@ -83,3 +116,35 @@ jobs:
           path: qualification/
           retention-days: 7
           if-no-files-found: error
+  publish:
+    needs: qualify
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - name: Publish qualified Docker runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "pgcat-linux-qualified-$SOURCE_REVISION" --dir qualification
+          docker load -i qualification/pgcat-runtime.tar
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/raptor-pgcat:$SOURCE_REVISION"
+          docker tag pgcat-qualified:local "$image"
+          docker push "$image"
+          digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
+          # Fresh credentials directory proves new ECS nodes can pull anonymously.
+          mkdir -p "$RUNNER_TEMP/pgcat-anonymous-docker"
+          if ! DOCKER_CONFIG="$RUNNER_TEMP/pgcat-anonymous-docker" docker pull "$digest"; then
+            echo 'Container is not anonymously pullable. Set GHCR package visibility to public and rerun.' >&2
+            exit 1
+          fi
+          # shellcheck disable=SC2016 # Literal Markdown backticks, not shell substitution.
+          printf 'Published container: `%s`\n' "$image" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
