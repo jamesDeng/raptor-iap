@@ -34,3 +34,9 @@ variable "ack_only" {
     error_message = "ACK-only mode requires a cluster ID."
   }
 }
+
+variable "enable_rds_discovery" {
+  type        = bool
+  default     = false
+  description = "Add RDS instance and tag reads to the otherwise ACK-only execution role."
+}
