@@ -1,15 +1,15 @@
 environment: rdev.ali
 images:
-  raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:9996a82a65756a415dd4f60916341f1aaec226e44962038e21443243531b5b3c
+  raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:34d7868a8d1af816790b0059c3cbc0cd22fbf63d8744e0f92307a5394cf24c66
   gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:8fbe695bbf2339da18c5da5fe54344648033d8005f49b779c8934579ab69e226
 repository:
-  revision: 710c4ee3d6d3af565f911d5fd2f177c410787d12
+  revision: ec26276adb0aa160b7b1fd0bb20098ab5da2ae90
 appCodes:
-  raptor-admin: e3c02a87-0c62-4b16-bf50-4cc85d02b44f
-  agent-gateway: d9ccebb2-8990-413f-8c61-aca20b46fe43
-  raptor-backend: 2849c67e-6e0d-44fd-804d-b513c77aa0ba
-  raptor-frontend: 9fc3dc66-63ae-4b5a-9cc2-536b8a758d0b
-  raptor-open-api: 0779c695-c3fe-429f-ae08-6a8570bb8085
+  raptor-admin: A00006
+  agent-gateway: A00005
+  raptor-backend: A00001
+  raptor-frontend: A00002
+  raptor-open-api: A00004
 
 secureCookies: true
 publicFrontend: true
