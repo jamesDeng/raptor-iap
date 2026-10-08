@@ -99,9 +99,11 @@ func (s *Service) Create(ctx context.Context, u domain.User, key string, in doma
 		return domain.Request{}, e
 	}
 	if input.Type == "agent" {
-		if _, e = s.Catalog.FindObject(ctx, input.Object.Kind, input.Object.Code); e != nil {
-			return domain.Request{}, e
+		o, findError := s.Catalog.FindObject(ctx, input.Object.Kind, input.Object.Code)
+		if findError != nil {
+			return domain.Request{}, findError
 		}
+		input.Object.Code = o.Code
 		if _, e = s.Catalog.GetEnvironment(ctx, input.EnvCode); e != nil {
 			return domain.Request{}, e
 		}
@@ -119,6 +121,7 @@ func (s *Service) Create(ctx context.Context, u domain.User, key string, in doma
 				if e != nil {
 					return domain.Request{}, domain.ErrInvalid
 				}
+				op.Parameters["targetDbCode"] = db.Code
 				items, e := s.Catalog.Deployments(ctx, db.ID, input.EnvCode)
 				if e != nil {
 					return domain.Request{}, e
@@ -130,7 +133,7 @@ func (s *Service) Create(ctx context.Context, u domain.User, key string, in doma
 		}
 		applyDefaults(&input)
 	} else {
-		for _, target := range input.Targets {
+		for i, target := range input.Targets {
 			o, e := s.Catalog.FindObject(ctx, "application", target.AppCode)
 			if e != nil {
 				return domain.Request{}, e
@@ -155,6 +158,10 @@ func (s *Service) Create(ctx context.Context, u domain.User, key string, in doma
 			if !matched {
 				return domain.Request{}, domain.ErrInvalid
 			}
+			input.Targets[i].AppCode = o.Code
+		}
+		if e = s.Validate(input); e != nil {
+			return domain.Request{}, e
 		}
 	}
 	body, _ := json.Marshal(input)
