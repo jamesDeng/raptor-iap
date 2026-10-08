@@ -1,8 +1,9 @@
 import os,shutil,subprocess,unittest,yaml,pathlib
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 class LiveManifest(unittest.TestCase):
- def render(self,live):
+ def render(self,live,restart=None):
   args=[os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
+  if restart is not None:args+=['--set','directRestart.enabled='+str(restart).lower()]
   if not live:args+=['--set','gatewayLive.enabled=false']
   if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
@@ -16,10 +17,11 @@ class LiveManifest(unittest.TestCase):
  def test_live_without_secret_refs_fails_closed(self):
   p=subprocess.run([os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml'),'--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=','--set','gatewayLive.controllerSecretName='],capture_output=True,text=True);self.assertNotEqual(p.returncode,0)
  def test_direct_restart_requires_opt_in(self):
-  docs=self.render(False)
-  for d in docs:
-   if d and d.get('kind')=='Deployment':
-    env={v['name']:v.get('value') for v in d['spec']['template']['spec']['containers'][0]['env']}
-    if d['metadata']['name']=='raptor-backend':self.assertEqual(env.get('RAPTOR_ENABLE_RESTART'),'false')
-    else:self.assertNotIn('RAPTOR_ENABLE_RESTART',env)
+  for enabled in [False,True]:
+   docs=self.render(False,restart=enabled)
+   for d in docs:
+    if d and d.get('kind')=='Deployment':
+     env={v['name']:v.get('value') for v in d['spec']['template']['spec']['containers'][0]['env']}
+     if d['metadata']['name']=='raptor-backend':self.assertEqual(env.get('RAPTOR_ENABLE_RESTART'),str(enabled).lower())
+     else:self.assertNotIn('RAPTOR_ENABLE_RESTART',env)
 if __name__=='__main__':unittest.main()
