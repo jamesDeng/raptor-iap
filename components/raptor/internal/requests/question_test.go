@@ -115,3 +115,32 @@ func TestQuestionCancelAwaitsGatewayCleanup(t *testing.T) {
 		t.Fatal("cancel signal missing")
 	}
 }
+
+func TestQuestionLegacyAliasPinsCanonicalCode(t *testing.T) {
+	s, _, u := setup(t)
+	ctx := context.Background()
+	obj, e := s.Catalog.CreateObject(ctx, catalog.CreateObjectInput{Kind: "application", Name: "Migrated"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.Pool.Exec(ctx, "INSERT INTO raptor.object_code_aliases(code,object_id,kind,canonical_code) VALUES('old-app',$1,'application',$2)", obj.ID, obj.Code); e != nil {
+		t.Fatal(e)
+	}
+	s.ResolveSkills = func(context.Context, domain.SkillsVersion) (domain.SkillsVersion, error) {
+		return domain.SkillsVersion{Tag: "release", CommitSHA: strings.Repeat("a", 40)}, nil
+	}
+	in := questionInput(t, "health?", "gpt-5.6-luna")
+	in.Object.Code = "old-app"
+	in.EnvCode = "adev"
+	r, e := s.Create(ctx, u, "alias-request", in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if r.Definition.Object.Code != obj.Code {
+		t.Fatalf("new request pinned legacy code %q instead of %q", r.Definition.Object.Code, obj.Code)
+	}
+	again, e := s.Create(ctx, u, "alias-request", in)
+	if e != nil || again.ID != r.ID {
+		t.Fatalf("alias retry lost idempotency: %v", e)
+	}
+}

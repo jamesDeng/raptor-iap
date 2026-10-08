@@ -30,6 +30,24 @@ func (s *Service) Action(ctx context.Context, id, action, instructions string) e
 	if json.Unmarshal(definition, &input) != nil {
 		return domain.ErrUnavailable
 	}
+	if action == "continue" {
+		codes := []string{input.Object.Code}
+		for _, target := range input.Targets {
+			codes = append(codes, target.AppCode)
+		}
+		for _, op := range input.Operations {
+			if code, ok := op.Parameters["targetDbCode"].(string); ok {
+				codes = append(codes, code)
+			}
+		}
+		var legacy bool
+		if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.object_code_aliases WHERE code=ANY($1))", codes).Scan(&legacy); e != nil {
+			return domain.ErrUnavailable
+		}
+		if legacy {
+			return domain.ErrConflict
+		}
+	}
 	if isQuestion(input) {
 		if action != "cancel" {
 			return domain.ErrInvalid

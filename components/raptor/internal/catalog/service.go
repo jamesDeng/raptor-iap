@@ -45,8 +45,8 @@ func (s *Service) CreateObject(ctx context.Context, in CreateObjectInput) (domai
 	if (in.Kind != "application" && in.Kind != "database" && in.Kind != "db-proxy") || !validName(in.Name) || len(in.Description) > 4000 {
 		return domain.Object{}, domain.ErrInvalid
 	}
-	o := domain.Object{ID: domain.NewID(), Kind: in.Kind, Code: domain.NewID(), Name: in.Name, Description: in.Description}
-	_, e := s.Pool.Exec(ctx, "INSERT INTO raptor.objects(id,kind,code,name,description) VALUES($1,$2,$3,$4,$5)", o.ID, o.Kind, o.Code, o.Name, o.Description)
+	o := domain.Object{ID: domain.NewID(), Kind: in.Kind, Name: in.Name, Description: in.Description}
+	e := s.Pool.QueryRow(ctx, "INSERT INTO raptor.objects(id,kind,code,name,description) VALUES($1,$2,raptor.next_object_code($2),$3,$4) RETURNING code", o.ID, o.Kind, o.Name, o.Description).Scan(&o.Code)
 	return o, storeError(e)
 }
 func (s *Service) UpdateObject(ctx context.Context, id string, in UpdateObjectInput) (domain.Object, error) {
@@ -69,7 +69,7 @@ func (s *Service) GetObject(ctx context.Context, id string) (domain.Object, erro
 }
 func (s *Service) FindObject(ctx context.Context, kind, code string) (domain.Object, error) {
 	var o domain.Object
-	e := s.Pool.QueryRow(ctx, "SELECT id,kind,code,name,description FROM raptor.objects WHERE kind=$1 AND code=$2", kind, code).Scan(&o.ID, &o.Kind, &o.Code, &o.Name, &o.Description)
+	e := s.Pool.QueryRow(ctx, "SELECT o.id,o.kind,o.code,o.name,o.description FROM raptor.objects o WHERE o.kind=$1 AND (o.code=$2 OR EXISTS (SELECT 1 FROM raptor.object_code_aliases a WHERE a.object_id=o.id AND a.kind=$1 AND a.code=$2))", kind, code).Scan(&o.ID, &o.Kind, &o.Code, &o.Name, &o.Description)
 	return o, storeError(e)
 }
 func (s *Service) ListObjects(ctx context.Context) ([]domain.Object, error) {
