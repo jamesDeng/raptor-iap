@@ -28,3 +28,7 @@ gatewayLive:
   serviceURL: ''
   configSecretName: ''
   controllerSecretName: ''
+
+# Opt-in only after the Infra API route and scoped patch permission are ready.
+directRestart:
+  enabled: false

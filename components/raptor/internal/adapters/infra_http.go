@@ -1,6 +1,7 @@
 package adapters
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -109,4 +110,97 @@ func (p HTTPInfra) GetDeploymentStatus(ctx context.Context, t domain.RestartTarg
 		return DeploymentStatus{}, domain.ErrUnavailable
 	}
 	return st, nil
+}
+
+// A mutation is sent once. Missing or mismatched acknowledgement stays unknown.
+func (p HTTPInfra) RestartDeployment(ctx context.Context, requestID string, t domain.RestartTarget) error {
+	if requestID == "" || t.AppCode == "" || t.EnvCode == "" || t.ClusterID == "" || t.Namespace == "" || t.Name == "" || t.UID == "" || p.ResolveEnvironment == nil {
+		return ErrRejected
+	}
+	env, e := p.ResolveEnvironment(ctx, t.EnvCode)
+	if e != nil || env.Code != t.EnvCode || env.Config["clusterId"] != t.ClusterID {
+		return ErrRejected
+	}
+	type command struct {
+		RequestID string `json:"requestId"`
+		domain.RestartTarget
+	}
+	input := command{requestID, t}
+	body, e := json.Marshal(input)
+	if e != nil {
+		return ErrRejected
+	}
+	var receipt struct {
+		Accepted     bool    `json:"accepted"`
+		Target       command `json:"target"`
+		Generation   int64   `json:"generation"`
+		EvidenceMode string  `json:"evidenceMode"`
+	}
+	if e = p.submitRestart(ctx, env, body, &receipt); e != nil {
+		return e
+	}
+	if !receipt.Accepted || receipt.Target != input || receipt.Generation <= 0 || receipt.EvidenceMode != "live" {
+		return ErrSubmissionUnknown
+	}
+	return nil
+}
+func (p HTTPInfra) submitRestart(ctx context.Context, env domain.Environment, body []byte, out any) error {
+	if p.Username == "" || p.Password == "" || strings.Contains(p.Username, ":") {
+		return ErrRejected
+	}
+	header := p.AuthHeader
+	if header == "" {
+		header = "Authorization"
+	}
+	if header != "Authorization" && header != "X-Infra-Authorization" {
+		return ErrRejected
+	}
+	raw, _ := env.Config["infraApiUrl"].(string)
+	u, e := url.Parse(raw)
+	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return ErrRejected
+	}
+	ip := net.ParseIP(u.Hostname())
+	loopback := u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
+		return ErrRejected
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/v1/deployment-restart"
+
+	request, e := http.NewRequestWithContext(ctx, "POST", u.String(), bytes.NewReader(body))
+	if e != nil {
+		return ErrRejected
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(header, "Basic "+base64.StdEncoding.EncodeToString([]byte(p.Username+":"+p.Password)))
+	client := http.Client{Timeout: 30 * time.Second}
+	if p.Client != nil {
+		client = *p.Client
+	}
+	client.Timeout = 30 * time.Second
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	r, e := client.Do(request)
+	if e != nil {
+		return ErrSubmissionUnknown
+	}
+	defer r.Body.Close()
+	if r.StatusCode != 200 {
+		switch r.StatusCode {
+		case 400, 401, 403, 404, 409, 422:
+			return ErrRejected
+		}
+		return ErrSubmissionUnknown
+	}
+	b, e := io.ReadAll(io.LimitReader(r.Body, 2*1024*1024+1))
+	if e != nil || len(b) > 2*1024*1024 {
+		return ErrSubmissionUnknown
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(b, &envelope) != nil || len(envelope) != 1 || envelope["data"] == nil || string(envelope["data"]) == "null" {
+		return ErrSubmissionUnknown
+	}
+	if json.Unmarshal(envelope["data"], out) != nil {
+		return ErrSubmissionUnknown
+	}
+	return nil
 }

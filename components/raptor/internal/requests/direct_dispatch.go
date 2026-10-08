@@ -27,7 +27,7 @@ func (s *Service) RunDirectPending(ctx context.Context, client InfraCommands) er
 		return e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `UPDATE raptor.targets SET state='unknown',details=details || '{"reason":"backend interrupted; reconcile deployment status before any retry","recoveryNeeded":true,"evidenceMode":"simulated"}'::jsonb WHERE request_id IN (SELECT id FROM raptor.requests WHERE definition->>'type'='direct' AND status='running') AND state IN ('submitting','observing')`); e != nil {
+	if _, e = tx.Exec(ctx, `UPDATE raptor.targets SET state='unknown',details=details || '{"reason":"backend interrupted; reconcile deployment status before any retry","recoveryNeeded":true}'::jsonb WHERE request_id IN (SELECT id FROM raptor.requests WHERE definition->>'type'='direct' AND status='running') AND state IN ('submitting','observing')`); e != nil {
 		return e
 	}
 	if _, e = tx.Exec(ctx, `UPDATE raptor.requests SET status='failed' WHERE definition->>'type'='direct' AND status='running'`); e != nil {

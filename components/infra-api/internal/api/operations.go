@@ -16,8 +16,11 @@ type operationError struct {
 func (e *operationError) Error() string { return e.code }
 
 type operations struct {
-	reader Reader
-	scopes map[string]domain.Environment
+	reader     Reader
+	commander  Commander
+	authorizer Authorizer
+	principal  string
+	scopes     map[string]domain.Environment
 }
 
 func (o operations) execute(ctx context.Context, path string, q url.Values) (any, error) {
@@ -51,6 +54,9 @@ func (o operations) execute(ctx context.Context, path string, q url.Values) (any
 	}
 	env, ok := o.scopes[q.Get("envCode")]
 	if !ok {
+		return nil, &operationError{403, "ScopeMismatch"}
+	}
+	if o.authorizer != nil && o.authorizer.Authorize(ctx, o.principal, path, q) != nil {
 		return nil, &operationError{403, "ScopeMismatch"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)

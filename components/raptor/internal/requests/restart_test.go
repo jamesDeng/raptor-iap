@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"sync"
@@ -16,22 +17,30 @@ type fakeRestart struct {
 	barrier chan struct{}
 	failure string
 	unknown bool
+	mode    string
 }
 type staleRestart struct {
 	fakeRestart
-	wrongUID    bool
-	lookupFails bool
+	wrongUID     bool
+	lookupFails  bool
+	zeroObserved bool
 }
 
 func (f *staleRestart) GetDeploymentStatus(ctx context.Context, target domain.RestartTarget) (adapters.DeploymentStatus, error) {
 	if f.lookupFails {
 		return adapters.DeploymentStatus{}, adapters.ErrRejected
 	}
+	if f.zeroObserved {
+		f.mu.Lock()
+		generation := int64(1 + f.calls[target.Name])
+		f.mu.Unlock()
+		return adapters.DeploymentStatus{UID: target.UID, Generation: generation, ObservedGeneration: generation, DesiredReplicas: 1, EvidenceMode: "live"}, nil
+	}
 	uid := target.UID
 	if f.wrongUID {
 		uid = "other-uid"
 	}
-	return adapters.DeploymentStatus{UID: uid, Generation: 1, ObservedGeneration: 1, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1}, nil
+	return adapters.DeploymentStatus{UID: uid, Generation: 1, ObservedGeneration: 1, DesiredReplicas: 1, AvailableReplicas: 1, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1}, nil
 }
 func TestRestartIdentityLookupAndDeadline(t *testing.T) {
 	for _, mode := range []string{"identity", "lookup", "deadline"} {
@@ -86,7 +95,7 @@ func (f *fakeRestart) GetDeploymentStatus(ctx context.Context, t domain.RestartT
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	generation := int64(1 + f.calls[t.Name])
-	return adapters.DeploymentStatus{UID: t.UID, Generation: generation, ObservedGeneration: generation, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1}, nil
+	return adapters.DeploymentStatus{EvidenceMode: f.mode, UID: t.UID, Generation: generation, ObservedGeneration: generation, DesiredReplicas: 1, AvailableReplicas: 1, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1}, nil
 }
 func restartRequest(t *testing.T) (*Service, string) {
 	s, _, u := setup(t)
@@ -156,5 +165,46 @@ func TestBackendRestartDoesNotAbandonOrReplayMutation(t *testing.T) {
 	}
 	if client.started != 0 {
 		t.Fatal("mutation replayed during recovery")
+	}
+}
+
+func TestLiveUnknownRestartKeepsEvidenceAndDoesNotReplay(t *testing.T) {
+	s, id := restartRequest(t)
+	f := &fakeRestart{calls: map[string]int{}, failure: "b", unknown: true, mode: "live"}
+	if e := s.RunRestartBatch(context.Background(), id, f); e != nil {
+		t.Fatal(e)
+	}
+	items, e := s.RestartItems(context.Background(), id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, item := range items {
+		var details map[string]any
+		if json.Unmarshal(item.Details, &details) != nil || details["evidenceMode"] != "live" {
+			t.Fatalf("lost live evidence: %s", item.Details)
+		}
+	}
+	s.RunRestartBatch(context.Background(), id, f)
+	if f.calls["b"] != 1 {
+		t.Fatal("ambiguous live mutation replayed")
+	}
+}
+
+func TestZeroObservedReplicasCannotCompleteDesiredDeployment(t *testing.T) {
+	s, id := restartRequest(t)
+	f := &staleRestart{fakeRestart: fakeRestart{calls: map[string]int{}}, zeroObserved: true}
+	tick := 0
+	s.RestartNow = func() time.Time { tick++; return time.Unix(int64(tick)*600, 0) }
+	if e := s.RunRestartBatch(context.Background(), id, f); e != nil {
+		t.Fatal(e)
+	}
+	items, e := s.RestartItems(context.Background(), id)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, item := range items {
+		if item.State != "unknown" {
+			t.Fatal("zero observed replicas reported success", item.State)
+		}
 	}
 }

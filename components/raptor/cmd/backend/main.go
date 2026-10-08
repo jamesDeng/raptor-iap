@@ -78,15 +78,21 @@ func main() {
 	}
 	h.RegisterService(os.Getenv("SERVICE_USERNAME"), os.Getenv("SERVICE_PASSWORD"))
 	h.Mux.Handle("POST /webhooks/github", h.GitHub.Handler(os.Getenv("GITHUB_WEBHOOK_SECRET")))
+	var directCommands adapters.InfraCommands
+	if os.Getenv("RAPTOR_ENABLE_RESTART") == "true" {
+		directCommands = adapters.HTTPInfra{Username: os.Getenv("INFRA_USERNAME"), Password: os.Getenv("INFRA_PASSWORD"), AuthHeader: os.Getenv("INFRA_AUTH_HEADER"), ResolveEnvironment: h.Catalog.GetEnvironment}
+	}
 	if os.Getenv("RAPTOR_SIMULATION") == "true" && os.Getenv("RAPTOR_FIXTURE_FILE") != "" {
 		h.Catalog.Infra = adapters.FixtureInfra{Path: os.Getenv("RAPTOR_FIXTURE_FILE")}
-		commands := &adapters.SimulatedCommands{}
+		directCommands = &adapters.SimulatedCommands{}
+	}
+	if directCommands != nil {
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
 			for range ticker.C {
-				if h.Requests.RunDirectPending(ctx, commands) != nil {
-					log.Print("simulated direct execution requires attention")
+				if h.Requests.RunDirectPending(ctx, directCommands) != nil {
+					log.Print("direct execution requires attention")
 				}
 			}
 		}()

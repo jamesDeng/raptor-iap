@@ -41,6 +41,8 @@ type Status struct {
 	Generation         int64     `json:"generation"`
 	ObservedGeneration int64     `json:"observedGeneration"`
 	Replicas           int       `json:"replicas"`
+	DesiredReplicas    int       `json:"desiredReplicas"`
+	AvailableReplicas  int       `json:"availableReplicas"`
 	UpdatedReplicas    int       `json:"updatedReplicas"`
 	ReadyReplicas      int       `json:"readyReplicas"`
 	EvidenceMode       string    `json:"evidenceMode"`
