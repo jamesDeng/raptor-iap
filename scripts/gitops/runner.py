@@ -45,8 +45,13 @@ def require_protection(document):
         raise ValueError('Required environment reviewer missing')
 
 def command(args,cwd):
+    stage=args[1] if args[0]=='terraform' else 'checkout'
+    print('GitOps step: '+stage, flush=True)
     r=subprocess.run(args,cwd=cwd,capture_output=True)
-    if r.returncode:raise RuntimeError('Terraform command failed; raw output withheld')
+    if r.returncode:
+        codes=re.findall(rb'(?:ErrorCode|Code|code)[\s:=\"]+([A-Za-z][A-Za-z0-9_.]{2,80})', r.stdout+r.stderr)
+        print('Failed step: '+stage+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable'), file=sys.stderr)
+        raise RuntimeError('Terraform command failed; raw output withheld')
     return r.stdout
 
 def main():
