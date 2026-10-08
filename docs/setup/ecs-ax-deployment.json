@@ -61,5 +61,9 @@
   "checkpoint_bytes": 19075,
   "exact_cleanup_verified": true,
   "argo_candidate_synced_healthy_verified": true,
-  "gateway_nonoverlapping_restart_verified": true
+  "gateway_nonoverlapping_restart_verified": true,
+  "post_gateway_restart_real_question_verified": true,
+  "post_restart_request": "c1e9fce8-af41-4e2b-a8d6-2141e48a45cd",
+  "post_restart_attempt": "04730314-a8e6-4ec0-918c-9b9db752d14e",
+  "post_restart_checkpoint_bytes": 20698
 }
