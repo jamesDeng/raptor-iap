@@ -21,7 +21,6 @@ let pageEpoch=0;
 export function setPageContext(document,page,kind,tab){
  pageEpoch++;
  document.getElementById('message').textContent='';
- document.getElementById('execution-notice').hidden=!['request-panel','new-request-panel'].includes(page);
  document.getElementById('restart-basket-panel').hidden=!(page==='object-detail'&&kind==='application'&&tab==='deployments');
 }
 export function setSessionView(document,signedIn){
