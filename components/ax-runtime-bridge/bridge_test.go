@@ -169,6 +169,32 @@ func TestInferenceRequiresSuccessfulRestore(t *testing.T) {
 	}
 }
 
-func TestNeverReceivedCreateCanBeTombstoned(t *testing.T){f:=&fakeBackend{};s:=service(t,f);r:=request();v,e:=s.Remove(context.Background(),r);if e!=nil||!v.Absent{t.Fatal("absence without create marker cannot be confirmed",e)};if _,e=s.Ensure(context.Background(),r);e==nil{t.Fatal("late create passed cleanup tombstone")};if f.creates!=0{t.Fatal("late create replayed")}}
+func TestNeverReceivedCreateCanBeTombstoned(t *testing.T) {
+	f := &fakeBackend{}
+	s := service(t, f)
+	r := request()
+	v, e := s.Remove(context.Background(), r)
+	if e != nil || !v.Absent {
+		t.Fatal("absence without create marker cannot be confirmed", e)
+	}
+	if _, e = s.Ensure(context.Background(), r); e == nil {
+		t.Fatal("late create passed cleanup tombstone")
+	}
+	if f.creates != 0 {
+		t.Fatal("late create replayed")
+	}
+}
 
-func TestBridgeUpgradeKeepsAttemptImageForCleanup(t *testing.T){f:=&fakeBackend{};s:=service(t,f);r:=request();if _,e:=s.Ensure(context.Background(),r);e!=nil{t.Fatal(e)};s.Image="new-default-image";v,e:=s.Remove(context.Background(),r);if e!=nil||!v.Absent{t.Fatal("bridge image update broke owned cleanup",e)}}
+func TestBridgeUpgradeKeepsAttemptImageForCleanup(t *testing.T) {
+	f := &fakeBackend{}
+	s := service(t, f)
+	r := request()
+	if _, e := s.Ensure(context.Background(), r); e != nil {
+		t.Fatal(e)
+	}
+	s.Image = "new-default-image"
+	v, e := s.Remove(context.Background(), r)
+	if e != nil || !v.Absent {
+		t.Fatal("bridge image update broke owned cleanup", e)
+	}
+}

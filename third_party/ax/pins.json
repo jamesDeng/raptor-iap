@@ -3,5 +3,10 @@
   "substrate_commit": "ac41c06ee8929ee05159d679febab970a9e5cf4c",
   "k3s_version": "v1.37.0+k3s1",
   "go_version": "1.27.1",
-  "patch": "substrate-v1-compat.patch"
+  "patch": "substrate-v1-compat.patch",
+  "source_sha256": {
+    "ecs-ax-upstream-ax.tar.gz": "3d835bc0e5f385dd23e0718fbf7439d6648bbbb8d877c80ee5399303d237181b",
+    "ecs-ax-substrate.tar.gz": "43eed08f931696baf9520a3542a5e27e025b8fc5a462d8b205d45d19be19d68b",
+    "substrate-v1-compat.patch": "4d525f8330a40a4ada54e8219365f6a3ba6a2d6abb367a486b8f00bd7ed07d9b"
+  }
 }

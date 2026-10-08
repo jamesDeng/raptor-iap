@@ -4,16 +4,16 @@ mock_provider "alicloud" {
 }
 variables {
   ssh_public_key = "ssh-ed25519 AAAATEST"
-  admin_cidr = "192.0.2.1/32"
+  admin_cidr     = "192.0.2.1/32"
 }
 run "single_persistent_node" {
   command = plan
   assert {
-    condition = alicloud_instance.node.instance_type == "ecs.g7.xlarge" && alicloud_instance.node.system_disk_encrypted && alicloud_instance.node.system_disk_size == 120
+    condition     = alicloud_instance.node.instance_type == "ecs.g7.xlarge" && alicloud_instance.node.system_disk_encrypted && alicloud_instance.node.system_disk_size == 120
     error_message = "POC requires one persistent encrypted node."
   }
   assert {
-    condition = alicloud_security_group_rule.ssh.cidr_ip == "192.0.2.1/32" && alicloud_instance.node.tags["Environment"] == "rdev.ali"
+    condition     = alicloud_security_group_rule.ssh.cidr_ip == "192.0.2.1/32" && alicloud_instance.node.tags["Environment"] == "rdev.ali"
     error_message = "SSH must be restricted and node belongs to rdev.ali."
   }
 }

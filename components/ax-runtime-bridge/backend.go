@@ -20,6 +20,7 @@ type SDKBackend struct {
 	AX                      ax.AXClient
 	Substrate               *substrate.Client
 	Image, Atespace, Router string
+	EgressHosts             []string
 }
 
 func view(t *ax.Task) (*TaskView, error) {
@@ -55,6 +56,9 @@ func (b *SDKBackend) Create(ctx context.Context, n, seal string) (*TaskView, err
 	return view(t)
 }
 func (b *SDKBackend) Resume(ctx context.Context, n string) (*TaskView, error) {
+	if e := b.Substrate.EnsureRuntimeEgress(ctx, b.Atespace, n, b.EgressHosts); e != nil {
+		return nil, ErrUnknown
+	}
 	t, e := b.AX.ResumeTask(ctx, &ax.ResumeTaskRequest{Atespace: b.Atespace, Name: n})
 	if e != nil {
 		return nil, ErrUnknown

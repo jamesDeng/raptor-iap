@@ -36,11 +36,11 @@ run "wrong_account_rejected" {
 run "authorized_public_api" {
   command = plan
   variables {
-    public_api_enabled = true
+    public_api_enabled   = true
     api_load_balancer_id = "lb-test"
   }
   assert {
-    condition = length(alicloud_eip_address.api) == 1 && alicloud_eip_association.api[0].instance_id == "lb-test" && alicloud_eip_association.api[0].instance_type == "SlbInstance"
+    condition     = length(alicloud_eip_address.api) == 1 && alicloud_eip_association.api[0].instance_id == "lb-test" && alicloud_eip_association.api[0].instance_type == "SlbInstance"
     error_message = "Explicit public API opt-in must enable the endpoint."
   }
 }

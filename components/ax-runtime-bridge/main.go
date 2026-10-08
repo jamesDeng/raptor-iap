@@ -98,7 +98,11 @@ func main() {
 	if image == "" {
 		log.Fatal("fixed Pi image required")
 	}
-	s := &Service{StateDir: "/state", Image: image, Backend: &SDKBackend{AX: ax.NewAXClient(conn), Substrate: sub, Image: image, Atespace: "raptor-runtime", Router: "atenet-router.ate-system.svc:80"}}
+	var hosts []string
+	if json.Unmarshal([]byte(os.Getenv("RUNTIME_EGRESS_HOSTS")), &hosts) != nil || len(hosts) == 0 {
+		log.Fatal("runtime egress allowlist required")
+	}
+	s := &Service{StateDir: "/state", Image: image, Backend: &SDKBackend{AX: ax.NewAXClient(conn), Substrate: sub, Image: image, Atespace: "raptor-runtime", Router: "atenet-router.ate-system.svc:80", EgressHosts: hosts}}
 	server := &http.Server{Addr: ":8443", Handler: s, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool}, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 130 * time.Second, IdleTimeout: 30 * time.Second}
 	log.Fatal(server.ListenAndServeTLS("/tls/tls.crt", "/tls/tls.key"))
 }

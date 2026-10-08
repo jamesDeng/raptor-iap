@@ -62,18 +62,22 @@
             "containers": [
               {
                 "name": "bridge",
-                "image": "localhost:5001/raptor-ax-bridge@sha256:1677bcc7050626dcb19c2a6f348755e476a6d4b8e33dfaf161819033c2bd6855",
+                "image": "${BRIDGE_IMAGE}",
                 "env": [
                   {
                     "name": "AX_PI_IMAGE",
-                    "value": "localhost:5001/ax-pi@sha256:1656169754d6ccaa937d2b30f1c5fa72130e0904e879c85ca41250dc91b6047e"
+                    "value": "${PI_IMAGE}"
+                  },
+                  {
+                    "name": "RUNTIME_EGRESS_HOSTS",
+                    "value": "[\"auth.openai.com\", \"chatgpt.com\", \"api.openai.com\", \"api.rdev.raptor-iap.top\", \"infra-api.raptor-iap.top\"]"
                   }
                 ],
                 "ports": [
                   {
                     "containerPort": 8443,
                     "hostPort": 8443,
-                    "hostIP": "10.70.1.180"
+                    "hostIP": "${PRIVATE_IP}"
                   }
                 ],
                 "resources": {
@@ -207,6 +211,114 @@
               {
                 "protocol": "TCP",
                 "port": 8080
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "guest-router-private",
+        "namespace": "ate-system"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app": "atenet-router"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "ax-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "raptor-ax-bridge"
+                  }
+                }
+              },
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "ax-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "ax-server"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "ax-worker-private",
+        "namespace": "ax-workers"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "ate.dev/worker-pool": "ax"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "ate-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "atenet-router"
+                  }
+                }
+              },
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "ate-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "ate-controller"
+                  }
+                }
+              },
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "ate-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "ate-api-server"
+                  }
+                }
               }
             ]
           }

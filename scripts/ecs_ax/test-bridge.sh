@@ -18,10 +18,12 @@ for item in ax substrate; do
   git -C "$workspace/$item" checkout -q --detach FETCH_HEAD
   [[ "$(git -C "$workspace/$item" rev-parse HEAD)" == "$revision" ]]
 done
+python3 "$root/scripts/ecs_ax/materialize_sources.py" "$workspace/ax" "$workspace/substrate" "$workspace/verified"
 cd "$workspace/ax"
 patch -p1 < "$root/third_party/ax/substrate-v1-compat.patch"
 mkdir -p cmd/raptor-bridge
 cp "$root"/components/ax-runtime-bridge/*.go cmd/raptor-bridge/
+cp "$root"/components/ax-runtime-bridge/substrate/*.go internal/substrate/
 go mod edit -replace=github.com/agent-substrate/substrate=../substrate
 go mod tidy
 go test ./...

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$(hostname)" == raptor-ecs-ax ]] || exit 1
+python3 /var/lib/raptor-ecs-ax/downloads/verify_sources.py /var/lib/raptor-ecs-ax/downloads/pins.json /var/lib/raptor-ecs-ax/downloads
 install -d -m 700 /opt/raptor/ax
 cd /opt/raptor/ax
 tar --no-same-owner -xzf /var/lib/raptor-ecs-ax/downloads/ecs-ax-upstream-ax.tar.gz
