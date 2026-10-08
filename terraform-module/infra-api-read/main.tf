@@ -26,7 +26,9 @@ locals {
     ] : [
     { Effect = "Allow", Action = ["sts:GetCallerIdentity", "rds:DescribeDBInstances", "rds:DescribeTags"], Resource = ["*"] },
     { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:${var.region}:${var.account_id}:scalinggroup/*"] }
-    ], var.cluster_id == "" ? [] : [
+    ], var.ack_only && var.enable_rds_discovery ? [
+    { Effect = "Allow", Action = ["rds:DescribeDBInstances", "rds:DescribeTags"], Resource = ["*"] }
+    ] : [], var.cluster_id == "" ? [] : [
     { Effect = "Allow", Action = ["cs:DescribeClusterUserKubeconfig"], Resource = ["acs:cs:${var.region}:${var.account_id}:cluster/${var.cluster_id}"] }
   ])
   routes = { identity = "/v1/cloud/identity", deployments = "/v1/deployments", status = "/v1/deployment-status" }

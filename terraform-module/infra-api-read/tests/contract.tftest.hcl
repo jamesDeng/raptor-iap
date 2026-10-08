@@ -45,3 +45,18 @@ run "ack_only_contract" {
     error_message = "Kubeconfig access must be restricted to the selected cluster."
   }
 }
+
+run "ack_with_rds_discovery_contract" {
+  command = plan
+  variables {
+    ack_only             = true
+    cluster_id           = "owned-cluster"
+    enable_rds_discovery = true
+  }
+  assert {
+    condition = toset(flatten([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s.Action])) == toset([
+      "sts:GetCallerIdentity", "cs:DescribeClusterUserKubeconfig", "rds:DescribeDBInstances", "rds:DescribeTags"
+    ])
+    error_message = "RDS discovery must add only the two read actions, without ESS or mutation access."
+  }
+}
