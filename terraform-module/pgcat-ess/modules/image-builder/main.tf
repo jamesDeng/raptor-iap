@@ -18,6 +18,8 @@ resource "alicloud_instance" "builder" {
   instance_name              = "raptor-rdev-pgcat-image-builder"
   instance_charge_type       = "PostPaid"
   instance_type              = "ecs.e-c1m2.large"
+  status                     = var.running ? "Running" : "Stopped"
+  stopped_mode               = "StopCharging"
   image_id                   = "ubuntu_24_04_x64_20G_alibase_20260916.vhd"
   vswitch_id                 = var.vswitch_id
   security_groups            = [alicloud_security_group.builder.id]

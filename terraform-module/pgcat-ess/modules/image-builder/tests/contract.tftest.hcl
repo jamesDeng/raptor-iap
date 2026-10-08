@@ -18,3 +18,11 @@ run "wrong_account" {
   variables { account_id = "9999999999999999" }
   expect_failures = [alicloud_security_group.builder]
 }
+
+run "economical_pause" {
+  command = plan
+  assert {
+    condition     = alicloud_instance.builder.status == "Stopped" && alicloud_instance.builder.stopped_mode == "StopCharging"
+    error_message = "Builder must pause economically outside an explicit work window."
+  }
+}
