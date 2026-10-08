@@ -29,5 +29,14 @@
   ],
   "cost_forecast_cny_24_hours": 4.704,
   "cost_forecast_assumption": "one CLB, one LCU each hour; not actual usage or a cap",
-  "no_sensitive_credential_transfer_performed": true
+  "no_sensitive_credential_transfer_performed": true,
+  "environment": "rdev.ali",
+  "terraform_root": "infra-terraform/environments/rdev.ali/ax-sandbox",
+  "environment_tag_reconciliation": {
+    "terraform_apply_passed": true,
+    "remote_state_readback_verified": true,
+    "tag_only_updates": 2,
+    "creates": 0,
+    "deletes": 0
+  }
 }

@@ -62,5 +62,5 @@ Terraform now lives under infra-terraform/environments/rdev.ali/ax-sandbox/ and
 resource Environment tags are rdev.ali. A separate component state remains useful
 for isolating sandbox lifecycle. Its existing backend prefix ax-sandbox.ali is a
 legacy state identifier, not a new application environment; retaining it avoids
-losing ownership of already-created resources. Live tag reconciliation is tracked
-separately from this source correction.
+losing ownership of already-created resources. Terraform applied exactly two tag-only updates. Remote state readback verified
+Environment=rdev.ali on both the ACK cluster and dedicated subnet.
