@@ -1,0 +1,404 @@
+{
+  "observedAt": "2026-10-08T10:46:19.634019+00:00",
+  "status": "passed_real_sts_expiry_refresh_no_pod_restart",
+  "deployment": {
+    "implementationPR": "https://github.com/jamesDeng/raptor-iap/pull/49",
+    "releasePR": "https://github.com/jamesDeng/raptor-iap/pull/50",
+    "gitopsRevision": "81ce2ffe55ef22d8572ccc49c445f73e07f6dcfe",
+    "gatewayDigest": "sha256:8fbe695bbf2339da18c5da5fe54344648033d8005f49b779c8934579ab69e226",
+    "staticControllerSecretDeleted": true,
+    "finalObservedGitopsRevision": "744951df8415b4f4cfd4b78a6d7bb6e994ed11c2"
+  },
+  "questions": [
+    {
+      "label": "before",
+      "requestId": "36ad0ab2-d042-4e2f-80cb-f7f62140b05c",
+      "attemptId": "337d048f-f1eb-46a8-8f3e-4a82ded06543",
+      "submittedAt": "2026-10-08T09:41:50.322196Z",
+      "completedAt": "2026-10-08T09:42:30.415508Z",
+      "selectedModel": "gpt-5.6-luna",
+      "actualModel": "gpt-5.6-luna",
+      "successfulMCPs": [
+        "infra",
+        "raptor"
+      ],
+      "checkpoint": {
+        "bytes": 22089,
+        "sha256": "1c44d43175ef1283179e8fe2c5c99acc48d62bbafba010728b8271684defecfd",
+        "piVersion": "0.99.2",
+        "archiveKey": "auth/lifecycle/337d048f-f1eb-46a8-8f3e-4a82ded06543.tgz",
+        "encryption": "AES256",
+        "verifiedAt": "2026-10-08T09:42:30.278029916Z",
+        "checksumKey": "auth/lifecycle/337d048f-f1eb-46a8-8f3e-4a82ded06543.sha256"
+      },
+      "cleanup": {
+        "accessRevoked": true,
+        "keyAbsent": true,
+        "sandboxAbsent": true
+      },
+      "slot": {
+        "request_id": null,
+        "owner": null,
+        "unresolved": false
+      },
+      "pod": {
+        "name": "agent-gateway-777448898-fktgp",
+        "uid": "d366ca3a-38d8-44d5-832b-d3bc17da5d51",
+        "createdAt": "2026-10-08T09:40:49Z",
+        "phase": "Running",
+        "serviceAccount": "agent-gateway",
+        "containers": [
+          {
+            "name": "agent-gateway",
+            "ready": true,
+            "restarts": 0,
+            "image": "sha256:f6a3f681d7f628f4148b2d64c0dbb37ffe383e0333c5b08521e9999d1cb5d601"
+          }
+        ],
+        "token": {
+          "iss": "https://oidc-ack-ap-southeast-1.oss-ap-southeast-1.aliyuncs.com/c92787e953503492ea141a744c81498f1",
+          "sub": "system:serviceaccount:raptor-system:agent-gateway",
+          "aud": [
+            "sts.aliyuncs.com"
+          ],
+          "iat": 1791452449,
+          "exp": 1791456049,
+          "sha256": "76b9ed303af36d0e5f6982a9909cf2577f5cfe6c207fed6801043ad1e8a2b3e7"
+        }
+      },
+      "resultAnswer": "查询结果（仅查询，未执行任何变更）：\n\n- **环境**：`rdev.ali`\n- **应用**：`agent-gateway`\n- **部署状态**：健康\n- **实际副本**：1\n- **就绪副本**：1\n- **期望副本**：1\n- **可用副本**：1\n- **当前 Pod**：`agent-gateway-777448898-fktgp`，状态 `Running`，就绪为 `true`\n- **当前镜像**：Infra MCP 返回的部署状态中**未提供镜像字段**，因此无法从本次证据确认当前镜像，不能据此推断。\n\n**证据来源：**\n\n1. **Raptor MCP**\n   - 应用目录对象确认：名称为 `agent-gateway`\n   - 环境配置：集群 `c92787e953503492ea141a744c81498f1`，命名空间 `raptor-system`\n   - 这些属于目录/配置上下文，不作为健康状态证据。\n2. **Infra MCP**\n   - 云账户匹配：`accountMatches=true`\n   - 部署发现：`state=1/1 ready`\n   - 实时部署状态：`replicas=1`、`readyReplicas=1`、`availableReplicas=1`、`updatedReplicas=1`，且 `observedGeneration=25` 与 `generation=25` 一致。\n\n**观测时间：**`2026-10-08T09:42:18.913116149Z`（部署状态查询，UTC）\n\n这是一个时间点观测；部署状态可能随后发生变化。",
+      "evidence": [
+        {
+          "evidenceMode": "catalog",
+          "identity": {
+            "envCode": "rdev.ali",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "requestId": "36ad0ab2-d042-4e2f-80cb-f7f62140b05c"
+          },
+          "observedAt": "2026-10-08T09:42:13.034Z",
+          "server": "raptor",
+          "state": {
+            "available": true
+          },
+          "tool": "request_get"
+        },
+        {
+          "evidenceMode": "catalog",
+          "identity": {
+            "envCode": "rdev.ali",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "requestId": "36ad0ab2-d042-4e2f-80cb-f7f62140b05c"
+          },
+          "observedAt": "2026-10-08T09:42:13.037Z",
+          "server": "raptor",
+          "state": {
+            "available": true
+          },
+          "tool": "environment_get"
+        },
+        {
+          "evidenceMode": "catalog",
+          "identity": {
+            "envCode": "rdev.ali",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "requestId": "36ad0ab2-d042-4e2f-80cb-f7f62140b05c"
+          },
+          "observedAt": "2026-10-08T09:42:13.039Z",
+          "server": "raptor",
+          "state": {
+            "available": true
+          },
+          "tool": "object_get"
+        },
+        {
+          "evidenceMode": "live",
+          "identity": {
+            "envCode": "rdev.ali"
+          },
+          "observedAt": "2026-10-08T09:42:13.321288024Z",
+          "server": "infra",
+          "state": {
+            "accountMatches": true
+          },
+          "tool": "cloud_identity_get"
+        },
+        {
+          "evidenceMode": "live",
+          "identity": {
+            "clusterId": "c92787e953503492ea141a744c81498f1",
+            "envCode": "rdev.ali",
+            "name": "agent-gateway",
+            "namespace": "raptor-system",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "uid": "b5d93aa3-a555-4b22-8082-60cc3c534563"
+          },
+          "observedAt": "2026-10-08T09:42:13.702185974Z",
+          "server": "infra",
+          "state": {
+            "state": "1/1 ready"
+          },
+          "tool": "deployments_list"
+        },
+        {
+          "evidenceMode": "live",
+          "identity": {
+            "clusterId": "c92787e953503492ea141a744c81498f1",
+            "envCode": "rdev.ali",
+            "name": "agent-gateway",
+            "namespace": "raptor-system",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "uid": "b5d93aa3-a555-4b22-8082-60cc3c534563"
+          },
+          "observedAt": "2026-10-08T09:42:18.913116149Z",
+          "server": "infra",
+          "state": {
+            "generation": 25,
+            "observedGeneration": 25,
+            "readyReplicas": 1,
+            "replicas": 1,
+            "updatedReplicas": 1
+          },
+          "tool": "deployment_status_get"
+        }
+      ]
+    },
+    {
+      "label": "after",
+      "requestId": "11653e6f-1889-4915-96eb-2b9dfd9e37d2",
+      "attemptId": "1c71a3e7-a3e6-41fb-afdf-3ddc25b06bcb",
+      "submittedAt": "2026-10-08T10:41:16.911973Z",
+      "completedAt": "2026-10-08T10:42:00.426555Z",
+      "selectedModel": "gpt-5.6-luna",
+      "actualModel": "gpt-5.6-luna",
+      "successfulMCPs": [
+        "infra",
+        "raptor"
+      ],
+      "checkpoint": {
+        "bytes": 23841,
+        "sha256": "af3d744653f8bf53b1ee57c49f8e6a97895a9fef336c0d122bdc415accccb222",
+        "piVersion": "0.99.2",
+        "archiveKey": "auth/lifecycle/1c71a3e7-a3e6-41fb-afdf-3ddc25b06bcb.tgz",
+        "encryption": "AES256",
+        "verifiedAt": "2026-10-08T10:42:00.289326253Z",
+        "checksumKey": "auth/lifecycle/1c71a3e7-a3e6-41fb-afdf-3ddc25b06bcb.sha256"
+      },
+      "cleanup": {
+        "accessRevoked": true,
+        "keyAbsent": true,
+        "sandboxAbsent": true
+      },
+      "slot": {
+        "request_id": null,
+        "owner": null,
+        "unresolved": false
+      },
+      "pod": {
+        "name": "agent-gateway-777448898-fktgp",
+        "uid": "d366ca3a-38d8-44d5-832b-d3bc17da5d51",
+        "createdAt": "2026-10-08T09:40:49Z",
+        "phase": "Running",
+        "serviceAccount": "agent-gateway",
+        "containers": [
+          {
+            "name": "agent-gateway",
+            "ready": true,
+            "restarts": 0,
+            "image": "sha256:f6a3f681d7f628f4148b2d64c0dbb37ffe383e0333c5b08521e9999d1cb5d601"
+          }
+        ],
+        "token": {
+          "iss": "https://oidc-ack-ap-southeast-1.oss-ap-southeast-1.aliyuncs.com/c92787e953503492ea141a744c81498f1",
+          "sub": "system:serviceaccount:raptor-system:agent-gateway",
+          "aud": [
+            "sts.aliyuncs.com"
+          ],
+          "iat": 1791455364,
+          "exp": 1791458964,
+          "sha256": "57c9c79fcc03736e0d5766ea9ecdf0e9a5f2dcee8b3c1b8cc8ecd9342769bdc2"
+        }
+      },
+      "resultAnswer": "已通过 Raptor MCP 和 Infra MCP 查询，**未执行任何变更**。\n\n### agent-gateway 部署状态\n\n- **环境**：`rdev.ali`\n- **云账户身份匹配**：是（Infra live identity）\n- **集群**：`c92787e953503492ea141a744c81498f1`\n- **命名空间**：`raptor-system`\n- **部署**：`agent-gateway`\n- **实际副本**：1\n- **就绪副本**：1\n- **可用副本**：1\n- **期望副本**：1\n- **状态**：健康；Pod 为 `Running` 且 `ready=true`\n- **当前镜像**：本次 Infra 部署状态接口未返回镜像字段，因此无法从已获取的证据确认镜像值。\n\n### 证据来源与时间\n\n- **Infra 部署发现**：`deployments_list`，观测时间 `2026-10-08T10:41:39.059034684Z`，返回 `1/1 ready`\n- **Infra 部署状态**：`deployment_status_get`，观测时间 `2026-10-08T10:41:50.125395171Z`\n  - `replicas=1`\n  - `readyReplicas=1`\n  - `availableReplicas=1`\n  - Pod：`agent-gateway-777448898-fktgp`，`Running`，就绪\n- **Raptor 目录信息**：确认应用名称 `agent-gateway` 与对象编码绑定；目录数据用于对象识别，不作为健康证据。\n- **证据模式**：`live`\n\n以上是截至 `2026-10-08T10:41:50.125395171Z` 的点时观测；部署状态可能在此后发生变化。",
+      "evidence": [
+        {
+          "evidenceMode": "catalog",
+          "identity": {
+            "envCode": "rdev.ali",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "requestId": "11653e6f-1889-4915-96eb-2b9dfd9e37d2"
+          },
+          "observedAt": "2026-10-08T10:41:38.425Z",
+          "server": "raptor",
+          "state": {
+            "available": true
+          },
+          "tool": "object_get"
+        },
+        {
+          "evidenceMode": "catalog",
+          "identity": {
+            "envCode": "rdev.ali",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "requestId": "11653e6f-1889-4915-96eb-2b9dfd9e37d2"
+          },
+          "observedAt": "2026-10-08T10:41:38.428Z",
+          "server": "raptor",
+          "state": {
+            "available": true
+          },
+          "tool": "request_get"
+        },
+        {
+          "evidenceMode": "catalog",
+          "identity": {
+            "envCode": "rdev.ali",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "requestId": "11653e6f-1889-4915-96eb-2b9dfd9e37d2"
+          },
+          "observedAt": "2026-10-08T10:41:38.43Z",
+          "server": "raptor",
+          "state": {
+            "available": true
+          },
+          "tool": "environment_get"
+        },
+        {
+          "evidenceMode": "live",
+          "identity": {
+            "envCode": "rdev.ali"
+          },
+          "observedAt": "2026-10-08T10:41:38.629619983Z",
+          "server": "infra",
+          "state": {
+            "accountMatches": true
+          },
+          "tool": "cloud_identity_get"
+        },
+        {
+          "evidenceMode": "live",
+          "identity": {
+            "clusterId": "c92787e953503492ea141a744c81498f1",
+            "envCode": "rdev.ali",
+            "name": "agent-gateway",
+            "namespace": "raptor-system",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "uid": "b5d93aa3-a555-4b22-8082-60cc3c534563"
+          },
+          "observedAt": "2026-10-08T10:41:39.059034684Z",
+          "server": "infra",
+          "state": {
+            "state": "1/1 ready"
+          },
+          "tool": "deployments_list"
+        },
+        {
+          "evidenceMode": "live",
+          "identity": {
+            "clusterId": "c92787e953503492ea141a744c81498f1",
+            "envCode": "rdev.ali",
+            "name": "agent-gateway",
+            "namespace": "raptor-system",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "uid": "b5d93aa3-a555-4b22-8082-60cc3c534563"
+          },
+          "observedAt": "2026-10-08T10:41:43.55865248Z",
+          "server": "infra",
+          "state": {
+            "generation": 25,
+            "observedGeneration": 25,
+            "readyReplicas": 1,
+            "replicas": 1,
+            "updatedReplicas": 1
+          },
+          "tool": "deployment_status_get"
+        },
+        {
+          "evidenceMode": "catalog",
+          "identity": {
+            "envCode": "rdev.ali",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "requestId": "11653e6f-1889-4915-96eb-2b9dfd9e37d2"
+          },
+          "observedAt": "2026-10-08T10:41:49.795Z",
+          "server": "raptor",
+          "state": {
+            "available": true
+          },
+          "tool": "object_get"
+        },
+        {
+          "evidenceMode": "live",
+          "identity": {
+            "clusterId": "c92787e953503492ea141a744c81498f1",
+            "envCode": "rdev.ali",
+            "name": "agent-gateway",
+            "namespace": "raptor-system",
+            "objectCode": "d9ccebb2-8990-413f-8c61-aca20b46fe43",
+            "uid": "b5d93aa3-a555-4b22-8082-60cc3c534563"
+          },
+          "observedAt": "2026-10-08T10:41:50.125395171Z",
+          "server": "infra",
+          "state": {
+            "generation": 25,
+            "observedGeneration": 25,
+            "readyReplicas": 1,
+            "replicas": 1,
+            "updatedReplicas": 1
+          },
+          "tool": "deployment_status_get"
+        }
+      ]
+    }
+  ],
+  "stsExchanges": [
+    {
+      "generation": {
+        "expiration": "2026-10-08T11:41:18Z",
+        "keyFingerprint": "bf102dac83c89e3b349e65304a6126ae97e16dc0653cf493f84579a508368496"
+      },
+      "eventTime": "2026-10-08T10:41:18Z",
+      "eventId": "01A11B1A-69AA-387A-9100-856C7899FFD2",
+      "errorCode": null,
+      "responseKeys": [
+        "RequestId",
+        "OIDCTokenInfo",
+        "AssumedRoleUser",
+        "Credentials"
+      ],
+      "request": {
+        "RoleSessionName": "raptor-gateway",
+        "DurationSeconds": 3600,
+        "RoleArn": "acs:ram::1360282071200743:role/raptor-rdev-gateway-controller"
+      }
+    },
+    {
+      "generation": {
+        "expiration": "2026-10-08T10:40:55Z",
+        "keyFingerprint": "2dcd0935dbfa1cc393e168c7b10995c694b5b6f47c77d1295b27beeef5d7d9bc"
+      },
+      "eventTime": "2026-10-08T09:40:55Z",
+      "eventId": "01A11AE3-23E6-3A28-9446-25F6DE922693",
+      "errorCode": null,
+      "responseKeys": [
+        "RequestId",
+        "OIDCTokenInfo",
+        "AssumedRoleUser",
+        "Credentials"
+      ],
+      "request": {
+        "RoleSessionName": "raptor-gateway",
+        "DurationSeconds": 3600,
+        "RoleArn": "acs:ram::1360282071200743:role/raptor-rdev-gateway-controller"
+      }
+    }
+  ],
+  "cleanup": {
+    "testPasswordRandomized": true,
+    "allTestSessionsRevoked": true,
+    "originalTestPasswordRejected401": true,
+    "staticSecretAbsent": true,
+    "localTunnelStopped": true,
+    "temporaryKubeconfigDeleted": true,
+    "temporaryWorkerProbesRemoved": true
+  }
+}
