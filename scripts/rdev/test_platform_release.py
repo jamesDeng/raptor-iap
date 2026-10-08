@@ -83,3 +83,10 @@ class RRSAPackaging(unittest.TestCase):
  def test_reject_unknown_missing_and_mixed_credentials(self):
   for mode,extra in [('invalid',[]),('rrsa',[]),('rrsa',['gatewayLive.controllerSecretName=static']),('static-sts',[])]:
    with self.subTest(mode=mode,extra=extra):self.assertNotEqual(self.render(mode,extra).returncode,0)
+
+class RRSAArgoPermissions(unittest.TestCase):
+ def test_gateway_serviceaccount_allowed_without_wildcards(self):
+  p=yaml.safe_load((ROOT/'infra-kubernetes/environments/rdev.ali/project.yaml').read_text())
+  self.assertIn({'group':'','kind':'ServiceAccount'},p['spec']['namespaceResourceWhitelist'])
+  self.assertNotIn({'group':'','kind':'Secret'},p['spec']['namespaceResourceWhitelist'])
+  self.assertNotIn('*',str(p['spec']['namespaceResourceWhitelist']))
