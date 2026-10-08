@@ -40,7 +40,7 @@ jobs:
           COMPONENT: ${{ matrix.component }}
         run: scripts/rdev/check-platform-image.sh "platform-${COMPONENT}:check" "$COMPONENT"
   publish:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     needs: [build-check, release-contracts, postgres14-acceptance, infra-read-tests, harness-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 20

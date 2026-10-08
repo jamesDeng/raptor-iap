@@ -1,10 +1,11 @@
 import os,shutil,subprocess,unittest,yaml,pathlib
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 class LiveManifest(unittest.TestCase):
- def render(self,live):
+ def render(self,live,ax=False):
   args=[os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
   if not live:args+=['--set','gatewayLive.enabled=false']
   if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
+  if ax:args += ["--set","gatewayLive.axTLSSecretName=gateway-ax-client-tls"]
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
  def test_default_disables_runtime(self):
   d=next(d for d in self.render(False) if d and d.get('kind')=='Deployment' and d['metadata']['name']=='agent-gateway');env={v['name']:v.get('value') for v in d['spec']['template']['spec']['containers'][0]['env']};self.assertEqual(env.get('GATEWAY_RUNTIME_MODE'),'disabled')
@@ -13,6 +14,10 @@ class LiveManifest(unittest.TestCase):
   for name in ['raptor-backend','raptor-open-api']:
    c=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']==name)['spec']['template']['spec']['containers'][0];env={v['name']:v for v in c['env']};self.assertEqual(env['AGENT_INTROSPECTION_PASSWORD']['valueFrom']['secretKeyRef']['name'],'raptor-agent-access')
   self.assertFalse(any(d and d.get('kind')=='Secret' for d in docs))
+ def test_ax_mutual_tls_stays_in_gateway_private_files(self):
+  docs=self.render(True,ax=True);d=next(v for v in docs if v and v.get('kind')=='Deployment' and v['metadata']['name']=='agent-gateway');pod=d['spec']['template']['spec'];vols={v['name']:v for v in pod['volumes']};self.assertEqual(vols['ax-tls-source']['secret']['secretName'],'gateway-ax-client-tls');init=pod['initContainers'][0];self.assertIn('install -m 0600 /ax-tls-source/tls.key /live-private/ax-client.key',init['args'][0]);self.assertFalse(any(v['name']=='ax-tls-source' for v in pod['containers'][0]['volumeMounts']))
+  for other in docs:
+   if other and other.get('kind')=='Deployment' and other['metadata']['name']!='agent-gateway':self.assertFalse(any(v['name']=='ax-tls-source' for v in other['spec']['template']['spec'].get('volumes',[])))
  def test_live_without_secret_refs_fails_closed(self):
   p=subprocess.run([os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml'),'--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=','--set','gatewayLive.controllerSecretName='],capture_output=True,text=True);self.assertNotEqual(p.returncode,0)
  def test_direct_restart_requires_opt_in(self):

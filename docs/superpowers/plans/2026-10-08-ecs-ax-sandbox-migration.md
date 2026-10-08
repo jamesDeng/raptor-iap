@@ -10,3 +10,9 @@ User chose current-session execution and authorizes one ECS; no new approval nee
 6. Run original design's acceptance and rollback checks, then switch dispatch. Record resource/cost receipts and one fresh branch review.
 
 Read exact manifests and install scripts before execution. Unexpected dependency or feature support stops the dependent stage, not unrelated read-only research. Never report deployment/migration completed without observed acceptance.
+
+Task5 integration refinement: a node-local runtime bridge speaks the inspected typed AX/Substrate/guest API. Gateway transport is authenticated private HTTPS with mutual TLS, deterministic request/attempt names and no automatic write retries. Cloud credentials stay at the gateway. Gate tests: mismatched binding/ownership, missing TLS identity, ambiguous creates/starts, expired deadline/lease, no inference replay on reconcile, bounded file/event reads, exact actor/task deletion, checkpoint publication only after encryption/checksum verification. New runtime remains opt-in until these and the original acceptance pass.
+
+## Multi-provider amendment
+
+User requires retaining Aliyun Sandbox. Add a durable provider router (`aliyun` default, `ax` opt-in) before completing AX integration. Provider selection is per attempt and immutable; restart recovery follows the journal and legacy untagged attempts use Aliyun. Test default changes during an active attempt, stale ownership, unknown/conflicting providers, missing configured backend and no fallback on backend errors. Keep existing Aliyun tests green and run the same lifecycle acceptance contract for AX. Switching the rdev.ali default does not remove the Aliyun backend.

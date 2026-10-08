@@ -28,6 +28,7 @@ gatewayLive:
   serviceURL: ''
   configSecretName: ''
   controllerSecretName: ''
+  axTLSSecretName: ''
 
 # Opt-in only after the Infra API route and scoped patch permission are ready.
 directRestart:

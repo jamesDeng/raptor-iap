@@ -69,7 +69,7 @@ spec:
         - name: live-private-files
           image: {{ $.Values.images.gateway | quote }}
           command: ["/bin/sh", "-ec"]
-          args: ["umask 077; install -m 0600 /live-config-source/config.json /live-private/config.json; install -m 0600 /live-controller-source/credential.json /live-private/credential.json"]
+          args: ["umask 077; install -m 0600 /live-config-source/config.json /live-private/config.json; install -m 0600 /live-controller-source/credential.json /live-private/credential.json{{ if $.Values.gatewayLive.axTLSSecretName }}; install -m 0600 /ax-tls-source/ca.crt /live-private/ax-ca.crt; install -m 0600 /ax-tls-source/tls.crt /live-private/ax-client.crt; install -m 0600 /ax-tls-source/tls.key /live-private/ax-client.key{{ end }}"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -78,6 +78,9 @@ spec:
             - {name: live-config-source, mountPath: /live-config-source, readOnly: true}
             - {name: live-controller-source, mountPath: /live-controller-source, readOnly: true}
             - {name: live-private, mountPath: /live-private}
+            {{ if $.Values.gatewayLive.axTLSSecretName }}
+            - {name: ax-tls-source, mountPath: /ax-tls-source, readOnly: true}
+            {{ end }}
       {{ end }}
       containers:
         - name: {{ $service.name }}
@@ -162,6 +165,10 @@ spec:
           secret: {secretName: {{ $.Values.gatewayLive.configSecretName | quote }}, defaultMode: 0440}
         - name: live-controller-source
           secret: {secretName: {{ $.Values.gatewayLive.controllerSecretName | quote }}, defaultMode: 0440}
+        {{ if $.Values.gatewayLive.axTLSSecretName }}
+        - name: ax-tls-source
+          secret: {secretName: {{ $.Values.gatewayLive.axTLSSecretName | quote }}, defaultMode: 0440}
+        {{ end }}
         {{ end }}
         - name: temporary
           emptyDir: {sizeLimit: 64Mi}

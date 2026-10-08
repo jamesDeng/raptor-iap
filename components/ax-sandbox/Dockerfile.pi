@@ -4,3 +4,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 procps 
 COPY bin/linux_amd64/ax-task-runner /usr/local/bin/ax-task-runner
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]
+COPY harness/ /opt/raptor-harness/
+RUN cd /opt/raptor-harness && npm ci --ignore-scripts --no-audit --no-fund
