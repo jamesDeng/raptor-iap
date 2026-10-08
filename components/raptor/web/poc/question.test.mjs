@@ -11,3 +11,22 @@ test('missing evidence is unverified rather than simulated',()=>{const hosts=dom
 test('answer stays plain text and cleanup is independent',async()=>{const hosts=dom();try{const app=await import('./app.js');assert.equal(typeof app.renderExecutionResult,'function');app.renderExecutionResult({request:{definition:{model:'gpt-5.6-luna',operations:[{name:'application.question'}],skills:{tag:'selected'}}},executionAvailable:false,lastSuccessfulSyncAt:'2026-10-07T00:00:00Z',execution:{runtimeMode:'live',result:{answer:'<script>not executed</script>',actualModel:'gpt-5.6-luna'},checkpointStatus:'failed',cleanupStatus:'unknown'}});assert.equal(hosts.get('answer').textContent,'<script>not executed</script>');assert.match(hosts.get('lifecycle').textContent,/cleanup: unknown/i);assert.match(hosts.get('answer-identity').textContent,/Last saved/)}finally{delete global.document}});
 
 test('structured cleanup and usage are readable on the request page',async()=>{const hosts=dom();try{const app=await import('./app.js');app.renderExecutionResult({execution:{stage:'finished',cleanupStatus:{sandboxAbsent:true,keyAbsent:true,accessRevoked:true},result:{answer:'healthy',usage:[{input:100,output:20,totalTokens:120},{input:50,output:10,totalTokens:60}]}}});assert.match(hosts.get('lifecycle').textContent,/cleanup: confirmed/i);assert.match(hosts.get('answer-identity').textContent,/150 input.*30 output.*180 total/i);assert.ok(!hosts.get('lifecycle').textContent.includes('[object Object]'));}finally{delete global.document}});
+
+test('navigation follows the visible panel and resource tab',async()=>{
+ const hosts=dom(),tabs=['overview','deployments'].map(tab=>({dataset:{tab},attributes:{},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]}}));
+ document.querySelectorAll=()=>tabs;
+ for(const id of ['catalog-nav','requests-nav'])Object.assign(document.getElementById(id),{attributes:{},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]}});
+ try{
+  const app=await import('./app.js');
+  assert.equal(typeof app.updateNavigation,'function');
+  app.updateNavigation('catalog-panel','deployments');
+  assert.equal(hosts.get('catalog-nav').attributes['aria-current'],'page');
+  assert.equal(tabs[1].attributes['aria-current'],'page');
+  assert.equal(tabs[0].attributes['aria-current'],undefined);
+  app.updateNavigation('request-panel','overview');
+  assert.equal(hosts.get('requests-nav').attributes['aria-current'],'page');
+  assert.equal(hosts.get('catalog-nav').attributes['aria-current'],undefined);
+  app.updateNavigation('login-panel','overview');
+  assert.equal(hosts.get('requests-nav').attributes['aria-current'],undefined);
+ }finally{delete global.document}
+});
