@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+umask 077
+# User data contains identity/reference metadata only, never database credentials.
+retry() {
+  n=0
+  until "$@"; do
+    n=$((n + 1))
+    [ "$n" -lt 5 ] || return 1
+    sleep 3
+  done
+}
+export DEBIAN_FRONTEND=noninteractive
+retry apt-get update -qq
+retry apt-get install -y --no-install-recommends docker.io
+systemctl enable --now docker
+install -d -m 0755 /etc/raptor-pgcat
+printf '%s' '${metadata_b64}' | base64 -d > /etc/raptor-pgcat/bootstrap.json
+chmod 0644 /etc/raptor-pgcat/bootstrap.json
+retry docker pull --quiet '${container_image}'
+# Host networking allows ECS IMDSv2 role retrieval and existing private SQL/metrics ports.
+# Runtime secret files live only in tmpfs and are recreated from versioned OSS on restart.
+docker run -d --name raptor-pgcat --restart unless-stopped \
+  --network host --user 65532:65532 --read-only \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --tmpfs /var/lib/raptor-pgcat:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=65532,gid=65532 \
+  --mount type=bind,src=/etc/raptor-pgcat/bootstrap.json,dst=/etc/raptor-pgcat/bootstrap.json,readonly \
+  --log-driver local --log-opt max-size=5m --log-opt max-file=2 \
+  '${container_image}'
