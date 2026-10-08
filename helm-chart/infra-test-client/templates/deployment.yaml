@@ -32,6 +32,7 @@ spec:
           image: {{ .Values.image | quote }}
           env:
             - {name: TEST_DB_DSN_FILE, value: /private-db/dsn}
+            - {name: TEST_ALLOW_PLAINTEXT_POC, value: {{ .Values.allowPlaintextPOC | quote }}}
           ports: [{name: metrics, containerPort: 9090}]
           volumeMounts: [{name: database, mountPath: /private-db, readOnly: true}]
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}

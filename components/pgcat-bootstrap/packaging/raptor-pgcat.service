@@ -1,0 +1,29 @@
+[Unit]
+Description=Private POC PgCat with version-pinned OSS bootstrap
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=raptor-pgcat
+Group=raptor-pgcat
+StateDirectory=raptor-pgcat
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/opt/raptor-pgcat/bootstrap --config /etc/raptor-pgcat/bootstrap.json
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=75
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/raptor-pgcat
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

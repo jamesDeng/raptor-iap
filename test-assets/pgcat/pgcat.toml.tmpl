@@ -1,3 +1,4 @@
+# Private-network POC: both DB hops use plaintext; OSS retrieval remains HTTPS.
 # Render privately with TOML escaping; credentials must never be committed.
 [general]
 host = "${BIND_ADDRESS}"
@@ -8,10 +9,8 @@ connect_timeout = 5000
 shutdown_timeout = 60000
 idle_client_in_transaction_timeout = 0
 # Omit autoreload: the pinned release represents disabled as None, not zero.
-server_tls = true
-verify_server_certificate = true
-tls_certificate = "${CLIENT_TLS_CERT_PATH}"
-tls_private_key = "${CLIENT_TLS_KEY_PATH}"
+server_tls = false
+verify_server_certificate = false
 admin_username = "${ADMIN_USER}"
 admin_password = "${ADMIN_PASSWORD}"
 

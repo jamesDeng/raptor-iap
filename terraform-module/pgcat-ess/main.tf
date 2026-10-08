@@ -85,6 +85,7 @@ resource "alicloud_ess_scaling_configuration" "proxy" {
   internet_max_bandwidth_out = 0
   system_disk_category       = "cloud_essd"
   system_disk_size           = 20
+  system_disk_encrypted      = true
   spot_strategy              = "NoSpot"
   active                     = true
   enable                     = true
@@ -93,10 +94,13 @@ resource "alicloud_ess_scaling_configuration" "proxy" {
  #!/bin/sh
  set -eu
  umask 077
- mkdir -p /etc/raptor-pgcat
+ install -d -m 0755 /etc/raptor-pgcat
  printf '%s' '${base64encode(local.bootstrap)}' | base64 -d > /etc/raptor-pgcat/bootstrap.json
  test -x /opt/raptor-pgcat/bootstrap
- /opt/raptor-pgcat/bootstrap --config /etc/raptor-pgcat/bootstrap.json
+ chmod 0644 /etc/raptor-pgcat/bootstrap.json
+ systemctl daemon-reload
+ systemctl enable raptor-pgcat.service
+ systemctl start raptor-pgcat.service
  BOOT
   )
   depends_on = [alicloud_ess_server_group_attachment.proxy]

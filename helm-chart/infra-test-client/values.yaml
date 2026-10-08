@@ -5,3 +5,6 @@ dsnSecretName: ""
 resources:
   requests: {cpu: 50m, memory: 64Mi}
   limits: {cpu: 200m, memory: 128Mi}
+
+# Explicit owner-approved private POC exception; evidence remains live.
+allowPlaintextPOC: false

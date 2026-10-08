@@ -26,6 +26,10 @@ variables {
 run "private_tagged_capacity" {
   command = plan
   assert {
+    condition = alicloud_ess_scaling_configuration.proxy.system_disk_encrypted == true && strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "systemctl start raptor-pgcat.service")
+    error_message = "Encrypted disk and unprivileged service startup required."
+  }
+  assert {
     condition     = alicloud_ess_scaling_group.proxy.desired_capacity == 2 && alicloud_ess_scaling_group.proxy.max_size == 4 && alicloud_ess_scaling_group.proxy.min_size == 2
     error_message = "Bounded baseline/surge required."
   }

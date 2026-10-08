@@ -37,8 +37,10 @@ func run() error {
 	if e != nil {
 		return fmt.Errorf("invalid secret configuration")
 	}
-	if os.Getenv("TEST_EVIDENCE_MODE") != "local" && (cfg.TLSConfig == nil || cfg.TLSConfig.InsecureSkipVerify || len(cfg.Fallbacks) > 0) {
-		return fmt.Errorf("verified TLS required")
+	if os.Getenv("TEST_EVIDENCE_MODE") != "local" {
+		if e := validateTransport(cfg, os.Getenv("TEST_ALLOW_PLAINTEXT_POC") == "true"); e != nil {
+			return e
+		}
 	}
 	id := make([]byte, 16)
 	if _, e = rand.Read(id); e != nil {
@@ -75,4 +77,14 @@ func run() error {
 		return fmt.Errorf("evidence server stopped")
 	}
 	return e
+}
+
+func validateTransport(cfg *pgx.ConnConfig, allowPlaintext bool) error {
+	if cfg.TLSConfig == nil && allowPlaintext && len(cfg.Fallbacks) == 0 {
+		return nil
+	}
+	if cfg.TLSConfig == nil || cfg.TLSConfig.InsecureSkipVerify || len(cfg.Fallbacks) > 0 {
+		return fmt.Errorf("verified TLS or explicit POC plaintext required")
+	}
+	return nil
 }
