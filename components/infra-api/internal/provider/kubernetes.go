@@ -84,7 +84,11 @@ func (p *reader) Status(ctx context.Context, env domain.Environment, t domain.Ta
 	if d.Labels["raptor.appcode"] != t.AppCode {
 		return domain.Status{}, domain.ErrScope
 	}
-	status := domain.Status{UID: string(d.UID), Generation: d.Generation, ObservedGeneration: d.Status.ObservedGeneration, Replicas: int(d.Status.Replicas), UpdatedReplicas: int(d.Status.UpdatedReplicas), ReadyReplicas: int(d.Status.ReadyReplicas), EvidenceMode: p.evidence, Pods: []domain.Pod{}}
+	desired := int32(1)
+	if d.Spec.Replicas != nil {
+		desired = *d.Spec.Replicas
+	}
+	status := domain.Status{DesiredReplicas: int(desired), AvailableReplicas: int(d.Status.AvailableReplicas), UID: string(d.UID), Generation: d.Generation, ObservedGeneration: d.Status.ObservedGeneration, Replicas: int(d.Status.Replicas), UpdatedReplicas: int(d.Status.UpdatedReplicas), ReadyReplicas: int(d.Status.ReadyReplicas), EvidenceMode: p.evidence, Pods: []domain.Pod{}}
 	rsIDs := map[types.UID]bool{}
 	token := ""
 	seen := map[string]bool{}

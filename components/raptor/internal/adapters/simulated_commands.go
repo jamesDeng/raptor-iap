@@ -22,7 +22,7 @@ func (s *SimulatedCommands) GetDeploymentStatus(ctx context.Context, t domain.Re
 	}
 	v, ok := s.states[t]
 	if !ok {
-		v = DeploymentStatus{UID: t.UID, Generation: 1, ObservedGeneration: 1, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1, EvidenceMode: "simulated"}
+		v = DeploymentStatus{UID: t.UID, Generation: 1, ObservedGeneration: 1, DesiredReplicas: 1, AvailableReplicas: 1, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1, EvidenceMode: "simulated"}
 		s.states[t] = v
 	}
 	return v, nil

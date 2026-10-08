@@ -7,15 +7,18 @@ import (
 	sts "github.com/alibabacloud-go/sts-20150401/v2/client"
 	"github.com/alibabacloud-go/tea/tea"
 	"github.com/aliyun/credentials-go/credentials"
+	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/client-go/kubernetes"
 	"raptor-iap/infra-api/internal/api"
 	"raptor-iap/infra-api/internal/domain"
 )
 
 type reader struct {
-	identity func(context.Context, domain.Environment) (string, error)
-	page     func(context.Context, domain.Environment, string, string, int) (page, error)
-	kube     kubeFactory
-	evidence string
+	identity     func(context.Context, domain.Environment) (string, error)
+	page         func(context.Context, domain.Environment, string, string, int) (page, error)
+	kube         kubeFactory
+	evidence     string
+	restartPatch func(context.Context, kubernetes.Interface, string, string, []byte) (*appsv1.Deployment, error)
 }
 
 func New() (api.Reader, error) {

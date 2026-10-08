@@ -15,4 +15,11 @@ class LiveManifest(unittest.TestCase):
   self.assertFalse(any(d and d.get('kind')=='Secret' for d in docs))
  def test_live_without_secret_refs_fails_closed(self):
   p=subprocess.run([os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml'),'--set','gatewayLive.enabled=true','--set','gatewayLive.configSecretName=','--set','gatewayLive.controllerSecretName='],capture_output=True,text=True);self.assertNotEqual(p.returncode,0)
+ def test_direct_restart_requires_opt_in(self):
+  docs=self.render(False)
+  for d in docs:
+   if d and d.get('kind')=='Deployment':
+    env={v['name']:v.get('value') for v in d['spec']['template']['spec']['containers'][0]['env']}
+    if d['metadata']['name']=='raptor-backend':self.assertEqual(env.get('RAPTOR_ENABLE_RESTART'),'false')
+    else:self.assertNotIn('RAPTOR_ENABLE_RESTART',env)
 if __name__=='__main__':unittest.main()

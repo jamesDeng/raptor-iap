@@ -64,10 +64,10 @@ func (s *Service) restartOne(ctx context.Context, id string, target domain.Resta
 	}
 	baseline, e := client.GetDeploymentStatus(ctx, target)
 	if e != nil || baseline.UID != target.UID {
-		return s.setRestartState(ctx, id, target, "failed", map[string]string{"reason": "deployment lookup unavailable or identity changed", "evidenceMode": "simulated"})
+		return s.setRestartState(ctx, id, target, "failed", map[string]string{"reason": "deployment lookup unavailable or identity changed", "evidenceMode": "unverified"})
 	}
 	deadline := s.restartNow().Add(10 * time.Minute)
-	if e = s.setRestartState(ctx, id, target, "submitting", map[string]any{"baselineGeneration": baseline.Generation, "deadline": deadline, "evidenceMode": "simulated"}); e != nil {
+	if e = s.setRestartState(ctx, id, target, "submitting", map[string]any{"baselineGeneration": baseline.Generation, "deadline": deadline, "evidenceMode": baseline.EvidenceMode}); e != nil {
 		return e
 	}
 	e = client.RestartDeployment(ctx, id, target)
@@ -76,27 +76,27 @@ func (s *Service) restartOne(ctx context.Context, id string, target domain.Resta
 		if errors.Is(e, adapters.ErrRejected) {
 			state = "failed"
 		}
-		return s.setRestartState(ctx, id, target, state, map[string]string{"reason": "restart submission " + state, "evidenceMode": "simulated"})
+		return s.setRestartState(ctx, id, target, state, map[string]string{"reason": "restart submission " + state, "evidenceMode": baseline.EvidenceMode})
 	}
-	if e = s.setRestartState(ctx, id, target, "observing", map[string]any{"baselineGeneration": baseline.Generation, "deadline": deadline, "evidenceMode": "simulated"}); e != nil {
+	if e = s.setRestartState(ctx, id, target, "observing", map[string]any{"baselineGeneration": baseline.Generation, "deadline": deadline, "evidenceMode": baseline.EvidenceMode}); e != nil {
 		return e
 	}
 	for {
 		status, e := client.GetDeploymentStatus(ctx, target)
 		if e != nil || status.UID != target.UID {
-			return s.setRestartState(ctx, id, target, "unknown", map[string]string{"reason": "rollout lookup unavailable or identity changed", "evidenceMode": "simulated"})
+			return s.setRestartState(ctx, id, target, "unknown", map[string]string{"reason": "rollout lookup unavailable or identity changed", "evidenceMode": baseline.EvidenceMode})
 		}
-		if status.Generation > baseline.Generation && status.ObservedGeneration >= status.Generation && status.UpdatedReplicas == status.Replicas && status.ReadyReplicas == status.Replicas {
+		if status.Generation > baseline.Generation && status.ObservedGeneration >= status.Generation && status.Replicas == status.DesiredReplicas && status.UpdatedReplicas == status.DesiredReplicas && status.ReadyReplicas == status.DesiredReplicas && status.AvailableReplicas == status.DesiredReplicas {
 			return s.setRestartState(ctx, id, target, "succeeded", status)
 		}
 		if !s.restartNow().Before(deadline) {
-			return s.setRestartState(ctx, id, target, "unknown", map[string]string{"reason": "ten-minute observation deadline exceeded", "evidenceMode": "simulated"})
+			return s.setRestartState(ctx, id, target, "unknown", map[string]string{"reason": "ten-minute observation deadline exceeded", "evidenceMode": baseline.EvidenceMode})
 		}
 		timer := time.NewTimer(time.Second)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return s.setRestartState(context.WithoutCancel(ctx), id, target, "unknown", map[string]string{"reason": "observation interrupted", "evidenceMode": "simulated"})
+			return s.setRestartState(context.WithoutCancel(ctx), id, target, "unknown", map[string]string{"reason": "observation interrupted", "evidenceMode": baseline.EvidenceMode})
 		case <-timer.C:
 		}
 	}

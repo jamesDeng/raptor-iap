@@ -105,6 +105,9 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ $.Values.infraReader.secretName | quote }}, key: INFRA_PASSWORD}
             {{ end }}
+            {{ if eq $service.name "raptor-backend" }}
+            - {name: RAPTOR_ENABLE_RESTART, value: {{ $.Values.directRestart.enabled | quote }}}
+            {{ end }}
             - {name: RAPTOR_SIMULATION, value: 'false'}
             - {name: GATEWAY_SIMULATION, value: 'false'}
             {{ if eq $service.name "agent-gateway" }}

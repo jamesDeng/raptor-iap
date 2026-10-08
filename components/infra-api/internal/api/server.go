@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"raptor-iap/infra-api/internal/domain"
@@ -20,6 +21,10 @@ type Reader interface {
 }
 
 func New(reader Reader, envs map[string]domain.Environment, username, password, authHeader string) (http.Handler, error) {
+	return NewWithCommands(reader, envs, username, password, authHeader, nil, nil)
+}
+
+func NewWithCommands(reader Reader, envs map[string]domain.Environment, username, password, authHeader string, commander Commander, authorizer Authorizer) (http.Handler, error) {
 	if reader == nil || username == "" || password == "" || strings.Contains(username, ":") || (authHeader != "Authorization" && authHeader != "X-Infra-Authorization") {
 		return nil, errors.New("invalid server configuration")
 	}
@@ -27,7 +32,7 @@ func New(reader Reader, envs map[string]domain.Environment, username, password, 
 	for k, v := range envs {
 		scopes[k] = v
 	}
-	op := operations{reader: reader, scopes: scopes}
+	op := operations{reader: reader, scopes: scopes, commander: commander, authorizer: authorizer, principal: username}
 	mcpHandler := newMCPHandler(op)
 	expected := sha256.Sum256([]byte(username + ":" + password))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +43,7 @@ func New(reader Reader, envs map[string]domain.Environment, username, password, 
 			json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}})
 		}
 		send := func(data any) { json.NewEncoder(w).Encode(map[string]any{"data": data}) }
-		if r.URL.Path != "/mcp" && r.Method != "GET" {
+		if r.URL.Path != "/mcp" && ((commandPath(r.URL.Path) && r.Method != "POST") || (!commandPath(r.URL.Path) && r.Method != "GET")) {
 			fail(405, "MethodNotAllowed")
 			return
 		}
@@ -59,6 +64,25 @@ func New(reader Reader, envs map[string]domain.Environment, username, password, 
 		}
 		if r.URL.Path == "/mcp" {
 			mcpHandler.ServeHTTP(w, r)
+			return
+		}
+		if commandPath(r.URL.Path) {
+			if r.URL.RawQuery != "" {
+				fail(400, "InvalidInput")
+				return
+			}
+			raw, e := io.ReadAll(io.LimitReader(r.Body, 8193))
+			if e != nil {
+				fail(400, "InvalidInput")
+				return
+			}
+			data, e := op.command(r.Context(), r.URL.Path, raw)
+			if e != nil {
+				oe := e.(*operationError)
+				fail(oe.status, oe.code)
+				return
+			}
+			send(data)
 			return
 		}
 		q, e := url.ParseQuery(r.URL.RawQuery)
