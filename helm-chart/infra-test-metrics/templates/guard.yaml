@@ -1,0 +1,8 @@
+{{- range $key := list "environment" "proxyCode" "targetDbCode" -}}
+{{- $code := required (printf "%s required" $key) (index $.Values $key) -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$" $code) }}{{ fail "invalid catalog code" }}{{ end -}}
+{{- end -}}
+{{- $image := required "immutable Prometheus image required" .Values.image -}}
+{{- if not (regexMatch "^[a-zA-Z0-9./_-]+@sha256:[a-f0-9]{64}$" $image) }}{{ fail "immutable image digest required" }}{{ end -}}
+{{- $inventory := required "external provider-derived inventory required" .Values.inventoryConfigMapName -}}
+{{- if not (regexMatch "^[a-f0-9]{40}$" .Values.inventoryRevision) }}{{ fail "reviewed inventory contract revision required" }}{{ end -}}

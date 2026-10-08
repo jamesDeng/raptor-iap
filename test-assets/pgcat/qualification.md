@@ -1,0 +1,9 @@
+# Local PgCat metric qualification — October 7, 2026
+
+Source commit: `5b038813eb14f181434ab7b5509e74d9b1fe123b`, package version 1.3.0, built locally on macOS arm64 using Rust 1.90.0 and its checked-in Cargo.lock. Build succeeded with one upstream unused-Result warning in `src/plugins/query_logger.rs`; no upstream source was changed. Native exporter aggregation was inspected at `src/stats/pool.rs:45–69` and `src/prometheus.rs`.
+
+Actual local tests: zero clients; an authenticated idle client counts one; a `pg_sleep(1)` operation appears active; simultaneous connections to two pools count two; closing both returns zero. PostgreSQL 17.11 was a session-owned disposable localhost backend with no TLS, not Aliyun RDS. Random fixture passwords stayed in ignored private files; no runtime credentials are in this receipt.
+
+Promtool 2.55.1 fixtures passed for idle/active/zero totals, multi-pool sums, incomplete family exclusion, duplicate scrape exclusion, stale disappearance/restart and preservation of an old sample timestamp after recording-rule reevaluation. These are local rule contracts, not Infra API gates. The first rule test failed before the recording rules existed. The first runtime integration failed while the PgCat fixture was unavailable; rerun after startup passed. No assurance for TLS, Linux/ECS image, provider health/routing, concurrent config reload, exporter caching, live scale-in or zero operation failures is claimed.
+
+No container runtime was available; source compilation enabled local qualification instead. The image digest remains null and unpublished. Before live use centrally qualify client/backend TLS, Linux image/digest, private scrape reachability, full pool/node inventory and actual Infra API freshness/coverage queries. Keep runtime unknown/stale metrics fail-closed, including after node/process replacement.

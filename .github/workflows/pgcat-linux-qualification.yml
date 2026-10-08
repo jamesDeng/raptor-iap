@@ -1,0 +1,85 @@
+name: PgCat Linux qualification
+on:
+  pull_request:
+    branches: [main]
+    paths: ['components/pgcat-bootstrap/**', 'components/test-client/**', 'test-assets/pgcat/**', '.github/workflows/pgcat-linux-qualification.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: fixture
+          POSTGRES_PASSWORD: synthetic-local-only
+          POSTGRES_DB: fixture
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U fixture -d fixture"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: components/pgcat-bootstrap/go.sum
+      - name: Build and test bootstrap
+        working-directory: components/pgcat-bootstrap
+        env:
+          SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          go test -race ./...
+          go vet ./...
+          mkdir -p ../../qualification
+          CGO_ENABLED=0 go build -trimpath -ldflags="-X main.revision=$SOURCE_REVISION" -o ../../qualification/bootstrap ./cmd/bootstrap
+          cp packaging/raptor-pgcat.service ../../qualification/
+          printf '%s\n' "$SOURCE_REVISION" > ../../qualification/bootstrap-revision.txt
+      - name: Build pinned PgCat as a static Linux artifact
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup toolchain install 1.90.0 --profile minimal
+          rustup target add --toolchain 1.90.0 x86_64-unknown-linux-musl
+          git init "$RUNNER_TEMP/pgcat-source"
+          git -C "$RUNNER_TEMP/pgcat-source" remote add origin https://github.com/postgresml/pgcat.git
+          git -C "$RUNNER_TEMP/pgcat-source" fetch --depth=1 origin 5b038813eb14f181434ab7b5509e74d9b1fe123b
+          git -C "$RUNNER_TEMP/pgcat-source" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/pgcat-source" rev-parse HEAD)" = 5b038813eb14f181434ab7b5509e74d9b1fe123b
+          cd "$RUNNER_TEMP/pgcat-source"
+          cargo +1.90.0 build --release --locked --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/pgcat "$GITHUB_WORKSPACE/qualification/pgcat"
+          printf '%s\n' 5b038813eb14f181434ab7b5509e74d9b1fe123b > "$GITHUB_WORKSPACE/qualification/pgcat-revision.txt"
+      - name: Qualify SQL and client metrics with synthetic credentials
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          lines=['[general]', 'host="127.0.0.1"', 'port=26432', 'enable_prometheus_exporter=true', 'prometheus_exporter_port=29930', 'server_tls=false', 'verify_server_certificate=false', 'admin_username="fixture-admin"', 'admin_password="synthetic-admin-only"']
+          for pool in ['test','test2']:
+              lines += [f'[pools.{pool}]', 'pool_mode="transaction"', f'[pools.{pool}.users.0]', 'username="fixture"', 'password="synthetic-local-only"', 'pool_size=16', f'[pools.{pool}.shards.0]', 'database="fixture"', 'servers=[["127.0.0.1",5432,"primary"]]']
+          pathlib.Path('/tmp/pgcat-fixture.toml').write_text('\n'.join(lines)+'\n')
+          pathlib.Path('/tmp/pgcat-fixture.dsn').write_text('postgres://fixture:synthetic-local-only@127.0.0.1:26432/test?sslmode=disable')
+          PY
+          RUST_LOG=off qualification/pgcat /tmp/pgcat-fixture.toml >/tmp/pgcat-fixture.log 2>&1 &
+          trap 'kill "$!" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:29930/metrics >/dev/null; then break; fi
+            sleep 1
+          done
+          cd components/test-client
+          TEST_LOCAL_POSTGRES_DSN='postgres://fixture:synthetic-local-only@127.0.0.1:5432/fixture?sslmode=disable' TEST_LOCAL_PGCAT_DSN_FILE=/tmp/pgcat-fixture.dsn go test -race -v ./internal/traffic
+      - name: Record artifact hashes
+        run: |
+          cd qualification
+          sha256sum bootstrap pgcat raptor-pgcat.service bootstrap-revision.txt pgcat-revision.txt > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pgcat-linux-qualified-${{ github.event.pull_request.head.sha || github.sha }}
+          path: qualification/
+          retention-days: 7
+          if-no-files-found: error

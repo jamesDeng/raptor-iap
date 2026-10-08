@@ -1,0 +1,1 @@
+{"evidenceMode":"simulated","envCode":"fixture.env","proxyCode":"proxy-fixture","observedAt":"2026-10-07T00:00:00Z","nodes":[{"id":"old-a","connectedClients":1,"idleClients":1,"activeClients":0,"waitingClients":0},{"id":"old-b","connectedClients":0,"idleClients":0,"activeClients":0,"waitingClients":0}]}

@@ -1,0 +1,98 @@
+rule_files:
+  - recording-rules.yaml
+evaluation_interval: 5s
+tests:
+  - interval: 5s
+    input_series:
+      - series: 'pgcat_pools_cl_active{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '0 1 0'
+      - series: 'pgcat_pools_cl_idle{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '1 0 0'
+      - series: 'pgcat_pools_cl_waiting{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '0 0 0'
+    promql_expr_test:
+      - expr: infra_pgcat_connected_clients
+        eval_time: 0s
+        exp_samples:
+          - labels: 'infra_pgcat_connected_clients{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a"}'
+            value: 1
+      - expr: infra_pgcat_connected_clients
+        eval_time: 5s
+        exp_samples:
+          - labels: 'infra_pgcat_connected_clients{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a"}'
+            value: 1
+      - expr: infra_pgcat_connected_clients
+        eval_time: 10s
+        exp_samples:
+          - labels: 'infra_pgcat_connected_clients{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a"}'
+            value: 0
+  - interval: 5s
+    input_series:
+      - series: 'pgcat_pools_cl_active{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '0'
+      - series: 'pgcat_pools_cl_waiting{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '0'
+    promql_expr_test:
+      - expr: infra_pgcat_connected_clients
+        eval_time: 0s
+        exp_samples: []
+  - interval: 5s
+    input_series:
+      - series: 'pgcat_pools_cl_active{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '0 0'
+      - series: 'pgcat_pools_cl_idle{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '2 2'
+      - series: 'pgcat_pools_cl_waiting{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '1 1'
+      - series: 'pgcat_pools_cl_active{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db2",user="app2"}'
+        values: '1 1'
+      - series: 'pgcat_pools_cl_idle{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db2",user="app2"}'
+        values: '1 1'
+      - series: 'pgcat_pools_cl_waiting{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db2",user="app2"}'
+        values: '0 0'
+    promql_expr_test:
+      - expr: infra_pgcat_connected_clients
+        eval_time: 5s
+        exp_samples:
+          - labels: 'infra_pgcat_connected_clients{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a"}'
+            value: 5
+      - expr: infra_pgcat_client_observation_timestamp_seconds
+        eval_time: 25s
+        exp_samples:
+          - labels: 'infra_pgcat_client_observation_timestamp_seconds{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a"}'
+            value: 5
+  - interval: 5s
+    input_series:
+      - series: 'pgcat_pools_cl_active{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app",job="one"}'
+        values: '0'
+      - series: 'pgcat_pools_cl_idle{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app",job="one"}'
+        values: '0'
+      - series: 'pgcat_pools_cl_waiting{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app",job="one"}'
+        values: '0'
+      - series: 'pgcat_pools_cl_active{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app",job="two"}'
+        values: '0'
+      - series: 'pgcat_pools_cl_idle{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app",job="two"}'
+        values: '0'
+      - series: 'pgcat_pools_cl_waiting{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app",job="two"}'
+        values: '0'
+    promql_expr_test:
+      - expr: infra_pgcat_connected_clients
+        eval_time: 0s
+        exp_samples: []
+  - interval: 5s
+    input_series:
+      - series: 'pgcat_pools_cl_active{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '0 stale 0'
+      - series: 'pgcat_pools_cl_idle{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '0 stale 1'
+      - series: 'pgcat_pools_cl_waiting{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a",pool="db",user="app"}'
+        values: '0 stale 0'
+    promql_expr_test:
+      - expr: infra_pgcat_connected_clients
+        eval_time: 5s
+        exp_samples: []
+      - expr: infra_pgcat_connected_clients
+        eval_time: 10s
+        exp_samples:
+          - labels: 'infra_pgcat_connected_clients{env="fixture",db_proxy_code="proxy",target_db_code="db",ecs_instance_id="old-a"}'
+            value: 1

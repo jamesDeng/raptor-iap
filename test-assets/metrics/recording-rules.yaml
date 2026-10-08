@@ -1,0 +1,18 @@
+groups:
+  - name: infra-pgcat-client-observation
+    interval: 5s
+    rules:
+      - record: infra_pgcat_connected_clients
+        expr: >-
+          sum by (env, db_proxy_code, target_db_code, ecs_instance_id)
+          (pgcat_pools_cl_active + pgcat_pools_cl_idle + pgcat_pools_cl_waiting)
+          unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
+          count by (env, db_proxy_code, target_db_code, ecs_instance_id)
+          (count by (env, db_proxy_code, target_db_code, ecs_instance_id, pool, user)
+          ({__name__=~"pgcat_pools_cl_(active|idle|waiting)"}) != 3)
+      - record: infra_pgcat_client_observation_timestamp_seconds
+        expr: >-
+          min by (env, db_proxy_code, target_db_code, ecs_instance_id)
+          (timestamp({__name__=~"pgcat_pools_cl_(active|idle|waiting)"}))
+          and on (env, db_proxy_code, target_db_code, ecs_instance_id)
+          infra_pgcat_connected_clients

@@ -1,0 +1,13 @@
+# Optional local integration only. Requires a reviewed digest and privately rendered config.
+services:
+  pgcat:
+    image: ${PGCAT_IMAGE:?supply immutable repository@sha256 digest}
+    command: ["pgcat", "/private/pgcat.toml"]
+    ports:
+      - "127.0.0.1:26432:6432"
+      - "127.0.0.1:29930:9930"
+    volumes:
+      - ${PGCAT_PRIVATE_CONFIG:?supply private rendered config}:/private/pgcat.toml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
