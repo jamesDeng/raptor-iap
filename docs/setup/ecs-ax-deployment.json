@@ -35,11 +35,10 @@
   "unrelated_pod_router_denied_verified": true,
   "unrelated_pod_worker_denied_verified": true,
   "current_pi_checkpoint_restore_and_cleanup_verified": true,
-  "real_question_e2e_verified": false,
-  "gateway_default_provider": "aliyun",
+  "real_question_e2e_verified": true,
+  "gateway_default_provider": "ax",
   "blocked_on": [
-    "existing gateway controller STS renewal through RAM identity",
-    "GitOps candidate revision staging after prerequisites"
+    "final PR merge and main GitOps reconciliation"
   ],
   "actor_model_mcp_tls_allowed_verified": true,
   "actor_arbitrary_external_host_denied_verified": true,
@@ -49,5 +48,18 @@
   "ordinary_test_user_authorized": true,
   "ordinary_test_user_login_verified": true,
   "ordinary_test_user_admin_route_denied_verified": true,
-  "ordinary_test_user_disabled_and_sessions_revoked_verified": true
+  "ordinary_test_user_disabled_and_sessions_revoked_verified": true,
+  "existing_controller_bootstrap_reused": true,
+  "bootstrap_key_inactive_verified": true,
+  "terraform_checkpoint_write_applied": true,
+  "checkpoint_write_scope": "oss:PutObject only; existing auth/lifecycle/*.tgz and *.sha256",
+  "successful_request": "073266fa-d6f2-4865-8ef3-869b4fd2b0e7",
+  "successful_attempt": "bc6e2291-1033-4014-aca5-50f3aaca96a2",
+  "actual_model": "gpt-5.6-luna",
+  "model_and_both_mcp_evidence_verified": true,
+  "checkpoint_export_readback_verified": true,
+  "checkpoint_bytes": 19075,
+  "exact_cleanup_verified": true,
+  "argo_candidate_synced_healthy_verified": true,
+  "gateway_nonoverlapping_restart_verified": true
 }
