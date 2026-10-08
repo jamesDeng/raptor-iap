@@ -39,6 +39,19 @@ class CertificateGateTests(unittest.TestCase):
         result = self.evaluate(self.discovery(), {'projection': 'true', 'approval': True, 'signing': True})
         self.assertFalse(result['ready'])
 
+    def test_independent_api_versions_pass(self):
+        source = pathlib.Path(__file__).with_name('preflight.py')
+        spec = importlib.util.spec_from_file_location('preflight', source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = module.evaluate_certificate_gate(
+            {'certificates.k8s.io/v1': ['clustertrustbundles'],
+             'certificates.k8s.io/v1beta1': ['podcertificaterequests']},
+            {'projection': True, 'approval': True, 'signing': True},
+            {r: ['certificates.k8s.io/v1', 'certificates.k8s.io/v1beta1']
+             for r in ['podcertificaterequests', 'clustertrustbundles']})
+        self.assertTrue(result['ready'])
+
     def test_supported_stable_version_passes(self):
         source = pathlib.Path(__file__).with_name('preflight.py')
         spec = importlib.util.spec_from_file_location('preflight', source)

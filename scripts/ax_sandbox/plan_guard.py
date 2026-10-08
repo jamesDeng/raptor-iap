@@ -9,6 +9,14 @@ def inspect_plan(plan: dict, ownership: dict) -> dict:
         reasons.append('incomplete_or_drifted')
     if ownership.get('account_match') is not True or ownership.get('vpc_owner') != 'rdev-foundation' or ownership.get('subnet_free') is not True:
         reasons.append('ownership_unverified')
+    try:
+        configured = plan['configuration']['root_module']['module_calls']['sandbox']['module']['resources']
+        cluster = next(r for r in configured if r['address'] == 'alicloud_cs_managed_kubernetes.cluster')
+        refs = cluster['expressions']['vswitch_ids']
+        if set(refs) != {'references'} or set(refs['references']) != {'alicloud_vswitch.workers.id', 'alicloud_vswitch.workers'}:
+            reasons.append('wrong_subnet_reference')
+    except (KeyError, TypeError, StopIteration):
+        reasons.append('subnet_reference_unverified')
     rows=[r for r in plan.get('resource_changes',[]) if r.get('mode')=='managed']
     if {r.get('address') for r in rows} != expected or len(rows)!=3:
         reasons.append('unexpected_resources')
@@ -20,6 +28,8 @@ def inspect_plan(plan: dict, ownership: dict) -> dict:
         if address.endswith('.cluster'):
             values={'version':'1.36.2-aliyun.1','new_nat_gateway':False,'slb_internet_enabled':False,'skip_set_certificate_authority':True,'pod_cidr':'10.74.0.0/16','service_cidr':'10.75.0.0/16','cluster_spec':'ack.standard'}
             if any(a.get(k)!=v for k,v in values.items()): reasons.append('wrong_cluster')
+            unknown = c.get('after_unknown', {})
+            if any(unknown.get(k) not in (None, False) for k in ('worker_number', 'worker_numbers')): reasons.append('unknown_workers')
             if a.get('worker_number') not in (None,0) or a.get('worker_numbers') not in (None,[]): reasons.append('unexpected_workers')
         if address.endswith('.workers'):
             values={'vpc_id':ownership.get('vpc_id'),'cidr_block':'10.70.3.0/24','zone_id':'ap-southeast-1a'}
