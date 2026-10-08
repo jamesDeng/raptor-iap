@@ -11,17 +11,17 @@ test('discovery failure is different from an empty deployment list',()=>{assert.
 import {readFileSync} from 'node:fs';
 const pageSource=readFileSync(new URL('../../components/raptor/web/poc/app.js',import.meta.url),'utf8');
 test('page navigation ignores a request load that finishes after a newer selection',async()=>{
- const source=pageSource.match(/async function loadRequest\(id\)\{([\s\S]*?)\n async function refreshRequest/)[1];
+ const source=pageSource.match(/async function loadRequest\(id,replace=false\)\{([\s\S]*?)\n async function refreshRequest/)[1];
  let resolveOld,selectedProgress;
  const progress={close(){selectedProgress=null},async select(id){selectedProgress=id}};
  const refresh=id=>id==='old'?new Promise(resolve=>resolveOld=resolve):Promise.resolve();
- const load=new Function('location','panel','refreshRequest','progress',`let requestId=null,requestEpoch=0; return async function loadRequest(id){${source}`)({},()=>{},refresh,progress);
+ const load=new Function('location','panel','refreshRequest','progress','setRoute',`let requestId=null,requestEpoch=0,viewEpoch=0; return async function loadRequest(id,replace=false){${source}`)({},()=>{},refresh,progress,()=>{});
  const old=load('old');await load('new');resolveOld();await old;assert.equal(selectedProgress,'new');
 });
 test('same pending browser submission retains identity after lost acknowledgement',async()=>{
  const source=pageSource.match(/async function submit\(body\)\{([\s\S]*?)\n async function loadRequest/)[1];
  const calls=[];let resolveFirst;const api=async(path,opts)=>{calls.push(opts.headers['Idempotency-Key']);if(calls.length===1)await new Promise(resolve=>resolveFirst=resolve);if(calls.length===1)throw new Error('lost response');return{id:'same-request'}};
- const submit=new Function('api','loadRequest','crypto',`let pendingSubmission=null; return async function submit(body){${source}`)(api,async()=>{},crypto);
+ const submit=new Function('api','loadRequest','crypto',`let pendingSubmission=null,viewEpoch=0; return async function submit(body){${source}`)(api,async()=>{},crypto);
  const first=submit({type:'agent'});const duplicate=submit({type:'agent'});resolveFirst();await Promise.allSettled([first,duplicate]);
  await submit({type:'agent'});assert.equal(calls.length,2);assert.equal(calls[0],calls[1]);
 });

@@ -184,3 +184,14 @@ h2{font-size:22px}
 
 .event time{display:block;font-size:11px;color:var(--muted);margin:6px 0}
 .skip-link:not(:focus){clip-path:inset(50%);overflow:hidden;width:1px;height:1px;padding:0}
+/* Dedicated creation workspace, separate from resource details. */
+.resource-actions{display:flex;align-items:center;gap:16px;margin-top:24px;padding-top:20px;border-top:1px solid var(--border)}
+.resource-actions .section-description{margin:0;font-size:12px}
+#new-request-panel{max-width:1120px}
+#new-request-context{padding:20px;background:#f7f9fc;border:1px solid var(--border);border-radius:8px;margin:24px 0}
+#new-agent-request>label{max-width:560px}
+#new-agent-request>label select{width:100%}
+#new-request-panel .actions{margin-top:20px}
+#cancel-new-request{margin-top:16px}
+#new-restart-request>button{margin-top:12px}
+@media(max-width:720px){.resource-actions{align-items:flex-start;flex-direction:column}}
