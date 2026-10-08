@@ -24,3 +24,9 @@ Priority: 产品使用咨询
 UI confirmed: 已分派; engineer assignment acknowledged.
 
 The request includes the cluster ID, region, version, edition and sanitized discovery results. It asks for supported versions/editions, whitelist or backend enablement, exact API-server/runtime-config and kubelet gates, signer/RBAC/rotation support, in-place versus recreation requirements, and minimal projection acceptance checks. It requests fee and change impact disclosure before any paid upgrade. No kubeconfig, token, private key or access key was sent.
+
+## Provider confirmation, 2026-10-08
+
+Ticket 000GJSBSH0, engineer reply at 12:28:33 Asia/Shanghai, directly read from the UI: ACK Basic and Pro currently do not expose PodCertificateRequest/ClusterTrustBundle APIs and kubelet projection configuration, and cannot satisfy Google AX + Agent Substrate native deployment requirements. Upgrading to Pro therefore does not resolve this blocker. This is provider-confirmed current support status, not a claim about all future ACK releases or all possible custom forks.
+
+The user already asked the engineer at 12:29:00 where to submit the request to the product team; no reply to that question was visible when inspected. Existing sandbox remains active; no cleanup or alternate cluster deployment performed.

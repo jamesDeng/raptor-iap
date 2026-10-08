@@ -75,9 +75,14 @@
     "id": "000GJSBSH0",
     "url": "https://smartservice.console.aliyun.com/service/chat?id=000GJSBSH0",
     "submitted_at": "2026-10-08 12:21 Asia/Shanghai",
-    "status_observed": "assigned",
+    "status_observed": "processing; unsupported confirmed",
     "category": "\u5bb9\u5668\u670d\u52a1 Kubernetes \u7248 ACK",
     "purpose": "Confirm/enable native PCR, CTB and kubelet certificate/trust-bundle projection for AX/Substrate",
-    "credentials_disclosed": false
+    "credentials_disclosed": false,
+    "support_response": {
+      "time": "2026-10-08 12:28:33 Asia/Shanghai",
+      "scope": "ACK Basic and Pro do not expose PCR/CTB APIs and kubelet projection configuration; cannot satisfy native AX/Substrate deployment requirements",
+      "source": "Read directly from ticket UI"
+    }
   }
 }
