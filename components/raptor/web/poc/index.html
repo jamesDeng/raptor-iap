@@ -2,8 +2,8 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Raptor · Infrastructure platform</title><link rel="stylesheet" href="/style.css"></head>
 <body>
-<a class="skip-link" href="#workspace">Skip to workspace</a>
-<aside>
+<a id="workspace-skip" hidden class="skip-link" href="#workspace">Skip to workspace</a>
+<aside id="platform-sidebar" hidden>
   <div class="brand-mark" aria-hidden="true">R</div><h1>Raptor</h1><p>Infrastructure platform</p>
   <div class="nav-caption">WORKSPACE</div>
   <nav aria-label="Main navigation">
@@ -13,11 +13,10 @@
   </nav>
   <small><span class="sidebar-dot" aria-hidden="true"></span> Internal workspace</small>
 </aside>
-<main id="workspace" tabindex="-1">
+<main id="workspace" tabindex="-1" hidden>
   <header><div class="header-title"><span class="eyebrow">DEVELOPER PLATFORM</span><strong>Infrastructure operations</strong></div><span id="identity">Sign in</span><label class="environment-control">Environment<select id="environment" aria-label="Environment"></select></label><button id="logout" class="secondary">Sign out</button></header>
   <details class="notice"><summary>Execution &amp; evidence</summary><p>Execution mode and observation evidence are shown on each request. Approval, PR and skills-switch execution have simulated acceptance only. Restart evidence is reported per target; live execution requires server configuration.</p></details>
-  <p id="message" role="status" aria-live="polite"></p>
-  <section id="login-panel"><p class="eyebrow">WELCOME TO RAPTOR</p><h2>Your infrastructure workspace</h2><p class="section-description">Sign in to manage applications, inspect deployments, and track operations.</p><form id="login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form></section>
+  <div id="workspace-feedback"></div>
   <section id="catalog-panel" hidden>
     <p id="catalog-eyebrow" class="eyebrow">APPLICATION</p><h2 id="catalog-heading">Application list</h2><p class="section-description">Open a resource to view its overview, deployments, dependencies, and requests.</p>
     <form id="create-object"><input name="kind" type="hidden" value="application"><label id="create-name-label">Application name<input name="name" placeholder="Name" required></label><button id="create-object-submit">Create application</button><span>Creating a catalog object does not deploy it.</span></form>
@@ -53,6 +52,11 @@
     <div id="request-progress" data-request-view="progress" hidden><h3>Saved progress</h3><p id="progress-availability"></p><div id="progress"></div></div>
     <div id="request-approvals" data-request-view="approvals" hidden><h3>Approvals</h3><div id="approvals"></div></div>
   </section>
+</main>
+<main id="login-page" aria-label="Sign in to Raptor">
+  <div class="login-brand"><div class="brand-mark" aria-hidden="true">R</div><span>Raptor</span></div>
+  <section id="login-panel"><p class="eyebrow">WELCOME TO RAPTOR</p><h2>Your infrastructure workspace</h2><p class="section-description">Sign in to manage applications, inspect deployments, and track operations.</p><div id="login-feedback"><p id="message" role="status" aria-live="polite"></p></div><form id="login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form></section>
+  <p class="login-footer">Infrastructure platform · Internal workspace</p>
 </main>
 <script type="module" src="/app.js"></script>
 </body></html>

@@ -195,3 +195,15 @@ h2{font-size:22px}
 #cancel-new-request{margin-top:16px}
 #new-restart-request>button{margin-top:12px}
 @media(max-width:720px){.resource-actions{align-items:flex-start;flex-direction:column}}
+
+/* Authentication is a standalone page, outside the platform workspace. */
+#login-page{margin:0;max-width:none;min-height:100vh;min-height:100dvh;padding:48px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at top,#e8eefc 0,transparent 65%),#f4f6fa}
+.login-brand{display:flex;align-items:center;gap:12px;font-size:24px;font-weight:750;letter-spacing:-.7px}
+#login-page #login-panel{width:100%;max-width:460px;margin:28px 0 20px;padding:36px;box-shadow:0 12px 40px #1e293b08}
+#login-page #login-panel h2{font-size:24px}
+#login-page #login{display:grid;gap:16px}
+#login-page #login label{margin:0;max-width:none}
+#login-page #login button{width:100%;margin-top:4px}
+#login-page #message:empty{display:none}
+.login-footer{font-size:12px;color:var(--muted);text-align:center}
+@media(max-width:540px){#login-page{padding:28px 16px}#login-page #login-panel{padding:26px 22px;margin-top:24px}}
