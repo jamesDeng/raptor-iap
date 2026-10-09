@@ -26,17 +26,18 @@ def clean(frame):
     return {'at':frame['at'],'phase':frame.get('phase','measurement'),'expectedReplicas':frame.get('expectedReplicas',len(pods)),'pods':pods,'inventory':{k:frame['inventory'][k] for k in ('observedAt','desired','members','healthyRegistered')},'metrics':dict({k:frame['metrics'][k] for k in ('observedAt','sourceAt','nodes','available')},raw=[{k:r[k] for k in ('node','pool','user','kind','value','sourceAt')} for r in frame['metrics']['raw']])}
 class CaptureWindow:
     def __init__(self,path):
-        self._sequences={}
+        self._sequences={};self._started=False
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
     def append(self,frame):
         frame=clean(frame)
         for p in frame['pods']:
-            s=p['snapshot'];key=(p['uid'],s['sample']['processId']);last=self._sequences.get(key,0)
+            s=p['snapshot'];key=(p['uid'],s['sample']['processId']);last=self._sequences.get(key,s['sample']['sequence'] if not self._started else 0)
             s['events']=[e for e in s['events'] if e['sequence']>last]
         raw=json.dumps(frame,separators=(',',':'),allow_nan=False)+'\n'
         if len(raw)>2*1024*1024:raise ValueError('frame bound exceeded')
         fd=os.open(str(self.path),os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
         with os.fdopen(fd,'a') as f:f.write(raw);f.flush();os.fsync(f.fileno())
+        self._started=True
         for p in frame['pods']:self._sequences[(p['uid'],p['snapshot']['sample']['processId'])]=p['snapshot']['sample']['sequence']
     def read(self):
         with self.path.open() as f:

@@ -52,7 +52,7 @@ def main():
     if not 5<=v.seconds<=1800:raise SystemExit('bounded capture duration required')
     os.umask(0o077)
     if Path(v.output).exists():raise SystemExit('capture output already exists')
-    w=CaptureWindow(v.output);start=time.monotonic();end=start+v.seconds;cancelled=False;errors=[]
+    w=CaptureWindow(v.output);Path(v.output).touch(mode=0o600);start=time.monotonic();end=start+v.seconds;cancelled=False;errors=[]
     try:
         tick=start
         while time.monotonic()<end:

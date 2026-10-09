@@ -94,6 +94,10 @@ class WindowTests(unittest.TestCase):
             a=self.good();a[1]['metrics']['raw'][0][key]=value;self.assertEqual(assess(a)['status'],'INCONCLUSIVE')
     def test_completion_required_by_default(self):
         self.assertEqual(raw_assess(self.good())['status'],'INCONCLUSIVE')
+    def test_first_boundary_does_not_retain_old_full_rings(self):
+        with tempfile.TemporaryDirectory() as d:
+            w=CaptureWindow(Path(d)/'e.jsonl');w.append(frame(10000,10000))
+            self.assertEqual(next(w.read())['pods'][0]['snapshot']['events'],[])
     def test_output_is_allowlisted(self):
         with tempfile.TemporaryDirectory() as d:
             w=CaptureWindow(Path(d)/'e.jsonl');f=frame(0,0);f['password']='never retain';f['metrics']['raw'][0]['password']='never retain'
