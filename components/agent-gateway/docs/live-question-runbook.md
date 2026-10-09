@@ -83,7 +83,7 @@ Verification uses the embedded Pi SDK with a deterministic local provider/MCP fi
 
 ## Request conversations (default off)
 
-Deploy additive Raptor migration 005 and Gateway migration 004 through the
+Deploy additive Raptor migration 006 and Gateway migration 004 through the
 existing schema-owner migration flow. Deploy Gateway and its matching harness
 before enabling `GATEWAY_CONVERSATION_ENABLED=true`; live runtime wiring must be
 present. Then enable `RAPTOR_CONVERSATION_ENABLED=true`. Both flags default off.

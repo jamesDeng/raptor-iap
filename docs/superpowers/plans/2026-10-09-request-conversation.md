@@ -50,7 +50,7 @@ Browser message receipt includes messageId, inputSequence, status, acceptedAt an
 
 ### Task 1: Raptor durable admission and outbox contract
 
-**Files:** Create migrations/005_request_messages.sql under components/raptor; requests/messages.go, messages_http.go, messages_test.go, messages_http_test.go; modify requests/http.go, outbox.go, gateway.go, progress.go, execution_view.go, internal/backend/service.go, cmd/backend/main.go and internal/db/migrate.go as needed for configuration/migration validation.
+**Files:** Create migrations/006_request_messages.sql under components/raptor; requests/messages.go, messages_http.go, messages_test.go, messages_http_test.go; modify requests/http.go, outbox.go, gateway.go, progress.go, execution_view.go, internal/backend/service.go, cmd/backend/main.go and internal/db/migrate.go as needed for configuration/migration validation.
 
 **Interfaces:** Produce SubmitMessage(ctx context.Context, actor domain.User, requestID, messageID, text string) (MessageReceipt, error), ListMessages(ctx context.Context, requestID string, after int64) ([]PublicMessage, error), and MessageClient.PutMessage(ctx context.Context, requestID string, payload json.RawMessage) (MessageReceipt, error). Add ConversationEnabled on requests.Service from RAPTOR_CONVERSATION_ENABLED (default false); capability version=1 is also required for send admission.
 
