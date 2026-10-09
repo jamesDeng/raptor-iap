@@ -129,7 +129,7 @@ func (s *Store) RecordResource(ctx context.Context, attempt, owner string, r Run
 	}
 	return tx.Commit(ctx)
 }
-func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, events []RuntimeEvent) error {
+func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, events []RuntimeEvent, turns ...ConversationTurn) error {
 	if len(events) > 100 {
 		return ErrInvalid
 	}
@@ -138,15 +138,20 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 		return e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = bindingFrom(ctx, tx, attempt); e != nil {
+	b, e := bindingFrom(ctx, tx, attempt)
+	if e != nil {
 		return e
+	}
+	turnMap := map[string]ConversationTurn{}
+	for _, turn := range turns {
+		turnMap[turn.TurnID] = turn
 	}
 	for _, v := range events {
 		if v.RuntimeSequence < 1 || v.OccurredAt.IsZero() || v.OccurredAt.After(time.Now().Add(time.Minute)) {
 			return ErrInvalid
 		}
 		switch v.Kind {
-		case "status", "progress", "checkpoint", "cleanup":
+		case "status", "progress", "checkpoint", "cleanup", "session", "message", "turn", "settling":
 			if v.Tool != "" {
 				return ErrInvalid
 			}
@@ -158,7 +163,7 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 			return ErrInvalid
 		}
 		switch v.Outcome {
-		case "started", "running", "succeeded", "failed", "cancelled", "pending", "confirmed":
+		case "started", "running", "succeeded", "failed", "cancelled", "pending", "confirmed", "delivered":
 		default:
 			return ErrInvalid
 		}
@@ -168,6 +173,29 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 			}
 			if containsSensitive(v.Summary, s.KnownSecrets) {
 				v.Summary = "[redacted sensitive content]"
+			}
+		}
+
+		switch v.Kind {
+		case "message":
+			if !conversationUUID.MatchString(v.MessageID) || v.InputSequence < 1 || v.Outcome != "delivered" || v.TurnID != "" || v.SessionID != "" || v.SessionFile != "" {
+				return ErrInvalid
+			}
+		case "session":
+			if v.Outcome != "confirmed" || !conversationUUID.MatchString(v.SessionID) || !validSessionFile(v.SessionFile) || v.MessageID != "" || v.TurnID != "" || v.InputSequence != 0 {
+				return ErrInvalid
+			}
+		case "turn":
+			if v.Outcome != "confirmed" || !conversationUUID.MatchString(v.TurnID) || v.MessageID != "" || v.SessionID != "" || v.SessionFile != "" || v.InputSequence != 0 {
+				return ErrInvalid
+			}
+		case "settling":
+			if v.Outcome != "confirmed" || v.InputSequence < 0 || v.MessageID != "" || v.TurnID != "" || v.SessionID != "" || v.SessionFile != "" {
+				return ErrInvalid
+			}
+		default:
+			if v.MessageID != "" || v.TurnID != "" || v.SessionID != "" || v.SessionFile != "" || v.InputSequence != 0 || v.Outcome == "delivered" {
+				return ErrInvalid
 			}
 		}
 		raw, _ := json.Marshal(v)
@@ -189,6 +217,30 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 		}
 		if v.RuntimeSequence != highest+1 {
 			return ErrInvalid
+		}
+
+		if v.Kind == "session" || v.Kind == "message" || v.Kind == "turn" || v.Kind == "settling" {
+			switch v.Kind {
+			case "session":
+				e = recordConversationSession(ctx, tx, id, attempt, v)
+			case "message":
+				e = recordConversationReceipt(ctx, tx, id, attempt, ConversationReceipt{MessageID: v.MessageID, InputSequence: v.InputSequence, Status: "delivered"})
+			case "turn":
+				turn, ok := turnMap[v.TurnID]
+				if !ok {
+					return ErrInvalid
+				}
+				e = recordConversationTurn(ctx, tx, id, attempt, b, turn, s.KnownSecrets)
+			case "settling":
+				e = closeConversationInput(ctx, tx, id, attempt, v.InputSequence)
+			}
+			if e != nil {
+				return e
+			}
+			if _, e = tx.Exec(ctx, "INSERT INTO gateway.runtime_events(attempt_id,runtime_sequence,payload) VALUES($1,$2,$3)", attempt, v.RuntimeSequence, raw); e != nil {
+				return e
+			}
+			continue
 		}
 		var n int64
 		if e = tx.QueryRow(ctx, "UPDATE gateway.executions SET next_sequence=next_sequence+1,updated_at=now() WHERE request_id=$1 RETURNING next_sequence", id).Scan(&n); e != nil {
@@ -306,6 +358,9 @@ func (s *Store) FinalizeLive(ctx context.Context, attempt, owner string, o LiveO
 	checkpoint, _ := json.Marshal(o.Checkpoint)
 	checkpointStatus := "failed"
 	if o.Checkpoint.valid() {
+		if _, e = tx.Exec(ctx, "UPDATE gateway.conversation_sessions SET checkpoint=$2,input_open=false WHERE request_id=$1 AND attempt_id=$3 AND session_id<>''", id, checkpoint, attempt); e != nil {
+			return e
+		}
 		checkpointStatus = "verified"
 		if _, e = tx.Exec(ctx, "INSERT INTO gateway.selected_checkpoint(id,reference,attempt_id) VALUES(1,$1,$2) ON CONFLICT(id) DO UPDATE SET reference=EXCLUDED.reference,attempt_id=EXCLUDED.attempt_id,updated_at=now()", checkpoint, attempt); e != nil {
 			return e

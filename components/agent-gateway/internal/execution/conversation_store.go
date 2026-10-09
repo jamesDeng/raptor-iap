@@ -62,9 +62,9 @@ func (s *Store) QueueMessage(ctx context.Context, in ConversationInput) (Convers
 		return out, e
 	}
 	defer tx.Rollback(ctx)
-	var status, mode, attempt string
+	var status, mode, attempt, cleanup, checkpoint string
 	var recovery bool
-	e = tx.QueryRow(ctx, "SELECT status,runtime_mode,COALESCE(attempt_id::text,''),recovery_needed FROM gateway.executions WHERE request_id=$1 FOR UPDATE", in.RequestID).Scan(&status, &mode, &attempt, &recovery)
+	e = tx.QueryRow(ctx, "SELECT status,runtime_mode,COALESCE(attempt_id::text,''),recovery_needed,cleanup,checkpoint_status FROM gateway.executions WHERE request_id=$1 FOR UPDATE", in.RequestID).Scan(&status, &mode, &attempt, &recovery, &cleanup, &checkpoint)
 	if e != nil {
 		return out, ErrUnavailable
 	}
@@ -100,7 +100,7 @@ func (s *Store) QueueMessage(ctx context.Context, in ConversationInput) (Convers
 	case "completed":
 		var ready bool
 		tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway.conversation_sessions WHERE request_id=$1 AND session_id<>'' AND checkpoint IS NOT NULL)", in.RequestID).Scan(&ready)
-		if !ready {
+		if !ready || cleanup != "confirmed" || checkpoint != "verified" {
 			out.Status = "rejected"
 			out.Reason = "MissingConversationSession"
 		}
@@ -173,7 +173,7 @@ func (s *Store) PendingMessage(ctx context.Context, id, attempt, owner string) (
 		if e != nil {
 			return nil, e
 		}
-		if status == "rejected" {
+		if status == "rejected" || status == "interrupted" {
 			last++
 			if _, e = tx.Exec(ctx, "UPDATE gateway.conversation_sessions SET last_input_sequence=$2 WHERE request_id=$1", id, last); e != nil {
 				return nil, e
@@ -183,8 +183,12 @@ func (s *Store) PendingMessage(ctx context.Context, id, attempt, owner string) (
 		if status != "queued" {
 			return nil, tx.Commit(ctx)
 		}
-		if _, e = tx.Exec(ctx, "UPDATE gateway.conversation_messages SET attempt_id=$3 WHERE request_id=$1 AND message_id=$2 AND (attempt_id IS NULL OR attempt_id=$3)", id, in.MessageID, attempt); e != nil {
-			return nil, e
+		tag, err := tx.Exec(ctx, "UPDATE gateway.conversation_messages SET attempt_id=$3 WHERE request_id=$1 AND message_id=$2 AND (attempt_id IS NULL OR attempt_id=$3)", id, in.MessageID, attempt)
+		if err != nil {
+			return nil, err
+		}
+		if tag.RowsAffected() != 1 {
+			return nil, ErrInvalid
 		}
 		return &in, tx.Commit(ctx)
 	}
@@ -210,7 +214,7 @@ func recordConversationReceipt(ctx context.Context, tx pgx.Tx, id, attempt strin
 	if old == r.Status {
 		return nil
 	}
-	if !(old == "queued" && r.Status == "delivered" || old == "delivered" && (r.Status == "answered" || r.Status == "interrupted")) {
+	if !(old == "queued" && (r.Status == "delivered" || r.Status == "interrupted") || old == "delivered" && (r.Status == "answered" || r.Status == "interrupted")) {
 		return ErrInvalid
 	}
 	if _, e = tx.Exec(ctx, "UPDATE gateway.conversation_messages SET status=$3 WHERE request_id=$1 AND message_id=$2", id, r.MessageID, r.Status); e != nil {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/jackc/pgx/v5"
 	"time"
 	"unicode/utf8"
 )
@@ -158,6 +159,27 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e != nil {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "CheckpointFailed")
 	}
+
+	var conversation *ConversationSession
+	var initial *ConversationInput
+	if w.Store.ConversationEnabled && w.Store.ConversationRuntime {
+		session, err := w.Store.RequestConversationSession(ctx, b.RequestID)
+		if err == nil {
+			conversation = &session
+			checkpoint = session.Checkpoint
+		} else if err != pgx.ErrNoRows {
+			return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "CheckpointFailed")
+		}
+		if e = w.Store.BeginConversationAttempt(ctx, b.AttemptID, w.Owner); e != nil {
+			return e
+		}
+		if conversation != nil {
+			initial, e = w.Store.PendingMessage(ctx, b.RequestID, b.AttemptID, w.Owner)
+			if e != nil || initial == nil {
+				return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "InvalidResult")
+			}
+		}
+	}
 	if e = w.authorized(ctx); e != nil {
 		return e
 	}
@@ -174,7 +196,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e = w.authorized(ctx); e != nil {
 		return e
 	}
-	h, e := w.Runtime.Start(ctx, LiveStart{Binding: b, Question: question, Checkpoint: checkpoint, Access: access, Deadline: record.Deadline})
+	h, e := w.Runtime.Start(ctx, LiveStart{Binding: b, Question: question, Checkpoint: checkpoint, Access: access, Deadline: record.Deadline, ConversationEnabled: w.Store.ConversationEnabled && w.Store.ConversationRuntime, Conversation: conversation, InitialMessage: initial})
 	if e != nil {
 		return w.finish(ctx, b, h, "failed", "PreparationFailed")
 	}
@@ -222,11 +244,11 @@ func (w *LiveWorker) RunActive(ctx context.Context) error {
 	if e != nil {
 		return w.finish(ctx, b, h, "failed", "ProviderUnavailable")
 	}
-	if e = w.Store.AppendRuntimeEvents(ctx, x.AttemptID, w.Owner, o.Events); e != nil {
+	if e = w.Store.AppendRuntimeEvents(ctx, x.AttemptID, w.Owner, o.Events, o.Turns...); e != nil {
 		return e
 	}
 	if !o.Terminal {
-		return nil
+		return w.deliverConversation(ctx, h, b)
 	}
 	status, code := "completed", ""
 	if o.FailureCode != "" {
@@ -247,6 +269,11 @@ func (w *LiveWorker) RunActive(ctx context.Context) error {
 func (w *LiveWorker) finish(ctx context.Context, b AttemptBinding, h RuntimeHandle, status, code string) error {
 	if e := w.authorized(ctx); e != nil {
 		return e
+	}
+	if w.Store.ConversationEnabled {
+		if e := w.Store.InterruptConversation(ctx, b.AttemptID, w.Owner); e != nil {
+			return e
+		}
 	}
 	w.Store.SetLiveStage(ctx, b.AttemptID, w.Owner, "checkpointing")
 	checkpoint, checkpointErr := w.Runtime.Checkpoint(ctx, h)
@@ -276,7 +303,11 @@ func (w *LiveWorker) finish(ctx context.Context, b AttemptBinding, h RuntimeHand
 	if status == "completed" && (!cleanup.SandboxAbsent || !cleanup.KeyAbsent || revokeErr != nil) {
 		status = "failed"
 	}
-	return w.Store.FinalizeLive(ctx, b.AttemptID, w.Owner, LiveOutcome{Status: status, FailureCode: code, Checkpoint: checkpoint, SandboxAbsent: cleanup.SandboxAbsent, KeyAbsent: cleanup.KeyAbsent, AccessRevoked: revokeErr == nil})
+	e := w.Store.FinalizeLive(ctx, b.AttemptID, w.Owner, LiveOutcome{Status: status, FailureCode: code, Checkpoint: checkpoint, SandboxAbsent: cleanup.SandboxAbsent, KeyAbsent: cleanup.KeyAbsent, AccessRevoked: revokeErr == nil})
+	if e == nil && status == "completed" && w.Store.ConversationEnabled {
+		return w.Store.QueueContinuation(ctx, b.RequestID)
+	}
+	return e
 }
 func (w *LiveWorker) Reconcile(ctx context.Context) error {
 	if e := w.authorized(ctx); e != nil {
@@ -333,5 +364,14 @@ func (w *LiveWorker) Reconcile(ctx context.Context) error {
 	if status == "completed" && (!recovered.Cleanup.KeyAbsent || !recovered.Cleanup.SandboxAbsent || revokeErr != nil) {
 		status, code = "failed", "CleanupUnconfirmed"
 	}
-	return w.Store.FinalizeLive(ctx, x.AttemptID, w.Owner, LiveOutcome{Status: status, FailureCode: code, Checkpoint: recovered.Checkpoint, SandboxAbsent: recovered.Cleanup.SandboxAbsent, KeyAbsent: recovered.Cleanup.KeyAbsent, AccessRevoked: revokeErr == nil})
+	if w.Store.ConversationEnabled {
+		if e = w.Store.InterruptConversation(ctx, x.AttemptID, w.Owner); e != nil {
+			return e
+		}
+	}
+	e = w.Store.FinalizeLive(ctx, x.AttemptID, w.Owner, LiveOutcome{Status: status, FailureCode: code, Checkpoint: recovered.Checkpoint, SandboxAbsent: recovered.Cleanup.SandboxAbsent, KeyAbsent: recovered.Cleanup.KeyAbsent, AccessRevoked: revokeErr == nil})
+	if e == nil && status == "completed" && w.Store.ConversationEnabled {
+		return w.Store.QueueContinuation(ctx, id)
+	}
+	return e
 }
