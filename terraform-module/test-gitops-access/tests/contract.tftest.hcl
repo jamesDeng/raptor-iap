@@ -23,3 +23,15 @@ run "state_scope" {
     error_message = "Config metadata access must not cover unrelated buckets."
   }
 }
+
+run "apply_only_exact_bucket_retention" {
+  command = plan
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.state["plan"].policy_document).Statement : s if contains(s.Action, "oss:PutBucketLifecycle")]) == 0
+    error_message = "Plan identity must not alter retention."
+  }
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.state["apply"].policy_document).Statement : s if contains(s.Action, "oss:PutBucketLifecycle")]) == 1 && try(one([for s in jsondecode(alicloud_ram_policy.state["apply"].policy_document).Statement : s if contains(s.Action, "oss:PutBucketLifecycle")]).Resource == ["acs:oss:*:123456789012:test-config"], false)
+    error_message = "Retention write must bind only apply identity and exact config bucket."
+  }
+}
