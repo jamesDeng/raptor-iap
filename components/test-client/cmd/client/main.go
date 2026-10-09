@@ -70,6 +70,17 @@ func run() error {
 	go func() { srvErr <- srv.ListenAndServe(); cancel() }()
 	runner := traffic.Runner{Config: traffic.Config{Sessions: 4, Idle: 1, Timeout: 5 * time.Second, Interval: time.Second, ProcessID: hex.EncodeToString(id)}, Dial: func(c context.Context) (traffic.Session, error) { return traffic.ConnectPostgres(c, dsn) }, Emit: store.Record}
 	e = runner.Run(ctx)
+	if final, err := store.Finalize(); err == nil {
+		// Sanitized final counters survive Prometheus restart in external capture/logs.
+		_ = json.NewEncoder(os.Stdout).Encode(struct {
+			Kind     string           `json:"kind"`
+			Snapshot observe.Snapshot `json:"snapshot"`
+		}{"traffic_final", final})
+		// Keep final evidence readable throughout several one-second collector polls.
+		time.Sleep(10 * time.Second)
+	} else if e == nil {
+		e = err
+	}
 	stop, done := context.WithTimeout(context.Background(), 2*time.Second)
 	defer done()
 	_ = srv.Shutdown(stop)

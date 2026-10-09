@@ -2,10 +2,10 @@ name: Test client image
 on:
   pull_request:
     branches: [main]
-    paths: ['components/test-client/**', 'helm-chart/infra-test-client/**', 'helm-chart/infra-test-metrics/**', 'tests/test_test_env_charts.py', '.github/workflows/test-client.yml']
+    paths: ['components/test-client/**', 'test-assets/traffic/**', 'helm-chart/infra-test-client/**', 'helm-chart/infra-test-metrics/**', 'tests/test_test_env_charts.py', '.github/workflows/test-client.yml']
   push:
     branches: [main]
-    paths: ['components/test-client/**', 'helm-chart/infra-test-client/**', 'helm-chart/infra-test-metrics/**', 'tests/test_test_env_charts.py', '.github/workflows/test-client.yml']
+    paths: ['components/test-client/**', 'test-assets/traffic/**', 'helm-chart/infra-test-client/**', 'helm-chart/infra-test-metrics/**', 'tests/test_test_env_charts.py', '.github/workflows/test-client.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -38,6 +38,8 @@ jobs:
         run: |
           go test -race ./...
           go vet ./...
+      - name: Retained traffic evidence contracts
+        run: python3 -m unittest discover -s test-assets/traffic -p test_*.py
       - name: Render real Helm charts
         run: |
           curl -fsSL https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz -o "$RUNNER_TEMP/helm.tar.gz"

@@ -10,6 +10,7 @@ import (
 )
 
 type Snapshot struct {
+	Final     bool            `json:"final"`
 	Sample    evidence.Sample `json:"sample"`
 	Events    []traffic.Event `json:"events"`
 	Connected int             `json:"connected"`
@@ -21,6 +22,7 @@ type Store struct {
 	events                         []traffic.Event
 	connected, sessions, limit     int
 	truncated                      bool
+	final                          bool
 	connectionOK, connectionFailed uint64
 	durationCount                  uint64
 	durationSum                    float64
@@ -71,7 +73,7 @@ func (s *Store) Snapshot() Snapshot {
 	defer s.mu.Unlock()
 	a := s.sample
 	a.At = time.Now().UTC()
-	return Snapshot{Sample: a, Events: append([]traffic.Event(nil), s.events...), Connected: s.connected, Truncated: s.truncated}
+	return Snapshot{Final: s.final, Sample: a, Events: append([]traffic.Event(nil), s.events...), Connected: s.connected, Truncated: s.truncated}
 }
 func (s *Store) Ready() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.connected == s.sessions }
 func (s *Store) Metrics() string {
@@ -87,4 +89,16 @@ func (s *Store) Metrics() string {
 	}
 	fmt.Fprintf(&b, "infra_test_connected_sessions{%s} %d\ninfra_test_scheduled_operations_total{%s} %d\ninfra_test_skipped_operations_total{%s} %d\ninfra_test_connection_attempts_total{%s,outcome=\"success\"} %d\ninfra_test_connection_attempts_total{%s,outcome=\"failure\"} %d\ninfra_test_operation_duration_seconds_sum{%s} %g\ninfra_test_operation_duration_seconds_count{%s} %d\n", label, s.connected, label, s.sample.Scheduled, label, s.sample.Skipped, label, s.connectionOK, label, s.connectionFailed, label, s.durationSum, label, s.durationCount)
 	return b.String()
+}
+
+// Finalize is called only after the runner joins all operations and closes sessions.
+func (s *Store) Finalize() (Snapshot, error) {
+	s.mu.Lock()
+	if s.connected != 0 || s.sample.Scheduled != s.sample.Attempts+s.sample.Skipped || s.sample.Attempts != s.sample.Success+s.sample.Failure+s.sample.Timeout+s.sample.Ambiguous {
+		s.mu.Unlock()
+		return Snapshot{}, fmt.Errorf("traffic not settled")
+	}
+	s.final = true
+	s.mu.Unlock()
+	return s.Snapshot(), nil
 }
