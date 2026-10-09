@@ -129,3 +129,50 @@ func TestConversationCleanupBlocksContinuation(t *testing.T) {
 		t.Fatal("cleanup-uncertain continuation", e, v)
 	}
 }
+func TestConversationSettledUnconsumedInputContinues(t *testing.T) {
+	s, x, b := liveAttempt(t)
+	s.ConversationEnabled = true
+	s.ConversationRuntime = true
+	ctx := context.Background()
+	s.BeginConversationAttempt(ctx, x.AttemptID, "owner")
+	msg := conversationInput(b.RequestID, 1)
+	s.QueueMessage(ctx, msg)
+	s.PendingMessage(ctx, b.RequestID, x.AttemptID, "owner")
+	if e := s.CloseConversationInput(ctx, x.AttemptID, "owner", 0); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.InterruptConversation(ctx, x.AttemptID, "owner"); e != nil {
+		t.Fatal(e)
+	}
+	var status, bound string
+	s.Pool.QueryRow(ctx, "SELECT status,COALESCE(attempt_id::text,'') FROM gateway.conversation_messages WHERE message_id=$1", msg.MessageID).Scan(&status, &bound)
+	if status != "queued" || bound != "" {
+		t.Fatalf("known unsent input lost: %s/%s", status, bound)
+	}
+}
+func TestConversationCompletedGapDefersContinuation(t *testing.T) {
+	s, x, b := liveAttempt(t)
+	s.ConversationEnabled = true
+	s.ConversationRuntime = true
+	ctx := context.Background()
+	s.BeginConversationAttempt(ctx, x.AttemptID, "owner")
+	s.AppendRuntimeEvents(ctx, x.AttemptID, "owner", []RuntimeEvent{{RuntimeSequence: 1, Kind: "session", Outcome: "confirmed", SessionID: NewID(), SessionFile: "fixture.jsonl", OccurredAt: time.Now()}})
+	s.SaveLiveResult(ctx, x.AttemptID, "owner", validLiveResult(b))
+	if e := s.FinalizeLive(ctx, x.AttemptID, "owner", LiveOutcome{Status: "completed", Checkpoint: verifiedCheckpoint(), SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := s.QueueMessage(ctx, conversationInput(b.RequestID, 2)); e != nil {
+		t.Fatal(e)
+	}
+	v, e := s.Get(ctx, b.RequestID)
+	if e != nil || v.Status != "completed" {
+		t.Fatal("gap was scheduled", v.Status, e)
+	}
+	if _, e = s.QueueMessage(ctx, conversationInput(b.RequestID, 1)); e != nil {
+		t.Fatal(e)
+	}
+	v, e = s.Get(ctx, b.RequestID)
+	if e != nil || v.Status != "queued" {
+		t.Fatal("contiguous message not scheduled", v.Status, e)
+	}
+}

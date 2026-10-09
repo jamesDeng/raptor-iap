@@ -57,7 +57,24 @@ func (s *Service) DispatchPending(ctx context.Context, c GatewayClient) error {
 				if json.Unmarshal(payload, &in) != nil {
 					return domain.ErrUnavailable
 				}
-				if e = applyMessageReceipt(ctx, tx, entity, MessageReceipt{MessageID: in.MessageID, InputSequence: in.InputSequence, Status: "rejected", Reason: "DeliveryRejected"}); e != nil {
+				receipt := MessageReceipt{MessageID: in.MessageID, InputSequence: in.InputSequence, Status: "rejected", Reason: "DeliveryRejected"}
+				if rejector, ok := c.(interface {
+					RejectMessage(context.Context, string, json.RawMessage) (MessageReceipt, error)
+				}); ok {
+					acknowledged, err := rejector.RejectMessage(ctx, entity, payload)
+					if err != nil && !errors.Is(err, domain.ErrInvalid) {
+						tx.Rollback(ctx)
+						return domain.ErrUnavailable
+					}
+					if err == nil {
+						if acknowledged.MessageID != in.MessageID || acknowledged.InputSequence != in.InputSequence {
+							tx.Rollback(ctx)
+							return domain.ErrUnavailable
+						}
+						receipt = acknowledged
+					}
+				}
+				if e = applyMessageReceipt(ctx, tx, entity, receipt); e != nil {
 					return e
 				}
 			}

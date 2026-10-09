@@ -147,7 +147,7 @@ func (s *Service) ListMessages(ctx context.Context, id string, after int64) ([]P
 	if _, e := s.Get(ctx, id); e != nil {
 		return out, e
 	}
-	rows, e := s.Pool.Query(ctx, "SELECT message_id::text,input_sequence,status,accepted_at,reason,text,actor_id::text FROM raptor.request_messages WHERE request_id=$1 AND input_sequence>$2 ORDER BY input_sequence LIMIT 100", id, after)
+	rows, e := s.Pool.Query(ctx, "SELECT message_id::text,input_sequence,status,accepted_at,reason,CASE WHEN status='accepted' THEN '[Awaiting input validation]' WHEN status='rejected' THEN '[Message rejected]' ELSE text END,actor_id::text FROM raptor.request_messages WHERE request_id=$1 AND input_sequence>$2 ORDER BY input_sequence LIMIT 100", id, after)
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}

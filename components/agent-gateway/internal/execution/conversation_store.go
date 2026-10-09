@@ -50,6 +50,12 @@ func messagePublicEvent(ctx context.Context, tx pgx.Tx, id, attempt, text string
 	return e
 }
 func (s *Store) QueueMessage(ctx context.Context, in ConversationInput) (ConversationReceipt, error) {
+	return s.queueMessage(ctx, in, false)
+}
+func (s *Store) RejectMessage(ctx context.Context, in ConversationInput) (ConversationReceipt, error) {
+	return s.queueMessage(ctx, in, true)
+}
+func (s *Store) queueMessage(ctx context.Context, in ConversationInput, rejected bool) (ConversationReceipt, error) {
 	var out ConversationReceipt
 	if !in.valid() {
 		return out, ErrInvalid
@@ -113,6 +119,11 @@ func (s *Store) QueueMessage(ctx context.Context, in ConversationInput) (Convers
 		out.Status = "rejected"
 		out.Reason = "SensitiveInput"
 	}
+	if rejected {
+		out.Status = "rejected"
+		out.Reason = "DeliveryRejected"
+		text = "[Message rejected]"
+	}
 	var pending int
 	if e = tx.QueryRow(ctx, "SELECT count(*) FROM gateway.conversation_messages WHERE request_id=$1 AND status IN ('queued','delivered')", in.RequestID).Scan(&pending); e != nil {
 		return out, e
@@ -132,7 +143,7 @@ func (s *Store) QueueMessage(ctx context.Context, in ConversationInput) (Convers
 		return out, e
 	}
 	if status == "completed" && out.Status == "queued" {
-		if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET status='queued',queued_at=now() WHERE request_id=$1", in.RequestID); e != nil {
+		if _, e = tx.Exec(ctx, queueContinuationSQL, in.RequestID); e != nil {
 			return out, e
 		}
 	}

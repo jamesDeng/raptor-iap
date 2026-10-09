@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -135,4 +136,39 @@ func TestConversationEndToEndOutboxAndReplay(t *testing.T) {
 	if count != 1 {
 		t.Fatal("duplicate queue replay", count)
 	}
+	// A permanent HTTP rejection must become a durable Gateway skip and must not
+	// starve a subsequent message in the shared outbox.
+	upstream, _ := url.Parse(gateway.BaseURL)
+	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	rejectedOnce := false
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/v1/requests/"+id+"/messages" && !rejectedOnce {
+			rejectedOnce = true
+			w.WriteHeader(400)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer relay.Close()
+	throughProxy := gateway
+	throughProxy.BaseURL = relay.URL
+	h.Requests.Gateway = throughProxy
+	for _, text := range []string{"permanent rejection fixture", "valid later message"} {
+		code, _ = call("/requests/"+id+"/messages", map[string]string{"messageId": domain.NewID(), "text": text}, csrf)
+		if code != 202 {
+			t.Fatal(code)
+		}
+	}
+	if e = h.Requests.DispatchPending(ctx, throughProxy); e != nil {
+		t.Fatal(e)
+	}
+	messages, e = h.Requests.ListMessages(ctx, id, 0)
+	if e != nil || len(messages) != 3 || messages[1].Status != "rejected" || messages[2].Status != "queued" {
+		t.Fatal("permanent rejection starved later input", messages, e)
+	}
+	var reason string
+	if e = p.QueryRow(ctx, "SELECT reason FROM gateway.conversation_messages WHERE request_id=$1 AND input_sequence=2", id).Scan(&reason); e != nil || reason != "DeliveryRejected" {
+		t.Fatal("Gateway gap not persisted", reason, e)
+	}
+
 }

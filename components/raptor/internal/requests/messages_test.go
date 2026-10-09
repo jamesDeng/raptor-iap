@@ -71,7 +71,7 @@ func TestMessageAdmissionAuthorizationAndBounds(t *testing.T) {
 		t.Fatal(e, v)
 	}
 	rows, e := s.ListMessages(ctx, r.ID, 0)
-	if e != nil || len(rows) != 1 || rows[0].Text != text {
+	if e != nil || len(rows) != 1 || rows[0].Text != "[Awaiting input validation]" {
 		t.Fatal(e)
 	}
 	g.capability.Version = 0
@@ -163,5 +163,33 @@ func TestMessageOutboxAtomicity(t *testing.T) {
 	s.Pool.QueryRow(ctx, "SELECT has_table_privilege('raptor_app','raptor.request_messages','SELECT,INSERT,UPDATE')").Scan(&ok)
 	if !ok {
 		t.Fatal("missing privilege")
+	}
+}
+func TestMessagePublicHistoryRedaction(t *testing.T) {
+	s, r, u, _ := messageSetup(t)
+	ctx := context.Background()
+	text := "password=my-fixture-secret"
+	v, e := s.SubmitMessage(ctx, u, r.ID, domain.NewID(), text)
+	if e != nil {
+		t.Fatal(e)
+	}
+	rows, e := s.ListMessages(ctx, r.ID, 0)
+	if e != nil || len(rows) != 1 || strings.Contains(rows[0].Text, "my-fixture-secret") {
+		t.Fatal("public admission leaked sensitive input")
+	}
+	tx, e := s.Pool.Begin(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = applyMessageReceipt(ctx, tx, r.ID, MessageReceipt{MessageID: v.MessageID, InputSequence: v.InputSequence, Status: "rejected", Reason: "SensitiveInput"}); e != nil {
+		t.Fatal(e)
+	}
+	tx.Commit(ctx)
+	rows, _ = s.ListMessages(ctx, r.ID, 0)
+	if strings.Contains(rows[0].Text, "my-fixture-secret") {
+		t.Fatal("rejected history leaked sensitive input")
+	}
+	if _, e = s.SubmitMessage(ctx, u, r.ID, v.MessageID, text); e != nil {
+		t.Fatal("private immutable retry changed", e)
 	}
 }

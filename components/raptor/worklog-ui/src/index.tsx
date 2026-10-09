@@ -2,7 +2,7 @@ import {createContext,useContext,useState,useMemo,useRef,useEffect} from 'react'
 import {createRoot,type Root} from 'react-dom/client';
 import {AssistantRuntimeProvider,useExternalStoreRuntime,ThreadPrimitive,MessagePrimitive,groupPartByType,useAuiState} from '@assistant-ui/react';
 import {ConversationComposer} from './ConversationComposer';
-import {createMessageSender} from './conversation.mjs';
+import {createMessageSender,getConversationState,clearConversationState} from './conversation.mjs';
 import {projectTranscript} from './model.mjs';
 type View={snapshot?:any;events?:any[];unavailable?:boolean;conversation?:any};
 const roots=new WeakMap<HTMLElement,{root:Root;view:View}>();
@@ -29,14 +29,17 @@ function AssistantMessage(){const model=useContext(ModelContext);return <Message
  return null;
  }}</MessagePrimitive.GroupedParts></MessagePrimitive.Root>}
 function Viewer({view}:{view:View}){
- const [local,setLocal]=useState<any[]>([]);const current=useRef(view);current.current=view;
  const requestId=view.snapshot?.request?.id??'';
- const sender=useMemo(()=>createMessageSender({requestId,submit:async(id:any,input:any)=>{const c=current.current.conversation??current.current.snapshot?.conversation;if(!c?.canSend||!current.current.conversation?.onSend)throw Error('ReadOnlyProgress');return current.current.conversation.onSend(id,input)},onChange:setLocal}),[requestId]);
- useEffect(()=>()=>sender.close(),[sender]);
+ const state=useMemo(()=>getConversationState(requestId),[requestId]);
+ const [local,setLocal]=useState<any[]>(()=>state.sender?.messages??[]);const current=useRef(view);current.current=view;
+ const sender=useMemo(()=>{state.sender??=createMessageSender({requestId,submit:rejectSend});return state.sender},[state,requestId]);
+ sender.attach({submit:async(id:any,input:any)=>{const c=current.current.conversation??current.current.snapshot?.conversation;if(!c?.canSend||!current.current.conversation?.onSend)throw Error('ReadOnlyProgress');return current.current.conversation.onSend(id,input)},onChange:setLocal});
+ useEffect(()=>()=>sender.attach({onChange:()=>{}}),[sender]);
  const capability=view.conversation??view.snapshot?.conversation;
  const model=projectTranscript(view.snapshot,view.events,local);model.canSend=capability?.canSend===true&&typeof view.conversation?.onSend==='function';model.retry=(id:string)=>sender.retry(id);
  // Sending adds durable queued input; it does not start an assistant-ui model run.
  const runtime=useExternalStoreRuntime({messages:model.messages,convertMessage,isRunning:false,onNew:model.canSend?async(message:any)=>{const text=message.content.filter((p:any)=>p.type==='text').map((p:any)=>p.text).join('');await sender.send(text).catch(()=>{})}:rejectSend,isDisabled:!model.canSend});
+ useEffect(()=>{runtime.thread.composer.setText(state.draft);const unsubscribe=runtime.thread.composer.subscribe(()=>{state.draft=runtime.thread.composer.getState().text});return ()=>{state.draft=runtime.thread.composer.getState().text;unsubscribe()}},[runtime,state]);
  return <div className="assistant-progress">
  {(view.unavailable||model.stale)&&<p className="progress-notice" role="status">Live sync unavailable — showing saved history.</p>}
  {model.recoveryNeeded&&<p className="progress-notice">Recovery required. Execution ownership remains unresolved.</p>}
@@ -53,4 +56,4 @@ export function updateWorklog(host:HTMLElement|null,patch:View){
  let entry=roots.get(host);if(!entry){entry={root:createRoot(host),view:{events:[],snapshot:{}}};roots.set(host,entry);}
  entry.view={...entry.view,...patch};entry.root.render(<Viewer key={entry.view.snapshot?.request?.id??''} view={entry.view}/>);return true;
 }
-export function resetWorklog(host:HTMLElement|null){if(!host)return;const entry=roots.get(host);if(entry){entry.root.unmount();roots.delete(host);}}
+export function resetWorklog(host:HTMLElement|null,clearConversation=false){if(clearConversation)clearConversationState();if(!host)return;const entry=roots.get(host);if(entry){entry.root.unmount();roots.delete(host);}}

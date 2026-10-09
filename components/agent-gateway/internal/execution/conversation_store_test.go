@@ -148,3 +148,16 @@ func TestConversationPendingReceiptFences(t *testing.T) {
 		t.Fatal(e, v)
 	}
 }
+func TestConversationPermanentRejectionSkipsSequence(t *testing.T) {
+	s, id := conversationFixture(t)
+	ctx := context.Background()
+	in := conversationInput(id, 1)
+	if _, e := s.RejectMessage(ctx, in); e != nil {
+		t.Fatal(e)
+	}
+	var status string
+	s.Pool.QueryRow(ctx, "SELECT status FROM gateway.conversation_messages WHERE message_id=$1", in.MessageID).Scan(&status)
+	if status != "rejected" {
+		t.Fatal(status)
+	}
+}

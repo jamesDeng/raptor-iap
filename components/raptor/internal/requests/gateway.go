@@ -109,13 +109,19 @@ func (g HTTPGateway) Conversation(ctx context.Context, id string) (ConversationC
 	return out.Data, e
 }
 func (g HTTPGateway) PutMessage(ctx context.Context, id string, payload json.RawMessage) (MessageReceipt, error) {
+	return g.putMessage(ctx, id, payload, "messages")
+}
+func (g HTTPGateway) RejectMessage(ctx context.Context, id string, payload json.RawMessage) (MessageReceipt, error) {
+	return g.putMessage(ctx, id, payload, "message-rejections")
+}
+func (g HTTPGateway) putMessage(ctx context.Context, id string, payload json.RawMessage, suffix string) (MessageReceipt, error) {
 	var out struct {
 		Data MessageReceipt `json:"data"`
 	}
 	if !transportpolicy.Allowed(g.BaseURL, "http://agent-gateway:8874", g.AllowClusterHTTP) || g.Username == "" || g.Password == "" {
 		return out.Data, domain.ErrUnavailable
 	}
-	r, e := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(g.BaseURL, "/")+"/v1/requests/"+url.PathEscape(id)+"/messages", bytes.NewReader(payload))
+	r, e := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(g.BaseURL, "/")+"/v1/requests/"+url.PathEscape(id)+"/"+suffix, bytes.NewReader(payload))
 	if e != nil {
 		return out.Data, domain.ErrInvalid
 	}
@@ -127,6 +133,9 @@ func (g HTTPGateway) PutMessage(ctx context.Context, id string, payload json.Raw
 		return out.Data, domain.ErrUnavailable
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == 400 || resp.StatusCode == 409 || resp.StatusCode == 422 {
+		return out.Data, domain.ErrInvalid
+	}
 	if resp.StatusCode != 200 {
 		return out.Data, domain.ErrUnavailable
 	}

@@ -38,7 +38,7 @@ rendering while keeping the production progress/tool view. The platform passes
 `conversation={canSend,reason,onSend}` to updateWorklog; saved message history
 comes from `snapshot.conversation.messages`. onSend uses the existing Raptor
 CSRF API, never the browser progress ticket. Local send state is in memory and
-is destroyed on navigation/logout. Timeout retries retain a stable UUID.
+is retained per Request across navigation and destroyed on logout. Timeout retries retain a stable UUID.
 Accepted, queued, delivered, answered, rejected and interrupted receipts merge
 by message ID; per-turn answers remain in chronological transcript history.
 Neither text input nor the UI grants operation permissions.

@@ -39,7 +39,11 @@ func closeConversationInput(ctx context.Context, tx pgx.Tx, id, attempt string, 
 	if highest != last {
 		return ErrInvalid
 	}
-	_, e := tx.Exec(ctx, "UPDATE gateway.conversation_sessions SET input_open=false WHERE request_id=$1 AND attempt_id=$2", id, attempt)
+	if _, e := tx.Exec(ctx, "UPDATE gateway.conversation_sessions SET input_open=false WHERE request_id=$1 AND attempt_id=$2", id, attempt); e != nil {
+		return e
+	}
+	// A verified settling receipt proves these inputs never entered the session.
+	_, e := tx.Exec(ctx, "UPDATE gateway.conversation_messages SET attempt_id=NULL WHERE request_id=$1 AND attempt_id=$2 AND status='queued'", id, attempt)
 	return e
 }
 func (s *Store) RequestConversationSession(ctx context.Context, id string) (ConversationSession, error) {
@@ -120,8 +124,14 @@ func recordConversationTurn(ctx context.Context, tx pgx.Tx, id, attempt string, 
 	_, e = tx.Exec(ctx, "INSERT INTO gateway.events(request_id,sequence,event_id,payload) VALUES($1,$2,$3,$4)", id, n, event.EventID, payload)
 	return e
 }
+
+const queueContinuationSQL = `UPDATE gateway.executions SET status='queued',queued_at=now(),updated_at=now() WHERE request_id=$1 AND status='completed' AND cleanup='confirmed' AND checkpoint_status='verified' AND NOT recovery_needed AND EXISTS (
+ SELECT 1 FROM gateway.conversation_sessions cs WHERE cs.request_id=$1 AND cs.session_id<>'' AND cs.checkpoint IS NOT NULL
+ AND EXISTS (SELECT 1 FROM gateway.conversation_messages m WHERE m.request_id=$1 AND m.status='queued' AND m.input_sequence>cs.last_input_sequence
+ AND NOT EXISTS (SELECT 1 FROM generate_series(cs.last_input_sequence+1,m.input_sequence-1) n LEFT JOIN gateway.conversation_messages earlier ON earlier.request_id=$1 AND earlier.input_sequence=n WHERE earlier.status IS NULL OR earlier.status NOT IN ('rejected','interrupted'))))`
+
 func (s *Store) QueueContinuation(ctx context.Context, id string) error {
-	_, e := s.Pool.Exec(ctx, `UPDATE gateway.executions SET status='queued',queued_at=now(),updated_at=now() WHERE request_id=$1 AND status='completed' AND cleanup='confirmed' AND checkpoint_status='verified' AND NOT recovery_needed AND EXISTS(SELECT 1 FROM gateway.conversation_messages WHERE request_id=$1 AND status='queued') AND EXISTS(SELECT 1 FROM gateway.conversation_sessions WHERE request_id=$1 AND session_id<>'' AND checkpoint IS NOT NULL)`, id)
+	_, e := s.Pool.Exec(ctx, queueContinuationSQL, id)
 	return e
 }
 func (s *Store) InterruptConversation(ctx context.Context, attempt, owner string) error {
