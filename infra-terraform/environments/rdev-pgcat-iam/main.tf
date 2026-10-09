@@ -1,9 +1,7 @@
-# Temporary bootstrap entrypoint. Resource ownership belongs to the PgCat module.
+# Ownership handoff: apply this root before importing IAM into the live fleet.
+# This removes state ownership only. The real role/policy/attachment remain intact.
 provider "alicloud" { region = "ap-southeast-1" }
-module "config_iam" {
-  source      = "../../../terraform-module/pgcat-ess/modules/config-iam"
-  account_id  = "1360282071200743"
-  role_name   = "raptor-iap-rdev-pgcat-config"
-  bucket_name = "raptor-iap-rdev-pgcat-config-1360282071200743"
-  object_key  = "rdev.ali/pgcat-test/config.json"
+removed {
+  from = module.config_iam
+  lifecycle { destroy = false }
 }

@@ -67,3 +67,29 @@ run "mutable_container_rejected" {
   variables { container_image = "ghcr.io/example/pgcat:latest" }
   expect_failures = [var.container_image]
 }
+run "component_owned_private_network" {
+  command = plan
+  variables {
+    security_group_id    = null
+    sql_client_cidrs     = ["10.70.1.0/24", "10.70.4.0/24"]
+    metrics_client_cidrs = ["10.70.1.0/24"]
+  }
+  assert {
+    condition     = length(alicloud_security_group.proxy) == 1 && length(alicloud_security_group_rule.sql) == 2 && length(alicloud_security_group_rule.metrics) == 1
+    error_message = "PgCat must own its private SQL/metrics network rules."
+  }
+  assert {
+    condition     = alltrue([for r in alicloud_security_group_rule.sql : r.port_range == "6432/6432"]) && alltrue([for r in alicloud_security_group_rule.metrics : r.port_range == "9930/9930"])
+    error_message = "Do not widen service ports."
+  }
+}
+run "reject_public_network" {
+  command = plan
+  variables { sql_client_cidrs = ["0.0.0.0/0"] }
+  expect_failures = [var.sql_client_cidrs]
+}
+run "reject_public_nonzero_source" {
+  command = plan
+  variables { sql_client_cidrs = ["8.8.8.0/24"] }
+  expect_failures = [var.sql_client_cidrs]
+}

@@ -80,7 +80,7 @@ resource "alicloud_ess_scaling_configuration" "proxy" {
   scaling_configuration_name = "raptor-test-${var.proxy_code}"
   image_id                   = var.image_id
   instance_type              = var.instance_class
-  security_group_id          = var.security_group_id
+  security_group_id          = var.security_group_id != null ? var.security_group_id : alicloud_security_group.proxy[0].id
   role_name                  = module.config_iam.role_name
   internet_max_bandwidth_out = 0
   system_disk_category       = "cloud_essd"

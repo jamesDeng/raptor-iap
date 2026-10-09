@@ -46,7 +46,32 @@ variable "nlb_zones" {
     error_message = "At least two distinct verified Singapore NLB zones required."
   }
 }
-variable "security_group_id" { type = string }
+variable "security_group_id" {
+  type    = string
+  default = null
+}
+variable "sql_client_cidrs" {
+  type    = set(string)
+  default = []
+  validation {
+    condition = alltrue([for c in var.sql_client_cidrs : try(
+      (startswith(cidrhost(c, 0), "10.") && tonumber(split("/", c)[1]) >= 8) ||
+      (can(regex("^172\\.(1[6-9]|2[0-9]|3[01])\\.", cidrhost(c, 0))) && tonumber(split("/", c)[1]) >= 12) ||
+    (startswith(cidrhost(c, 0), "192.168.") && tonumber(split("/", c)[1]) >= 16), false)])
+    error_message = "SQL source CIDRs must be contained within RFC1918 private IPv4 ranges."
+  }
+}
+variable "metrics_client_cidrs" {
+  type    = set(string)
+  default = []
+  validation {
+    condition = alltrue([for c in var.metrics_client_cidrs : try(
+      (startswith(cidrhost(c, 0), "10.") && tonumber(split("/", c)[1]) >= 8) ||
+      (can(regex("^172\\.(1[6-9]|2[0-9]|3[01])\\.", cidrhost(c, 0))) && tonumber(split("/", c)[1]) >= 12) ||
+    (startswith(cidrhost(c, 0), "192.168.") && tonumber(split("/", c)[1]) >= 16), false)])
+    error_message = "Metrics source CIDRs must be contained within RFC1918 private IPv4 ranges."
+  }
+}
 variable "image_id" {
   type        = string
   default     = "ubuntu_24_04_x64_20G_alibase_20260916.vhd"
@@ -78,6 +103,6 @@ variable "bootstrap_reviewed" {
   default = false
   validation {
     condition     = var.bootstrap_reviewed
-    error_message = "Docker startup and role-backed secret delivery must be qualified before this module can plan."
+    error_message = "Reviewed Docker artifact and actual versioned credential binding required; live first-boot acceptance is checked after deployment."
   }
 }
