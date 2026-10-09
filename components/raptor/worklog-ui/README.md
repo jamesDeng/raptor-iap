@@ -32,3 +32,17 @@ The jsdom component test exercises the real production bundle, expansion preserv
 Local acceptance used the existing completed live request via the read-only preview on port 3790. That preview explicitly disables realtime and uses saved-history polling; it does not validate production WebSocket ingress or run new operations. The direct stream controller regression tests cover subscription, replay deduplication, renewal and navigation isolation. This change does not deploy services or implement new approval/PR workflows.
 
 Sources: [ExternalStoreRuntime](https://www.assistant-ui.com/docs/runtimes/custom/external-store), [grouped activity](https://www.assistant-ui.com/docs/guides/chain-of-thought), and the installed package types/source.
+
+Request conversation adds assistant-ui ComposerPrimitive and UserMessage
+rendering while keeping the production progress/tool view. The platform passes
+`conversation={canSend,reason,onSend}` to updateWorklog; saved message history
+comes from `snapshot.conversation.messages`. onSend uses the existing Raptor
+CSRF API, never the browser progress ticket. Local send state is in memory and
+is retained per Request across navigation and destroyed on logout. Timeout retries retain a stable UUID.
+Accepted, queued, delivered, answered, rejected and interrupted receipts merge
+by message ID; per-turn answers remain in chronological transcript history.
+Neither text input nor the UI grants operation permissions.
+
+Both deployment flags default off. See the Gateway live-question runbook for
+migration order, runtime capability and required deployed acceptance. The
+local conversation preview uses simulated messages, not real infrastructure.

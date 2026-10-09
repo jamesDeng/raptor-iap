@@ -35,6 +35,8 @@ type nativeRun struct {
 	terminal  *terminalFile
 }
 type terminalFile struct {
+	SessionID       string                `json:"sessionId,omitempty"`
+	SessionFile     string                `json:"sessionFile,omitempty"`
 	Phase           string                `json:"phase"`
 	Passed          bool                  `json:"passed"`
 	Error           string                `json:"error"`
@@ -213,7 +215,7 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 
 const prepareCommand = "umask 077; test \"$(node --version)\" = v22.23.3 && python3 --version >/dev/null && test ! -e /tmp/raptor-state && mkdir -p /tmp/raptor-harness /tmp/raptor-private && chmod 700 /tmp/raptor-harness /tmp/raptor-private"
 
-var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "mcp-runtime.mjs"}
+var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "mcp-runtime.mjs", "conversation.mjs"}
 
 func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	b := r.start.Binding
@@ -296,6 +298,12 @@ func (n *NativeLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor
 		if e != nil {
 			return out, e
 		}
+	}
+	out.Turns, e = observeConversation(ctx, out.Events, r.start.Binding, func(c context.Context, p string, l int64) ([]byte, error) {
+		return r.transport.ReadFile(c, r.sandbox, p, l)
+	}, append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential))
+	if e != nil {
+		return out, e
 	}
 	// Wait must finish the Connect stream before a result can authorize checkpointing.
 	select {
@@ -569,5 +577,18 @@ func (n *NativeLive) managementFor(b execution.AttemptBinding) Management {
 
 func liveJob(config LiveConfig, in execution.LiveStart) ([]byte, error) {
 	token := "Bearer " + in.Access.Credential
-	return json.Marshal(map[string]any{"phase": "live-inference", "state_root": "/tmp/raptor-state", "private_root": "/tmp/raptor-private", "mount_root": "/mnt/oss", "prefix": config.BucketPrefix, "generation": in.Binding.AttemptID, "request": map[string]any{"binding": in.Binding, "question": in.Question}, "limits": map[string]any{"model_seconds": 90, "max_turns": 10, "max_output_tokens": 1024}, "mcp": map[string]any{"raptor": map[string]any{"url": config.RaptorMcpURL, "headers": map[string]string{"Authorization": token}}, "infra": map[string]any{"url": config.InfraMcpURL, "headers": map[string]string{"X-Infra-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(config.InfraUsername+":"+config.InfraPassword))}}}})
+	job := map[string]any{"phase": "live-inference", "state_root": "/tmp/raptor-state", "private_root": "/tmp/raptor-private", "mount_root": "/mnt/oss", "prefix": config.BucketPrefix, "generation": in.Binding.AttemptID, "request": map[string]any{"binding": in.Binding, "question": in.Question}, "limits": map[string]any{"model_seconds": 90, "max_turns": 10, "max_output_tokens": 1024}, "mcp": map[string]any{"raptor": map[string]any{"url": config.RaptorMcpURL, "headers": map[string]string{"Authorization": token}}, "infra": map[string]any{"url": config.InfraMcpURL, "headers": map[string]string{"X-Infra-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(config.InfraUsername+":"+config.InfraPassword))}}}}
+	if in.ConversationEnabled {
+		v := map[string]any{"enabled": true}
+		if in.Conversation != nil {
+			v["requestId"] = in.Conversation.RequestID
+			v["sessionId"] = in.Conversation.SessionID
+			v["sessionFile"] = in.Conversation.SessionFile
+		}
+		if in.InitialMessage != nil {
+			v["initialMessage"] = in.InitialMessage
+		}
+		job["conversation"] = v
+	}
+	return json.Marshal(job)
 }

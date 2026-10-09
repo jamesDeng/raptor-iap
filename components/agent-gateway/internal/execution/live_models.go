@@ -28,6 +28,11 @@ type RuntimeResource struct {
 	ID   string `json:"id"`
 }
 type RuntimeEvent struct {
+	MessageID       string    `json:"messageId,omitempty"`
+	InputSequence   int64     `json:"inputSequence,omitempty"`
+	TurnID          string    `json:"turnId,omitempty"`
+	SessionID       string    `json:"sessionId,omitempty"`
+	SessionFile     string    `json:"sessionFile,omitempty"`
 	Summary         string    `json:"summary,omitempty"`
 	RuntimeSequence int64     `json:"runtimeSequence"`
 	Kind            string    `json:"kind"`

@@ -13,10 +13,12 @@ var ErrUnavailable = errors.New("Unavailable")
 var ErrInvalid = errors.New("InvalidInput")
 
 type Store struct {
-	Pool         *pgxpool.Pool
-	KnownSecrets []string
-	RuntimeMode  string
-	liveLease    *LiveLease
+	ConversationEnabled bool
+	ConversationRuntime bool
+	Pool                *pgxpool.Pool
+	KnownSecrets        []string
+	RuntimeMode         string
+	liveLease           *LiveLease
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Execution, error) {

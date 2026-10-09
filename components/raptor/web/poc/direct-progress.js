@@ -21,5 +21,5 @@ export function createDirectProgressController({read,ticket,Socket=WebSocket,sch
   }catch(error){if(!active(id,v))return;if(error.message==='ProgressNotConfigured'){state.events=[];state.cursor=0;streamCursor=0;namespace='raptor';return fallback(id,v)}if(!state.events.length){try{const saved=await read(id,0);if(!active(id,v))return;namespace='raptor';append(saved.events??[])}catch{}}state.unavailable=true;state.mode='reconnecting';publish();timer=schedule(()=>connect(id,v),Math.min(1000*2**retries++,15000))}
  }
  function close(){epoch++;cancel(timer);if(socket){socket.onclose=null;socket.close();socket=null}state.requestId=null}
- return {state,close,async select(id){close();const v=epoch;state.requestId=id;state.events=[];state.cursor=0;state.execution=null;state.unavailable=false;completed=false;retries=0;streamCursor=0;namespace='gateway';await connect(id,v)}};
+ return {state,close,async renew(id){if(state.requestId!==id)return;epoch++;cancel(timer);if(socket){socket.onclose=null;socket.close();socket=null}completed=false;retries=0;await connect(id,epoch)},async select(id){close();const v=epoch;state.requestId=id;state.events=[];state.cursor=0;state.execution=null;state.unavailable=false;completed=false;retries=0;streamCursor=0;namespace='gateway';await connect(id,v)}};
 }

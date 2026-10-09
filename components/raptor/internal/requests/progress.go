@@ -24,6 +24,7 @@ type GatewayReader interface {
 	Progress(context.Context, string, int64) ([]GatewayEvent, error)
 }
 type RequestView struct {
+	Conversation         ConversationView  `json:"conversation"`
 	Request              domain.Request    `json:"request"`
 	Execution            map[string]any    `json:"execution,omitempty"`
 	CancellationPending  bool              `json:"cancellationPending"`
@@ -135,7 +136,7 @@ func (s *Service) Timeline(ctx context.Context, id string, after int64) (Timelin
 					return out, domain.ErrUnavailable
 				}
 				for _, event := range events {
-					if event.EventID == "" || event.Sequence <= 0 || len(event.Summary) > 4096 || len(event.Details) > 4096 || (event.EvidenceMode != "simulated" && event.EvidenceMode != "live") || (event.RequestID != "" && event.RequestID != id) || (event.EvidenceMode == "live" && (event.RequestID != id || event.AttemptID == "" || event.OccurredAt.IsZero())) {
+					if event.EventID == "" || event.Sequence <= 0 || (len(event.Summary) > 4096 && event.Kind != "message") || len(event.Summary) > 16384 || len(event.Details) > 4096 || (event.EvidenceMode != "simulated" && event.EvidenceMode != "live") || (event.RequestID != "" && event.RequestID != id) || (event.EvidenceMode == "live" && (event.RequestID != id || (event.AttemptID == "" && event.Kind != "message") || event.OccurredAt.IsZero())) {
 						return out, domain.ErrUnavailable
 					}
 					if event.Sequence > cursor+1 {
@@ -154,6 +155,20 @@ func (s *Service) Timeline(ctx context.Context, id string, after int64) (Timelin
  WHERE raptor.events.kind=excluded.kind AND raptor.events.summary=excluded.summary AND raptor.events.details=excluded.details AND raptor.events.evidence_mode=excluded.evidence_mode AND raptor.events.source_sequence=excluded.source_sequence AND raptor.events.attempt_id=excluded.attempt_id AND ($10 OR raptor.events.occurred_at=excluded.occurred_at) RETURNING sequence`, id, event.Kind, event.Summary, event.Details, event.EvidenceMode, event.EventID, event.Sequence, event.AttemptID, occurred, event.OccurredAt.IsZero()).Scan(&savedSequence)
 					if e != nil {
 						return out, domain.ErrUnavailable
+					}
+					if event.Kind == "message" {
+						var role struct {
+							Role string `json:"role"`
+						}
+						if json.Unmarshal(event.Details, &role) != nil {
+							return out, domain.ErrUnavailable
+						}
+						if role.Role == "user" {
+							var receipt MessageReceipt
+							if json.Unmarshal(event.Details, &receipt) != nil || applyMessageReceipt(ctx, tx, id, receipt) != nil {
+								return out, domain.ErrUnavailable
+							}
+						}
 					}
 					if event.Sequence > cursor {
 						cursor = event.Sequence

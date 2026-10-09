@@ -130,6 +130,8 @@ func main() {
 			}
 			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease}, Bridge: bridge}
 		}
+		s.ConversationEnabled = os.Getenv("GATEWAY_CONVERSATION_ENABLED") == "true"
+		s.ConversationRuntime = true
 		router := &runtimeadapter.Providers{Default: config.Provider, Backends: backends, Store: s, Owner: owner, Lease: lease}
 		worker := &execution.LiveWorker{Store: s, Owner: owner, Lease: lease, Runtime: router, Access: raptor, Raptor: raptor, Bootstrap: bootstrap}
 		if worker.Reconcile(ctx) != nil {
