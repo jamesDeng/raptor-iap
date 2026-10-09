@@ -1,4 +1,4 @@
-import {createDirectProgressController,progressConnectionStatus} from './direct-progress.js?v=connection-status-1';
+import {createDirectProgressController,progressConnectionStatus} from './direct-progress.js?v=connection-status-2';
 const {updateWorklog,resetWorklog}=typeof document==='undefined'?{updateWorklog:()=>false,resetWorklog:()=>{}}:await import('./worklog.js?v=request-conversation-1');
 export function validateParameters(schema, values) {
   const errors=[];
