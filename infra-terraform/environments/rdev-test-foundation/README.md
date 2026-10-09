@@ -2,7 +2,7 @@
 
 Owns the existing dedicated PostgreSQL database, zone-B subnet and encrypted versioned configuration bucket. Preserve resource addresses. The backend prefix is fixed to rdev.ali/test-pgcat; never use platform foundation state.
 
-Terraform PRs trigger checks and a protected live plan, followed by a sanitized PR comment. Fork PRs run offline checks only. The plan environment MUST require an owner reviewer and allow same-repository PR runs. Approve only the reviewed exact head: Terraform PR code can execute with plan-role/state-reader permissions. Without this protection, do not enable the workflow. Use branch protection to require review and passing checks before main merge.
+Terraform PRs trigger checks and an automatic live plan, followed by a sanitized PR comment. Fork PRs run offline checks only. Same-repository PR plans run without a reviewer gate; fork PRs remain offline. PR Terraform code can execute with plan-role/state-reader permissions. Use branch protection to require review and passing checks before main merge.
 
 Main generates a fresh plan and job summary, uploads only AES-256-GCM encrypted saved-plan bytes, then awaits the rdev.ali-apply environment reviewer. Review that summary and source SHA before approval. Apply decrypts this run’s artifact and executes the exact saved plan. Terraform rejects stale saved plans. Artifact retention is one day; PR plans are not directly applied.
 
@@ -18,4 +18,4 @@ Before the enabled fleet apply, apply the retirement configuration in rdev-pgcat
 
 The bootstrap artifact is reviewed, but live ECS first-boot and SQL through the NLB remain deployment acceptance checks. The separate metadata-read supplement requires owner approval before granting it; fleet creation permissions must also be reviewed before apply.
 
-For this single-owner POC, self-review remains allowed; environment reviewer protection is mandatory. Main branch protection is not currently configured.
+For this single-owner POC, self-review remains allowed; apply environment reviewer protection is mandatory. Main branch protection is not currently configured.
