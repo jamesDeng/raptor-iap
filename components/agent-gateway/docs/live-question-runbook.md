@@ -80,3 +80,40 @@ The harness drops public paragraphs exceeding 2,048 bytes instead of truncating 
 Roll out Gateway before the updated harness: the older strict runtime decoder rejects the new summary field. Updated Gateway accepts old events without summary. The frontend already understands progress summaries. This change does not add skill execution, permission approval or PR operations to the current read-only application-question harness.
 
 Verification uses the embedded Pi SDK with a deterministic local provider/MCP fixture (no model billing or cloud mutation), plus PostgreSQL journal/replay and existing stream regression tests. These tests do not constitute a production deployment or a new live execution.
+
+## Request conversations (default off)
+
+Deploy additive Raptor migration 005 and Gateway migration 004 through the
+existing schema-owner migration flow. Deploy Gateway and its matching harness
+before enabling `GATEWAY_CONVERSATION_ENABLED=true`; live runtime wiring must be
+present. Then enable `RAPTOR_CONVERSATION_ENABLED=true`. Both flags default off.
+Raptor checks Gateway capability version 1 before accepting input. Unsupported
+runtime combinations and pre-feature completed Requests remain view only.
+
+Browser messages go through Raptor login, CSRF and creator/admin authorization.
+Gateway message/capability routes require service authentication. Public Gateway
+ingress must continue to expose only the read-only progress WebSocket; do not
+publish `/v1/requests/*/messages`. Chat never supplies approval or broadens the
+six application.question read tools.
+
+Messages are limited to 2,000 Unicode code points / 8,192 UTF-8 bytes and 20
+outstanding per Request. Retry an HTTP timeout with the same message ID. A
+Gateway receipt moves accepted → queued → delivered → answered; interrupted or
+rejected input displays a reason. Delivered means Pi appended the user message,
+not merely that a sandbox file was written. Ambiguous delivery after a crash is
+interrupted rather than automatically replayed. A user may submit a new message
+explicitly after recovery permits it.
+
+Continuation requires that Request's exact Pi session association, verified
+checkpoint and confirmed sandbox/key/access cleanup. It gets fresh Request
+context, attempt ID, deadline and access. Each attempt retains the existing
+90-second / 10-turn / 1,024-output-token limits. Input does not reset them.
+
+Local verification uses disposable PostgreSQL, production HTTP/outbox/worker
+code and the pinned Pi SDK with deterministic model/MCP fixtures. The local
+fixture checkpoint and sandbox do not prove deployed AX/Native restore. Before
+enabling these flags in an environment, review an acceptance receipt proving:
+exact-session checkpoint restoration, new attempt credentials, browser ingress
+and ticket renewal, cleanup, and interrupted-message recovery on that runtime.
+Keep flags off until that deployed acceptance is reviewed. No provisioning is
+required or performed by this feature.

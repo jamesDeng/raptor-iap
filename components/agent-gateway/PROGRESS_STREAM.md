@@ -18,3 +18,13 @@ Gateway reads committed event rows every 500ms and drains replay pages before se
 Non-TLS WebSocket is allowed only for localhost development. Public Gateway ingress must route only the browser progress endpoint to the intended service with TLS and WebSocket upgrades; do not expose all service-authenticated administrative routes as a shortcut. No ingress or cloud resource is provisioned by this change.
 
 When realtime is explicitly disabled, the browser shows a polling label and retains the existing HTTP history path. Authentication/connection failures in an enabled stream show reconnecting/unavailable; they do not silently downgrade. Frontend rendering uses the assistant-ui transcript with public narration and expandable tool groups. This transport does not implement conversational agent messages, live approval/resume, permission grants or PR execution.
+
+Conversation writes remain Raptor-only. The existing read ticket cannot send
+messages. `kind=message` events carry stable `details.messageId`, `role` and
+`status`; user events also carry `inputSequence`. Input sequences are separate
+from Gateway event sequences and must never become WebSocket replay cursors.
+Multiple receipts update one displayed user row; assistant turn IDs preserve
+all final answers. Queued user events can precede an attempt and have no
+attempt ID. A complete socket is renewed after admission with its valid Gateway
+cursor. Idle viewers refresh saved Request state every three seconds and
+reconnect when a new attempt becomes active.
