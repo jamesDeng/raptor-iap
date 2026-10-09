@@ -1,0 +1,43 @@
+{
+  "checkedAt": "2026-10-09T12:40:00Z",
+  "sourceCommit": "66918ba0b9bf68d6a8e01709aede6b4ebd1e2385",
+  "imageWorkflow": 37929287309,
+  "releasePR": "https://github.com/jamesDeng/raptor-iap/pull/79",
+  "gitopsRelease": "e3b6b307b2f7b509d78490e49a15ffd753dc45ea",
+  "requestId": "e1cc0b0c-922a-4302-95ca-9078ede37ca2",
+  "initialAttempt": "3dd1ed50-6c91-4c1e-9e15-2fb86c2d3752",
+  "continuationAttempt": "a85f66dd-9c6d-4105-b7a1-692a5e000bc4",
+  "continuationMessageId": "3f2ed75a-3c86-4bd6-b3ed-3e81f06c5e39",
+  "messageStatus": "answered",
+  "samePiSessionId": "01a120aa-31e8-74b9-a9d6-c02635d31bfa",
+  "lastInputSequence": 1,
+  "checkpoints": {
+    "initial": "bb00bc8f513766ec4f9730b791ba01e9d921b853b490e24e3f1ba920cbf9238b",
+    "continuation": "1936044d9a6886ff88b0f2a4682532c05b49cb20c3089f2495d3b9c592e25642",
+    "verified": true
+  },
+  "access": {
+    "distinctAttemptBindings": true,
+    "oneTokenPerAttempt": true,
+    "freshDeadline": true,
+    "allTokensRevoked": true
+  },
+  "cleanup": {
+    "sandboxAbsent": true,
+    "keyAbsent": true,
+    "accessRevoked": true,
+    "recoveryNeeded": false
+  },
+  "progress": {
+    "tlsWssAccepted": true,
+    "initialLastSequence": 16,
+    "continuationLastSequence": 35,
+    "freshTicketReplayPassed": true,
+    "raptorHistoryImportedAnsweredReceipt": true
+  },
+  "scope": "application.question, existing six readonly tools; no infrastructure mutation or approval added",
+  "limits": [
+    "Private acceptance used Raptor business admission/outbox probe before opening public admission. Browser HTTP/CSRF and UI verification follows enablement.",
+    "Process-crash recovery covered by automated tests, not newly injected into the live cluster."
+  ]
+}
