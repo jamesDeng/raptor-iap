@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTerminalRejectsIdentityPartialAndSecret(t *testing.T) {
@@ -181,5 +183,23 @@ func TestProgressRedactsAttemptCredentials(t *testing.T) {
 		if err != nil || len(events) != 1 || events[0].Summary != "[redacted sensitive content]" {
 			t.Fatalf("attempt credential not redacted: %v", err)
 		}
+	}
+}
+
+func TestConversationRuntimeEnvelopeIsBoundedAndRequestScoped(t *testing.T) {
+	b := execution.AttemptBinding{RequestID: execution.NewID(), AttemptID: execution.NewID()}
+	in := execution.ConversationInput{RequestID: b.RequestID, MessageID: execution.NewID(), ActorID: execution.NewID(), InputSequence: 1, Text: "/skill:literal", AcceptedAt: time.Now()}
+	raw, e := conversationEnvelope(in, b)
+	if e != nil || !bytes.Contains(raw, []byte("/skill:literal")) {
+		t.Fatal(e)
+	}
+	in.RequestID = execution.NewID()
+	if _, e = conversationEnvelope(in, b); e == nil {
+		t.Fatal("foreign request accepted")
+	}
+	in.RequestID = b.RequestID
+	in.Text = strings.Repeat("x", 8193)
+	if _, e = conversationEnvelope(in, b); e == nil {
+		t.Fatal("unbounded message accepted")
 	}
 }

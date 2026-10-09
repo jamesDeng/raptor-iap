@@ -25,14 +25,23 @@ type AgentAccessClient interface {
 	Issue(context.Context, AttemptBinding, string, time.Time) (AgentAccess, error)
 	Revoke(context.Context, AttemptBinding) error
 }
+type ConversationRuntime interface {
+	DeliverMessage(context.Context, RuntimeHandle, ConversationInput) error
+}
 type LiveStart struct {
-	Binding    AttemptBinding
-	Question   string
-	Checkpoint VerifiedCheckpoint
-	Access     AgentAccess
-	Deadline   time.Time
+	ConversationEnabled bool
+	Conversation        *ConversationSession
+	InitialMessage      *ConversationInput
+	Binding             AttemptBinding
+	Question            string
+	Checkpoint          VerifiedCheckpoint
+	Access              AgentAccess
+	Deadline            time.Time
 }
 type LiveObservation struct {
+	SessionID   string
+	SessionFile string
+	Turns       []ConversationTurn
 	Events      []RuntimeEvent
 	Terminal    bool
 	Result      *LiveResult

@@ -178,6 +178,10 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 			return out, e
 		}
 	}
+	out.Turns, e = observeConversation(ctx, out.Events, r.start.Binding, func(c context.Context, p string, l int64) ([]byte, error) { return a.read(c, r.start, p, l) }, append(a.Config.RedactionValues(), r.start.Access.Credential))
+	if e != nil {
+		return out, e
+	}
 	req := a.request(r.start, "poll")
 	req.Phase = "inference"
 	v, e := a.call(ctx, req)
