@@ -52,7 +52,8 @@ def command(args,cwd):
     r=subprocess.run(args,cwd=cwd,capture_output=True)
     if r.returncode:
         codes=re.findall(rb'(?:ErrorCode|Code|code)[\s:=\"]+([A-Za-z][A-Za-z0-9_.]{2,80})', r.stdout+r.stderr)
-        print('Failed step: '+stage+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable'), file=sys.stderr)
+        actions=re.findall(rb'\b(?:ram|ess|nlb|ecs|vpc|rds|oss|ots):[A-Za-z][A-Za-z0-9]{1,80}\b', r.stdout+r.stderr)
+        print('Failed step: '+stage+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable')+'; permission actions: '+(', '.join(sorted({a.decode() for a in actions})) or 'unavailable'), file=sys.stderr)
         raise RuntimeError('Terraform command failed; raw output withheld')
     return r.stdout
 
