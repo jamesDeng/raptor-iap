@@ -65,7 +65,7 @@ resource "alicloud_ram_policy" "fleet_apply" {
     Version = "1"
     Statement = [
       { Effect = "Allow", Action = ["ess:CreateScalingGroup", "ess:CreateScalingConfiguration", "ess:EnableScalingGroup", "ess:ModifyScalingGroup", "ess:AttachServerGroups", "ess:TagResources"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/*", "acs:ess:ap-southeast-1:${var.account_id}:scalingconfiguration/*"] },
-      { Effect = "Allow", Action = ["nlb:CreateLoadBalancer", "nlb:CreateServerGroup", "nlb:CreateListener", "nlb:StartListener", "nlb:UpdateLoadBalancerProtection", "nlb:TagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:loadbalancer/*", "acs:nlb:ap-southeast-1:${var.account_id}:servergroup/*", "acs:nlb:ap-southeast-1:${var.account_id}:listener/*", "acs:vpc:ap-southeast-1:${var.account_id}:vpc/*", "acs:vpc:ap-southeast-1:${var.account_id}:vswitch/*"] },
+      { Effect = "Allow", Action = ["nlb:CreateLoadBalancer", "nlb:CreateServerGroup", "nlb:CreateListener", "nlb:StartListener", "nlb:UpdateLoadBalancerProtection", "nlb:TagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:*", "acs:vpc:ap-southeast-1:${var.account_id}:vpc/*", "acs:vpc:ap-southeast-1:${var.account_id}:vswitch/*"] },
       { Effect = "Allow", Action = ["ecs:CreateSecurityGroup", "ecs:AuthorizeSecurityGroup", "ecs:TagResources"], Resource = ["acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/*", "acs:vpc:ap-southeast-1:${var.account_id}:vpc/*"] },
       { Effect = "Allow", Action = ["ram:PassRole"], Resource = ["acs:ram::${var.account_id}:role/raptor-iap-rdev-pgcat-config"] }
     ]
