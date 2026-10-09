@@ -1,0 +1,23 @@
+{
+  "name": "raptor-worklog-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check:assets": "node build.mjs --check"
+  },
+  "dependencies": {
+    "clsx": "2.1.1",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "tailwind-merge": "3.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.1.14",
+    "esbuild": "0.25.12",
+    "jsdom": "26.1.0",
+    "postcss": "8.5.29",
+    "tailwindcss": "4.1.14"
+  }
+}

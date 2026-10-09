@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/pingdotgg/t3code",
+  "commit": "c9fa1367caff4cd6595386814e1f8bb950d3d3ef",
+  "path": "apps/web/src/components/chat/WorkLog.tsx",
+  "upstreamSha256": "c8efe59c35fba2f7bcd70d0da96e176627e94a9d0029f87fc8253c97f1839f6b",
+  "changes": [
+    "cn import redirected to ../utils; component implementation unchanged"
+  ],
+  "license": "MIT"
+}
