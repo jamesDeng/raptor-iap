@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Lock the global slot first, consistently with ClaimNext. Every live mutation
@@ -160,6 +162,14 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 		default:
 			return ErrInvalid
 		}
+		if v.Summary != "" {
+			if v.Kind != "progress" || v.Outcome != "running" || len(v.Summary) > 2048 || !utf8.ValidString(v.Summary) || strings.TrimSpace(v.Summary) == "" {
+				return ErrInvalid
+			}
+			if containsSensitive(v.Summary, s.KnownSecrets) {
+				v.Summary = "[redacted sensitive content]"
+			}
+		}
 		raw, _ := json.Marshal(v)
 		var previous []byte
 		e = tx.QueryRow(ctx, "SELECT payload FROM gateway.runtime_events WHERE attempt_id=$1 AND runtime_sequence=$2", attempt, v.RuntimeSequence).Scan(&previous)
@@ -186,6 +196,9 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 		}
 		details, _ := json.Marshal(map[string]any{"tool": v.Tool, "status": v.Outcome, "runtimeSequence": v.RuntimeSequence})
 		event := ProgressEvent{EventID: fmt.Sprintf("%s:%d", attempt, v.RuntimeSequence), RequestID: id, AttemptID: attempt, Sequence: n, OccurredAt: v.OccurredAt, Kind: v.Kind, Summary: v.Kind + ": " + v.Outcome, Details: details, EvidenceMode: "live"}
+		if v.Summary != "" {
+			event.Summary = v.Summary
+		}
 		payload, _ := json.Marshal(event)
 		if _, e = tx.Exec(ctx, "INSERT INTO gateway.runtime_events(attempt_id,runtime_sequence,payload) VALUES($1,$2,$3)", attempt, v.RuntimeSequence, raw); e != nil {
 			return e

@@ -173,7 +173,7 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 		return out, e
 	}
 	if e == nil {
-		out.Events, e = decodeProgress(raw, cursor)
+		out.Events, e = decodeProgress(raw, cursor, append(a.Config.RedactionValues(), r.start.Access.Credential)...)
 		if e != nil {
 			return out, e
 		}

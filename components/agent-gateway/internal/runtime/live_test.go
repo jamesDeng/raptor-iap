@@ -173,3 +173,13 @@ func TestLiveJobAllowsTenTurnsWithoutIncreasingOtherLimits(t *testing.T) {
 		t.Fatalf("unexpected limits: %+v", job.Limits)
 	}
 }
+
+func TestProgressRedactsAttemptCredentials(t *testing.T) {
+	for _, secret := range []string{"opaque-attempt-credential", "opaque-runtime-key"} {
+		raw := `{"runtimeSequence":1,"kind":"progress","outcome":"running","summary":"checking ` + secret + `","occurredAt":"2026-10-09T00:00:00Z"}` + "\n"
+		events, err := decodeProgress([]byte(raw), 0, secret)
+		if err != nil || len(events) != 1 || events[0].Summary != "[redacted sensitive content]" {
+			t.Fatalf("attempt credential not redacted: %v", err)
+		}
+	}
+}
