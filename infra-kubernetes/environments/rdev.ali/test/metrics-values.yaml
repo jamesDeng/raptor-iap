@@ -6,3 +6,4 @@ inventoryConfigMapName: pgcat-provider-inventory
 inventoryRevision: 5c2cb1f33e6a2672e23d88d57c6afdf5c7891485
 clientDiscoveryNames:
 - rdev-test-client-client.raptor-test.svc.cluster.local
+infraReaderUser: '300172700753867300'

@@ -41,3 +41,17 @@ class Charts(unittest.TestCase):
   job=next(x for x in cfg['scrape_configs'] if x['job_name']=='test-client')
   self.assertEqual(job['dns_sd_configs'][0]['type'],'A')
   self.assertEqual(job['dns_sd_configs'][0]['port'],9090)
+
+ def test_metrics_reader_is_exact_namespaced_service_proxy(self):
+  vals=self.metrics();vals['infraReaderUser']='300172700753867300'
+  docs=self.render('infra-test-metrics',vals)
+  role=next(x for x in docs if x['kind']=='Role')
+  binding=next(x for x in docs if x['kind']=='RoleBinding')
+  self.assertEqual(role['metadata']['namespace'],'raptor-test')
+  self.assertEqual(role['rules'],[{'apiGroups':[''],'resources':['services/proxy'],'resourceNames':['http:fixture-metrics:http'],'verbs':['get']}])
+  self.assertEqual(binding['roleRef']['name'],role['metadata']['name'])
+  self.assertEqual(binding['subjects'],[{'kind':'User','name':'300172700753867300','apiGroup':'rbac.authorization.k8s.io'}])
+  self.assertFalse(any(x['kind'].startswith('ClusterRole') for x in docs))
+  vals['infraReaderUser']='system:admin';self.render('infra-test-metrics',vals,False)
+ def test_metrics_reader_rbac_is_opt_in(self):
+  docs=self.render('infra-test-metrics',self.metrics());self.assertFalse(any(x['kind'] in ['Role','RoleBinding'] for x in docs))

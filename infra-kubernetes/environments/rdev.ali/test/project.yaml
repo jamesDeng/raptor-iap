@@ -17,3 +17,7 @@ spec:
     kind: Service
   - group: ''
     kind: ConfigMap
+  - group: rbac.authorization.k8s.io
+    kind: Role
+  - group: rbac.authorization.k8s.io
+    kind: RoleBinding
