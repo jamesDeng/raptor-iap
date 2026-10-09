@@ -110,3 +110,30 @@ spec:
             pathType: Prefix
             backend:
               service: {name: raptor-frontend, port: {number: 8870}}
+
+---
+# Request-bound tickets authorize this read-only WebSocket; no Gateway API prefix.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: raptor-request-progress
+  namespace: raptor-system
+  annotations:
+    konghq.com/protocols: https
+    konghq.com/methods: GET
+    konghq.com/preserve-host: "true"
+    konghq.com/strip-path: "false"
+    konghq.com/read-timeout: "120000"
+spec:
+  ingressClassName: raptor-kong
+  tls:
+    - hosts: [raptor.rdev.raptor-iap.top]
+      secretName: raptor-public-tls
+  rules:
+    - host: raptor.rdev.raptor-iap.top
+      http:
+        paths:
+          - path: /v1/progress
+            pathType: Exact
+            backend:
+              service: {name: agent-gateway, port: {number: 8874}}

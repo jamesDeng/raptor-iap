@@ -122,12 +122,19 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ $.Values.infraReader.secretName | quote }}, key: INFRA_PASSWORD}
             {{ end }}
+            {{ if eq $service.name "raptor-frontend" }}
+            - {name: RAPTOR_PROGRESS_CONNECT_ORIGIN, value: {{ $.Values.progress.connectOrigin | quote }}}
+            {{ end }}
             {{ if eq $service.name "raptor-backend" }}
+            - {name: RAPTOR_CONVERSATION_ENABLED, value: {{ $.Values.conversation.raptorEnabled | quote }}}
             - {name: RAPTOR_ENABLE_RESTART, value: {{ $.Values.directRestart.enabled | quote }}}
             {{ end }}
             - {name: RAPTOR_SIMULATION, value: 'false'}
             - {name: GATEWAY_SIMULATION, value: 'false'}
             {{ if eq $service.name "agent-gateway" }}
+            - {name: GATEWAY_CONVERSATION_ENABLED, value: {{ $.Values.conversation.gatewayEnabled | quote }}}
+            - {name: GATEWAY_PROGRESS_PUBLIC_URL, value: {{ $.Values.progress.publicURL | quote }}}
+            - {name: GATEWAY_PROGRESS_ORIGINS, value: {{ $.Values.progress.origins | quote }}}
             - name: GATEWAY_RUNTIME_MODE
               value: {{ if $.Values.gatewayLive.enabled }}'live'{{ else }}'disabled'{{ end }}
             {{ if $.Values.gatewayLive.enabled }}

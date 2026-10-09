@@ -37,3 +37,12 @@ gatewayLive:
 # Opt-in only after the Infra API route and scoped patch permission are ready.
 directRestart:
   enabled: false
+
+# Gateway may be enabled for private acceptance while Raptor admission stays off.
+conversation:
+  gatewayEnabled: false
+  raptorEnabled: false
+progress:
+  publicURL: ''
+  origins: ''
+  connectOrigin: ''
