@@ -19,8 +19,9 @@ makes the coverage inconclusive, while already fsynced traffic evidence remains.
 The new client emits `traffic_final` after scheduling stops, all operation deadlines
 settle and sessions close; its final HTTP evidence remains readable for 10 seconds.
 The collector retains that final sample before a Pod disappears. A missing final
-sample is inconclusive. A newly discovered process requires all startup events
-and no history before the preceding poll. Do not infer old counts from new zeros.
+sample is inconclusive. Final snapshots are cached by Pod UID so shutdown of an
+already finalized HTTP endpoint cannot erase its retained terminal counters. A newly discovered process requires all startup events
+and no history before the capture boundary. Do not infer old counts from new zeros.
 Rolling restart before deploying this client revision cannot prove the old process
 boundary; begin acceptance only after the new revision has stabilized.
 
