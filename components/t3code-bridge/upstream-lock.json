@@ -1,0 +1,15 @@
+{
+  "t3": {
+    "version": "0.0.46-nightly.20261008.2813",
+    "commit": "30cc788975500a8c00d32a50f348174d1ce578d1",
+    "archive": "t3-0.0.46-nightly.20261008.2813-darwin-arm64.tar.gz",
+    "sha256": "13aef64aa6aa7b455df5cca002e81a97b3ec580331b395fc13e54aa982a21edd"
+  },
+  "acp": {
+    "protocolVersion": 1,
+    "sdkVersion": "1.7.0",
+    "sdkIntegrity": "sha512-ZORuxsuEnLjRly7t6Ad7zAsWitjWsyprswyPUHz/yycPb+tTm3DGa8XheaHhRXqX8LS9snuxaYavXSRA50TlHw==",
+    "schemaSha256": "6449a87a3b3c42aa0abd30033fc9bd3236cd785078ad084ce3675766be09109e",
+    "schemaSource": "@agentclientprotocol/sdk@1.7.0/schema/schema.json"
+  }
+}

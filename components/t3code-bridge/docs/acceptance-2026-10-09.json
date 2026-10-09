@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-09",
+  "timezone": "Asia/Shanghai",
+  "applicationCode": "A00001",
+  "environmentCode": "rdev.ali",
+  "t3Version": "0.0.46-nightly.20261008.2813",
+  "requests": [
+    {
+      "requestId": "0e8fee21-29ac-493a-87c0-a46df39588cb",
+      "attemptId": "4902cbf5-ef55-40b1-a3f6-cad7bc8c97cd",
+      "status": "completed",
+      "runtimeMode": "live",
+      "checkpointStatus": "verified",
+      "cleanupStatus": {
+        "accessRevoked": true,
+        "keyAbsent": true,
+        "sandboxAbsent": true
+      },
+      "recoveryNeeded": false,
+      "updatedAt": "2026-10-09T01:02:34.890726Z",
+      "selectedModel": "gpt-5.6-luna",
+      "actualModel": "gpt-5.6-luna",
+      "evidenceTools": [
+        "raptor.request_get",
+        "raptor.environment_get",
+        "raptor.object_get",
+        "infra.cloud_identity_get",
+        "infra.deployments_list",
+        "infra.deployment_status_get"
+      ]
+    },
+    {
+      "requestId": "8b5cbdf8-8805-46a9-81f5-18f72047c0e7",
+      "attemptId": "c2f21391-3124-421d-b7e7-27753ed68595",
+      "status": "cancelled",
+      "runtimeMode": "live",
+      "checkpointStatus": "verified",
+      "cleanupStatus": {
+        "accessRevoked": true,
+        "keyAbsent": true,
+        "sandboxAbsent": true
+      },
+      "recoveryNeeded": false,
+      "updatedAt": "2026-10-09T01:03:14.884812Z",
+      "selectedModel": null,
+      "actualModel": null,
+      "evidenceTools": []
+    }
+  ],
+  "reloadNewRequestIds": [],
+  "cleanupVerification": "separate authenticated Raptor projection; direct AX SSH inspection timed out"
+}
