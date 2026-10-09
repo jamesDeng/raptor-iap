@@ -10,6 +10,7 @@ import (
 
 func (s *Service) Register(m *http.ServeMux, a *auth.Service) {
 	s.registerProgressTicket(m, a)
+	s.registerMessages(m, a)
 	m.Handle("GET /api/v1/requests/{id}/events", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var after int64
 		var e error
@@ -46,6 +47,9 @@ func (s *Service) Register(m *http.ServeMux, a *auth.Service) {
 	m.Handle("GET /api/v1/requests", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { v, e := s.List(r.Context()); httpx.Result(w, 200, v, e) })))
 	m.Handle("GET /api/v1/requests/{id}", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.View(r.Context(), r.PathValue("id"))
+		if e == nil {
+			v.Conversation = s.conversationView(r.Context(), auth.UserFrom(r), v.Request)
+		}
 		httpx.Result(w, 200, v, e)
 	})))
 }

@@ -16,11 +16,12 @@ type GatewayClient interface {
 	PutRequest(context.Context, string) error
 }
 type Service struct {
-	Pool          *pgxpool.Pool
-	Catalog       *catalog.Service
-	ResolveSkills func(context.Context, domain.SkillsVersion) (domain.SkillsVersion, error)
-	RestartNow    func() time.Time
-	Gateway       GatewayReader
+	ConversationEnabled bool
+	Pool                *pgxpool.Pool
+	Catalog             *catalog.Service
+	ResolveSkills       func(context.Context, domain.SkillsVersion) (domain.SkillsVersion, error)
+	RestartNow          func() time.Time
+	Gateway             GatewayReader
 }
 
 func NewService(p *pgxpool.Pool, c *catalog.Service) *Service { return &Service{Pool: p, Catalog: c} }

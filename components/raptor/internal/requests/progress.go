@@ -24,6 +24,7 @@ type GatewayReader interface {
 	Progress(context.Context, string, int64) ([]GatewayEvent, error)
 }
 type RequestView struct {
+	Conversation         ConversationView  `json:"conversation"`
 	Request              domain.Request    `json:"request"`
 	Execution            map[string]any    `json:"execution,omitempty"`
 	CancellationPending  bool              `json:"cancellationPending"`
@@ -154,6 +155,12 @@ func (s *Service) Timeline(ctx context.Context, id string, after int64) (Timelin
  WHERE raptor.events.kind=excluded.kind AND raptor.events.summary=excluded.summary AND raptor.events.details=excluded.details AND raptor.events.evidence_mode=excluded.evidence_mode AND raptor.events.source_sequence=excluded.source_sequence AND raptor.events.attempt_id=excluded.attempt_id AND ($10 OR raptor.events.occurred_at=excluded.occurred_at) RETURNING sequence`, id, event.Kind, event.Summary, event.Details, event.EvidenceMode, event.EventID, event.Sequence, event.AttemptID, occurred, event.OccurredAt.IsZero()).Scan(&savedSequence)
 					if e != nil {
 						return out, domain.ErrUnavailable
+					}
+					if event.Kind == "message" {
+						var receipt MessageReceipt
+						if json.Unmarshal(event.Details, &receipt) != nil || applyMessageReceipt(ctx, tx, id, receipt) != nil {
+							return out, domain.ErrUnavailable
+						}
 					}
 					if event.Sequence > cursor {
 						cursor = event.Sequence

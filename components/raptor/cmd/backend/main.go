@@ -63,6 +63,7 @@ func main() {
 		h.Catalog.Infra = adapters.HTTPInfra{Username: os.Getenv("INFRA_USERNAME"), Password: os.Getenv("INFRA_PASSWORD"), AuthHeader: os.Getenv("INFRA_AUTH_HEADER"), ResolveEnvironment: h.Catalog.GetEnvironment}
 	}
 	h.Skills.Source = skills.GitSource{Repository: os.Getenv("RAPTOR_REPOSITORY")}
+	h.Requests.ConversationEnabled = os.Getenv("RAPTOR_CONVERSATION_ENABLED") == "true"
 	if gatewayURL := os.Getenv("GATEWAY_URL"); gatewayURL != "" {
 		client := requests.HTTPGateway{BaseURL: gatewayURL, AllowClusterHTTP: os.Getenv("RAPTOR_CLUSTER_HTTP") == "true", Username: os.Getenv("SERVICE_USERNAME"), Password: os.Getenv("SERVICE_PASSWORD")}
 		h.Requests.Gateway = client

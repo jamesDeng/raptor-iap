@@ -100,3 +100,38 @@ func (g HTTPGateway) PutRequest(ctx context.Context, id string) error {
 func (g HTTPGateway) SendSignal(ctx context.Context, id string, payload json.RawMessage) error {
 	return g.send(ctx, "POST", "/v1/requests/"+url.PathEscape(id)+"/signals", payload)
 }
+
+func (g HTTPGateway) Conversation(ctx context.Context, id string) (ConversationCapability, error) {
+	var out struct {
+		Data ConversationCapability `json:"data"`
+	}
+	e := g.read(ctx, "/v1/requests/"+url.PathEscape(id)+"/conversation", &out)
+	return out.Data, e
+}
+func (g HTTPGateway) PutMessage(ctx context.Context, id string, payload json.RawMessage) (MessageReceipt, error) {
+	var out struct {
+		Data MessageReceipt `json:"data"`
+	}
+	if !transportpolicy.Allowed(g.BaseURL, "http://agent-gateway:8874", g.AllowClusterHTTP) || g.Username == "" || g.Password == "" {
+		return out.Data, domain.ErrUnavailable
+	}
+	r, e := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(g.BaseURL, "/")+"/v1/requests/"+url.PathEscape(id)+"/messages", bytes.NewReader(payload))
+	if e != nil {
+		return out.Data, domain.ErrInvalid
+	}
+	r.SetBasicAuth(g.Username, g.Password)
+	r.Header.Set("Content-Type", "application/json")
+	c := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, e := c.Do(r)
+	if e != nil {
+		return out.Data, domain.ErrUnavailable
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return out.Data, domain.ErrUnavailable
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 16384)).Decode(&out) != nil {
+		return out.Data, domain.ErrUnavailable
+	}
+	return out.Data, nil
+}

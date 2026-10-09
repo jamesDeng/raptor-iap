@@ -31,12 +31,36 @@ func (s *Service) DispatchPending(ctx context.Context, c GatewayClient) error {
 		}
 		if topic == "dispatch" {
 			e = c.PutRequest(ctx, entity)
+		} else if topic == "message" {
+			if mc, ok := c.(MessageClient); ok {
+				var receipt MessageReceipt
+				receipt, e = mc.PutMessage(ctx, entity, payload)
+				if e == nil {
+					var in MessageInput
+					if json.Unmarshal(payload, &in) != nil || receipt.MessageID != in.MessageID || receipt.InputSequence != in.InputSequence {
+						e = domain.ErrUnavailable
+					} else {
+						e = applyMessageReceipt(ctx, tx, entity, receipt)
+					}
+				}
+			} else {
+				e = domain.ErrUnavailable
+			}
 		} else if sc, ok := c.(SignalClient); ok {
 			e = sc.SendSignal(ctx, entity, payload)
 		} else {
 			e = domain.ErrUnavailable
 		}
 		if errors.Is(e, domain.ErrInvalid) {
+			if topic == "message" {
+				var in MessageInput
+				if json.Unmarshal(payload, &in) != nil {
+					return domain.ErrUnavailable
+				}
+				if e = applyMessageReceipt(ctx, tx, entity, MessageReceipt{MessageID: in.MessageID, InputSequence: in.InputSequence, Status: "rejected", Reason: "DeliveryRejected"}); e != nil {
+					return e
+				}
+			}
 			if _, e = tx.Exec(ctx, "UPDATE raptor.outbox SET failed_reason='delivery rejected as invalid' WHERE id=$1", id); e != nil {
 				tx.Rollback(ctx)
 				return domain.ErrUnavailable
