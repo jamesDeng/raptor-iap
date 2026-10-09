@@ -1,0 +1,90 @@
+name: Test client image
+on:
+  pull_request:
+    branches: [main]
+    paths: ['components/test-client/**', 'helm-chart/infra-test-client/**', 'helm-chart/infra-test-metrics/**', 'tests/test_test_env_charts.py', '.github/workflows/test-client.yml']
+  push:
+    branches: [main]
+    paths: ['components/test-client/**', 'helm-chart/infra-test-client/**', 'helm-chart/infra-test-metrics/**', 'tests/test_test_env_charts.py', '.github/workflows/test-client.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: fixture
+          POSTGRES_PASSWORD: synthetic-local-only
+          POSTGRES_DB: fixture
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U fixture -d fixture"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: components/test-client/go.sum
+      - name: Client race and PostgreSQL integration tests
+        working-directory: components/test-client
+        env:
+          TEST_LOCAL_POSTGRES_DSN: postgres://fixture:synthetic-local-only@127.0.0.1:5432/fixture?sslmode=disable
+        run: |
+          go test -race ./...
+          go vet ./...
+      - name: Render real Helm charts
+        run: |
+          curl -fsSL https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz -o "$RUNNER_TEMP/helm.tar.gz"
+          curl -fsSL https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz.sha256sum -o "$RUNNER_TEMP/helm.sha256"
+          expected=$(cut -d ' ' -f1 "$RUNNER_TEMP/helm.sha256")
+          test "$(sha256sum "$RUNNER_TEMP/helm.tar.gz" | cut -d ' ' -f1)" = "$expected"
+          tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
+          python3 -m pip install PyYAML==6.0.3
+          HELM_BIN="$RUNNER_TEMP/linux-amd64/helm" python3 -m unittest discover -s tests -p test_test_env_charts.py
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: components/test-client
+          platforms: linux/amd64
+          push: false
+  publish:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - name: Registry login
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        id: image
+        with:
+          context: components/test-client
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/jamesdeng/raptor-iap-test-client:${{ github.sha }}
+      - name: Save immutable image receipt
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf '%s\n' "image=ghcr.io/jamesdeng/raptor-iap-test-client@${DIGEST}" "source=${SOURCE_SHA}" > "$RUNNER_TEMP/test-client-image.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-client-image
+          path: ${{ runner.temp }}/test-client-image.txt

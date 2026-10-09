@@ -31,5 +31,13 @@ data:
       - job_name: test-client
         honor_labels: false
         honor_timestamps: false
+{{- if .Values.clientDiscoveryNames }}
+        dns_sd_configs:
+          - names: {{ .Values.clientDiscoveryNames | toJson }}
+            type: A
+            port: 9090
+            refresh_interval: 5s
+{{- else }}
         static_configs:
           - targets: {{ .Values.clientTargets | toJson }}
+{{- end }}
