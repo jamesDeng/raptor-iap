@@ -108,9 +108,9 @@ run "infra_gitops_permission_owner" {
     condition     = length([for s in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : s if contains(s.Action, "ram:CreatePolicyVersion") || contains(s.Action, "apigateway:CreateApi") || contains(s.Action, "oss:PutObject")]) == 0
     error_message = "Plan must not acquire cloud mutation or state-write rights."
   }
- assert {
- condition = alltrue([for s in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : s.Condition.StringEquals["oss:Prefix"] == ["rdev.ali/"] if contains(s.Action,"oss:ListObjects")])
- error_message = "OSS backend lists the existing workspace prefix, not the state object name."
- }
+  assert {
+    condition     = alltrue([for s in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : s.Condition.StringEquals["oss:Prefix"] == ["rdev.ali/"] if contains(s.Action, "oss:ListObjects")])
+    error_message = "OSS backend lists the existing workspace prefix, not the state object name."
+  }
 
 }
