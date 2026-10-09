@@ -1,0 +1,24 @@
+{
+  "sourceCommit": "8ef78bc2263d17bf4e7ea9a3d45d126244afd92d",
+  "node": "i-t4nj9k37b82g5a64x424",
+  "guestImage": "localhost:5001/ax-pi@sha256:1b944985d81ab3e015afd2c00d160fe9709c73fe0d7ce7d20bca814ac1353bbe",
+  "baseGuestImage": "localhost:5001/ax-pi@sha256:1656169754d6ccaa937d2b30f1c5fa72130e0904e879c85ca41250dc91b6047e",
+  "harnessSourceSha256": {
+    "package.json": "137ac7bfc8fb3cd0b058d6bf89b6d7dd75c67d1afa48113fa027010d71620622",
+    "package-lock.json": "863509f6c5202839bacbbab07292e80221bfb0c38aea2ae905c2a6b7587dafe6",
+    "archive.py": "1467ac7efeccb23035458ee1aeffa95937383bc652439e9ed9f4d18bd370931a",
+    "application-context.mjs": "06b454e6cddefd9035b1245e446e4574df7760a4a52f04e1eab34a10a89114f1",
+    "app-question.mjs": "6b2d4bb1bc5db53811c24b097c48d6d95e098fc50800b4544d86e4decd4599f7",
+    "checkpoint.mjs": "550218fb54a0d9f0ab2b0cffa8b1398cf480ab1f1b2680abe2c797812d0ca947",
+    "pi-adapter.mjs": "ee214b77a2944f9e7b7c7d45d054832b66dbfd23f3ad1bbd6cd858b31092034c",
+    "runner.mjs": "49895a049756cf76157f41ea397b59324b08a817981689a8eb541eba1eadb9d8",
+    "progress.mjs": "134f2b9b0aa559c23fa93b89927cf578841f26c85e197ed93d61327f2903ccb2",
+    "live-contract.mjs": "0c483e8fef85e90d2d0b9b30bef5ad1a29df80c66bbaa08bdb9505c43b4e1f21",
+    "live-runner.mjs": "660b80d032be71172ed2fe0dfc0544e3f4df6f636ad037209814265bf165aed7",
+    "live-question.mjs": "48a8cfa5c05666e1195f02306d403ef2e4622f0190cef8a4e8c316eabfef7399",
+    "mcp-runtime.mjs": "64fe76b4d81431e75bf3d029d52b09c46236ae90e04f0efa3e8b7c5d8d0bc8c9",
+    "conversation.mjs": "c0f23610d0d8bdcb5727b6e5bd2e1001b0cb524d3e8fc80fa94acc2e4c18d892"
+  },
+  "sourceVerified": true,
+  "deployedConversationAcceptance": "pending"
+}

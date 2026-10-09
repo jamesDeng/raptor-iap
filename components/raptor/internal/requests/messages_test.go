@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"strings"
 	"testing"
+	"time"
 )
 
 type messageGateway struct {
@@ -191,5 +193,92 @@ func TestMessagePublicHistoryRedaction(t *testing.T) {
 	}
 	if _, e = s.SubmitMessage(ctx, u, r.ID, v.MessageID, text); e != nil {
 		t.Fatal("private immutable retry changed", e)
+	}
+}
+
+func TestCompletedMessageReopensForFreshAttemptAccess(t *testing.T) {
+	s, r, u, _ := messageSetup(t)
+	ctx := context.Background()
+	r.Definition.EnvCode = "adev"
+	r.Definition.Skills = domain.SkillsVersion{Tag: "skills-v0.1.0", CommitSHA: strings.Repeat("a", 40)}
+	body, _ := json.Marshal(r.Definition)
+	if _, e := s.Pool.Exec(ctx, "UPDATE raptor.requests SET definition=$2 WHERE id=$1", r.ID, body); e != nil {
+		t.Fatal(e)
+	}
+	old := map[string]any{"requestId": r.ID, "attemptId": "53bd8d1d-9bd5-42f1-af0c-bd2a6717f802", "status": "completed", "updatedAt": "2026-10-09T11:00:00Z"}
+	if _, _, _, e := s.syncExecution(ctx, r, old); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := s.SubmitMessage(ctx, u, r.ID, domain.NewID(), "read fresh state"); e != nil {
+		t.Fatal(e)
+	}
+	reopened, e := s.Get(ctx, r.ID)
+	if e != nil || reopened.Status != "queued" {
+		t.Fatalf("continuation is not queued: %s %v", reopened.Status, e)
+	}
+	if _, _, _, e = s.syncExecution(ctx, reopened, old); e != nil {
+		t.Fatal(e)
+	}
+	reopened, e = s.Get(ctx, r.ID)
+	if e != nil || reopened.Status != "queued" {
+		t.Fatalf("old snapshot closed continuation: %s %v", reopened.Status, e)
+	}
+	// Receipts may reach the timeline before the first new execution snapshot.
+	if _, e = s.Pool.Exec(ctx, "UPDATE raptor.request_messages SET status='answered' WHERE request_id=$1", r.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, _, e = s.syncExecution(ctx, reopened, old); e != nil {
+		t.Fatal(e)
+	}
+	reopened, e = s.Get(ctx, r.ID)
+	if e != nil || reopened.Status != "queued" {
+		t.Fatal("answered receipt lifted the old-attempt fence", reopened.Status, e)
+	}
+	access := agentaccess.Service{Pool: s.Pool, RaptorMCPURL: "https://raptor.fixture/mcp", InfraMCPURL: "https://infra.fixture/mcp"}
+	hash, _ := agentaccess.Fingerprint(r.Definition)
+	attempt := domain.NewID()
+	issued, e := access.Issue(ctx, r.ID, agentaccess.IssueInput{AttemptID: attempt, DefinitionSHA256: hash, ExpiresAt: time.Now().Add(time.Minute)})
+	if e != nil || issued.Binding.AttemptID != attempt {
+		t.Fatalf("fresh attempt access denied: %v", e)
+	}
+	checked, e := access.Check(ctx, agentaccess.CheckInput{Credential: issued.Credential, Audience: "raptor", Tool: "request_get", Selectors: map[string]string{"requestId": r.ID}})
+	if e != nil || !checked.Active {
+		t.Fatalf("fresh access inactive: %v", e)
+	}
+	next := map[string]any{"requestId": r.ID, "attemptId": attempt, "status": "running", "updatedAt": "2026-10-09T11:01:00Z"}
+	if _, _, _, e = s.syncExecution(ctx, reopened, next); e != nil {
+		t.Fatal(e)
+	}
+	next["status"] = "completed"
+	next["updatedAt"] = "2026-10-09T11:02:00Z"
+	if _, _, _, e = s.syncExecution(ctx, reopened, next); e != nil {
+		t.Fatal(e)
+	}
+	checked, e = access.Check(ctx, agentaccess.CheckInput{Credential: issued.Credential, Audience: "raptor"})
+	if e != nil || checked.Active {
+		t.Fatal("terminal continuation access remained active", e)
+	}
+}
+
+func TestRejectedContinuationRestoresPreviousCompletion(t *testing.T) {
+	s, r, u, _ := messageSetup(t)
+	ctx := context.Background()
+	old := map[string]any{"requestId": r.ID, "attemptId": "53bd8d1d-9bd5-42f1-af0c-bd2a6717f802", "status": "completed", "updatedAt": "2026-10-09T11:00:00Z"}
+	if _, _, _, e := s.syncExecution(ctx, r, old); e != nil {
+		t.Fatal(e)
+	}
+	receipt, e := s.SubmitMessage(ctx, u, r.ID, domain.NewID(), "read state")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.Pool.Exec(ctx, "UPDATE raptor.request_messages SET status='rejected' WHERE message_id=$1", receipt.MessageID); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, _, e = s.syncExecution(ctx, r, old); e != nil {
+		t.Fatal(e)
+	}
+	restored, e := s.Get(ctx, r.ID)
+	if e != nil || restored.Status != "completed" {
+		t.Fatal("rejected input left request queued", restored.Status, e)
 	}
 }

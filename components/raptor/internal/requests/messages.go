@@ -123,9 +123,22 @@ func (s *Service) SubmitMessage(ctx context.Context, actor domain.User, requestI
 	if pending >= 20 {
 		return out, ErrMessageCapacity
 	}
+	var continuationAttempt string
+	if r.Status == "completed" {
+		if e = tx.QueryRow(ctx, "SELECT COALESCE(public_view->>'attemptId','') FROM raptor.execution_views WHERE request_id=$1", requestID).Scan(&continuationAttempt); e != nil || !messageUUID.MatchString(continuationAttempt) {
+			return out, domain.ErrUnavailable
+		}
+	} else if r.Status == "queued" {
+		// Additional input admitted before dispatch belongs to the same
+		// continuation generation, including after an earlier input rejection.
+		e = tx.QueryRow(ctx, "SELECT COALESCE(continuation_attempt_id::text,'') FROM raptor.request_messages WHERE request_id=$1 ORDER BY input_sequence DESC LIMIT 1", requestID).Scan(&continuationAttempt)
+		if e != nil && e != pgx.ErrNoRows {
+			return out, domain.ErrUnavailable
+		}
+	}
 	out = MessageReceipt{MessageID: messageID, InputSequence: sequence, Status: "accepted", AcceptedAt: time.Now().UTC()}
 	digest := sha256.Sum256([]byte(text))
-	_, e = tx.Exec(ctx, "INSERT INTO raptor.request_messages(request_id,message_id,actor_id,input_sequence,text,text_hash,accepted_at) VALUES($1,$2,$3,$4,$5,$6,$7)", requestID, messageID, actor.ID, sequence, text, hex.EncodeToString(digest[:]), out.AcceptedAt)
+	_, e = tx.Exec(ctx, "INSERT INTO raptor.request_messages(request_id,message_id,actor_id,input_sequence,text,text_hash,accepted_at,continuation_attempt_id) VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,'')::uuid)", requestID, messageID, actor.ID, sequence, text, hex.EncodeToString(digest[:]), out.AcceptedAt, continuationAttempt)
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}
@@ -133,6 +146,13 @@ func (s *Service) SubmitMessage(ctx context.Context, actor domain.User, requestI
 	_, e = tx.Exec(ctx, "INSERT INTO raptor.outbox(id,topic,entity_id,payload) VALUES($1,'message',$2,$3)", domain.NewID(), requestID, payload)
 	if e != nil {
 		return out, domain.ErrUnavailable
+	}
+	// Reopen a completed Request before dispatch so the next attempt can receive
+	// fresh scoped access. The message and state transition commit together.
+	if r.Status == "completed" {
+		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status='queued' WHERE id=$1 AND control_state=''", requestID); e != nil {
+			return out, domain.ErrUnavailable
+		}
 	}
 	if e = tx.Commit(ctx); e != nil {
 		return out, domain.ErrUnavailable
