@@ -37,7 +37,27 @@
   },
   "scope": "application.question, existing six readonly tools; no infrastructure mutation or approval added",
   "limits": [
-    "Private acceptance used Raptor business admission/outbox probe before opening public admission. Browser HTTP/CSRF and UI verification follows enablement.",
+    "Initial private acceptance used Raptor business admission/outbox probe; browser acceptance after PR81 used the public authenticated UI and its normal HTTP/CSRF admission.",
     "Process-crash recovery covered by automated tests, not newly injected into the live cluster."
-  ]
+  ],
+  "browserAcceptance": {
+    "checkedAt": "2026-10-09T13:02:00Z",
+    "enabledByPR": 81,
+    "attemptId": "700d42ae-b303-43a1-84a1-89242caf17a5",
+    "messageId": "978ed138-092f-4334-9a4b-c6be3a662e32",
+    "messageStatus": "answered",
+    "samePiSessionId": "01a120aa-31e8-74b9-a9d6-c02635d31bfa",
+    "lastInputSequence": 2,
+    "checkpointSHA256": "419e42c55677fd3654951c40dab70cda9d9a3a3d4c89eee9c0cd18bc834dbe90",
+    "checkpointVerified": true,
+    "cleanupConfirmed": true,
+    "allAttemptPermissionsRevoked": true,
+    "authenticatedUILoginPassed": true,
+    "pageErrors": [],
+    "socketCount": 2,
+    "eventCount": 54,
+    "lastSequence": 54,
+    "savedHistoryImported": true,
+    "freshObservedAt": "2026-10-09T12:52:02.473Z"
+  }
 }
