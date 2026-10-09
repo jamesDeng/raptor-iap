@@ -71,3 +71,8 @@ against a complete provider snapshot before taking a new guard. Guards have no
 expiry. A process crash before recording or an uncertain call with no observable
 effect requires operator reconciliation; never clear it merely because time
 elapsed. Approved scale-in action consumption remains separate and permanent.
+
+Terraform OSS backend initialization lists the exact existing `rdev.ali/`
+workspace prefix. This reveals object names under that prefix; object contents
+remain restricted to `rdev.ali/infra-api.tfstate`. A condition on the full state
+object name cannot authorize the backend's workspace listing request.
