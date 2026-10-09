@@ -36,3 +36,23 @@ resource "alicloud_ram_role_policy_attachment" "state" {
   policy_name = alicloud_ram_policy.state[each.key].policy_name
   policy_type = "Custom"
 }
+
+# Read-only fleet planning supplement. No credential-object reads or cloud writes.
+resource "alicloud_ram_policy" "fleet_read" {
+  policy_name = "raptor-iap-test-gitops-fleet-read"
+  force       = false
+  policy_document = jsonencode({
+    Version = "1"
+    Statement = [
+      { Effect = "Allow", Action = ["ess:DescribeScalingGroups", "ess:DescribeScalingConfigurations", "ess:DescribeScalingInstances", "ess:DescribeScalingActivities", "ess:ListTagResources", "nlb:ListLoadBalancers", "nlb:GetLoadBalancerAttribute", "nlb:ListServerGroups", "nlb:GetServerGroupAttribute", "nlb:ListServerGroupServers", "nlb:ListListeners", "nlb:GetListenerAttribute", "nlb:ListTagResources"], Resource = ["*"] },
+      { Effect = "Allow", Action = ["ram:GetPolicy", "ram:GetPolicyVersion"], Resource = ["acs:ram::${var.account_id}:policy/raptor-iap-rdev-pgcat-config-read"] }
+    ]
+  })
+  depends_on = [terraform_data.account_guard]
+}
+resource "alicloud_ram_role_policy_attachment" "fleet_read" {
+  for_each    = local.roles
+  role_name   = each.value
+  policy_name = alicloud_ram_policy.fleet_read.policy_name
+  policy_type = "Custom"
+}

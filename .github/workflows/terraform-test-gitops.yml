@@ -2,10 +2,10 @@ name: Terraform test foundation GitOps
 on:
   pull_request:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev-test-foundation/**', 'terraform-module/test-postgresql/**', 'terraform-module/test-gitops-access/**', 'infra-terraform/environments/rdev-test-gitops-access/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-test-gitops.yml']
+    paths: ['infra-terraform/environments/rdev-test-foundation/**', 'terraform-module/test-postgresql/**', 'terraform-module/pgcat-ess/**', 'terraform-module/test-gitops-access/**', 'infra-terraform/environments/rdev-test-gitops-access/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-test-gitops.yml']
   push:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev-test-foundation/**', 'terraform-module/test-postgresql/**', 'terraform-module/test-gitops-access/**', 'infra-terraform/environments/rdev-test-gitops-access/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-test-gitops.yml']
+    paths: ['infra-terraform/environments/rdev-test-foundation/**', 'terraform-module/test-postgresql/**', 'terraform-module/pgcat-ess/**', 'terraform-module/test-gitops-access/**', 'infra-terraform/environments/rdev-test-gitops-access/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-test-gitops.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,6 +29,9 @@ jobs:
           terraform -chdir=infra-terraform/environments/rdev-test-foundation fmt -check
           terraform -chdir=infra-terraform/environments/rdev-test-foundation init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra-terraform/environments/rdev-test-foundation validate
+          terraform -chdir=terraform-module/pgcat-ess fmt -check -recursive
+          terraform -chdir=terraform-module/pgcat-ess init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform-module/pgcat-ess test
           terraform -chdir=terraform-module/test-gitops-access fmt -check -recursive
           terraform -chdir=terraform-module/test-gitops-access init -backend=false -input=false -lockfile=readonly
           terraform -chdir=terraform-module/test-gitops-access test

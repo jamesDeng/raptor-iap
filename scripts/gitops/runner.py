@@ -32,9 +32,11 @@ def summary(plan,sha):
     for r in plan.get('resource_changes',[]):
         if r.get('mode')!='managed':continue
         address=r['address']; actions=r['change']['actions']
-        if not re.fullmatch(r'[A-Za-z0-9_.\[\]"-]{1,240}',address):raise ValueError('Unsafe address')
+        if not re.fullmatch(r'[A-Za-z0-9_.\[\]"/-]{1,240}',address):raise ValueError('Unsafe address')
         if not actions or any(a not in ('create','update','delete','no-op','read') for a in actions):raise ValueError('Unknown action')
-        if actions==['no-op']:continue
+        importing=bool(r['change'].get('importing'))
+        if actions==['no-op'] and not importing:continue
+        if importing:actions=['import']+([] if actions==['no-op'] else actions)
         address=re.sub(r'\["[^"]*"\]', '[redacted-key]', address)
         rows.append('| `'+address+'` | '+', '.join(actions)+' |')
     return '<!-- raptor-terraform-plan -->\nTerraform test foundation plan for `'+sha+'`\n\n| Resource | Action |\n|---|---|\n'+('\n'.join(rows) if rows else '| — | No resource changes |')+'\n\nValues are withheld; raw plan/state are never posted.\n'
@@ -54,6 +56,16 @@ def command(args,cwd):
         raise RuntimeError('Terraform command failed; raw output withheld')
     return r.stdout
 
+def validate_inputs(config):
+    required={'account_id','vpc_id','db_vswitch_id','config_bucket','db_code'}
+    optional={'proxy_enabled','proxy_code','proxy_worker_vswitch_id','proxy_secret_version'}
+    if not required.issubset(config) or set(config)-required-optional:raise ValueError('Invalid stack inputs')
+    for k,v in config.items():
+        if k=='proxy_enabled':
+            if not isinstance(v,bool):raise ValueError('Invalid enable flag')
+        elif not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,200}',v):raise ValueError('Invalid input')
+    if config.get('proxy_enabled') and not (optional-{'proxy_enabled'}).issubset(config):raise ValueError('Incomplete proxy binding')
+
 def main():
     mode=sys.argv[1]
     if mode=='guard':
@@ -62,10 +74,7 @@ def main():
     if command(['git','rev-parse','HEAD'],ROOT).decode().strip()!=sha:raise ValueError('Checkout mismatch')
     if mode not in ('plan','apply'):raise ValueError('Invalid mode')
     config=json.loads(os.environ['TF_STACK_INPUTS'])
-    expected={'account_id','vpc_id','db_vswitch_id','config_bucket','db_code'}
-    if set(config)!=expected:raise ValueError('Invalid stack inputs')
-    for k,v in config.items():
-        if not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9-]{1,100}',v):raise ValueError('Invalid input')
+    validate_inputs(config)
     bucket=os.environ['TF_STATE_BUCKET'];endpoint=os.environ['TF_LOCK_ENDPOINT']
     if not re.fullmatch('[a-z0-9-]{3,63}',bucket) or not re.fullmatch(r'https://[a-z0-9-]+\.ap-southeast-1\.ots\.aliyuncs\.com',endpoint):raise ValueError('Invalid backend')
     # No raw logs or state artifacts; temp private inputs are deleted on exit.
