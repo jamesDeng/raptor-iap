@@ -28,3 +28,16 @@ class Charts(unittest.TestCase):
  def test_environment_selector_is_literal(self):
   import re
   docs=self.render('infra-test-metrics',self.metrics());cfg=yaml.safe_load(next(x for x in docs if x['kind']=='ConfigMap')['data']['prometheus.yml']);rule=cfg['scrape_configs'][0]['relabel_configs'][0];self.assertIsNotNone(re.fullmatch(rule['regex'],'fixture.env'));self.assertIsNone(re.fullmatch(rule['regex'],'fixtureXenv'))
+
+ def test_client_replica_discovery_is_headless(self):
+  vals=self.client();vals['headless']=True
+  docs=self.render('infra-test-client',vals)
+  service=next(x for x in docs if x['kind']=='Service')
+  self.assertEqual(service['spec'].get('clusterIP'),'None')
+ def test_metrics_discovers_all_replica_addresses(self):
+  vals=self.metrics();vals['clientDiscoveryNames[0]']='traffic-client.raptor-test.svc.cluster.local'
+  docs=self.render('infra-test-metrics',vals)
+  cfg=yaml.safe_load(next(x for x in docs if x['kind']=='ConfigMap')['data']['prometheus.yml'])
+  job=next(x for x in cfg['scrape_configs'] if x['job_name']=='test-client')
+  self.assertEqual(job['dns_sd_configs'][0]['type'],'A')
+  self.assertEqual(job['dns_sd_configs'][0]['port'],9090)

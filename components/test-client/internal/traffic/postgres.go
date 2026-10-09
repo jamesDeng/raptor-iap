@@ -11,7 +11,11 @@ import (
 type PostgresSession struct{ conn *pgx.Conn }
 
 func ConnectPostgres(ctx context.Context, dsn string) (Session, error) {
-	conn, e := pgx.Connect(ctx, dsn)
+	cfg, e := postgresConfig(dsn)
+	if e != nil {
+		return nil, e
+	}
+	conn, e := pgx.ConnectConfig(ctx, cfg)
 	if e != nil {
 		return nil, e
 	}
@@ -62,4 +66,15 @@ func (s *PostgresSession) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_ = s.conn.Close(ctx)
+}
+
+// Named statement caches are connection-local and incompatible with the POC's
+// PgCat transaction pooling. Exec retains parameter binding without named caches.
+func postgresConfig(dsn string) (*pgx.ConnConfig, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	cfg.DefaultQueryExecMode = pgx.QueryExecModeExec
+	return cfg, nil
 }
