@@ -1,0 +1,24 @@
+name: PgCat metrics rules
+on:
+  pull_request:
+    branches: [main]
+    paths: ['test-assets/metrics/**', 'helm-chart/infra-test-metrics/**', '.github/workflows/pgcat-metrics.yml']
+  push:
+    branches: [main]
+    paths: ['test-assets/metrics/**', 'helm-chart/infra-test-metrics/**', '.github/workflows/pgcat-metrics.yml']
+permissions:
+  contents: read
+jobs:
+  rules:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - name: Verify shipped rules and deployed Prometheus semantics
+        run: |
+          cmp test-assets/metrics/recording-rules.yaml helm-chart/infra-test-metrics/files/recording-rules.yaml
+          docker run --rm --entrypoint /bin/promtool \
+            -v "$PWD/test-assets/metrics:/fixtures:ro" -w /fixtures \
+            prom/prometheus@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e \
+            test rules fixtures.yaml
