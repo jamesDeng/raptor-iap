@@ -80,7 +80,7 @@ func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (t
 	}
 	return out, nil
 }
-func decodeProgress(raw []byte, cursor int64) ([]execution.RuntimeEvent, error) {
+func decodeProgress(raw []byte, cursor int64, secrets ...string) ([]execution.RuntimeEvent, error) {
 	if len(raw) > 65536 {
 		return nil, ErrRuntimeUnavailable
 	}
@@ -97,6 +97,12 @@ func decodeProgress(raw []byte, cursor int64) ([]execution.RuntimeEvent, error) 
 		var extra any
 		if d.Decode(&extra) != io.EOF {
 			return nil, ErrRuntimeUnavailable
+		}
+		for _, secret := range secrets {
+			if secret != "" && bytes.Contains([]byte(e.Summary), []byte(secret)) {
+				e.Summary = "[redacted sensitive content]"
+				break
+			}
 		}
 		last = e.RuntimeSequence
 		if last > cursor {
@@ -286,7 +292,7 @@ func (n *NativeLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor
 		return out, e
 	}
 	if e == nil {
-		out.Events, e = decodeProgress(raw, cursor)
+		out.Events, e = decodeProgress(raw, cursor, append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential)...)
 		if e != nil {
 			return out, e
 		}

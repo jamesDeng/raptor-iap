@@ -1,0 +1,13 @@
+# Direct Gateway progress implementation plan
+
+**Goal:** Browser gets a request-scoped ticket through authenticated Raptor, then receives durable progress directly over Gateway WebSocket.
+**Architecture:** Gateway mints random opaque one-use tickets; only their SHA256 hashes are stored in PostgreSQL. Browser authenticates in its first WebSocket frame. Gateway replays ordered persisted events and streams new records plus execution snapshots. Raptor remains responsible for validating the browser session before issuing each ticket.
+**Scope:** Realtime transport for existing events, not approval/resume execution support or full T3 conversational rendering. No deployment or public endpoint provisioning in this change.
+**Constraints:** Ticket expires after 60 seconds; connection lease 60 seconds and reconnect requires a fresh Raptor-authorized ticket. Gateway URL and exact browser origins are explicit configuration; disabled by default. Credentials never go to browser. Invalid origins, reused/expired tickets, wrong requests, malformed/oversize frames fail closed. Replay cursor nonnegative, events deduplicated by sequence. Initial implementation reads durable rows every 500ms; WebSocket removes browser polling, but database notification optimization remains future work. Completed clean executions close subscription; paused states remain subscribed. Logout/navigation cancels browser connection. A logout in another tab can retain the existing read-only lease for at most 60 seconds.
+
+- [x] Gateway: migration, ticket issuance and consumption, configured WebSocket entry point, bounded connection/read/write handling, replay and snapshots; test ticket replay/expiry/binding and streaming.
+- [x] Raptor: authenticated CSRF-protected ticket endpoint, preserve existing request-read policy, service-authenticated Gateway issuance; test browser authentication and credential isolation.
+- [x] Front: select history, ticket, direct subscription, cursor replay and reconnect, terminal/cleanup closure, teardown on navigation; retain HTTP fallback only for disabled deployments, clearly label it; test stale callbacks, reconnect and deduplication.
+- [x] Run frontend tests and both Go suites with isolated PostgreSQL, build embedded assets, review configuration/docs, commit. Existing local T3 service stays available for user testing.
+
+Verification: both component full Go suites passed with isolated PostgreSQL; 33 platform frontend tests and 4 WorkLog tests passed. Actual socket test verified >101-row replay plus new event delivery. Browser-direct production ingress is not deployed. Independent review found cursor namespace, non-agent fallback, CSP and saved-history cases; all corrected with regression coverage.

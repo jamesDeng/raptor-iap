@@ -28,6 +28,7 @@ type RuntimeResource struct {
 	ID   string `json:"id"`
 }
 type RuntimeEvent struct {
+	Summary         string    `json:"summary,omitempty"`
 	RuntimeSequence int64     `json:"runtimeSequence"`
 	Kind            string    `json:"kind"`
 	Tool            string    `json:"tool,omitempty"`

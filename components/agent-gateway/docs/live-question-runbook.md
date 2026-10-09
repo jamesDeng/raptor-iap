@@ -70,3 +70,13 @@ These layered fixture tests do not prove vendor protocol compatibility, cross-ke
 Operational skills are not loaded in this read-only question slice: the commit is an immutable catalog/binding identifier, not evidence of skill execution. The model uses a fixed system prompt and six scoped reads. Loading operational skills requires a separate reviewed contract.
 
 No live acceptance success is claimed by this branch.
+
+### Public progress narration
+
+The harness asks the selected agent to provide a brief public description before each tool round. Completed assistant text from a `toolUse` message is emitted as `progress/running` with optional `summary`; thinking blocks and the final answer are excluded. This is paragraph-level progress, not token-level streaming. A model that emits no public pre-tool text still produces its normal tool events; the UI does not invent commentary.
+
+The harness drops public paragraphs exceeding 2,048 bytes instead of truncating them, preserving complete text for secret matching. Both the writer and Gateway enforce the same byte limit. Runtime polling redacts per-attempt credentials (and the native runtime key), and Gateway applies its existing secret redaction before storing either the runtime journal or public event. The existing request-bound WebSocket delivers these events, and assistant-ui displays their summaries inline with tool groups. No schema migration is needed for the existing JSON payloads.
+
+Roll out Gateway before the updated harness: the older strict runtime decoder rejects the new summary field. Updated Gateway accepts old events without summary. The frontend already understands progress summaries. This change does not add skill execution, permission approval or PR operations to the current read-only application-question harness.
+
+Verification uses the embedded Pi SDK with a deterministic local provider/MCP fixture (no model billing or cloud mutation), plus PostgreSQL journal/replay and existing stream regression tests. These tests do not constitute a production deployment or a new live execution.

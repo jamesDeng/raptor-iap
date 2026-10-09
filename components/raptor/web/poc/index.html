@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Raptor · Infrastructure platform</title><link rel="stylesheet" href="/style.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Raptor · Infrastructure platform</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/worklog.css?v=assistant-progress-2"></head>
 <body>
 <a id="workspace-skip" hidden class="skip-link" href="#workspace">Skip to workspace</a>
 <aside id="platform-sidebar" hidden>
@@ -48,7 +48,7 @@
     <div class="tabs" aria-label="Request views"><button data-request-tab="overview">Overview</button><button data-request-tab="result">Result</button><button data-request-tab="progress">Progress</button><button data-request-tab="approvals" hidden>Approvals</button></div>
     <div id="request-overview" data-request-view="overview"><h3>Submitted operation</h3><div id="request-input"></div><dl id="request-config" class="metadata-grid"></dl><div id="lifecycle"></div><details class="request-definition"><summary>Request definition</summary><pre id="request-definition"></pre></details><form id="skills-change"><label>Skills version<select id="change-skills"></select></label><label>Apply change<select name="strategy"><option value="next-pause">At next approval/review pause</option><option value="interrupt">Interrupt and restore with new skills</option></select></label><button>Change skills</button></form></div>
     <div id="request-result" data-request-view="result" hidden><p id="result-empty" class="section-description">No result is available yet. Check Progress for execution updates.</p><section id="answer-panel" hidden><h3>Answer</h3><div id="answer"></div><div id="answer-identity"></div><div id="answer-evidence"></div></section><div id="target-results"></div></div>
-    <div id="request-progress" data-request-view="progress" hidden><h3>Saved progress</h3><p id="progress-availability"></p><div id="progress"></div></div>
+    <div id="request-progress" data-request-view="progress" hidden><p id="progress-availability"></p><div id="t3-worklog" aria-label="Request handling progress"></div><div id="progress" hidden></div></div>
     <div id="request-approvals" data-request-view="approvals" hidden><h3>Approvals</h3><div id="approvals"></div></div>
   </section>
 </main>
@@ -57,5 +57,5 @@
   <section id="login-panel"><p class="eyebrow">WELCOME TO RAPTOR</p><h2>Your infrastructure workspace</h2><p class="section-description">Sign in to manage applications, inspect deployments, and track operations.</p><div id="login-feedback"><p id="message" role="status" aria-live="polite"></p></div><form id="login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form></section>
   <p class="login-footer">Infrastructure platform · Internal workspace</p>
 </main>
-<script type="module" src="/app.js"></script>
+<script type="module" src="/app.js?v=assistant-progress-1"></script>
 </body></html>

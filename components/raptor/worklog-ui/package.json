@@ -1,0 +1,19 @@
+{
+  "name": "raptor-worklog-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check:assets": "node build.mjs --check"
+  },
+  "dependencies": {
+    "@assistant-ui/react": "0.15.25",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "jsdom": "26.1.0"
+  }
+}

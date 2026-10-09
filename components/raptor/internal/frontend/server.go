@@ -25,10 +25,21 @@ func NewHandler(backendURL string) (http.Handler, error) {
 		return nil, e
 	}
 	static := http.FileServer(http.FS(files))
+	connectOrigin := os.Getenv("RAPTOR_PROGRESS_CONNECT_ORIGIN")
+	if connectOrigin != "" {
+		v, e := url.Parse(connectOrigin)
+		if e != nil || v.Host == "" || v.User != nil || v.Path != "" || v.RawQuery != "" || v.Fragment != "" || strings.ContainsAny(connectOrigin, " *;\t\r\n") || !(v.Scheme == "wss" || (v.Scheme == "ws" && (v.Hostname() == "localhost" || v.Hostname() == "127.0.0.1" || v.Hostname() == "::1"))) {
+			return nil, fmt.Errorf("invalid Gateway connect origin")
+		}
+	}
+	connectSource := "'self'"
+	if connectOrigin != "" {
+		connectSource += " " + connectOrigin
+	}
 	public := os.Getenv("RAPTOR_PUBLIC_FRONTEND") == "true"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src "+connectSource+"; frame-ancestors 'none'")
 		clean := path.Clean(r.URL.Path)
 		users := clean == "/api/v1/users" || strings.HasPrefix(clean, "/api/v1/users/")
 		envWrite := r.Method != "GET" && r.Method != "HEAD" && (clean == "/api/v1/environments" || strings.HasPrefix(clean, "/api/v1/environments/") || clean == "/api/v1/environment-groups" || strings.HasPrefix(clean, "/api/v1/environment-groups/"))

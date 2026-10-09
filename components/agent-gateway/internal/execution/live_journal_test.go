@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -267,5 +268,63 @@ func TestLateCancelAfterConfirmedCompletionIsIdempotent(t *testing.T) {
 	json.Unmarshal(got.CleanupStatus, &cleanup)
 	if e != nil || got.Status != "cancelled" || got.Result == nil || got.Result.Answer != "retained" || !cleanup.AccessRevoked {
 		t.Fatal("late cancel lost terminal evidence", e)
+	}
+}
+
+func TestPublicNarrationIsPersistedRedactedAndReplayable(t *testing.T) {
+	s, x, _ := liveAttempt(t)
+	ctx := context.Background()
+	s.KnownSecrets = []string{"fixture-sensitive-value"}
+	raw := []byte(`{"runtimeSequence":1,"kind":"progress","outcome":"running","summary":"Checking deployments","occurredAt":"2026-10-09T01:00:00Z"}`)
+	var v RuntimeEvent
+	if e := json.Unmarshal(raw, &v); e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; i < 2; i++ {
+		if e := s.AppendRuntimeEvents(ctx, x.AttemptID, "owner", []RuntimeEvent{v}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	rows, e := s.Events(ctx, x.RequestID, 0)
+	if e != nil || len(rows) != 1 || rows[0].Summary != "Checking deployments" {
+		t.Fatalf("public narration lost: %+v %v", rows, e)
+	}
+	raw = []byte(`{"runtimeSequence":2,"kind":"progress","outcome":"running","summary":"fixture-sensitive-value","occurredAt":"2026-10-09T01:00:01Z"}`)
+	if e := json.Unmarshal(raw, &v); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.AppendRuntimeEvents(ctx, x.AttemptID, "owner", []RuntimeEvent{v}); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.AppendRuntimeEvents(ctx, x.AttemptID, "owner", []RuntimeEvent{v}); e != nil {
+		t.Fatal(e)
+	}
+	rows, e = s.Events(ctx, x.RequestID, 1)
+	if e != nil || len(rows) != 1 || rows[0].Summary != "[redacted sensitive content]" {
+		t.Fatalf("sensitive narration: %+v %v", rows, e)
+	}
+	var persisted string
+	if e = s.Pool.QueryRow(ctx, "SELECT payload::text FROM gateway.runtime_events WHERE attempt_id=$1 AND runtime_sequence=2", x.AttemptID).Scan(&persisted); e != nil {
+		t.Fatal(e)
+	}
+	if strings.Contains(persisted, "fixture-sensitive-value") {
+		t.Fatal("raw credential persisted")
+	}
+}
+
+func TestPublicNarrationRejectsInvalidEnvelopes(t *testing.T) {
+	s, x, _ := liveAttempt(t)
+	for _, v := range []RuntimeEvent{
+		{Kind: "tool_start", Tool: "mcp__raptor__request_get", Outcome: "started", Summary: "not progress"},
+		{Kind: "progress", Outcome: "running", Summary: " "},
+		{Kind: "progress", Outcome: "running", Summary: strings.Repeat("字", 700)},
+		{Kind: "progress", Outcome: "running", Summary: string([]byte{0xff})},
+		{Kind: "progress", Outcome: "succeeded", Summary: "not running"},
+	} {
+		v.RuntimeSequence = 1
+		v.OccurredAt = time.Now().UTC()
+		if e := s.AppendRuntimeEvents(context.Background(), x.AttemptID, "owner", []RuntimeEvent{v}); e == nil {
+			t.Fatal("invalid narration accepted")
+		}
 	}
 }
