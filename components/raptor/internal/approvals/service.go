@@ -117,6 +117,17 @@ func (s *Service) Decide(ctx context.Context, user domain.User, id string, in De
 		return domain.Approval{}, domain.ErrUnavailable
 	}
 	defer tx.Rollback(ctx)
+	// Decisions and submission claims both lock request before approval.
+	var requestID string
+	if e = tx.QueryRow(ctx, "SELECT request_id::text FROM raptor.approvals WHERE id=$1", id).Scan(&requestID); e != nil {
+		if errors.Is(e, pgx.ErrNoRows) {
+			return domain.Approval{}, domain.ErrNotFound
+		}
+		return domain.Approval{}, domain.ErrUnavailable
+	}
+	if _, e = tx.Exec(ctx, "SELECT id FROM raptor.requests WHERE id=$1 FOR UPDATE", requestID); e != nil {
+		return domain.Approval{}, domain.ErrUnavailable
+	}
 	a, e := scan(tx.QueryRow(ctx, "SELECT id::text,request_id::text,action_id,binding,state,guidance FROM raptor.approvals WHERE id=$1 FOR UPDATE", id))
 	if e != nil {
 		return a, e
