@@ -1,0 +1,6 @@
+appCode: 07c55273-bd64-4ff8-bd0d-304afad5175a
+environment: rdev.ali
+image: ghcr.io/jamesdeng/raptor-iap-test-client@sha256:d5f71ab3db13e9c0290114c7e6c56199ce43160c80cde476b1bdec8762f51ee9
+dsnSecretName: traffic-db-dsn
+allowPlaintextPOC: true
+headless: true

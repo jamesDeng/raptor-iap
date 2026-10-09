@@ -1,0 +1,8 @@
+image: prom/prometheus@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+environment: rdev.ali
+proxyCode: b5267fa4-33b9-408c-a799-0ed56501061f
+targetDbCode: 6b704ca0-401e-41cb-b71f-2d310c6943ba
+inventoryConfigMapName: pgcat-provider-inventory
+inventoryRevision: 5c2cb1f33e6a2672e23d88d57c6afdf5c7891485
+clientDiscoveryNames:
+- rdev-test-client-client.raptor-test.svc.cluster.local

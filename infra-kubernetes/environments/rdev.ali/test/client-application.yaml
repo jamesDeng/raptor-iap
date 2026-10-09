@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rdev-test-client
+  namespace: argocd
+spec:
+  project: rdev-test
+  source:
+    repoURL: https://github.com/jamesDeng/raptor-iap.git
+    targetRevision: main
+    path: helm-chart/infra-test-client
+    helm:
+      valueFiles:
+      - ../../infra-kubernetes/environments/rdev.ali/test/client-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: raptor-test
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
