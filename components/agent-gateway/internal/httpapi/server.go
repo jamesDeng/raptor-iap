@@ -8,8 +8,14 @@ import (
 	"strconv"
 )
 
-func New(s *execution.Store, user, password string) http.Handler {
+func New(s *execution.Store, user, password string, options ...ProgressConfig) http.Handler {
 	m := http.NewServeMux()
+	cfg := ProgressConfig{}
+	if len(options) > 0 {
+		cfg = options[0]
+	}
+	progress := newProgress(s, cfg)
+	m.HandleFunc("POST /v1/requests/{id}/progress-ticket", progress.mint)
 	m.HandleFunc("POST /v1/requests/{id}/signals", func(w http.ResponseWriter, r *http.Request) {
 		var v execution.Signal
 		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
@@ -66,6 +72,10 @@ func New(s *execution.Store, user, password string) http.Handler {
 		write(w, 200, map[string]any{"data": v, "nextAfter": next, "hasMore": more})
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/v1/progress" {
+			progress.connect(w, r)
+			return
+		}
 		u, p, ok := r.BasicAuth()
 		if !ok || user == "" || password == "" || subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 || subtle.ConstantTimeCompare([]byte(p), []byte(password)) != 1 {
 			write(w, 401, map[string]string{"error": "Unauthorized"})

@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -155,7 +156,7 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8874"
 	}
-	server := &http.Server{Addr: addr, Handler: httpapi.New(s, user, password), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: addr, Handler: httpapi.New(s, user, password, httpapi.ProgressConfig{URL: os.Getenv("GATEWAY_PROGRESS_PUBLIC_URL"), Origins: strings.Split(os.Getenv("GATEWAY_PROGRESS_ORIGINS"), ",")}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("Gateway listening on %s", addr)
 	log.Fatal(server.ListenAndServe())
 }

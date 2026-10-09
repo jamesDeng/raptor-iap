@@ -9,6 +9,7 @@ import (
 )
 
 func (s *Service) Register(m *http.ServeMux, a *auth.Service) {
+	s.registerProgressTicket(m, a)
 	m.Handle("GET /api/v1/requests/{id}/events", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var after int64
 		var e error
