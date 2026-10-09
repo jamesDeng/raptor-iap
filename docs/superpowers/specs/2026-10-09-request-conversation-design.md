@@ -1,6 +1,6 @@
 # Request conversation design
 
-Status: proposed implementation contract; awaiting review of this written specification.
+Status: written specification approved by the user in this chat on 2026-10-09; implementation not yet started.
 Base: main at af0a1dab444956d04a746e37d8be804caa21f216 (PR #70).
 Branch: feat/request-conversation, created directly from that main commit.
 
