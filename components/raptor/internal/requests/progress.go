@@ -136,7 +136,7 @@ func (s *Service) Timeline(ctx context.Context, id string, after int64) (Timelin
 					return out, domain.ErrUnavailable
 				}
 				for _, event := range events {
-					if event.EventID == "" || event.Sequence <= 0 || len(event.Summary) > 4096 || len(event.Details) > 4096 || (event.EvidenceMode != "simulated" && event.EvidenceMode != "live") || (event.RequestID != "" && event.RequestID != id) || (event.EvidenceMode == "live" && (event.RequestID != id || event.AttemptID == "" || event.OccurredAt.IsZero())) {
+					if event.EventID == "" || event.Sequence <= 0 || len(event.Summary) > 4096 || len(event.Details) > 4096 || (event.EvidenceMode != "simulated" && event.EvidenceMode != "live") || (event.RequestID != "" && event.RequestID != id) || (event.EvidenceMode == "live" && (event.RequestID != id || (event.AttemptID == "" && event.Kind != "message") || event.OccurredAt.IsZero())) {
 						return out, domain.ErrUnavailable
 					}
 					if event.Sequence > cursor+1 {

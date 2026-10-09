@@ -10,6 +10,7 @@ import (
 
 func New(s *execution.Store, user, password string, options ...ProgressConfig) http.Handler {
 	m := http.NewServeMux()
+	registerConversation(m, s)
 	cfg := ProgressConfig{}
 	if len(options) > 0 {
 		cfg = options[0]
