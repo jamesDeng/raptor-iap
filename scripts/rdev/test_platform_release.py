@@ -90,3 +90,33 @@ class RRSAArgoPermissions(unittest.TestCase):
   self.assertIn({'group':'','kind':'ServiceAccount'},p['spec']['namespaceResourceWhitelist'])
   self.assertNotIn({'group':'','kind':'Secret'},p['spec']['namespaceResourceWhitelist'])
   self.assertNotIn('*',str(p['spec']['namespaceResourceWhitelist']))
+
+class ConversationRollout(unittest.TestCase):
+ def render(self,*extra):
+  helm=os.environ.get('HELM',shutil.which('helm'))
+  if not helm:self.skipTest('Helm required')
+  args=[helm,'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
+  for value in extra:args+=['--set',value]
+  p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr)
+  return {d['metadata']['name']:d for d in yaml.safe_load_all(p.stdout) if d and d['kind']=='Deployment'}
+ def test_conversation_flags_default_off(self):
+  defaults=yaml.safe_load((ROOT/'helm-chart/raptor-platform/values.yaml').read_text())
+  self.assertEqual(defaults['conversation'],{'gatewayEnabled':False,'raptorEnabled':False})
+  d=self.render('conversation.gatewayEnabled=false')
+  for name,key in [('agent-gateway','GATEWAY_CONVERSATION_ENABLED'),('raptor-backend','RAPTOR_CONVERSATION_ENABLED')]:
+   env={e['name']:e.get('value') for e in d[name]['spec']['template']['spec']['containers'][0]['env']}
+   self.assertEqual(env[key],'false')
+ def test_private_gateway_acceptance_keeps_raptor_closed(self):
+  d=self.render('conversation.gatewayEnabled=true','progress.publicURL=wss://raptor.rdev.raptor-iap.top/v1/progress','progress.origins=https://raptor.rdev.raptor-iap.top','progress.connectOrigin=wss://raptor.rdev.raptor-iap.top')
+  for name,key,expected in [('agent-gateway','GATEWAY_CONVERSATION_ENABLED','true'),('raptor-backend','RAPTOR_CONVERSATION_ENABLED','false'),('raptor-frontend','RAPTOR_PROGRESS_CONNECT_ORIGIN','wss://raptor.rdev.raptor-iap.top')]:
+   env={e['name']:e.get('value') for e in d[name]['spec']['template']['spec']['containers'][0]['env']};self.assertEqual(env[key],expected)
+ def test_public_gateway_only_exact_progress_get(self):
+  docs=list(yaml.safe_load_all((ROOT/'infra-kubernetes/environments/rdev.ali/kong/routes.yaml').read_text()))
+  routes=[]
+  for d in docs:
+   if d.get('kind')!='Ingress':continue
+   for rule in d['spec']['rules']:
+    for path in rule['http']['paths']:
+     if path['backend']['service']['name']=='agent-gateway':routes.append((d,path))
+  self.assertEqual(len(routes),1)
+  d,p=routes[0];self.assertEqual((p['path'],p['pathType']),('/v1/progress','Exact'));self.assertEqual(d['metadata']['annotations']['konghq.com/methods'],'GET');self.assertEqual(d['metadata']['annotations']['konghq.com/strip-path'],'false')

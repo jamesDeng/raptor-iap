@@ -34,3 +34,12 @@ gatewayLive:
 # Validated Infra API route and two-target Kubernetes restart permission.
 directRestart:
   enabled: true
+
+# Private runtime acceptance first; users cannot send until acceptance passes.
+conversation:
+  gatewayEnabled: true
+  raptorEnabled: false
+progress:
+  publicURL: wss://raptor.rdev.raptor-iap.top/v1/progress
+  origins: https://raptor.rdev.raptor-iap.top
+  connectOrigin: wss://raptor.rdev.raptor-iap.top
