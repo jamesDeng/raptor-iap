@@ -13,3 +13,7 @@ The [OSS-backed lifecycle guide](docs/setup/oss-sandbox-lifecycle.md) records th
 [Terraform networking/RAM preparation](docs/setup/sandbox-storage-network.md) and the [AgenticFS bootstrap tool](docs/setup/agenticfs-bootstrap.md) remain separate setup components. AgenticFS approval/mounting is not a prerequisite for the current encrypted OSS checkpoint route.
 
 Credentials, application context, questions and answers stay outside Git and CI. Offline checks use synthetic data and no cloud credentials.
+
+## T3 Code POC integration
+
+[Setup](docs/setup/t3code-bridge.md) · [Acceptance status](docs/setup/t3code-bridge-acceptance.md). The local ACP bridge supports read-only Raptor application questions; live health-question, cancellation and reload acceptance passed on raptor-backend/rdev.ali; see the evidence and verification limits.
