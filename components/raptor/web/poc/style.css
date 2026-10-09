@@ -204,3 +204,9 @@ h2{font-size:22px}
 #login-page #message:empty{display:none}
 .login-footer{font-size:12px;color:var(--muted);text-align:center}
 @media(max-width:540px){#login-page{padding:28px 16px}#login-page #login-panel{padding:26px 22px;margin-top:24px}}
+
+.progress-connection{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 16px;margin:12px 0 4px;min-height:32px}
+.progress-connection-badge{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border-radius:999px;background:#eff3f8;color:#52627a;font-size:12px;font-weight:600}
+.progress-connection-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.progress-connection[data-state="connected"] .progress-connection-badge{background:#edf8f2;color:#246744}
+.progress-connection[data-state="connecting"] .progress-connection-badge,.progress-connection[data-state="authenticating"] .progress-connection-badge,.progress-connection[data-state="reconnecting"] .progress-connection-badge{background:#fff8eb;color:#805816}
