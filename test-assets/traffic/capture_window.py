@@ -9,6 +9,7 @@ def seconds(value):
         if not math.isfinite(value):raise ValueError("nonfinite timestamp")
         return float(value)
     v=re.sub(r'(\.\d{6})\d+',r'\1',value).replace('Z','+0000')
+    v=re.sub(r'([+-]\d{2}):(\d{2})$',r'\1\2',v)
     d=None
     for pattern in ('%Y-%m-%dT%H:%M:%S.%f%z','%Y-%m-%dT%H:%M:%S%z'):
         try:d=datetime.datetime.strptime(v,pattern);break
