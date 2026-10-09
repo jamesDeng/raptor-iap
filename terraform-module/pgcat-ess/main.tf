@@ -17,6 +17,11 @@ locals {
   tags      = { Project = "raptor-iap", Owner = "test-env-skills", env = var.env_code, db-proxy-code = var.proxy_code, target-db-code = var.target_db_code }
   bootstrap = jsonencode({ env = var.env_code, proxy_code = var.proxy_code, target_db_code = var.target_db_code, db_host = var.target_db_host, database = var.target_database, secret_reference = var.secret_reference, revision = var.bootstrap_revision })
 }
+# Shared Alibaba-managed NLB prerequisite, retained when this POC is removed.
+resource "alicloud_resource_manager_service_linked_role" "nlb" {
+  service_name = "nlb.aliyuncs.com"
+  lifecycle { prevent_destroy = true }
+}
 resource "alicloud_nlb_load_balancer" "proxy" {
   load_balancer_name          = "raptor-test-${var.proxy_code}"
   address_type                = "Intranet"
@@ -33,7 +38,7 @@ resource "alicloud_nlb_load_balancer" "proxy" {
       vswitch_id = zone_mappings.value.vswitch_id
     }
   }
-  depends_on = [terraform_data.account_guard]
+  depends_on = [terraform_data.account_guard, alicloud_resource_manager_service_linked_role.nlb]
 }
 resource "alicloud_nlb_server_group" "proxy" {
   server_group_name          = "raptor-test-${var.proxy_code}"
