@@ -96,7 +96,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(raw_assess(self.good())['status'],'INCONCLUSIVE')
     def test_output_is_allowlisted(self):
         with tempfile.TemporaryDirectory() as d:
-            w=CaptureWindow(Path(d)/'e.jsonl');f=frame(0,0);f['password']='never retain'
+            w=CaptureWindow(Path(d)/'e.jsonl');f=frame(0,0);f['password']='never retain';f['metrics']['raw'][0]['password']='never retain'
             w.append(f);self.assertNotIn('password',w.path.read_text())
 
 if __name__=='__main__':unittest.main()

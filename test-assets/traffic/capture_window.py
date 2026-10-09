@@ -23,7 +23,7 @@ def clean(frame):
     for p in frame['pods']:
         s=p['snapshot'];a=s['sample']
         pods.append({'uid':p['uid'],'snapshot':{'sample':{k:a[k] for k in ('processId','at','sequence')+COUNTERS},'events':[{k:e[k] for k in EVENT_FIELDS if k in e} for e in s['events']], 'connected':s['connected'],'truncated':s['truncated'],'final':s.get('final',False)}})
-    return {'at':frame['at'],'phase':frame.get('phase','measurement'),'expectedReplicas':frame.get('expectedReplicas',len(pods)),'pods':pods,'inventory':{k:frame['inventory'][k] for k in ('observedAt','desired','members','healthyRegistered')},'metrics':{k:frame['metrics'][k] for k in ('observedAt','sourceAt','nodes','available','raw')}}
+    return {'at':frame['at'],'phase':frame.get('phase','measurement'),'expectedReplicas':frame.get('expectedReplicas',len(pods)),'pods':pods,'inventory':{k:frame['inventory'][k] for k in ('observedAt','desired','members','healthyRegistered')},'metrics':dict({k:frame['metrics'][k] for k in ('observedAt','sourceAt','nodes','available')},raw=[{k:r[k] for k in ('node','pool','user','kind','value','sourceAt')} for r in frame['metrics']['raw']])}
 class CaptureWindow:
     def __init__(self,path):
         self._sequences={}
