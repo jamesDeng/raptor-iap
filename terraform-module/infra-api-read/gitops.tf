@@ -2,7 +2,7 @@
 # deployment supplements; it does not create or change their trust policies.
 locals {
   gitops_roles          = var.gitops_plan_role == "" ? {} : { plan = var.gitops_plan_role, apply = var.gitops_apply_role }
-  component_policy_arns = [for name in ["${var.name}-read", "${var.name}-invoke", "${var.name}-gitops-plan", "${var.name}-gitops-apply"] : "acs:ram:*:${var.account_id}:policy/${name}"]
+  component_policy_arns = [for name in ["${var.name}-read", "${var.name}-invoke", "${var.name}-gitops-plan", "${var.name}-gitops-apply", "${var.name}-package-backup"] : "acs:ram:*:${var.account_id}:policy/${name}"]
   component_role_arns   = [for name in concat(["${var.name}-read", "${var.name}-invoke"], values(local.gitops_roles)) : "acs:ram::${var.account_id}:role/${name}"]
   component_group_arn   = "acs:apigateway:${var.region}:${var.account_id}:apigroup/${alicloud_api_gateway_group.read.id}"
 }
@@ -18,7 +18,7 @@ resource "alicloud_ram_policy" "gitops" {
     { Effect = "Allow", Action = ["apigateway:DescribeApiGroup", "apigateway:DescribeApiGroupDetail", "apigateway:DescribeApi", "apigateway:DescribeDeployedApi"], Resource = [local.component_group_arn] },
     { Effect = "Allow", Action = ["oss:ListObjects"], Resource = ["acs:oss:*:${var.account_id}:${var.gitops_state_bucket}"], Condition = { StringEquals = { "oss:Prefix" = ["rdev.ali/"] } } },
     { Effect = "Allow", Action = each.key == "apply" ? ["oss:GetObject", "oss:PutObject"] : ["oss:GetObject"], Resource = ["acs:oss:*:${var.account_id}:${var.gitops_state_bucket}/rdev.ali/infra-api.tfstate"] }
-    ], each.key != "apply" ? [] : [
+    ], var.deployment_user == "" ? [] : [{ Effect = "Allow", Action = ["ram:GetUser", "ram:ListPoliciesForUser"], Resource = ["acs:ram::${var.account_id}:user/${var.deployment_user}"] }], each.key != "apply" ? [] : [
     { Effect = "Allow", Action = ["ram:CreatePolicyVersion", "ram:DeletePolicyVersion"], Resource = local.component_policy_arns },
     { Effect = "Allow", Action = ["apigateway:CreateApi", "apigateway:ModifyApi", "apigateway:DeployApi"], Resource = [local.component_group_arn] },
     { Effect = "Allow", Action = ["ram:PassRole"], Resource = [alicloud_ram_role.invoke.arn] }

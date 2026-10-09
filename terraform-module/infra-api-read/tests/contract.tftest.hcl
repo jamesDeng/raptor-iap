@@ -114,3 +114,21 @@ run "infra_gitops_permission_owner" {
   }
 
 }
+run "function_package_backup_is_scoped" {
+  command = plan
+  variables {
+    deployment_user = "raptor-rdev-infra-deploy"
+  }
+  assert {
+    condition = jsondecode(alicloud_ram_policy.package_backup[0].policy_document).Statement == [{
+      Action   = ["fc:GetFunctionCode"]
+      Effect   = "Allow"
+      Resource = ["acs:fc:ap-southeast-1:1234567890123456:functions/raptor-read-test"]
+    }]
+    error_message = "Package backup must be read-only and restricted to this function."
+  }
+  assert {
+    condition     = alicloud_ram_user_policy_attachment.package_backup[0].user_name == "raptor-rdev-infra-deploy"
+    error_message = "Only the existing scoped deployment identity receives package backup access."
+  }
+}

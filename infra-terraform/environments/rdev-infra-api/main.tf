@@ -11,6 +11,7 @@ module "infra_api_read" {
   gitops_plan_role      = "raptor-iap-rdev-plan"
   gitops_apply_role     = "raptor-iap-rdev-apply"
   gitops_state_bucket   = "raptor-iap-tfstate-sg-200743"
+  deployment_user       = "raptor-rdev-infra-deploy"
   enable_proxy_commands = true
   proxy_targets = {
     "b5267fa4-33b9-408c-a799-0ed56501061f" = {
