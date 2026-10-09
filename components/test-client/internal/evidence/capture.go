@@ -18,6 +18,7 @@ type Target struct {
 	URL    string `json:"url"`
 }
 type RemoteSnapshot struct {
+	Final     bool            `json:"final"`
 	Sample    Sample          `json:"sample"`
 	Events    []traffic.Event `json:"events"`
 	Connected int             `json:"connected"`
