@@ -18,7 +18,7 @@ resource "alicloud_ram_policy" "gitops" {
     { Effect = "Allow", Action = ["apigateway:DescribeApiGroup", "apigateway:DescribeApiGroupDetail", "apigateway:DescribeApi", "apigateway:DescribeDeployedApi"], Resource = [local.component_group_arn] },
     { Effect = "Allow", Action = ["oss:ListObjects"], Resource = ["acs:oss:*:${var.account_id}:${var.gitops_state_bucket}"], Condition = { StringEquals = { "oss:Prefix" = ["rdev.ali/"] } } },
     { Effect = "Allow", Action = each.key == "apply" ? ["oss:GetObject", "oss:PutObject"] : ["oss:GetObject"], Resource = ["acs:oss:*:${var.account_id}:${var.gitops_state_bucket}/rdev.ali/infra-api.tfstate"] }
-    ], var.deployment_user == "" ? [] : [{ Effect = "Allow", Action = ["ram:GetUser", "ram:ListPoliciesForUser"], Resource = ["acs:ram::${var.account_id}:user/${var.deployment_user}"] }], each.key != "apply" ? [] : [
+    ], var.deployment_user == "" ? [] : [{ Effect = "Allow", Action = ["ram:GetUser", "ram:ListPoliciesForUser"], Resource = ["acs:ram:*:${var.account_id}:user/${var.deployment_user}"] }], each.key != "apply" ? [] : [
     { Effect = "Allow", Action = ["ram:CreatePolicyVersion", "ram:DeletePolicyVersion"], Resource = local.component_policy_arns },
     { Effect = "Allow", Action = ["apigateway:CreateApi", "apigateway:ModifyApi", "apigateway:DeployApi"], Resource = [local.component_group_arn] },
     { Effect = "Allow", Action = ["ram:PassRole"], Resource = [alicloud_ram_role.invoke.arn] }

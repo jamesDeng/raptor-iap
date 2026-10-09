@@ -47,7 +47,7 @@ func (p *ProxyBackend) groups(ctx context.Context, env domain.Environment, m dom
 				}
 				tags[*t.TagKey] = *t.TagValue
 			}
-			if tags["env"] != env.Code || tags["db-proxy-code"] != m.Code || tags["target-db-code"] != m.TargetDBCode {
+			if tags["env"] != env.Code || tags["db-proxy-code"] != m.Code {
 				return nil, domain.ErrScope
 			}
 			rows = append(rows, g)
@@ -199,6 +199,34 @@ func (p *ProxyBackend) unhealthy(ctx context.Context, env domain.Environment, m 
 	}
 	return bad, nil
 }
+
+// Filtered ESS enumeration returns only the filter tags. Hydrate the exact
+// registered group without filters before verifying its database association.
+func (p *ProxyBackend) groupDetail(ctx context.Context, env domain.Environment, m domain.ProxyMapping) (*ess.DescribeScalingGroupsResponseBodyScalingGroups, error) {
+	r, e := p.sdk.groups(ctx, &ess.DescribeScalingGroupsRequest{RegionId: tea.String(env.Region), ScalingGroupIds: []*string{tea.String(m.GroupID)}, PageNumber: tea.Int32(1), PageSize: tea.Int32(1)}, noRetry())
+	if e != nil || r == nil || r.Body == nil || r.Body.TotalCount == nil || *r.Body.TotalCount != 1 || r.Body.PageNumber == nil || *r.Body.PageNumber != 1 || len(r.Body.ScalingGroups) != 1 || r.Body.ScalingGroups[0] == nil {
+		return nil, providerRefusal()
+	}
+	g := r.Body.ScalingGroups[0]
+	if tea.StringValue(g.ScalingGroupId) != m.GroupID {
+		return nil, domain.ErrScope
+	}
+	tags := map[string]string{}
+	for _, tag := range g.Tags {
+		if tag == nil || tag.TagKey == nil || tag.TagValue == nil {
+			return nil, providerRefusal()
+		}
+		if _, exists := tags[*tag.TagKey]; exists {
+			return nil, providerRefusal()
+		}
+		tags[*tag.TagKey] = *tag.TagValue
+	}
+	if tags["env"] != env.Code || tags["db-proxy-code"] != m.Code || tags["target-db-code"] != m.TargetDBCode {
+		return nil, domain.ErrScope
+	}
+	return g, nil
+}
+
 func (p *ProxyBackend) Snapshot(ctx context.Context, env domain.Environment, code string) ([]policy.ProxySnapshot, error) {
 	m, e := p.mapping(ctx, env, code)
 	if e != nil {
@@ -211,7 +239,13 @@ func (p *ProxyBackend) Snapshot(ctx context.Context, env domain.Environment, cod
 	if len(groups) != 1 {
 		return nil, providerRefusal()
 	}
-	g := groups[0]
+	if tea.StringValue(groups[0].ScalingGroupId) != m.GroupID {
+		return nil, domain.ErrScope
+	}
+	g, e := p.groupDetail(ctx, env, m)
+	if e != nil {
+		return nil, e
+	}
 	if tea.StringValue(g.ScalingGroupId) != m.GroupID || tea.StringValue(g.LifecycleState) != "Active" || g.EnableDesiredCapacity == nil || !*g.EnableDesiredCapacity || g.DesiredCapacity == nil || g.MinSize == nil || g.MaxSize == nil || *g.MinSize < 0 || *g.MaxSize < *g.MinSize || *g.DesiredCapacity < *g.MinSize || *g.DesiredCapacity > *g.MaxSize {
 		return nil, providerRefusal()
 	}

@@ -115,9 +115,17 @@ run "infra_gitops_permission_owner" {
 
 }
 run "function_package_backup_is_scoped" {
+  override_resource {
+    target          = alicloud_api_gateway_group.read
+    override_during = plan
+    values          = { id = "group-fixture" }
+  }
   command = plan
   variables {
-    deployment_user = "raptor-rdev-infra-deploy"
+    deployment_user     = "raptor-rdev-infra-deploy"
+    gitops_plan_role    = "raptor-iap-rdev-plan"
+    gitops_apply_role   = "raptor-iap-rdev-apply"
+    gitops_state_bucket = "fixture-state"
   }
   assert {
     condition = jsondecode(alicloud_ram_policy.package_backup[0].policy_document).Statement == [{
@@ -130,5 +138,9 @@ run "function_package_backup_is_scoped" {
   assert {
     condition     = alicloud_ram_user_policy_attachment.package_backup[0].user_name == "raptor-rdev-infra-deploy"
     error_message = "Only the existing scoped deployment identity receives package backup access."
+  }
+  assert {
+    condition     = alltrue([for statement in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : statement.Resource == ["acs:ram:*:1234567890123456:user/raptor-rdev-infra-deploy"] if contains(statement.Action, "ram:ListPoliciesForUser")])
+    error_message = "RAM user metadata reads require the documented wildcard-region ARN."
   }
 }
