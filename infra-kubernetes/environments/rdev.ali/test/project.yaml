@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: rdev-test
+  namespace: argocd
+spec:
+  sourceRepos:
+  - https://github.com/jamesDeng/raptor-iap.git
+  destinations:
+  - server: https://kubernetes.default.svc
+    namespace: raptor-test
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+  - group: apps
+    kind: Deployment
+  - group: ''
+    kind: Service
+  - group: ''
+    kind: ConfigMap
