@@ -19,7 +19,7 @@ func proxyFixture(t *testing.T) (*ProxyBackend, domain.Environment, *ess.Describ
 	health := &nlb.GetListenerHealthStatusResponseBody{ListenerHealthStatus: []*nlb.GetListenerHealthStatusResponseBodyListenerHealthStatus{{ListenerId: tea.String("lsn-test@6432"), ListenerPort: tea.Int32(6432), ServerGroupInfos: []*nlb.GetListenerHealthStatusResponseBodyListenerHealthStatusServerGroupInfos{{ServerGroupId: tea.String("sgp-test"), HeathCheckEnabled: tea.Bool(true), NonNormalServers: []*nlb.GetListenerHealthStatusResponseBodyListenerHealthStatusServerGroupInfosNonNormalServers{}}}}}}
 	p := &ProxyBackend{identity: func(context.Context, domain.Environment) (string, error) { return "123", nil }}
 	p.sdk.groups = func(_ context.Context, r *ess.DescribeScalingGroupsRequest, _ *dara.RuntimeOptions) (*ess.DescribeScalingGroupsResponse, error) {
-		if tea.StringValue(r.RegionId) != "ap-southeast-1" || len(r.Tags) != 2 {
+		if tea.StringValue(r.RegionId) != "ap-southeast-1" || !(len(r.Tags) == 2 && len(r.ScalingGroupIds) == 0 || len(r.Tags) == 0 && len(r.ScalingGroupIds) == 1 && tea.StringValue(r.ScalingGroupIds[0]) == "asg-test") {
 			t.Fatal("unscoped group read")
 		}
 		return &ess.DescribeScalingGroupsResponse{Body: &ess.DescribeScalingGroupsResponseBody{TotalCount: tea.Int32(1), PageNumber: r.PageNumber, PageSize: r.PageSize, ScalingGroups: []*ess.DescribeScalingGroupsResponseBodyScalingGroups{g}}}, nil
@@ -187,5 +187,57 @@ func TestProxySnapshotRejectsZeroAndMultipleGroups(t *testing.T) {
 		if _, e := p.Snapshot(context.Background(), env, "proxy"); e == nil {
 			t.Fatalf("accepted %d groups", n)
 		}
+	}
+}
+
+func TestSnapshotHydratesTagsAfterFilteredEnumeration(t *testing.T) {
+	p, env, full, _, _, _ := proxyFixture(t)
+	calls := 0
+	p.sdk.groups = func(_ context.Context, req *ess.DescribeScalingGroupsRequest, _ *dara.RuntimeOptions) (*ess.DescribeScalingGroupsResponse, error) {
+		calls++
+		row := *full
+		if len(req.Tags) == 2 {
+			row.Tags = full.Tags[:2]
+		} else if len(req.Tags) != 0 || len(req.ScalingGroupIds) != 1 || tea.StringValue(req.ScalingGroupIds[0]) != "asg-test" {
+			t.Fatal("unscoped hydration")
+		}
+		return &ess.DescribeScalingGroupsResponse{Body: &ess.DescribeScalingGroupsResponseBody{TotalCount: tea.Int32(1), PageNumber: req.PageNumber, ScalingGroups: []*ess.DescribeScalingGroupsResponseBodyScalingGroups{&row}}}, nil
+	}
+	got, err := p.Snapshot(context.Background(), env, "proxy")
+	if err != nil || len(got) != 1 || calls != 2 {
+		t.Fatalf("filtered tags were not hydrated: calls=%d error=%v", calls, err)
+	}
+}
+
+func TestSnapshotRefusesInvalidHydratedAssociation(t *testing.T) {
+	for _, name := range []string{"missing association", "changed database", "foreign group", "incomplete result", "duplicate tag"} {
+		t.Run(name, func(t *testing.T) {
+			p, env, full, _, _, _ := proxyFixture(t)
+			p.sdk.groups = func(_ context.Context, req *ess.DescribeScalingGroupsRequest, _ *dara.RuntimeOptions) (*ess.DescribeScalingGroupsResponse, error) {
+				row := *full
+				row.Tags = append([]*ess.DescribeScalingGroupsResponseBodyScalingGroupsTags(nil), full.Tags...)
+				total := int32(1)
+				if len(req.Tags) == 2 {
+					row.Tags = row.Tags[:2]
+				} else {
+					switch name {
+					case "missing association":
+						row.Tags = row.Tags[:2]
+					case "changed database":
+						row.Tags[2] = &ess.DescribeScalingGroupsResponseBodyScalingGroupsTags{TagKey: tea.String("target-db-code"), TagValue: tea.String("foreign")}
+					case "foreign group":
+						row.ScalingGroupId = tea.String("asg-other")
+					case "incomplete result":
+						total = 2
+					case "duplicate tag":
+						row.Tags = append(row.Tags, row.Tags[0])
+					}
+				}
+				return &ess.DescribeScalingGroupsResponse{Body: &ess.DescribeScalingGroupsResponseBody{TotalCount: &total, PageNumber: req.PageNumber, ScalingGroups: []*ess.DescribeScalingGroupsResponseBodyScalingGroups{&row}}}, nil
+			}
+			if _, err := p.Snapshot(context.Background(), env, "proxy"); err == nil {
+				t.Fatal("accepted invalid hydrated group")
+			}
+		})
 	}
 }
