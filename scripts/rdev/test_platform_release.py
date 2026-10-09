@@ -102,14 +102,19 @@ class ConversationRollout(unittest.TestCase):
  def test_conversation_flags_default_off(self):
   defaults=yaml.safe_load((ROOT/'helm-chart/raptor-platform/values.yaml').read_text())
   self.assertEqual(defaults['conversation'],{'gatewayEnabled':False,'raptorEnabled':False})
-  d=self.render('conversation.gatewayEnabled=false')
+  d=self.render('conversation.gatewayEnabled=false','conversation.raptorEnabled=false')
   for name,key in [('agent-gateway','GATEWAY_CONVERSATION_ENABLED'),('raptor-backend','RAPTOR_CONVERSATION_ENABLED')]:
    env={e['name']:e.get('value') for e in d[name]['spec']['template']['spec']['containers'][0]['env']}
    self.assertEqual(env[key],'false')
  def test_private_gateway_acceptance_keeps_raptor_closed(self):
-  d=self.render('conversation.gatewayEnabled=true','progress.publicURL=wss://raptor.rdev.raptor-iap.top/v1/progress','progress.origins=https://raptor.rdev.raptor-iap.top','progress.connectOrigin=wss://raptor.rdev.raptor-iap.top')
+  d=self.render('conversation.gatewayEnabled=true','conversation.raptorEnabled=false','progress.publicURL=wss://raptor.rdev.raptor-iap.top/v1/progress','progress.origins=https://raptor.rdev.raptor-iap.top','progress.connectOrigin=wss://raptor.rdev.raptor-iap.top')
   for name,key,expected in [('agent-gateway','GATEWAY_CONVERSATION_ENABLED','true'),('raptor-backend','RAPTOR_CONVERSATION_ENABLED','false'),('raptor-frontend','RAPTOR_PROGRESS_CONNECT_ORIGIN','wss://raptor.rdev.raptor-iap.top')]:
    env={e['name']:e.get('value') for e in d[name]['spec']['template']['spec']['containers'][0]['env']};self.assertEqual(env[key],expected)
+ def test_accepted_rdev_release_opens_raptor_conversation(self):
+  d=self.render()
+  for name,key in [('agent-gateway','GATEWAY_CONVERSATION_ENABLED'),('raptor-backend','RAPTOR_CONVERSATION_ENABLED')]:
+   env={e['name']:e.get('value') for e in d[name]['spec']['template']['spec']['containers'][0]['env']}
+   self.assertEqual(env[key],'true')
  def test_public_gateway_only_exact_progress_get(self):
   docs=list(yaml.safe_load_all((ROOT/'infra-kubernetes/environments/rdev.ali/kong/routes.yaml').read_text()))
   routes=[]

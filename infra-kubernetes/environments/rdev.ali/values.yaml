@@ -35,10 +35,10 @@ gatewayLive:
 directRestart:
   enabled: true
 
-# Private runtime acceptance first; users cannot send until acceptance passes.
+# Same-session AX continuation accepted; messages still pass Raptor authorization.
 conversation:
   gatewayEnabled: true
-  raptorEnabled: false
+  raptorEnabled: true
 progress:
   publicURL: wss://raptor.rdev.raptor-iap.top/v1/progress
   origins: https://raptor.rdev.raptor-iap.top

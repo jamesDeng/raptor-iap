@@ -20,5 +20,6 @@
     "conversation.mjs": "c0f23610d0d8bdcb5727b6e5bd2e1001b0cb524d3e8fc80fa94acc2e4c18d892"
   },
   "sourceVerified": true,
-  "deployedConversationAcceptance": "pending"
+  "deployedConversationAcceptance": "passed",
+  "acceptanceRequestId": "e1cc0b0c-922a-4302-95ca-9078ede37ca2"
 }
