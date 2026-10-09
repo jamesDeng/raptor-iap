@@ -8,3 +8,5 @@ resources:
 
 # Explicit owner-approved private POC exception; evidence remains live.
 allowPlaintextPOC: false
+
+headless: false
