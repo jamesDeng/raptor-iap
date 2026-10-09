@@ -53,6 +53,6 @@ func cloudKube(config func(string) *openapi.Config) kubeFactory {
 			return nil, errors.New("invalid cluster configuration")
 		}
 		rc.Timeout = 10 * time.Second
-		return kubernetes.NewForConfig(rc)
+		return kubernetesClient(rc)
 	}
 }

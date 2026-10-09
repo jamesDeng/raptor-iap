@@ -69,3 +69,46 @@ func TestSubmissionServiceRoutes(t *testing.T) {
 		t.Fatal("conflicting record", w.Code)
 	}
 }
+
+func TestFleetServiceRoutesRequireAuthAndExactToken(t *testing.T) {
+	ctx := context.Background()
+	p := testutil.Database(t)
+	if e := db.Migrate(ctx, p); e != nil {
+		t.Fatal(e)
+	}
+	h := New(p)
+	h.RegisterService("service", "private")
+	in := approvals.FleetInput{EnvCode: "dev", GroupID: "group", Token: domain.NewID(), Intent: json.RawMessage(`{"kind":"scale"}`)}
+	call := func(path string, auth bool) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(in)
+		r := httptest.NewRequest("POST", path, bytes.NewReader(b))
+		if auth {
+			r.SetBasicAuth("service", "private")
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	for _, path := range []string{"/v1/fleet-claim", "/v1/fleet-record", "/v1/fleet-resolve"} {
+		if w := call(path, false); w.Code != 401 {
+			t.Fatalf("unauthorized %s status %d", path, w.Code)
+		}
+	}
+	if w := call("/v1/fleet-claim", true); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+	token := in.Token
+	in.Token = domain.NewID()
+	for _, path := range []string{"/v1/fleet-record", "/v1/fleet-resolve"} {
+		if w := call(path, true); w.Code != 409 {
+			t.Fatalf("foreign %s status %d", path, w.Code)
+		}
+	}
+	in.Token = token
+	if w := call("/v1/fleet-record", true); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+	if w := call("/v1/fleet-resolve", true); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+}

@@ -25,7 +25,12 @@ func main() {
 	if e != nil {
 		log.Fatal("credential provider unavailable")
 	}
-	h, e := buildHandler(reader, envs, os.Getenv("INFRA_USERNAME"), os.Getenv("INFRA_PASSWORD"), header, os.Getenv("INFRA_ENABLE_RESTART") == "true")
+	opts := runtimeOptions{Restart: os.Getenv("INFRA_ENABLE_RESTART") == "true", Proxy: os.Getenv("INFRA_ENABLE_PROXY_COMMANDS") == "true"}
+	deps, e := liveDependencies(envs, opts, os.Getenv("RAPTOR_APPROVAL_ORIGIN"), os.Getenv("RAPTOR_SERVICE_USERNAME"), os.Getenv("RAPTOR_SERVICE_PASSWORD"))
+	if e != nil {
+		log.Fatal("proxy runtime configuration unavailable")
+	}
+	h, e := buildRuntimeHandler(reader, envs, os.Getenv("INFRA_USERNAME"), os.Getenv("INFRA_PASSWORD"), header, opts, deps)
 	if e != nil {
 		log.Fatal("authentication configuration unavailable")
 	}

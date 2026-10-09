@@ -42,7 +42,7 @@ resource "alicloud_ram_role" "read" {
 resource "alicloud_ram_policy" "read" {
   depends_on      = [terraform_data.account_guard]
   policy_name     = "${var.name}-read"
-  policy_document = jsonencode({ Version = "1", Statement = local.read_statements })
+  policy_document = jsonencode({ Version = "1", Statement = concat(local.read_statements, local.proxy_statements) })
 }
 resource "alicloud_ram_role_policy_attachment" "read" {
   role_name   = alicloud_ram_role.read.role_name

@@ -32,6 +32,18 @@ func Load(path string) (map[string]domain.Environment, error) {
 		if _, ok := out[r.Code]; ok {
 			return nil, errors.New("duplicate scope")
 		}
+		codes, groups, backends := map[string]bool{}, map[string]bool{}, map[string]bool{}
+		for _, p := range r.Proxies {
+			for _, value := range []string{p.Code, p.GroupID, p.ServerGroupID, p.ListenerID, p.TargetDBCode} {
+				if strings.TrimSpace(value) != value || value == "" || len(value) > 256 {
+					return nil, errors.New("invalid proxy mapping")
+				}
+			}
+			if p.Port < 1 || p.Port > 65535 || codes[p.Code] || groups[p.GroupID] || backends[p.ServerGroupID] {
+				return nil, errors.New("invalid proxy mapping")
+			}
+			codes[p.Code], groups[p.GroupID], backends[p.ServerGroupID] = true, true, true
+		}
 		out[r.Code] = r
 	}
 	if len(out) == 0 {

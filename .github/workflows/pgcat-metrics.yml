@@ -17,6 +17,7 @@ jobs:
         with: {persist-credentials: false}
       - name: Verify shipped rules and deployed Prometheus semantics
         run: |
+          python3 -m unittest discover -s test-assets/metrics -p "test_*.py"
           cmp test-assets/metrics/recording-rules.yaml helm-chart/infra-test-metrics/files/recording-rules.yaml
           docker run --rm --entrypoint /bin/promtool \
             -v "$PWD/test-assets/metrics:/fixtures:ro" -w /fixtures \

@@ -60,3 +60,57 @@ run "ack_with_rds_discovery_contract" {
     error_message = "RDS discovery must add only the two read actions, without ESS or mutation access."
   }
 }
+
+run "proxy_permissions_and_routes" {
+  command = plan
+  variables {
+    ack_only              = true
+    cluster_id            = "cluster"
+    enable_proxy_commands = true
+    proxy_targets = {
+      proxy = { group_id = "asg-test", server_group_id = "sgp-test", load_balancer_id = "nlb-test" }
+    }
+  }
+  assert {
+    condition     = alltrue([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s.Resource == ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-test"] if contains(s.Action, "ess:ModifyScalingGroup") || contains(s.Action, "ess:SetInstancesProtection")])
+    error_message = "ESS mutation must be pinned to the POC group."
+  }
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "ess:ModifyScalingGroup")]) == 1 && length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:RemoveServersFromServerGroup")]) == 1
+    error_message = "Required runtime capabilities must exist exactly once."
+  }
+  assert {
+    condition     = toset(keys(alicloud_api_gateway_api.proxy)) == toset(["scale", "protection", "deregistration"])
+    error_message = "Expose exactly the reviewed individual commands."
+  }
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "ecs:DeleteInstance") || contains(s.Action, "ess:RemoveInstances")]) == 0
+    error_message = "Never grant direct node termination."
+  }
+}
+run "infra_gitops_permission_owner" {
+  command = plan
+  override_resource {
+    target          = alicloud_api_gateway_group.read
+    override_during = plan
+    values          = { id = "group-fixture" }
+  }
+  variables {
+    gitops_plan_role    = "raptor-iap-rdev-plan"
+    gitops_apply_role   = "raptor-iap-rdev-apply"
+    gitops_state_bucket = "fixture-state"
+  }
+  assert {
+    condition     = toset(keys(alicloud_ram_policy.gitops)) == toset(["plan", "apply"])
+    error_message = "Deployment IAM must belong to this component."
+  }
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : s if contains(s.Action, "ram:CreatePolicyVersion") || contains(s.Action, "apigateway:CreateApi") || contains(s.Action, "oss:PutObject")]) == 0
+    error_message = "Plan must not acquire cloud mutation or state-write rights."
+  }
+  assert {
+    condition     = alltrue([for s in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : s.Condition.StringEquals["oss:Prefix"] == ["rdev.ali/"] if contains(s.Action, "oss:ListObjects")])
+    error_message = "OSS backend lists the existing workspace prefix, not the state object name."
+  }
+
+}
