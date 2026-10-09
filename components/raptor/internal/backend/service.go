@@ -102,4 +102,21 @@ func (s *Server) RegisterService(user, password string) {
 		v, e := s.Approvals.Check(r.Context(), in)
 		httpx.Result(w, 200, v, e)
 	})
+	wrap("POST /v1/approval-claim", func(w http.ResponseWriter, r *http.Request) {
+		var in approvals.ApprovalInput
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		v, e := s.Approvals.Claim(r.Context(), in)
+		httpx.Result(w, 200, v, e)
+	})
+	wrap("POST /v1/approval-record", func(w http.ResponseWriter, r *http.Request) {
+		var in approvals.SubmissionRecordInput
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		e := s.Approvals.RecordSubmission(r.Context(), in)
+		httpx.Result(w, 200, map[string]bool{"recorded": e == nil}, e)
+	})
+
 }
