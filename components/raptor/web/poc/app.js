@@ -182,6 +182,6 @@ async function start(){
  for(const b of document.querySelectorAll('[data-action]'))b.onclick=async()=>{try{await api(`/requests/${requestId}/actions`,{method:'POST',body:{action:b.dataset.action,instructions:$('instructions').value}});await refreshRequest(requestId);}catch(err){showError(err);}};
  $('skills-change').onsubmit=async e=>{e.preventDefault();try{await api(`/requests/${requestId}/skills`,{method:'POST',body:{...pickedSkills($('change-skills')),strategy:e.target.elements.strategy.value}});await refreshRequest(requestId);}catch(err){showError(err);}};
  window.addEventListener('pagehide',()=>progress.close());
- try{const session=await api('/session');csrf=session.csrf;$('identity').textContent=session.user.username;await refreshCatalog();try{await restoreRoute();}catch(error){showError(error);}}catch{panel('login-panel');}
+ try{const session=await api('/session');csrf=session.csrf;$('identity').textContent=session.user.username;await refreshCatalog();try{await restoreRoute();}catch(error){showError(error);}}catch{panel('login-panel');}finally{$('login').querySelector('button[type="submit"]').disabled=false;}
 }
 if(typeof document!=='undefined')start().catch(showError);
