@@ -19,7 +19,7 @@ npm test
 npm run check:assets
 ```
 
-Commit the generated `../web/poc/worklog.js` and `worklog.css` so the existing Go embed and container build needs no Node runtime. CSS is scoped to `.assistant-progress`.
+Commit the generated `../web/poc/worklog.js` and `worklog.css` so the existing Go embed and container build needs no Node runtime. CSS is scoped to `.assistant-progress` and matches the approved dark probe. It explicitly resets platform summary weights, open-summary margins and pre backgrounds inside the host. The surrounding Request shell keeps its platform theme.
 
 From repository root:
 
