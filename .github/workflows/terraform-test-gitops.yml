@@ -29,6 +29,7 @@ jobs:
           terraform -chdir=infra-terraform/environments/rdev-test-foundation fmt -check
           terraform -chdir=infra-terraform/environments/rdev-test-foundation init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra-terraform/environments/rdev-test-foundation validate
+          terraform -chdir=infra-terraform/environments/rdev-test-foundation test
           terraform -chdir=terraform-module/pgcat-ess fmt -check -recursive
           terraform -chdir=terraform-module/pgcat-ess init -backend=false -input=false -lockfile=readonly
           terraform -chdir=terraform-module/pgcat-ess test

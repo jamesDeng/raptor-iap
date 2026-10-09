@@ -21,12 +21,14 @@ resource "alicloud_ram_policy" "state" {
   force       = false
   policy_document = jsonencode({
     Version = "1"
-    Statement = [
+    Statement = concat([
       { Effect = "Allow", Action = ["oss:ListObjects"], Resource = ["acs:oss:*:${var.account_id}:${var.state_bucket}"], Condition = { StringLike = { "oss:Prefix" = ["rdev.ali/test-pgcat/*"] } } },
       { Effect = "Allow", Action = each.key == "apply" ? ["oss:GetObject", "oss:PutObject"] : ["oss:GetObject"], Resource = ["acs:oss:*:${var.account_id}:${var.state_bucket}/rdev.ali/test-pgcat/terraform.tfstate"] },
       { Effect = "Allow", Action = ["oss:GetBucket*"], Resource = ["acs:oss:*:${var.account_id}:${var.config_bucket}"] },
       { Effect = "Allow", Action = ["ots:DescribeTable", "ots:GetRow", "ots:PutRow", "ots:DeleteRow"], Resource = ["acs:ots:ap-southeast-1:${var.account_id}:instance/raptor-tf-lock/table/terraform_lock"] }
-    ]
+      ], each.key == "apply" ? [
+      { Effect = "Allow", Action = ["oss:PutBucketLifecycle"], Resource = ["acs:oss:*:${var.account_id}:${var.config_bucket}"] }
+    ] : [])
   })
   depends_on = [terraform_data.account_guard]
 }

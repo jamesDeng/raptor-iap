@@ -19,3 +19,18 @@ Before the enabled fleet apply, apply the retirement configuration in rdev-pgcat
 The bootstrap artifact is reviewed, but live ECS first-boot and SQL through the NLB remain deployment acceptance checks. The separate metadata-read supplement requires owner approval before granting it; fleet creation permissions must also be reviewed before apply.
 
 For this single-owner POC, self-review remains allowed; apply environment reviewer protection is mandatory. Main branch protection is not currently configured.
+
+## Retained traffic evidence
+
+Only the `traffic-evidence/` prefix is eligible for lifecycle expiration. The
+existing private AES256-encrypted, versioned bucket and all PgCat configuration
+objects keep their ownership and protection. Current evidence expires after
+seven days; noncurrent versions expire one day after becoming noncurrent. OSS
+performs lifecycle processing asynchronously, so this is an eligibility policy,
+not an exact wall-clock deletion guarantee. Delete markers may remain.
+
+Apply-only GitOps permission to change lifecycle is bound to this one bucket.
+RAM cannot bind that bucket-level operation to a prefix; a future lifecycle
+configuration change could therefore affect configuration objects and must keep
+this prefix contract. Plan credentials cannot alter retention. No object-content
+read/write permission is added to either GitOps identity by this change.

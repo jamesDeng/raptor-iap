@@ -27,6 +27,14 @@ resource "alicloud_oss_bucket" "config" {
   force_destroy = false
   server_side_encryption_rule { sse_algorithm = "AES256" }
   versioning { status = "Enabled" }
+  # Never expire PgCat bootstrap credentials/configuration; evidence only.
+  lifecycle_rule {
+    id      = "traffic-evidence-expiry"
+    prefix  = "traffic-evidence/"
+    enabled = true
+    expiration { days = 7 }
+    noncurrent_version_expiration { days = 1 }
+  }
   tags = local.tags
   lifecycle { prevent_destroy = true }
   depends_on = [terraform_data.account_guard]
