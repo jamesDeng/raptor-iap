@@ -28,14 +28,14 @@ test('connection badge follows verified subscription, retry and deliberate compl
  await c.select('r');assert.equal(c.state.connection,'connecting');
  const first=Socket.all.at(-1);first.onopen();assert.equal(c.state.connection,'authenticating');
  first.message({type:'unknown'});assert.equal(c.state.connection,'authenticating');
- first.message({type:'snapshot',execution:{status:'running'}});assert.equal(c.state.connection,'connected');assert.equal(module.progressConnectionStatus(c.state).label,'WebSocket connected');
+ first.message({type:'snapshot',execution:{status:'running'}});assert.equal(c.state.connection,'connected');assert.equal(module.progressConnectionStatus(c.state).label,'Connected');
  first.onclose();assert.equal(c.state.connection,'reconnecting');assert.equal(module.progressConnectionStatus(c.state).status,'reconnecting');
  await jobs.pop()();assert.equal(c.state.connection,'reconnecting');const next=Socket.all.at(-1);next.onopen();next.message({type:'event',event:{requestId:'r',sequence:1}});assert.equal(c.state.connection,'connected');
  next.message({type:'complete'});assert.equal(c.state.connection,'disconnected');assert.equal(module.progressConnectionStatus(c.state).detail,'Execution finished; showing saved history');const scheduled=jobs.length;next.onclose();assert.equal(jobs.length,scheduled);assert.equal(c.state.connection,'disconnected');
  assert.ok(changes.includes('authenticating'));assert.ok(changes.includes('connected'));c.close();assert.equal(c.state.connection,'disconnected');
 });
-test('HTTP fallback is explicitly displayed as WebSocket disabled',async()=>{
+test('HTTP fallback is explicitly displayed as Disabled',async()=>{
  const {progressConnectionStatus}=await import('./direct-progress.js');
  const c=createDirectProgressController({read:async()=>({events:[]}),ticket:async()=>{throw Error('ProgressNotConfigured')},Socket,schedule:()=>0,cancel:()=>{}});
- await c.select('r');assert.equal(c.state.connection,'disabled');assert.equal(progressConnectionStatus(c.state).label,'WebSocket disabled');assert.match(progressConnectionStatus(c.state).detail,/HTTP/);c.close();
+ await c.select('r');assert.equal(c.state.connection,'disabled');assert.equal(progressConnectionStatus(c.state).label,'Disabled');assert.match(progressConnectionStatus(c.state).detail,/HTTP/);c.close();
 });

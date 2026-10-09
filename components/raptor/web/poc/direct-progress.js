@@ -26,7 +26,7 @@ export function createDirectProgressController({read,ticket,Socket=WebSocket,sch
 
 export function progressConnectionStatus(state){
  const status=state.connection??'disconnected';
- const labels={connecting:'WebSocket connecting',authenticating:'WebSocket verifying',connected:'WebSocket connected',reconnecting:'WebSocket reconnecting',disconnected:'WebSocket disconnected',disabled:'WebSocket disabled'};
+ const labels={connecting:'Connecting',authenticating:'Verifying',connected:'Connected',reconnecting:'Reconnecting',disconnected:'Disconnected',disabled:'Disabled'};
  const details={connecting:'Connecting to Gateway',authenticating:'Connection opened; verifying progress access',connected:'Live progress from Gateway',reconnecting:'Live sync unavailable; retrying connection',disconnected:state.mode==='complete'?'Execution finished; showing saved history':'Showing saved history',disabled:state.unavailable?'HTTP sync unavailable; showing saved history':'Updating progress via HTTP every two seconds'};
  return {status,label:labels[status]??labels.disconnected,detail:details[status]??details.disconnected};
 }
