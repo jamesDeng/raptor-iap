@@ -44,7 +44,7 @@ resource "alicloud_ram_policy" "fleet_read" {
   policy_document = jsonencode({
     Version = "1"
     Statement = [
-      { Effect = "Allow", Action = ["ess:DescribeScalingGroups", "ess:DescribeScalingConfigurations", "ess:DescribeScalingInstances", "ess:DescribeScalingActivities", "ess:ListTagResources", "nlb:ListLoadBalancers", "nlb:GetLoadBalancerAttribute", "nlb:ListServerGroups", "nlb:GetServerGroupAttribute", "nlb:ListServerGroupServers", "nlb:ListListeners", "nlb:GetListenerAttribute", "nlb:ListTagResources"], Resource = ["*"] },
+      { Effect = "Allow", Action = ["ess:DescribeScalingGroups", "ess:DescribeScalingConfigurations", "ess:DescribeScalingInstances", "ess:DescribeScalingActivities", "ess:ListTagResources", "nlb:ListLoadBalancers", "nlb:GetLoadBalancerAttribute", "nlb:ListServerGroups", "nlb:GetServerGroupAttribute", "nlb:ListServerGroupServers", "nlb:ListListeners", "nlb:GetListenerAttribute", "nlb:ListTagResources", "ram:ListTagResources"], Resource = ["*"] },
       { Effect = "Allow", Action = ["ram:GetPolicy", "ram:GetPolicyVersion"], Resource = ["acs:ram::${var.account_id}:policy/raptor-iap-rdev-pgcat-config-read"] }
     ]
   })
