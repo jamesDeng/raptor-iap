@@ -159,7 +159,7 @@ func commandFailure(e error) *operationError {
 		switch ce.Code {
 		case "SubmissionUnknown":
 			return &operationError{503, ce.Code}
-		case "TargetChanged", "InvalidCapacity", "AmbiguousTarget", "TargetNotFound", "NoEligibleNodes", "ConnectedClientsPresent", "InsufficientHealthyCapacity", "ApprovalRequired":
+		case "FleetBusy", "IdentityChanged", "TargetChanged", "InvalidCapacity", "AmbiguousTarget", "TargetNotFound", "NoEligibleNodes", "ConnectedClientsPresent", "InsufficientHealthyCapacity", "ApprovalRequired":
 			return &operationError{409, ce.Code}
 		case "MetricsUnavailable", "MetricsInvalid":
 			return &operationError{503, ce.Code}

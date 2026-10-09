@@ -3,10 +3,19 @@ package domain
 import "time"
 
 type Environment struct {
-	Code      string `json:"code"`
-	AccountID string `json:"accountId"`
-	Region    string `json:"region"`
-	ClusterID string `json:"clusterId,omitempty"`
+	Code      string         `json:"code"`
+	AccountID string         `json:"accountId"`
+	Region    string         `json:"region"`
+	ClusterID string         `json:"clusterId,omitempty"`
+	Proxies   []ProxyMapping `json:"proxies,omitempty"`
+}
+type ProxyMapping struct {
+	Code          string `json:"code"`
+	GroupID       string `json:"groupId"`
+	ServerGroupID string `json:"serverGroupId"`
+	ListenerID    string `json:"listenerId"`
+	Port          int    `json:"port"`
+	TargetDBCode  string `json:"targetDbCode"`
 }
 type Target struct{ EnvCode, AppCode, ClusterID, Namespace, Name, UID string }
 type Deployment struct {

@@ -1,0 +1,12 @@
+# Bind only to the verified RAM RoleId of raptor-rdev-infra-read, as for discovery.
+# The resource name includes the exact scheme/service/named-port proxy tuple.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: raptor-rdev-infra-metrics
+  namespace: raptor-test
+rules:
+  - apiGroups: ['']
+    resources: [services/proxy]
+    resourceNames: ['http:rdev-test-metrics-metrics:http']
+    verbs: [get]

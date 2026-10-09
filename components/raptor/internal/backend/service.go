@@ -119,4 +119,30 @@ func (s *Server) RegisterService(user, password string) {
 		httpx.Result(w, 200, map[string]bool{"recorded": e == nil}, e)
 	})
 
+	wrap("POST /v1/fleet-claim", func(w http.ResponseWriter, r *http.Request) {
+		var in approvals.FleetInput
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		v, e := s.Approvals.FleetClaim(r.Context(), in)
+		httpx.Result(w, 200, v, e)
+	})
+	wrap("POST /v1/fleet-resolve", func(w http.ResponseWriter, r *http.Request) {
+		var in approvals.FleetInput
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		e := s.Approvals.FleetResolve(r.Context(), in)
+		httpx.Result(w, 200, map[string]bool{"resolved": e == nil}, e)
+	})
+
+	wrap("POST /v1/fleet-record", func(w http.ResponseWriter, r *http.Request) {
+		var in approvals.FleetInput
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		e := s.Approvals.FleetRecord(r.Context(), in)
+		httpx.Result(w, 200, map[string]bool{"recorded": e == nil}, e)
+	})
+
 }
