@@ -54,7 +54,7 @@
 </main>
 <main id="login-page" aria-label="Sign in to Raptor">
   <div class="login-brand"><div class="brand-mark" aria-hidden="true">R</div><span>Raptor</span></div>
-  <section id="login-panel"><p class="eyebrow">WELCOME TO RAPTOR</p><h2>Your infrastructure workspace</h2><p class="section-description">Sign in to manage applications, inspect deployments, and track operations.</p><div id="login-feedback"><p id="message" role="status" aria-live="polite"></p></div><form id="login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form></section>
+  <section id="login-panel"><p class="eyebrow">WELCOME TO RAPTOR</p><h2>Your infrastructure workspace</h2><p class="section-description">Sign in to manage applications, inspect deployments, and track operations.</p><div id="login-feedback"><p id="message" role="status" aria-live="polite"></p></div><form id="login" method="post" action="/api/v1/login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button type="submit" disabled>Sign in</button></form></section>
   <p class="login-footer">Infrastructure platform · Internal workspace</p>
 </main>
 <script type="module" src="/app.js?v=assistant-progress-1"></script>
