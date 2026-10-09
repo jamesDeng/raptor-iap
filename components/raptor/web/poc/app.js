@@ -1,5 +1,5 @@
 import {createDirectProgressController} from './direct-progress.js';
-import {updateWorklog,resetWorklog} from './worklog.js';
+import {updateWorklog,resetWorklog} from './worklog.js?v=assistant-progress-1';
 export function validateParameters(schema, values) {
   const errors=[];
   for (const name of schema.required ?? []) if (!(name in values) || values[name]==='') errors.push(`${name} is required`);
