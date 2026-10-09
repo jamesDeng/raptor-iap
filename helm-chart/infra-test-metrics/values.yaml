@@ -10,3 +10,5 @@ resources:
   limits: {cpu: 500m, memory: 512Mi}
 
 clientDiscoveryNames: []
+# Optional, verified RAM RoleId; grants only GET of this private Service proxy.
+infraReaderUser: ''

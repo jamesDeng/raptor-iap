@@ -1,0 +1,28 @@
+{{- if .Values.infraReaderUser }}
+{{- $user := toString .Values.infraReaderUser -}}
+{{- if not (regexMatch "^[0-9]{15,30}$" $user) }}{{ fail "verified RAM RoleId required for metrics reader" }}{{ end }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: raptor-rdev-infra-metrics
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ['']
+    resources: [services/proxy]
+    resourceNames: [{{ printf "http:%s-metrics:http" .Release.Name | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: raptor-rdev-infra-metrics
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: raptor-rdev-infra-metrics
+subjects:
+  - kind: User
+    name: {{ $user | quote }}
+    apiGroup: rbac.authorization.k8s.io
+{{- end }}
