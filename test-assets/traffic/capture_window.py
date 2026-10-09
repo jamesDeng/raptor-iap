@@ -109,7 +109,7 @@ def assess(frames,cancelled=False,completed=False,max_gap=3):
                 ec={k:0 for k in COUNTERS}
                 for e in events:
                     if e['processId']!=pid or seconds(e['at'])>now+1:issue('invalid event identity/time')
-                    if new_process and previous is not None and seconds(e['at'])<previous:issue('uncovered new process history')
+                    if new_process and previous is not None and seconds(e['at'])<first_poll:issue('uncovered new process history')
                     op=e.get('operationId');kind=e['kind']
                     if kind=='scheduled':
                         ec['Scheduled']+=1

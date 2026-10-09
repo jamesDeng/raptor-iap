@@ -73,6 +73,16 @@ class WindowTests(unittest.TestCase):
     def test_duplicate_process_across_pods(self):
         a=self.good();other=copy.deepcopy(a[1]['pods'][0]);other['uid']='another';a[1]['pods'].append(other)
         self.assertEqual(assess(a)['status'],'INCONCLUSIVE')
+    def test_delayed_discovery_with_complete_in_window_history(self):
+        a=self.good();a.append(frame(3,1));a[-1]['phase']='settling'
+        a[-1]['pods'][0]['uid']='newpod';snap=a[-1]['pods'][0]['snapshot'];snap['sample']['processId']='newprocess'
+        for e in snap['events']:e['processId']='newprocess'
+        self.assertEqual(assess(a)['status'],'PASS')
+    def test_new_process_history_before_window_refuses(self):
+        a=self.good();a.append(frame(3,1));a[-1]['phase']='settling'
+        a[-1]['pods'][0]['uid']='newpod';snap=a[-1]['pods'][0]['snapshot'];snap['sample']['processId']='newprocess'
+        for e in snap['events']:e['processId']='newprocess';e['at']=-1
+        self.assertEqual(assess(a)['status'],'INCONCLUSIVE')
     def test_uncovered_new_process_history(self):
         a=self.good();a.append(frame(3,1));a[-1]['pods'][0]['uid']='newpod';snap=a[-1]['pods'][0]['snapshot'];snap['sample']['processId']='newprocess'
         for e in snap['events']:e['processId']='newprocess'

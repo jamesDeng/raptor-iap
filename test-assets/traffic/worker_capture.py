@@ -34,9 +34,16 @@ def query_metrics(base,stamp):
         for row in values:
             node,pool,user=key(row);raw.append({'node':node,'pool':pool,'user':user,'kind':kind,'value':float(row['value'][1]),'sourceAt':stamps[key(row)]})
     return {'observedAt':utc(),'sourceAt':min(float(r['value'][1]) for r in results['up']),'nodes':nodes,'available':True,'raw':raw}
-def capture_frame(inventory_path):
+def read_pod(p,final_snapshots):
+    uid=p['metadata']['uid']
+    if uid in final_snapshots:return {'uid':uid,'snapshot':final_snapshots[uid]}
+    snapshot=get('http://'+p['status']['podIP']+':9090/evidence')
+    if snapshot.get('final') is True:final_snapshots[uid]=snapshot
+    return {'uid':uid,'snapshot':snapshot}
+def capture_frame(inventory_path,final_snapshots=None):
+    if final_snapshots is None:final_snapshots={}
     stamp=utc();pods=kubectl('get','pods','-l','app.kubernetes.io/name=rdev-test-client-client','-o','json')['items']
-    def one(p):return {'uid':p['metadata']['uid'],'snapshot':get('http://'+p['status']['podIP']+':9090/evidence')}
+    def one(p):return read_pod(p,final_snapshots)
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:rows=list(pool.map(one,[p for p in pods if p['status'].get('podIP') and p['status'].get('phase') in ('Running','Pending')]))
     deployment=kubectl('get','deployment','rdev-test-client-client','-o','json')
     expected=deployment['spec']['replicas']
@@ -52,18 +59,18 @@ def main():
     if not 5<=v.seconds<=1800:raise SystemExit('bounded capture duration required')
     os.umask(0o077)
     if Path(v.output).exists():raise SystemExit('capture output already exists')
-    w=CaptureWindow(v.output);Path(v.output).touch(mode=0o600);start=time.monotonic();end=start+v.seconds;cancelled=False;errors=[]
+    w=CaptureWindow(v.output);Path(v.output).touch(mode=0o600);start=time.monotonic();end=start+v.seconds;cancelled=False;errors=[];final_snapshots={}
     try:
         tick=start
         while time.monotonic()<end:
-            try:w.append(capture_frame(v.inventory))
+            try:w.append(capture_frame(v.inventory,final_snapshots))
             except Exception:errors.append({'at':utc(),'reason':'client or provider snapshot unavailable'})
             tick+=1;time.sleep(max(0,tick-time.monotonic()))
         # Extend the end boundary at most five seconds to settle finite operations.
         settle_end=time.monotonic()+5
         while time.monotonic()<settle_end:
             try:
-                frame=capture_frame(v.inventory);frame['phase']='settling';w.append(frame)
+                frame=capture_frame(v.inventory,final_snapshots);frame['phase']='settling';w.append(frame)
                 if frame['pods'] and all(p['snapshot']['sample']['Scheduled']==p['snapshot']['sample']['Attempts']+p['snapshot']['sample']['Skipped'] for p in frame['pods']):break
             except Exception:errors.append({'at':utc(),'reason':'settling snapshot unavailable'})
             time.sleep(0.2)
