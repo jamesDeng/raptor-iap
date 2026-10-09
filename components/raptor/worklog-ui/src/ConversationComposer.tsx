@@ -1,0 +1,2 @@
+import {ComposerPrimitive} from '@assistant-ui/react';
+export function ConversationComposer(){return <ComposerPrimitive.Root className="conversation-composer"><ComposerPrimitive.Input placeholder="Ask a follow-up or add context…" aria-label="Message to agent" maxLength={4000} rows={3}/><ComposerPrimitive.Send>Send</ComposerPrimitive.Send><p className="progress-metadata">Messages do not grant permissions or approve operations.</p></ComposerPrimitive.Root>}
