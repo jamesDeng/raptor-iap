@@ -174,3 +174,22 @@ func TestRepositoryMetadataRejectsCredentialsAndTraversal(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyBootstrapAliasesRemainReadable(t *testing.T) {
+	s, _ := setup(t)
+	ctx := context.Background()
+	if e := s.CreateGroup(ctx, "g", "Group"); e != nil {
+		t.Fatal(e)
+	}
+	legacy := domain.Environment{Code: "rdev", GroupCode: "g", Stage: "dev", Config: map[string]any{"cloud": "aliyun", "cloudAccountId": "123", "clusterId": "ack", "k8sRepo": "https://github.com/jamesDeng/raptor-iap", "k8sPath": "infra-kubernetes"}}
+	if e := s.SaveEnvironment(ctx, legacy, false); e != nil {
+		t.Fatal(e)
+	}
+	got, e := s.GetEnvironment(ctx, "rdev")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got.AccountID != "123" || got.Config["cloudAccountId"] != "123" || len(got.Repositories) != 1 || got.Repositories[0].Purpose != "kubernetes" || got.Config["k8sPath"] != "infra-kubernetes" {
+		t.Fatal("bootstrap aliases lost", got)
+	}
+}
