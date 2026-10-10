@@ -31,4 +31,7 @@ func TestAdminDelegatesAndDoesNotLeakUpstreamErrors(t *testing.T) {
 	if !strings.Contains(string(b), "Raptor Admin") {
 		t.Fatal("admin page missing")
 	}
+	if !strings.Contains(string(b), "refresh().then(()=>refreshModelProviders()).catch(()=>{});") {
+		t.Fatal("model provider refresh must wait until its script is loaded")
+	}
 }

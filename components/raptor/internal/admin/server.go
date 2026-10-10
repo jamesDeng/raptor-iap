@@ -28,7 +28,7 @@ func NewHandler(backendURL string) (http.Handler, error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		content := strings.Replace(page, `<div id="environment-admin"></div>`, `<div id="environment-admin">`+environmentPanel+`</div>`, 1)
 		content = strings.Replace(content, "await refresh()", "await refresh();await refreshEnvironments();await refreshModelProviders()", -1)
-		content = strings.Replace(content, "refresh().catch(()=>{});", "refresh().then(refreshModelProviders).catch(()=>{});", 1)
+		content = strings.Replace(content, "refresh().catch(()=>{});", "refresh().then(()=>refreshModelProviders()).catch(()=>{});", 1)
 		content = strings.Replace(content, environmentPanel+`</div>`, environmentPanel+`</div><div id="model-admin"></div>`, 1)
 		content = strings.Replace(content, "</body>", environmentScript+"</body>", 1)
 		content = strings.Replace(content, "</body>", modelScript+"</body>", 1)
