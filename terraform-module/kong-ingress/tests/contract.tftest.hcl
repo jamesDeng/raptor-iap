@@ -13,3 +13,15 @@ run "dedicated_public_proxy" {
     error_message = "DNS publication must default off until HTTPS authentication passes."
   }
 }
+
+run "published_admin_dns" {
+  command = plan
+  variables {
+    vswitch_id = "vsw-t4nop9qf6v46gw2sa8l7d"
+    publish_dns = true
+  }
+  assert {
+    condition     = toset(keys(alicloud_alidns_record.public)) == toset(["raptor.rdev", "api.rdev", "admin.rdev"])
+    error_message = "Public DNS must include the Admin hostname alongside existing hosts."
+  }
+}
