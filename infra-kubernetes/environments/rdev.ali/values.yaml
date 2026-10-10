@@ -1,9 +1,9 @@
 environment: rdev.ali
 images:
-  raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:fd4722d250cb2481440c63aee1872d1a766b3ede5ce44027a9f366a7bef222d0
-  gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:f3e83db581f26420e7299114e6dda96b4634bcd04b259ac05168b206b0613749
+  raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:757f0326abc4eca41cdb7a9acd4f90f8be9ed269c3d91bba9ed71a6e0a8e4ff8
+  gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:5d533744623c01c9850ca3b65703dc6383d138d12309e2187ae44b883593417c
 repository:
-  revision: 138e96c6705e218a09abb7e41fa9512fd7ab7c61
+  revision: a0964bcd0990afe7d339300ea6826b60952e16af
 appCodes:
   raptor-admin: A00006
   agent-gateway: A00005
@@ -39,6 +39,8 @@ directRestart:
 conversation:
   gatewayEnabled: true
   raptorEnabled: true
+modelProviders:
+  enabled: false
 progress:
   publicURL: wss://raptor.rdev.raptor-iap.top/v1/progress
   origins: https://raptor.rdev.raptor-iap.top
