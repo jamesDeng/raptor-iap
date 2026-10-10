@@ -59,7 +59,8 @@ def command(args,cwd):
     print('GitOps step: '+stage, flush=True)
     r=subprocess.run(args,cwd=cwd,capture_output=True)
     if r.returncode:
-        diagnostic = (r.stdout+r.stderr).lower()
+        plain = re.sub(rb'\x1b\[[0-9;]*m', b'', r.stdout+r.stderr)
+        diagnostic = plain.lower()
         categories = [label for label, patterns in {
             'access-denied': (b'accessdenied', b'access denied', b'status code: 403', b'statuscode: 403'),
             'missing-backend-object': (b'nosuchbucket', b'nosuchkey', b'no such bucket'),
@@ -68,7 +69,7 @@ def command(args,cwd):
             'module-path': (b'unreadable module directory', b'module not installed'),
         }.items() if any(pattern in diagnostic for pattern in patterns)]
         # Terraform's first error heading is static prose; discard any value-bearing suffix.
-        heading = re.search(rb'Error: ([A-Za-z ]{3,60})(?::|\r?\n)', r.stdout+r.stderr)
+        heading = re.search(rb'Error: ([A-Za-z ]{3,60})(?::|\r?\n)', plain)
         safe_heading = heading.group(1).decode().strip() if heading else 'unavailable'
         codes=re.findall(rb'(?:ErrorCode|Code|code)[\s:=\"]+([A-Za-z][A-Za-z0-9_.]{2,80})', r.stdout+r.stderr)
         actions=re.findall(rb'\b(?:ram|ess|nlb|ecs|vpc|rds|oss|ots):[A-Za-z][A-Za-z0-9]{1,80}\b', r.stdout+r.stderr)
