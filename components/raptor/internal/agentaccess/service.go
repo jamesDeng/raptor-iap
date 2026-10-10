@@ -131,7 +131,7 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 		return out, domain.ErrConflict
 	}
 	var cluster string
-	if e = tx.QueryRow(ctx, "SELECT config->>'ackClusterId' FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
+	if e = tx.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
 		return out, domain.ErrUnavailable
 	}
 	out.Binding = Binding{RequestID: id, AttemptID: in.AttemptID, Operation: "application.question", ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, DefinitionSHA256: fingerprint, ClusterID: cluster}
@@ -232,7 +232,7 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 		return out, nil
 	}
 	var cluster string
-	if e = s.Pool.QueryRow(ctx, "SELECT config->>'ackClusterId' FROM raptor.environments WHERE code=$1", binding.EnvCode).Scan(&cluster); e != nil {
+	if e = s.Pool.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", binding.EnvCode).Scan(&cluster); e != nil {
 		return out, domain.ErrUnavailable
 	}
 	if cluster != binding.ClusterID {

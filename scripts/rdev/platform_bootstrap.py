@@ -76,16 +76,31 @@ COMMIT;
     bootstrap=[_secret('platform-db-admin',{'PGHOST':host,'PGPORT':'5432','PGUSER':'raptor_bootstrap','PGPASSWORD':passwords['admin'],'PGDATABASE':'postgres','PGSSLMODE':'require'}),_secret('platform-role-sql',{'roles.sql':sql}),_secret('platform-migrator',{'MIGRATION_DATABASE_URL':url('platform_migrator',passwords['migrator'])})]
     init=_job('platform-db-init',c['postgres_image'],['/bin/sh','-ec'],'platform-db-admin','platform-role-sql',['if psql -X -f /bootstrap/roles.sql > /tmp/bootstrap.log 2>&1; then echo database-initialized; else echo database-initialization-failed-inspect-private-log; exit 1; fi'])
     migrations=[_job('raptor-migrate',c['raptor_image'],['/usr/local/bin/backend'],'platform-migrator',args=['-migrate']),_job('gateway-migrate',c['gateway_image'],['/usr/local/bin/gateway'],'platform-migrator',args=['-migrate'])]
-    env_config={'cloud':'aliyun','cloudAccountId':c['account'],'region':c['region'],'clusterId':c['cluster'],'namespace':NAMESPACE,'terraformRepo':'https://github.com/jamesDeng/raptor-iap','terraformPath':'infra-terraform/environments/rdev.ali','k8sRepo':'https://github.com/jamesDeng/raptor-iap','k8sPath':'infra-kubernetes/environments/rdev.ali'}
+    terraform_path='infra-terraform/environments/rdev.ali'
+    kubernetes_path='infra-kubernetes/environments/rdev.ali'
+    repository='https://github.com/jamesDeng/raptor-iap'
     names=('raptor-frontend','raptor-backend','raptor-open-api','raptor-admin','agent-gateway')
     sql_names=','.join("'"+n+"'" for n in names)
     catalog_sql=f'''\\set ON_ERROR_STOP on
 BEGIN;
 SELECT pg_advisory_xact_lock(hashtext('raptor:platform-bootstrap'));
 INSERT INTO raptor.environment_groups(code,name) VALUES ('raptor','Raptor') ON CONFLICT DO NOTHING;
-INSERT INTO raptor.environments(code,group_code,stage,config) VALUES ('rdev.ali','raptor','dev','{json.dumps(env_config)}'::jsonb) ON CONFLICT DO NOTHING;
 DO $$ BEGIN
- IF NOT EXISTS (SELECT FROM raptor.environment_groups WHERE code='raptor' AND name='Raptor') OR NOT EXISTS (SELECT FROM raptor.environments WHERE code='rdev.ali' AND group_code='raptor' AND stage='dev' AND config='{json.dumps(env_config)}'::jsonb) THEN RAISE EXCEPTION 'Environment conflict'; END IF;
+ IF NOT EXISTS (SELECT FROM raptor.environments WHERE code='rdev.ali') THEN
+  INSERT INTO raptor.environments(code,group_code,stage,cloud,region,account_id,ack_cluster_id,cluster_id,namespace)
+   VALUES ('rdev.ali','raptor','dev','aliyun','{c['region']}','{c['account']}','{c['cluster']}','{c['cluster']}','{NAMESPACE}');
+  INSERT INTO raptor.environment_repositories(environment_code,purpose,repository_url,base_branch,directory)
+   VALUES ('rdev.ali','terraform','{repository}','','{terraform_path}'),('rdev.ali','kubernetes','{repository}','','{kubernetes_path}');
+  INSERT INTO raptor.environment_settings(environment_code,key,value_json)
+   VALUES ('rdev.ali','cloudAccountId','{json.dumps(c['account'])}'),('rdev.ali','k8sRepo','{json.dumps(repository)}'),('rdev.ali','k8sPath','{json.dumps(kubernetes_path)}');
+ END IF;
+END $$;
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT FROM raptor.environment_groups WHERE code='raptor' AND name='Raptor')
+  OR NOT EXISTS (SELECT FROM raptor.environments WHERE code='rdev.ali' AND group_code='raptor' AND stage='dev' AND cloud='aliyun' AND region='{c['region']}' AND account_id='{c['account']}' AND ack_cluster_id='{c['cluster']}' AND cluster_id='{c['cluster']}' AND namespace='{NAMESPACE}')
+  OR NOT EXISTS (SELECT FROM raptor.environment_repositories WHERE environment_code='rdev.ali' AND purpose='terraform' AND repository_url='{repository}' AND directory='{terraform_path}')
+  OR NOT EXISTS (SELECT FROM raptor.environment_repositories WHERE environment_code='rdev.ali' AND purpose='kubernetes' AND repository_url='{repository}' AND directory='{kubernetes_path}')
+  THEN RAISE EXCEPTION 'Environment conflict'; END IF;
  IF EXISTS (SELECT name FROM raptor.objects WHERE kind='application' AND name IN ({sql_names}) GROUP BY name HAVING count(*)>1) OR EXISTS (SELECT FROM raptor.objects WHERE kind='application' AND name IN ({sql_names}) AND description<>'Platform service created during rdev bootstrap') THEN RAISE EXCEPTION 'Catalog ownership conflict'; END IF;
 END $$;
 INSERT INTO raptor.objects(id,kind,code,name,description)

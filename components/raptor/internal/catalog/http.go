@@ -61,6 +61,9 @@ func (s *Service) Register(m *http.ServeMux, a *auth.Service) {
 			return
 		}
 		e := s.SaveEnvironment(r.Context(), in, false)
+		if e == nil {
+			in, e = s.GetEnvironment(r.Context(), in.Code)
+		}
 		httpx.Result(w, 201, in, e)
 	})))
 	m.Handle("GET /api/v1/environments/{code}", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +80,9 @@ func (s *Service) Register(m *http.ServeMux, a *auth.Service) {
 			return
 		}
 		e := s.SaveEnvironment(r.Context(), in, true)
+		if e == nil {
+			in, e = s.GetEnvironment(r.Context(), in.Code)
+		}
 		httpx.Result(w, 200, in, e)
 	})))
 }

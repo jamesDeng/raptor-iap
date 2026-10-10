@@ -38,5 +38,5 @@ class PostgreSQLBootstrap(unittest.TestCase):
    seed=json.loads((root/'catalog-secrets.json').read_text())['items'];data=next(x for x in seed if x['metadata']['name']=='platform-catalog-sql')['data'];sql=base64.b64decode(data['catalog.sql']).decode()
    runtime=next(x for x in seed if x['metadata']['name']=='platform-catalog-db');credentials=runtime['data'];e=dict(env,PGDATABASE='raptor_platform',PGUSER=base64.b64decode(credentials['PGUSER']).decode(),PGPASSWORD=base64.b64decode(credentials['PGPASSWORD']).decode());a=run([psql,'-X','-qAt','-v','ON_ERROR_STOP=1'],e,input=sql).stdout.strip().splitlines()[-1];b=run([psql,'-X','-qAt','-v','ON_ERROR_STOP=1'],e,input=sql).stdout.strip().splitlines()[-1]
    self.assertEqual(json.loads(a),json.loads(b));self.assertEqual(len(json.loads(a)),5);self.assertEqual(len(set(json.loads(a).values())),5);self.assertEqual(sorted(json.loads(a).values()),["A00001","A00002","A00003","A00004","A00005"])
-   run([psql,'-X','-c',"UPDATE raptor.environments SET config='{}' WHERE code='rdev.ali'"],e)
+   run([psql,'-X','-c',"UPDATE raptor.environments SET region='other' WHERE code='rdev.ali'"],e)
    conflict=run([psql,'-X','-qAt','-v','ON_ERROR_STOP=1'],e,input=sql,ok=False);self.assertNotEqual(conflict.returncode,0)
