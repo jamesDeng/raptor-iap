@@ -1,0 +1,91 @@
+name: Terraform rdev Kong DNS plan
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'terraform-module/kong-ingress/**'
+      - 'infra-terraform/environments/rdev.ali/kong.tf'
+      - 'infra-terraform/environments/rdev.ali/kong.auto.tfvars'
+      - 'scripts/gitops/runner.py'
+      - 'scripts/gitops/test_runner.py'
+      - '.github/workflows/terraform-rdev-kong-plan.yml'
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Offline contracts
+        run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          python3 -m unittest discover -s scripts/gitops -p 'test_runner.py' -v
+          terraform fmt -check -recursive terraform-module/kong-ingress infra-terraform/environments/rdev.ali
+          terraform -chdir=terraform-module/kong-ingress init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform-module/kong-ingress test -no-color
+  plan:
+    needs: check
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    environment: rdev.ali-plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Install plan dependencies
+        run: python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.RDEV_PLAN_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-expiration: 1800
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Prepare nonsecret stack inputs
+        env:
+          RDEV_PLAN_ROLE_ARN: ${{ vars.RDEV_PLAN_ROLE_ARN }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json, os, re
+          role = re.fullmatch(r'acs:ram::(\d{8,20}):role/[A-Za-z0-9_-]+', os.environ['RDEV_PLAN_ROLE_ARN'])
+          if not role:
+              raise ValueError('Invalid plan role ARN')
+          print('TF_STACK_INPUTS=' + json.dumps({'account_id': role.group(1), 'kubernetes_version': '1.35.7-aliyun.1'}))
+          PY
+      - name: Private Terraform plan and sanitized summary
+        env:
+          TF_STACK_NAME: rdev-kong
+          TF_SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          TF_STATE_BUCKET: ${{ vars.RDEV_STATE_BUCKET }}
+          TF_LOCK_ENDPOINT: ${{ vars.RDEV_LOCK_ENDPOINT }}
+          TF_SUMMARY_PATH: ${{ runner.temp }}/summary.md
+        run: python3 scripts/gitops/runner.py plan
+      - name: Comment plan result on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          if [ ! -f "$RUNNER_TEMP/summary.md" ]; then
+            printf 'Terraform rdev Kong DNS plan failed for `%s`. Private output withheld; check the workflow run.\n' "$SOURCE_SHA" > "$RUNNER_TEMP/summary.md"
+          fi
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/summary.md"

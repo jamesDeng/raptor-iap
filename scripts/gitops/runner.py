@@ -14,6 +14,7 @@ def select_stack(name):
     choices = {
         'test-foundation': {'root':'infra-terraform/environments/rdev-test-foundation','prefix':'rdev.ali/test-pgcat','key':'terraform.tfstate','label':'Terraform test foundation','binding':'raptor-test-foundation-v1'},
         'infra-api': {'root':'infra-terraform/environments/rdev-infra-api','prefix':'rdev.ali','key':'infra-api.tfstate','label':'Terraform Infra API','binding':'raptor-infra-api-v1'},
+        'rdev-kong': {'root':'infra-terraform/environments/rdev.ali','prefix':'rdev.ali','key':'terraform.tfstate','label':'Terraform rdev Kong DNS','binding':'raptor-rdev-kong-v1'},
     }
     if name not in choices:raise ValueError('Unknown stack')
     return choices[name]
@@ -66,6 +67,11 @@ def command(args,cwd):
 
 def validate_inputs(config,stack="test-foundation"):
     select_stack(stack)
+    if stack == 'rdev-kong':
+        if set(config) != {'account_id','kubernetes_version'}:raise ValueError('Invalid stack inputs')
+        if not isinstance(config['account_id'],str) or not re.fullmatch(r'\d{8,20}',config['account_id']):raise ValueError('Invalid account ID')
+        if config['kubernetes_version'] != '1.35.7-aliyun.1':raise ValueError('Invalid Kubernetes version')
+        return
     if stack == 'infra-api':
         if set(config) != {'trigger_url','gateway_instance_id'}:raise ValueError('Invalid stack inputs')
         if not isinstance(config['trigger_url'],str) or not re.fullmatch(r'https://[a-zA-Z0-9.-]+\.ap-southeast-1\.fcapp\.run/?',config['trigger_url']):raise ValueError('Invalid trigger')

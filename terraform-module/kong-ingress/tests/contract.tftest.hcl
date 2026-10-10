@@ -17,7 +17,7 @@ run "dedicated_public_proxy" {
 run "published_admin_dns" {
   command = plan
   variables {
-    vswitch_id = "vsw-t4nop9qf6v46gw2sa8l7d"
+    vswitch_id  = "vsw-t4nop9qf6v46gw2sa8l7d"
     publish_dns = true
   }
   assert {
