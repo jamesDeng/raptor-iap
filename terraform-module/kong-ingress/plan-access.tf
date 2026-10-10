@@ -24,6 +24,7 @@ resource "alicloud_ram_policy" "plan_access" {
       { Effect = "Allow", Action = ["oss:GetObject"], Resource = ["acs:oss:*:${var.account_id}:${var.state_bucket}/rdev.ali/terraform.tfstate"] },
       { Effect = "Allow", Action = ["ots:DescribeTable", "ots:GetRow", "ots:PutRow", "ots:DeleteRow"], Resource = ["acs:ots:ap-southeast-1:${var.account_id}:instance/raptor-tf-lock/table/terraform_lock"] },
       { Effect = "Allow", Action = ["alidns:DescribeDomainRecords", "alidns:DescribeDomainRecordInfo"], Resource = ["acs:alidns::${var.account_id}:domain/raptor-iap.top"] },
+      { Effect = "Allow", Action = ["vpc:ListTagResources"], Resource = ["*"] },
       { Effect = "Allow", Action = ["ram:GetPolicy", "ram:GetPolicyVersion", "ram:ListPolicyVersions", "ram:ListEntitiesForPolicy"], Resource = ["acs:ram:*:${var.account_id}:policy/raptor-rdev-kong-gitops-plan"] }
     ]
   })
