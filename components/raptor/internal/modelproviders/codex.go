@@ -14,6 +14,31 @@ import (
 
 type NodeFlow struct{ NodePath, HelperPath string }
 
+func (f NodeFlow) Discover(ctx context.Context) ([]DiscoveredModel, error) {
+	if !filepath.IsAbs(f.NodePath) || !filepath.IsAbs(f.HelperPath) {
+		return nil, errors.New("invalid model helper path")
+	}
+	cmd := exec.CommandContext(ctx, f.NodePath, f.HelperPath, "--models")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=/nonexistent", "PI_OFFLINE=1", "PI_TELEMETRY=0"}
+	cmd.Stderr = io.Discard
+	output, err := cmd.Output()
+	if err != nil || len(output) > 65536 {
+		return nil, errors.New("model discovery failed")
+	}
+	var result struct {
+		Models []DiscoveredModel `json:"models"`
+	}
+	if json.Unmarshal(output, &result) != nil || len(result.Models) == 0 {
+		return nil, errors.New("model discovery failed")
+	}
+	for _, model := range result.Models {
+		if model.ModelID == "" || model.DisplayName == "" {
+			return nil, errors.New("invalid model catalog")
+		}
+	}
+	return result.Models, nil
+}
+
 func NewNodeFlow(nodePath, helperPath string) NodeFlow {
 	return NodeFlow{NodePath: nodePath, HelperPath: helperPath}
 }

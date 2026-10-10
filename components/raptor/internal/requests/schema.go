@@ -77,7 +77,7 @@ func (s *Service) Validate(in domain.RequestInput) error {
 		return domain.ErrInvalid
 	}
 	for _, op := range in.Operations {
-		if op.Name == "application.question" && (len(in.Operations) != 1 || in.Model != "gpt-5.6-luna") {
+		if op.Name == "application.question" && (len(in.Operations) != 1 || (s.ModelPolicy == nil && in.Model != "gpt-5.6-luna") || (s.ModelPolicy != nil && (in.ProviderID != "codex" || in.Model == ""))) {
 			return domain.ErrInvalid
 		}
 	}

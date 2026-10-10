@@ -117,3 +117,27 @@ func (s *CredentialStore) ReplaceCredential(ctx context.Context, providerID Prov
 	}
 	return CredentialRecord{ProviderID: providerID, ConnectionVersion: expectedVersion, Generation: generation, Credential: append([]byte(nil), next...), ExpiresAt: expiry}, nil
 }
+
+func (s *CredentialStore) Disconnect(ctx context.Context, providerID ProviderID, actorID string) error {
+	if providerID != "codex" || actorID == "" {
+		return ErrCredentialUnavailable
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return ErrCredentialStore
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE raptor.model_provider_connections SET status='disconnected',connection_version=connection_version+1,updated_at=now() WHERE provider_id=$1`, providerID); err != nil {
+		return ErrCredentialStore
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM raptor.model_provider_credentials WHERE provider_id=$1`, providerID); err != nil {
+		return ErrCredentialStore
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO raptor.model_provider_audit(actor_id,provider_id,action,result) VALUES($1,$2,'disconnect','success')`, actorID, providerID); err != nil {
+		return ErrCredentialStore
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return ErrCredentialStore
+	}
+	return nil
+}

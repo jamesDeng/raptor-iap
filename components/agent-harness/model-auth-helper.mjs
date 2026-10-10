@@ -18,5 +18,10 @@ export async function runLogin(runtime,emit,signal) {
 if(process.argv[1]===fileURLToPath(import.meta.url)) {
  const {AuthStorage}=await import(new URL('./core/auth-storage.js',import.meta.resolve('@earendil-works/pi-coding-agent')));
  const runtime=await ModelRuntime.create({credentials:AuthStorage.inMemory(),modelsPath:null,refreshOnCreate:false});
- await runLogin(runtime,value=>process.stdout.write(JSON.stringify(value)+'\n'));
+ if(process.argv[2]==='--models') {
+  const models=runtime.getModels('openai-codex').map(model=>({modelId:model.id,displayName:model.name||model.id}));
+  process.stdout.write(JSON.stringify({models})+'\n');
+ } else {
+  await runLogin(runtime,value=>process.stdout.write(JSON.stringify(value)+'\n'));
+ }
 }

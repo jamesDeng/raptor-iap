@@ -5,9 +5,57 @@ import (
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/modelproviders"
 	"strings"
 	"testing"
 )
+
+type selectedModel struct {
+	enabled bool
+	version int64
+}
+
+func (m *selectedModel) ValidateSelection(_ context.Context, p modelproviders.ProviderID, id modelproviders.ModelID) (int64, error) {
+	if !m.enabled || p != "codex" || id != "gpt-6-sol" {
+		return 0, modelproviders.ErrInvalidModel
+	}
+	return m.version, nil
+}
+
+func TestQuestionSelectedModelIsBoundAndStaleSelectionRejected(t *testing.T) {
+	s, _, u := setup(t)
+	ctx := context.Background()
+	obj, err := s.Catalog.CreateObject(ctx, catalog.CreateObjectInput{Kind: "application", Name: "Model Bound"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &selectedModel{enabled: true, version: 3}
+	s.ModelPolicy = p
+	in := questionInput(t, "health?", "gpt-6-sol")
+	in.ProviderID = "codex"
+	in.Object.Code = obj.Code
+	in.EnvCode = "adev"
+	r, err := s.Create(ctx, u, "model-bound", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Definition.ProviderID != "codex" || r.Definition.Model != "gpt-6-sol" || r.Definition.ConnectionVersion != 3 {
+		t.Fatalf("binding lost: %+v", r.Definition)
+	}
+	in.ConnectionVersion = 99
+	if _, err = s.Create(ctx, u, "forged", in); err == nil {
+		t.Fatal("browser supplied connection version accepted")
+	}
+	in.ConnectionVersion = 0
+	p.enabled = false
+	if _, err = s.Create(ctx, u, "stale", in); err == nil {
+		t.Fatal("disabled model accepted")
+	}
+	again, err := s.Create(ctx, u, "model-bound", in)
+	if err != nil || again.ID != r.ID {
+		t.Fatalf("idempotent retry changed: %v", err)
+	}
+}
 
 func questionInput(t *testing.T, question, model string) domain.RequestInput {
 	t.Helper()
