@@ -39,6 +39,9 @@ func validRepositoryURL(raw string) bool {
 }
 func repoFromConfig(c map[string]any, purpose string) (domain.EnvironmentRepository, bool) {
 	prefix := purpose
+	if purpose == "kubernetes" && configString(c, "kubernetesRepo") == "" {
+		prefix = "k8s"
+	}
 	r := domain.EnvironmentRepository{Purpose: purpose, URL: configString(c, prefix+"Repo"), BaseBranch: configString(c, prefix+"BaseBranch"), Directory: configString(c, prefix+"Path")}
 	return r, r.URL != ""
 }
@@ -46,7 +49,7 @@ func (s *Service) saveStructuredEnvironment(ctx context.Context, v domain.Enviro
 	if !codePattern.MatchString(v.Code) || !validName(v.Stage) || v.GroupCode == "" || (v.Config != nil && !validConfig(v.Config)) {
 		return domain.ErrInvalid
 	}
-	for _, purpose := range []string{"terraform", "kubernetes"} {
+	for _, purpose := range []string{"terraform", "kubernetes", "k8s"} {
 		if raw, ok := v.Config[purpose+"Repo"]; ok {
 			urlString, ok := raw.(string)
 			if !ok || (urlString != "" && !validRepositoryURL(urlString)) {
@@ -76,6 +79,9 @@ func (s *Service) saveStructuredEnvironment(ctx context.Context, v domain.Enviro
 			v.Cloud = configString(old.Config, "cloud")
 			v.Region = configString(old.Config, "region")
 			v.AccountID = configString(old.Config, "accountId")
+			if v.AccountID == "" {
+				v.AccountID = configString(old.Config, "cloudAccountId")
+			}
 			v.ACKClusterID = configString(old.Config, "ackClusterId")
 			v.Repositories = old.Repositories
 			for _, purpose := range []string{"terraform", "kubernetes"} {
@@ -105,6 +111,9 @@ func (s *Service) saveStructuredEnvironment(ctx context.Context, v domain.Enviro
 		}
 		if v.AccountID == "" {
 			v.AccountID = configString(v.Config, "accountId")
+			if v.AccountID == "" {
+				v.AccountID = configString(v.Config, "cloudAccountId")
+			}
 		}
 		if v.ACKClusterID == "" {
 			v.ACKClusterID = configString(v.Config, "ackClusterId")
@@ -224,6 +233,9 @@ func loadEnvironment(ctx context.Context, tx pgx.Tx, code string, lock bool) (do
 			v.Config[k] = value
 		}
 	}
+	if _, legacy := v.Config["cloudAccountId"]; legacy && v.AccountID != "" {
+		v.Config["cloudAccountId"] = v.AccountID
+	}
 	rows, e = tx.Query(ctx, "SELECT purpose,repository_url,base_branch,directory FROM raptor.environment_repositories WHERE environment_code=$1 ORDER BY purpose,id", code)
 	if e != nil {
 		return v, storeError(e)
@@ -235,13 +247,25 @@ func loadEnvironment(ctx context.Context, tx pgx.Tx, code string, lock bool) (do
 			break
 		}
 		v.Repositories = append(v.Repositories, r)
-		if _, exists := v.Config[r.Purpose+"Repo"]; !exists {
+		_, exists := v.Config[r.Purpose+"Repo"]
+		if !exists {
 			v.Config[r.Purpose+"Repo"] = r.URL
 			if r.BaseBranch != "" {
 				v.Config[r.Purpose+"BaseBranch"] = r.BaseBranch
 			}
 			if r.Directory != "" {
 				v.Config[r.Purpose+"Path"] = r.Directory
+			}
+		}
+		if r.Purpose == "kubernetes" && !exists {
+			if _, legacy := v.Config["k8sRepo"]; legacy {
+				v.Config["k8sRepo"] = r.URL
+			}
+			if _, legacy := v.Config["k8sBaseBranch"]; legacy && r.BaseBranch != "" {
+				v.Config["k8sBaseBranch"] = r.BaseBranch
+			}
+			if _, legacy := v.Config["k8sPath"]; legacy && r.Directory != "" {
+				v.Config["k8sPath"] = r.Directory
 			}
 		}
 	}

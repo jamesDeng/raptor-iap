@@ -29,8 +29,8 @@ BEGIN
   UPDATE raptor.environments SET
    cloud = CASE WHEN jsonb_typeof(config->'cloud')='string' THEN config->>'cloud' ELSE cloud END,
    region = CASE WHEN jsonb_typeof(config->'region')='string' THEN config->>'region' ELSE region END,
-   account_id = CASE WHEN jsonb_typeof(config->'accountId')='string' THEN config->>'accountId' ELSE account_id END,
-   ack_cluster_id = CASE WHEN jsonb_typeof(config->'ackClusterId')='string' THEN config->>'ackClusterId' ELSE ack_cluster_id END,
+   account_id = CASE WHEN jsonb_typeof(config->'accountId')='string' THEN config->>'accountId' WHEN jsonb_typeof(config->'cloudAccountId')='string' THEN config->>'cloudAccountId' ELSE account_id END,
+   ack_cluster_id = CASE WHEN jsonb_typeof(config->'ackClusterId')='string' THEN config->>'ackClusterId' WHEN jsonb_typeof(config->'clusterId')='string' THEN config->>'clusterId' ELSE ack_cluster_id END,
    cluster_id = CASE WHEN jsonb_typeof(config->'clusterId')='string' THEN config->>'clusterId' ELSE cluster_id END,
    namespace = CASE WHEN jsonb_typeof(config->'namespace')='string' THEN config->>'namespace' ELSE namespace END,
    infra_api_url = CASE WHEN jsonb_typeof(config->'infraApiUrl')='string' THEN config->>'infraApiUrl' ELSE infra_api_url END;
@@ -41,6 +41,10 @@ BEGIN
   INSERT INTO raptor.environment_repositories(environment_code,purpose,repository_url,base_branch,directory)
    SELECT code,'kubernetes',config->>'kubernetesRepo',CASE WHEN jsonb_typeof(config->'kubernetesBaseBranch')='string' THEN config->>'kubernetesBaseBranch' ELSE '' END,CASE WHEN jsonb_typeof(config->'kubernetesPath')='string' THEN config->>'kubernetesPath' ELSE '' END
    FROM raptor.environments WHERE jsonb_typeof(config->'kubernetesRepo')='string' AND config->>'kubernetesRepo'<>''
+   ON CONFLICT DO NOTHING;
+  INSERT INTO raptor.environment_repositories(environment_code,purpose,repository_url,base_branch,directory)
+   SELECT code,'kubernetes',config->>'k8sRepo',CASE WHEN jsonb_typeof(config->'k8sBaseBranch')='string' THEN config->>'k8sBaseBranch' ELSE '' END,CASE WHEN jsonb_typeof(config->'k8sPath')='string' THEN config->>'k8sPath' ELSE '' END
+   FROM raptor.environments WHERE jsonb_typeof(config->'k8sRepo')='string' AND config->>'k8sRepo'<>''
    ON CONFLICT DO NOTHING;
   -- Keep all non-string recognized values and every unknown value verbatim as JSON text.
   INSERT INTO raptor.environment_settings(environment_code,key,value_json)

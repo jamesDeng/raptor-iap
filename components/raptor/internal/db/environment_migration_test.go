@@ -27,6 +27,10 @@ func TestStructuredEnvironmentMigrationPreservesEveryKey(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	_, e = tx.Exec(ctx, `INSERT INTO raptor.environments(code,group_code,stage,config) VALUES('rdev','g','dev','{"cloudAccountId":"456","clusterId":"ack-alias","k8sRepo":"https://github.com/jamesDeng/raptor-iap","k8sPath":"infra-kubernetes"}'::jsonb)`)
+	if e != nil {
+		t.Fatal(e)
+	}
 	migration, _ := migrations.Files.ReadFile("008_structured_environments.sql")
 	if _, e = tx.Exec(ctx, string(migration)); e != nil {
 		t.Fatal(e)
@@ -51,6 +55,13 @@ func TestStructuredEnvironmentMigrationPreservesEveryKey(t *testing.T) {
 	}
 	if e = tx.QueryRow(ctx, "SELECT value_json='7' FROM raptor.environment_settings WHERE environment_code='dev' AND key='terraformBaseBranch'").Scan(&preserved); e != nil || !preserved {
 		t.Fatal("nonstring known value lost", e)
+	}
+	var aliasAccount, aliasACK string
+	if e = tx.QueryRow(ctx, "SELECT account_id,ack_cluster_id FROM raptor.environments WHERE code='rdev'").Scan(&aliasAccount, &aliasACK); e != nil || aliasAccount != "456" || aliasACK != "ack-alias" {
+		t.Fatal("legacy aliases not mapped", e)
+	}
+	if e = tx.QueryRow(ctx, "SELECT count(*) FROM raptor.environment_repositories WHERE environment_code='rdev' AND purpose='kubernetes'").Scan(&count); e != nil || count != 1 {
+		t.Fatal("k8s alias repository lost", e, count)
 	}
 	if _, e = tx.Exec(ctx, string(migration)); e != nil {
 		t.Fatal("migration replay", e)

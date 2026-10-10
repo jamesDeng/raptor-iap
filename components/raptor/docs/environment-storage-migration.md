@@ -7,9 +7,11 @@ This inventory is from the tracked repository. It does not claim to enumerate va
 | Existing key | New storage | Readers |
 | --- | --- | --- |
 | `cloud`, `region`, `accountId`, `ackClusterId` | Named environment columns | Admin, catalog HTTP, request context and MCP; `ackClusterId` also in request validation and agent access |
+| `cloudAccountId` | `account_id` plus preserved legacy key | rdev platform bootstrap and infra discovery guard |
 | `clusterId`, `namespace`, `infraApiUrl` | Named environment columns | Infra adapter; `namespace` also in agent MCP projection |
 | `terraformRepo`, `terraformBaseBranch`, `terraformPath` | Terraform row in `environment_repositories` | Existing HTTP/MCP `config` response; Admin form |
 | `kubernetesRepo`, `kubernetesBaseBranch`, `kubernetesPath` | Kubernetes row in `environment_repositories` | Existing HTTP/MCP `config` response; Admin form |
+| `k8sRepo`, `k8sBaseBranch`, `k8sPath` | Kubernetes row plus preserved legacy keys | rdev platform bootstrap and compatibility response |
 | Any other key, any nonstring value, and empty string values | `environment_settings` keyed by environment and original key | Existing HTTP/MCP `config` response |
 
 The repository has no other production direct SQL reader of `environments.config` after `agentaccess` switches to `ack_cluster_id`. `catalog` assembles the compatibility response from columns and related records. `requests`, `adapters`, `openapi`, and `agentaccess` continue to see their prior values. The agent MCP filter continues to expose only `ackClusterId`, `region`, and `namespace`.

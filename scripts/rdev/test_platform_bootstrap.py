@@ -113,5 +113,6 @@ class ReaderCluster(unittest.TestCase):
    doc=json.loads((root/'catalog-secrets.json').read_text())
    import base64
    sql=base64.b64decode(doc['items'][0]['data']['catalog.sql']).decode()
-   self.assertIn('"clusterId": "'+m.OWNED['cluster']+'"',sql)
-   self.assertIn('"terraformPath": "infra-terraform/environments/rdev.ali"',sql)
+   self.assertIn("ack_cluster_id,cluster_id,namespace",sql)
+   self.assertIn(m.OWNED['cluster'],sql)
+   self.assertIn("'terraform','https://github.com/jamesDeng/raptor-iap','','infra-terraform/environments/rdev.ali'",sql)
