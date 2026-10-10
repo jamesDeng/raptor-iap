@@ -72,7 +72,7 @@ def command(args,cwd):
         safe_heading = heading.group(1).decode().strip() if heading else 'unavailable'
         codes=re.findall(rb'(?:ErrorCode|Code|code)[\s:=\"]+([A-Za-z][A-Za-z0-9_.]{2,80})', r.stdout+r.stderr)
         actions=re.findall(rb'\b(?:ram|ess|nlb|ecs|vpc|rds|oss|ots):[A-Za-z][A-Za-z0-9]{1,80}\b', r.stdout+r.stderr)
-        print('Failed step: '+stage+'; heading: '+safe_heading+'; category: '+(', '.join(categories) or 'unclassified')+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable')+'; permission actions: '+(', '.join(sorted({a.decode() for a in actions})) or 'unavailable'), file=sys.stderr)
+        print('Failed step: '+stage+'; exit: '+str(r.returncode)+'; output bytes: '+str(len(r.stdout))+'/'+str(len(r.stderr))+'; heading: '+safe_heading+'; category: '+(', '.join(categories) or 'unclassified')+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable')+'; permission actions: '+(', '.join(sorted({a.decode() for a in actions})) or 'unavailable'), file=sys.stderr)
         raise RuntimeError('Terraform command failed; raw output withheld')
     return r.stdout
 
