@@ -21,7 +21,7 @@ Raptor owns provider connections, encrypted credential records, discovered model
 
 The public model-list endpoint returns only enabled, connected models and nonsecret display metadata. Admin endpoints expose provider status, discovered models, and enabled flags but never credential bytes. A catalog entry is not an entitlement guarantee; only a successful inference confirms that the account can use that model. The UI distinguishes discovered, enabled, and last-verified states.
 
-For the first adapter, the internal provider key is `codex` and model IDs are the exact IDs accepted by the pinned Pi runtime. Subsequent adapters may use different credential and discovery mechanisms without changing the Request selection contract. Provider IDs are namespaced in persisted definitions and attempt bindings so identical model names from different providers cannot collide.
+For the first adapter, the Raptor provider key is `codex`, mapped to Pi 0.99.2's `openai-codex` provider; model IDs are the exact IDs that provider accepts. Pi's `openai` provider is a different Sign in with ChatGPT/API route and must not be substituted for Codex device-code login. Subsequent adapters may use different credential and discovery mechanisms without changing the Request selection contract. Provider IDs are namespaced in persisted definitions and attempt bindings so identical model names from different providers cannot collide.
 
 ## Admin connection and credential lifecycle
 

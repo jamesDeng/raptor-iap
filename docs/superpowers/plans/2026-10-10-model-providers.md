@@ -17,7 +17,7 @@
 - Browser responses, Request definitions, logs, progress, and returned artifacts never contain access or refresh tokens.
 - Existing Requests keep their immutable definitions; do not import old checkpoint credentials implicitly.
 - No silent provider/model fallback, no implicit enablement of newly discovered models, and no live rollout before supported authorization and account eligibility are verified.
-- Runtime changes must preserve the current exclusive attempt lease, checkpoint fencing, and cleanup semantics.
+- Runtime changes must preserve the current exclusive attempt lease, checkpoint fencing, and cleanup semantics. Raptor provider `codex` maps to Pi provider `openai-codex`, not Pi `openai`.
 - User has authorized PR merge, deployment, and post-deployment testing. Do not infer authorization to provision unrelated cloud resources.
 
 ## Review Focus
