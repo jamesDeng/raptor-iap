@@ -21,7 +21,17 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 		return ErrInvalid
 	}
 	if mode == "live" && v.Kind != "cancel" {
-		return ErrInvalid
+		if v.Kind != "approval" && v.Kind != "continue" && v.Kind != "block" {
+			return ErrInvalid
+		}
+		var raw []byte
+		if e = tx.QueryRow(ctx, "SELECT binding FROM gateway.attempts WHERE id=(SELECT attempt_id FROM gateway.executions WHERE request_id=$1)", v.RequestID).Scan(&raw); e != nil {
+			return ErrInvalid
+		}
+		var binding AttemptBinding
+		if json.Unmarshal(raw, &binding) != nil || !binding.journalValid() || binding.Operation != "db-proxy.replace-nodes" || binding.RequestID != v.RequestID {
+			return ErrInvalid
+		}
 	}
 	switch v.Kind {
 	case "cancel", "block", "interrupt", "continue", "approval", "review", "merged", "skills", "pause":

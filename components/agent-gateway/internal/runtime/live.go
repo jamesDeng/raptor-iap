@@ -17,6 +17,7 @@ import (
 // NativeLive is deliberately separate from the legacy simulated Runtime.
 // A single leased worker calls it serially; no secret is recoverable from the journal.
 type NativeLive struct {
+	Observe          ObservationPreparer
 	Config           LiveConfig
 	Management       Management
 	Verifier         CheckpointVerifier
@@ -37,16 +38,42 @@ type nativeRun struct {
 	modelLease            ModelLease
 	modelRefreshProcessed bool
 	modelRevoked          bool
+	skillsBundle          []byte
+	observation           ObservationMaterial
 }
+type operationSessionReference struct {
+	Version          int    `json:"version"`
+	RequestID        string `json:"requestId"`
+	DefinitionSHA256 string `json:"definitionSha256"`
+	SkillsCommit     string `json:"skillsCommit"`
+	Model            string `json:"model"`
+	SessionID        string `json:"sessionId"`
+	File             string `json:"file"`
+	SHA256           string `json:"sha256"`
+}
+
+func (r operationSessionReference) checkpoint(archive execution.VerifiedCheckpoint) execution.SessionCheckpoint {
+	return execution.SessionCheckpoint{RequestID: r.RequestID, DefinitionSHA256: r.DefinitionSHA256, SkillsCommit: r.SkillsCommit, Model: r.Model, SessionID: r.SessionID, SessionFile: r.File, SessionSHA256: r.SHA256, Archive: archive}
+}
+
+type pausedFile struct {
+	execution.LiveWait
+	RequestID        string `json:"requestId"`
+	DefinitionSHA256 string `json:"definitionSha256"`
+}
+
 type terminalFile struct {
-	SessionID       string                `json:"sessionId,omitempty"`
-	SessionFile     string                `json:"sessionFile,omitempty"`
-	Phase           string                `json:"phase"`
-	Passed          bool                  `json:"passed"`
-	Error           string                `json:"error"`
-	CheckpointError string                `json:"checkpointError"`
-	Result          *execution.LiveResult `json:"result"`
-	Checkpoint      struct {
+	SessionID        string                     `json:"sessionId,omitempty"`
+	SessionFile      string                     `json:"sessionFile,omitempty"`
+	Paused           *pausedFile                `json:"paused,omitempty"`
+	Usage            []execution.Usage          `json:"usage,omitempty"`
+	SessionReference *operationSessionReference `json:"sessionReference,omitempty"`
+	Phase            string                     `json:"phase"`
+	Passed           bool                       `json:"passed"`
+	Error            string                     `json:"error"`
+	CheckpointError  string                     `json:"checkpointError"`
+	Result           *execution.LiveResult      `json:"result"`
+	Checkpoint       struct {
 		ArchiveKey  string `json:"archive_key"`
 		ChecksumKey string `json:"checksum_key"`
 		SHA256      string `json:"sha256"`
@@ -62,6 +89,15 @@ func modelSecretValues(lease ModelLease) []string {
 	}
 	_ = json.Unmarshal(lease.Credential, &credential)
 	return []string{credential.Access, credential.Refresh}
+}
+
+func (t terminalFile) observation() execution.LiveObservation {
+	out := execution.LiveObservation{Terminal: t.Paused == nil, Result: t.Result, FailureCode: t.Error, Usage: t.Usage, SessionID: t.SessionID, SessionFile: t.SessionFile}
+	if t.Paused != nil {
+		wait := t.Paused.LiveWait
+		out.Paused = &wait
+	}
+	return out
 }
 
 func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (terminalFile, error) {
@@ -86,8 +122,33 @@ func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (t
 	if out.Passed && (out.Result == nil || execution.ValidateLiveResult(*out.Result, b, secrets...) != nil) {
 		return out, ErrRuntimeUnavailable
 	}
-	allowed := map[string]bool{"NeedsSignIn": true, "Cancelled": true, "Timeout": true, "TurnLimit": true, "McpUnavailable": true, "ToolFailed": true, "MissingEvidence": true, "InvalidEvidence": true, "InvalidResult": true, "UnexpectedToolCatalog": true, "InvalidProgress": true, "ModelFailed": true, "RunnerFailed": true, "CheckpointFailed": true, "CredentialRefreshUnconfirmed": true}
-	if !out.Passed && !allowed[out.Error] {
+	if out.SessionReference != nil {
+		if out.SessionReference.Version != 1 {
+			return out, ErrRuntimeUnavailable
+		}
+		if _, e := out.SessionReference.checkpoint(execution.VerifiedCheckpoint{}).ReferenceFor(b); e != nil {
+			return out, ErrRuntimeUnavailable
+		}
+	}
+	if out.Passed && b.Operation == "db-proxy.replace-nodes" && out.SessionReference == nil {
+		return out, ErrRuntimeUnavailable
+	}
+	allowed := map[string]bool{"NeedsSignIn": true, "Cancelled": true, "Timeout": true, "TurnLimit": true, "McpUnavailable": true, "ToolFailed": true, "MissingEvidence": true, "MutationAlreadySubmitted": true, "InvalidEvidence": true, "InvalidResult": true, "UnexpectedToolCatalog": true, "InvalidProgress": true, "ModelFailed": true, "RunnerFailed": true, "CheckpointFailed": true, "CredentialRefreshUnconfirmed": true}
+	if out.Paused != nil {
+		p := out.Paused
+		if b.Operation != "db-proxy.replace-nodes" || b.ObjectKind != "db-proxy" || !p.Valid() || (p.Kind == "resource" && p.BindingDigest != b.DefinitionSHA256) || p.RequestID != b.RequestID || p.DefinitionSHA256 != b.DefinitionSHA256 || out.SessionReference == nil || out.Passed || out.Error != "" || out.CheckpointError != "" || out.Result != nil || out.Phase != "live-inference" {
+			return out, ErrRuntimeUnavailable
+		}
+	}
+	if len(out.Usage) > 10 {
+		return out, ErrRuntimeUnavailable
+	}
+	for _, u := range out.Usage {
+		if u.Input < 0 || u.Output < 0 || u.TotalTokens < 0 || u.Input > 10000000 || u.Output > 10000000 || u.TotalTokens > 10000000 {
+			return out, ErrRuntimeUnavailable
+		}
+	}
+	if !out.Passed && out.Paused == nil && !allowed[out.Error] {
 		return out, ErrRuntimeUnavailable
 	}
 	if out.Result != nil && execution.ValidateLiveResult(*out.Result, b, secrets...) != nil {
@@ -95,6 +156,13 @@ func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (t
 	}
 	return out, nil
 }
+func checkTerminalScope(t terminalFile, scope *execution.ReplacementScope) error {
+	if t.Result != nil && t.Result.Replacement != nil && (scope == nil || t.Result.Replacement.Scope != *scope) {
+		return ErrRuntimeUnavailable
+	}
+	return nil
+}
+
 func decodeProgress(raw []byte, cursor int64, secrets ...string) ([]execution.RuntimeEvent, error) {
 	if len(raw) > 65536 {
 		return nil, ErrRuntimeUnavailable
@@ -156,8 +224,20 @@ func (n *NativeLive) resource(ctx context.Context, b execution.AttemptBinding, k
 func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (execution.RuntimeHandle, error) {
 	h := execution.RuntimeHandle{RequestID: in.Binding.RequestID}
 	b := in.Binding
+	var skillsBundle []byte
+	if b.Operation == "db-proxy.replace-nodes" {
+		var e error
+		skillsBundle, e = BuildSkillsBundle(ctx, n.Config.SkillsRepository, in.Skills)
+		if e != nil || in.Skills.CommitSHA != b.SkillsCommit || in.Access.ReplacementScope == nil {
+			return h, ErrConfiguration
+		}
+	}
 	if n.Config.Validate() != nil || in.Access.Binding != b || in.Access.RaptorMcpURL != n.Config.RaptorMcpURL || in.Access.InfraMcpURL != n.Config.InfraMcpURL || len(in.Access.Credential) < 32 || !in.Deadline.After(time.Now()) {
 		return h, ErrConfiguration
+	}
+	observation, e := n.prepareObservation(ctx, in)
+	if e != nil {
+		return h, e
 	}
 	if _, e := n.Verifier.VerifyCheckpoint(ctx, in.Checkpoint); e != nil {
 		return h, e
@@ -184,7 +264,7 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	}
 	attemptCtx, cancelAttempt := context.WithDeadline(ctx, in.Deadline)
 	ctx = attemptCtx
-	r := &nativeRun{start: in, cancel: cancelAttempt, modelLease: modelLease}
+	r := &nativeRun{start: in, cancel: cancelAttempt, skillsBundle: skillsBundle, observation: observation, modelLease: modelLease}
 	n.runs[b.RequestID] = r
 	if e := n.intent(ctx, b, "key", "raptor-"+b.AttemptID); e != nil {
 		return h, e
@@ -227,7 +307,7 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	if e = n.intent(ctx, b, "command", b.AttemptID); e != nil {
 		return h, e
 	}
-	command, e := r.transport.StartCommand(ctx, r.sandbox, CommandSpec{Executable: "/bin/sh", Args: []string{"-c", "umask 077; exec node /tmp/raptor-harness/runner.mjs /tmp/raptor-private/attempt-job.json /tmp/raptor-private/attempt-result.json"}, Tag: b.AttemptID, Deadline: time.Minute * 3})
+	command, e := r.transport.StartCommand(ctx, r.sandbox, CommandSpec{Executable: "/bin/sh", Args: []string{"-c", privatePermissionsCommand + "; exec node /tmp/raptor-harness/runner.mjs /tmp/raptor-private/attempt-job.json /tmp/raptor-private/attempt-result.json"}, Tag: b.AttemptID, Deadline: time.Minute * 3})
 	if e != nil {
 		return h, e
 	}
@@ -240,9 +320,11 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	return h, nil
 }
 
+const privatePermissionsCommand = `set -eu; umask 077; for file in /tmp/raptor-private/attempt-job.json /tmp/raptor-private/skills-bundle.json /tmp/raptor-private/observation.json /tmp/raptor-private/kubeconfig; do test ! -L "$file"; if test -e "$file"; then test -f "$file"; chmod 600 "$file"; fi; done`
+
 const prepareCommand = "umask 077; test \"$(node --version)\" = v22.23.3 && python3 --version >/dev/null && test ! -e /tmp/raptor-state && mkdir -p /tmp/raptor-harness /tmp/raptor-private && chmod 700 /tmp/raptor-harness /tmp/raptor-private"
 
-var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "mcp-runtime.mjs", "conversation.mjs"}
+var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "mcp-runtime.mjs", "conversation.mjs", "operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "skills-bundle.mjs", "client-targets.mjs", "replacement-trace.mjs", "pgcat-metrics.mjs", "replacement-completion.mjs", "observation-tools.mjs", "observation-extension.mjs", "observation-config.mjs"}
 
 func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	b := r.start.Binding
@@ -280,7 +362,7 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	}
 	cp := r.start.Checkpoint
 	reference := map[string]any{"archive_key": cp.ArchiveKey, "checksum_key": cp.ChecksumKey, "sha256": cp.SHA256, "bytes": cp.Bytes, "pi_version": cp.PiVersion}
-	restore, _ := json.Marshal(map[string]any{"phase": "restore", "reference": reference, "state_root": "/tmp/raptor-state", "mount_root": "/mnt/oss", "prefix": n.Config.BucketPrefix, "skip_auth_check": b.ProviderID == "codex"})
+	restore, _ := json.Marshal(map[string]any{"phase": "restore", "reference": reference, "state_root": "/tmp/raptor-state", "mount_root": "/mnt/oss", "prefix": n.Config.BucketPrefix, "bootstrap_only": r.start.SessionCheckpoint == nil && r.start.Conversation == nil, "skip_auth_check": b.ProviderID == "codex"})
 	if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-restore.json", restore); e != nil {
 		return e
 	}
@@ -307,6 +389,19 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 			return ErrConfiguration
 		}
 		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/model-credential.json", auth); e != nil {
+			return e
+		}
+	}
+	if len(r.skillsBundle) > 0 {
+		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/skills-bundle.json", r.skillsBundle); e != nil {
+			return e
+		}
+	}
+	if len(r.observation.Config) > 0 {
+		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/observation.json", r.observation.Config); e != nil {
+			return e
+		}
+		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/kubeconfig", r.observation.Kubeconfig); e != nil {
 			return e
 		}
 	}
@@ -362,7 +457,7 @@ func (n *NativeLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor
 		return out, e
 	}
 	if e == nil {
-		out.Events, e = decodeProgress(raw, cursor, append(append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential), modelSecretValues(r.modelLease)...)...)
+		out.Events, e = decodeProgress(raw, cursor, append(append(append(n.Config.RedactionValues(), r.observation.Secrets...), r.key.value, r.start.Access.Credential), modelSecretValues(r.modelLease)...)...)
 		if e != nil {
 			return out, e
 		}
@@ -380,18 +475,21 @@ func (n *NativeLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor
 		if e != nil {
 			return out, e
 		}
-		terminal, e := decodeTerminal(raw, r.start.Binding, append(append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential), modelSecretValues(r.modelLease)...))
+		terminal, e := decodeTerminal(raw, r.start.Binding, append(append(append(n.Config.RedactionValues(), r.observation.Secrets...), r.key.value, r.start.Access.Credential), modelSecretValues(r.modelLease)...))
+		if e == nil {
+			e = checkTerminalScope(terminal, r.start.Access.ReplacementScope)
+		}
 		if e != nil {
 			return out, e
 		}
 		// Runner exit 1 is expected for explicit failure; a passed result requires clean exit.
-		if waitErr != nil && terminal.Passed {
+		if waitErr != nil && (terminal.Passed || terminal.Paused != nil) {
 			return out, ErrCommandUnconfirmed
 		}
 		r.terminal = &terminal
-		out.Terminal = true
-		out.Result = terminal.Result
-		out.FailureCode = terminal.Error
+		settled := terminal.observation()
+		settled.Events = out.Events
+		out = settled
 		return out, nil
 	default:
 		return out, nil
@@ -406,7 +504,20 @@ func (n *NativeLive) Checkpoint(ctx context.Context, h execution.RuntimeHandle) 
 		return execution.VerifiedCheckpoint{}, e
 	}
 	c := r.terminal.Checkpoint
-	return n.Verifier.VerifyCheckpoint(ctx, execution.VerifiedCheckpoint{ArchiveKey: c.ArchiveKey, ChecksumKey: c.ChecksumKey, SHA256: c.SHA256, Bytes: c.Bytes, PiVersion: c.PiVersion})
+	verified, e := n.Verifier.VerifyCheckpoint(ctx, execution.VerifiedCheckpoint{ArchiveKey: c.ArchiveKey, ChecksumKey: c.ChecksumKey, SHA256: c.SHA256, Bytes: c.Bytes, PiVersion: c.PiVersion})
+	if e != nil {
+		return execution.VerifiedCheckpoint{}, e
+	}
+	if r.terminal.SessionReference != nil {
+		cp, e := n.Verifier.VerifyOperationCheckpoint(ctx, r.terminal.SessionReference.checkpoint(verified), r.start.Binding)
+		if e != nil {
+			return execution.VerifiedCheckpoint{}, e
+		}
+		if e = n.Store.SaveOperationSession(ctx, r.start.Binding.AttemptID, n.Owner, cp); e != nil {
+			return execution.VerifiedCheckpoint{}, e
+		}
+	}
+	return verified, nil
 }
 func (n *NativeLive) Cancel(ctx context.Context, h execution.RuntimeHandle) error {
 	r := n.runs[h.RequestID]
@@ -645,8 +756,16 @@ func (n *NativeLive) managementFor(b execution.AttemptBinding) Management {
 }
 
 func liveJob(config LiveConfig, in execution.LiveStart) ([]byte, error) {
+	var reference map[string]any
+	if in.SessionCheckpoint != nil {
+		var e error
+		reference, e = in.SessionCheckpoint.ReferenceFor(in.Binding)
+		if e != nil {
+			return nil, e
+		}
+	}
 	token := "Bearer " + in.Access.Credential
-	job := map[string]any{"phase": "live-inference", "state_root": "/tmp/raptor-state", "private_root": "/tmp/raptor-private", "mount_root": "/mnt/oss", "prefix": config.BucketPrefix, "generation": in.Binding.AttemptID, "request": map[string]any{"binding": in.Binding, "question": in.Question}, "limits": map[string]any{"model_seconds": 90, "max_turns": 10, "max_output_tokens": 1024}, "mcp": map[string]any{"raptor": map[string]any{"url": config.RaptorMcpURL, "headers": map[string]string{"Authorization": token}}, "infra": map[string]any{"url": config.InfraMcpURL, "headers": map[string]string{"X-Infra-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(config.InfraUsername+":"+config.InfraPassword))}}}}
+	job := map[string]any{"observation_config_path": observationConfigPath(in), "skills_bundle_path": skillsBundlePath(in), "skills_release": in.Skills, "replacement_scope": in.Access.ReplacementScope, "decision_context": in.DecisionContext, "session_reference": reference, "phase": "live-inference", "state_root": "/tmp/raptor-state", "private_root": "/tmp/raptor-private", "mount_root": "/mnt/oss", "prefix": config.BucketPrefix, "generation": in.Binding.AttemptID, "request": map[string]any{"binding": in.Binding, "question": in.Question}, "limits": map[string]any{"model_seconds": 90, "max_turns": 10, "max_output_tokens": 1024}, "mcp": map[string]any{"raptor": map[string]any{"url": config.RaptorMcpURL, "headers": map[string]string{"Authorization": token}}, "infra": map[string]any{"url": config.InfraMcpURL, "headers": map[string]string{"X-Infra-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(config.InfraUsername+":"+config.InfraPassword))}}}}
 	if in.ConversationEnabled {
 		v := map[string]any{"enabled": true}
 		if in.Conversation != nil {
@@ -660,4 +779,11 @@ func liveJob(config LiveConfig, in execution.LiveStart) ([]byte, error) {
 		job["conversation"] = v
 	}
 	return json.Marshal(job)
+}
+
+func skillsBundlePath(in execution.LiveStart) string {
+	if in.Binding.Operation == "db-proxy.replace-nodes" {
+		return "/tmp/raptor-private/skills-bundle.json"
+	}
+	return ""
 }

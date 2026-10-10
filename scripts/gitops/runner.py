@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 ROOT = Path(os.environ.get('TF_CANDIDATE_ROOT', Path(__file__).resolve().parents[2])).resolve()
 def select_stack(name):
     choices = {
+        'agent-gateway': {'root':'infra-terraform/environments/rdev.ali/agent-gateway','prefix':'gateway.ali','key':'terraform.tfstate','label':'Terraform Gateway observer','binding':'raptor-agent-gateway-v1'},
         'test-foundation': {'root':'infra-terraform/environments/rdev-test-foundation','prefix':'rdev.ali/test-pgcat','key':'terraform.tfstate','label':'Terraform test foundation','binding':'raptor-test-foundation-v1'},
         'infra-api': {'root':'infra-terraform/environments/rdev-infra-api','prefix':'rdev.ali','key':'infra-api.tfstate','label':'Terraform Infra API','binding':'raptor-infra-api-v1'},
         'rdev-kong': {'root':'infra-terraform/environments/rdev.ali','prefix':'rdev.ali','key':'terraform.tfstate','label':'Terraform rdev Kong DNS','binding':'raptor-rdev-kong-v1'},
@@ -84,6 +85,21 @@ def validate_inputs(config,stack="test-foundation"):
         if not isinstance(config['account_id'],str) or not re.fullmatch(r'\d{8,20}',config['account_id']):raise ValueError('Invalid account ID')
         if config['kubernetes_version'] != '1.35.7-aliyun.1':raise ValueError('Invalid Kubernetes version')
         return
+    if stack == 'agent-gateway':
+        allowed={'rrsa_enabled','oidc_provider_arn','oidc_issuer','observer'}
+        if set(config)-allowed or not isinstance(config.get('rrsa_enabled'),bool):raise ValueError('Invalid Gateway inputs')
+        if config['rrsa_enabled']:
+            if not re.fullmatch(r'acs:ram::[0-9]+:oidc-provider/[A-Za-z0-9_.-]+',config.get('oidc_provider_arn','')):raise ValueError('Invalid OIDC provider')
+            if not re.fullmatch(r'https://oidc-ack-ap-southeast-1\.oss-ap-southeast-1\.aliyuncs\.com/[A-Za-z0-9_.-]+',config.get('oidc_issuer','')):raise ValueError('Invalid OIDC issuer')
+        elif config.get('oidc_provider_arn') or config.get('oidc_issuer'):raise ValueError('Inactive RRSA binding')
+        observer=config.get('observer')
+        if observer is not None:
+            fields={'group_id','backend_group_id','load_balancer_id','sql_bucket','sql_key'}
+            if not config['rrsa_enabled'] or not isinstance(observer,dict) or set(observer)!=fields:raise ValueError('Invalid observer binding')
+            for k,v in observer.items():
+                pattern=r'[A-Za-z0-9_.-]{1,200}' if k!='sql_key' else r'[A-Za-z0-9_./-]{1,240}'
+                if not isinstance(v,str) or not re.fullmatch(pattern,v) or any(part in ('','..','.') for part in v.split('/')):raise ValueError('Invalid observer reference')
+        return
     if stack == 'infra-api':
         if set(config) != {'trigger_url','gateway_instance_id'}:raise ValueError('Invalid stack inputs')
         if not isinstance(config['trigger_url'],str) or not re.fullmatch(r'https://[a-zA-Z0-9.-]+\.ap-southeast-1\.fcapp\.run/?',config['trigger_url']):raise ValueError('Invalid trigger')
@@ -122,7 +138,7 @@ def main():
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'saved.tfplan'
             if mode=='plan':
-                command(['terraform','plan','-input=false','-lock-timeout=5m','-out='+str(path)],STACK)
+                command(['terraform','plan','-input=false','-lock-timeout=5m','-var-file='+str(variable),'-out='+str(path)],STACK)
                 plan=json.loads(command(['terraform','show','-json',str(path)],STACK))
                 Path(os.environ['TF_SUMMARY_PATH']).write_text(summary(plan,sha,stack_name))
                 if os.environ.get('TF_ENCRYPTED_PLAN_PATH'):

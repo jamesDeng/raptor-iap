@@ -41,13 +41,13 @@ func bindingFrom(ctx context.Context, tx pgx.Tx, attempt string) (AttemptBinding
 	if e := tx.QueryRow(ctx, "SELECT binding FROM gateway.attempts WHERE id=$1", attempt).Scan(&raw); e != nil {
 		return b, e
 	}
-	if json.Unmarshal(raw, &b) != nil || !b.valid() {
+	if json.Unmarshal(raw, &b) != nil || !b.journalValid() {
 		return b, ErrInvalid
 	}
 	return b, nil
 }
 func (s *Store) BindLive(ctx context.Context, attempt, owner string, b AttemptBinding, hash string) error {
-	if !b.valid() || b.AttemptID != attempt || !shaPattern.MatchString(hash) {
+	if !b.journalValid() || b.AttemptID != attempt || !shaPattern.MatchString(hash) {
 		return ErrInvalid
 	}
 	tx, id, e := s.liveTx(ctx, attempt, owner)
@@ -156,7 +156,7 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 				return ErrInvalid
 			}
 		case "tool_start", "tool_result":
-			if !liveTools[v.Tool] {
+			if !ProgressToolAllowed(b.Operation, v.Tool) {
 				return ErrInvalid
 			}
 		default:

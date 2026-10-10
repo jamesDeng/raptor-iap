@@ -104,6 +104,10 @@ func main() {
 		if e != nil {
 			log.Fatal("live configuration invalid")
 		}
+		observe, e := runtimeadapter.BuildObservationPreparer(config, management)
+		if e != nil {
+			log.Fatal("replacement observation configuration invalid")
+		}
 		preflight, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if management.Preflight(preflight, config) != nil {
 			cancel()
@@ -122,19 +126,24 @@ func main() {
 		owner := execution.NewID()
 		raptor := execution.HTTPRaptor{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
 		modelCredentials := runtimeadapter.HTTPModelCredentials{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
-		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials}
+		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe}
+		s.ResolveLiveDecision = raptor.ResolveLiveDecision
 		backends := map[string]execution.LiveRuntime{"aliyun": adapter}
 		if config.AX != nil {
 			bridge, err := runtimeadapter.NewAXClient(*config.AX)
 			if err != nil {
 				log.Fatal("AX private transport configuration invalid")
 			}
-			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials}, Bridge: bridge}
+			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe}, Bridge: bridge}
 		}
 		s.ConversationEnabled = os.Getenv("GATEWAY_CONVERSATION_ENABLED") == "true"
 		s.ConversationRuntime = true
 		router := &runtimeadapter.Providers{Default: config.Provider, Backends: backends, Store: s, Owner: owner, Lease: lease}
 		worker := &execution.LiveWorker{Store: s, Owner: owner, Lease: lease, Runtime: router, Access: raptor, Raptor: raptor, Bootstrap: bootstrap}
+		if config.ReplacementEnabled {
+			scope := config.ReplacementObserver.Scope
+			worker.ReplacementScope = &scope
+		}
 		if worker.Reconcile(ctx) != nil {
 			log.Fatal("live reconciliation requires attention")
 		}
@@ -145,6 +154,9 @@ func main() {
 				if !lease.Valid(ctx) {
 					log.Print("live worker ownership lost; dispatch stopped")
 					return
+				}
+				if worker.DrainSignals(ctx) != nil {
+					log.Print("live approval wakeup requires attention")
 				}
 				if worker.RunActive(ctx) != nil {
 					log.Print("live active attempt requires attention")

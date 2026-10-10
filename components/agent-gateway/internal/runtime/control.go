@@ -29,6 +29,7 @@ type ManagementAPI interface {
 	DeleteApiKeyWithOptions(*string, *fc.DeleteApiKeyRequest, map[string]*string, *dara.RuntimeOptions) (*fc.DeleteApiKeyResponse, error)
 }
 type Management struct {
+	credential        *lockedCredential
 	before            func(context.Context) error
 	API               ManagementAPI
 	Client            *fc.Client

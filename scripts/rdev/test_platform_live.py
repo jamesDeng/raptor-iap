@@ -1,11 +1,13 @@
 import os,shutil,subprocess,unittest,yaml,pathlib
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 class LiveManifest(unittest.TestCase):
- def render(self,live,restart=None,ax=False):
+ def render(self,live,restart=None,ax=False,observer=False,replacement=False):
   args=[os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
   if restart is not None:args+=['--set','directRestart.enabled='+str(restart).lower()]
   if not live:args+=['--set','gatewayLive.enabled=false']
   if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.credentialMode=static-sts','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
+  if replacement:args += ['--set','replacement.scopeConfigMapName=pgcat-replacement-scope']
+  if observer:args += ['--set','gatewayLive.observer.enabled=true']
   if ax:args += ["--set","gatewayLive.axTLSSecretName=gateway-ax-client-tls"]
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
  def test_default_disables_runtime(self):
@@ -15,6 +17,17 @@ class LiveManifest(unittest.TestCase):
   for name in ['raptor-backend','raptor-open-api']:
    c=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']==name)['spec']['template']['spec']['containers'][0];env={v['name']:v for v in c['env']};self.assertEqual(env['AGENT_INTROSPECTION_PASSWORD']['valueFrom']['secretKeyRef']['name'],'raptor-agent-access')
   self.assertFalse(any(d and d.get('kind')=='Secret' for d in docs))
+ def test_replacement_binding_mounts_only_into_backend(self):
+  for enabled in [False,True]:
+   docs=self.render(True,replacement=enabled)
+   for doc in docs:
+    if not doc or doc.get('kind')!='Deployment':continue
+    pod=doc['spec']['template']['spec'];container=pod['containers'][0];env={v['name']:v.get('value') for v in container['env']}
+    if enabled and doc['metadata']['name']=='raptor-backend':
+     self.assertEqual(env.get('RAPTOR_REPLACEMENT_SCOPE_FILE'),'/run/raptor/replacement/scope.json')
+     self.assertTrue(any(v['name']=='replacement-scope' and v['readOnly'] for v in container['volumeMounts']))
+     volume=next(v for v in pod['volumes'] if v['name']=='replacement-scope');self.assertEqual(volume['configMap']['name'],'pgcat-replacement-scope')
+    else:self.assertNotIn('RAPTOR_REPLACEMENT_SCOPE_FILE',env);self.assertFalse(any(v['name']=='replacement-scope' for v in pod['volumes']))
  def test_ax_mutual_tls_stays_in_gateway_private_files(self):
   docs=self.render(True,ax=True);d=next(v for v in docs if v and v.get('kind')=='Deployment' and v['metadata']['name']=='agent-gateway');pod=d['spec']['template']['spec'];vols={v['name']:v for v in pod['volumes']};self.assertEqual(vols['ax-tls-source']['secret']['secretName'],'gateway-ax-client-tls');init=pod['initContainers'][0];self.assertIn('install -m 0600 /ax-tls-source/tls.key /live-private/ax-client.key',init['args'][0]);self.assertFalse(any(v['name']=='ax-tls-source' for v in pod['containers'][0]['volumeMounts']))
   for other in docs:
@@ -29,4 +42,10 @@ class LiveManifest(unittest.TestCase):
      env={v['name']:v.get('value') for v in d['spec']['template']['spec']['containers'][0]['env']}
      if d['metadata']['name']=='raptor-backend':self.assertEqual(env.get('RAPTOR_ENABLE_RESTART'),str(enabled).lower())
      else:self.assertNotIn('RAPTOR_ENABLE_RESTART',env)
+ def test_observer_issuer_projects_only_api_identity(self):
+  docs=self.render(True,observer=True)
+  gateway=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']=='agent-gateway');pod=gateway['spec']['template']['spec'];self.assertFalse(pod['automountServiceAccountToken']);self.assertEqual(pod['serviceAccountName'],'agent-gateway')
+  volume=next(v for v in pod['volumes'] if v['name']=='observer-api-token')
+  source=volume['projected']['sources'][0]['serviceAccountToken'];self.assertEqual(source['expirationSeconds'],900);self.assertNotIn('audience',source)
+  self.assertTrue(any(d and d.get('kind')=='ServiceAccount' and d['metadata']['name']=='agent-gateway' for d in docs))
 if __name__=='__main__':unittest.main()

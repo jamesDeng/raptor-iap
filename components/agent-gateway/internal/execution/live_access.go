@@ -20,11 +20,12 @@ func (c HTTPRaptor) Issue(ctx context.Context, b AttemptBinding, hash string, ex
 	}
 	var envelope struct {
 		Data struct {
-			Credential   string         `json:"credential"`
-			ExpiresAt    time.Time      `json:"expiresAt"`
-			Binding      AttemptBinding `json:"binding"`
-			RaptorMcpURL string         `json:"raptorMcpUrl"`
-			InfraMcpURL  string         `json:"infraMcpUrl"`
+			ReplacementScope *ReplacementScope `json:"replacementScope,omitempty"`
+			Credential       string            `json:"credential"`
+			ExpiresAt        time.Time         `json:"expiresAt"`
+			Binding          AttemptBinding    `json:"binding"`
+			RaptorMcpURL     string            `json:"raptorMcpUrl"`
+			InfraMcpURL      string            `json:"infraMcpUrl"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
@@ -34,7 +35,14 @@ func (c HTTPRaptor) Issue(ctx context.Context, b AttemptBinding, hash string, ex
 	if v.Binding != b || v.Binding.DefinitionSHA256 != hash || len(v.Credential) < 32 || len(v.Credential) > 4096 || v.ExpiresAt.Before(time.Now()) || v.ExpiresAt.After(expires) {
 		return out, ErrUnavailable
 	}
-	return AgentAccess{Credential: v.Credential, ExpiresAt: v.ExpiresAt, Binding: v.Binding, RaptorMcpURL: v.RaptorMcpURL, InfraMcpURL: v.InfraMcpURL}, nil
+	if b.Operation == "db-proxy.replace-nodes" {
+		if v.ReplacementScope == nil || !v.ReplacementScope.ValidFor(b) {
+			return out, ErrUnavailable
+		}
+	} else if v.ReplacementScope != nil {
+		return out, ErrUnavailable
+	}
+	return AgentAccess{ReplacementScope: v.ReplacementScope, Credential: v.Credential, ExpiresAt: v.ExpiresAt, Binding: v.Binding, RaptorMcpURL: v.RaptorMcpURL, InfraMcpURL: v.InfraMcpURL}, nil
 }
 func (c HTTPRaptor) Revoke(ctx context.Context, b AttemptBinding) error {
 	_, e := c.accessCall(ctx, "DELETE", "/v1/requests/"+url.PathEscape(b.RequestID)+"/agent-access/"+url.PathEscape(b.AttemptID), nil)

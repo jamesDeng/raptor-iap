@@ -15,6 +15,7 @@ var ErrInvalid = errors.New("InvalidInput")
 type Store struct {
 	ConversationEnabled bool
 	ConversationRuntime bool
+	ResolveLiveDecision func(context.Context, string, LiveWait) (LiveContinuation, error)
 	Pool                *pgxpool.Pool
 	KnownSecrets        []string
 	RuntimeMode         string

@@ -32,3 +32,9 @@ class ArchiveTests(unittest.TestCase):
   (self.root/'sessions/link').unlink();(self.root/'auth.json').write_text('synthetic-secret-not-JSON')
   with self.assertRaises(ValueError) as e:a.pack_state(self.root,self.p/'a.tgz')
   self.assertNotIn('synthetic-secret',str(e.exception))
+ def test_oauth_bootstrap_never_transfers_conversation(self):
+  archive=self.p/'auth.tgz';meta=a.pack_auth(self.root,archive);target=self.p/'new-auth';a.restore_auth(archive,target,meta['sha256']);self.assertEqual(list((target/'sessions').iterdir()),[]);self.assertEqual(json.loads((target/'auth.json').read_text())['openai']['clientId'],'keep-issued')
+ def test_bootstrap_restore_refuses_history_archive(self):
+  archive=self.p/'history.tgz';meta=a.pack_state(self.root,archive)
+  with self.assertRaises(ValueError):a.restore_auth(archive,self.p/'wrong-bootstrap',meta['sha256'])
+  self.assertFalse((self.p/'wrong-bootstrap').exists())

@@ -65,16 +65,17 @@ type Usage struct {
 	TotalTokens int64 `json:"totalTokens"`
 }
 type LiveResult struct {
-	RequestID        string         `json:"requestId"`
-	AttemptID        string         `json:"attemptId"`
-	SelectedModel    string         `json:"selectedModel"`
-	ActualModel      string         `json:"actualModel"`
-	SelectedProvider string         `json:"selectedProvider,omitempty"`
-	ActualProvider   string         `json:"actualProvider,omitempty"`
-	Answer           string         `json:"answer"`
-	Evidence         []ToolEvidence `json:"evidence"`
-	Usage            []Usage        `json:"usage,omitempty"`
-	GeneratedAt      time.Time      `json:"generatedAt"`
+	Replacement      *ReplacementConvergence `json:"replacement,omitempty"`
+	RequestID        string                  `json:"requestId"`
+	AttemptID        string                  `json:"attemptId"`
+	SelectedModel    string                  `json:"selectedModel"`
+	ActualModel      string                  `json:"actualModel"`
+	SelectedProvider string                  `json:"selectedProvider,omitempty"`
+	ActualProvider   string                  `json:"actualProvider,omitempty"`
+	Answer           string                  `json:"answer"`
+	Evidence         []ToolEvidence          `json:"evidence"`
+	Usage            []Usage                 `json:"usage,omitempty"`
+	GeneratedAt      time.Time               `json:"generatedAt"`
 }
 type VerifiedCheckpoint struct {
 	ArchiveKey  string    `json:"archiveKey"`
@@ -99,9 +100,35 @@ var commitPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 var journalName = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,256}$`)
 var liveTools = map[string]bool{"mcp__raptor__request_get": true, "mcp__raptor__environment_get": true, "mcp__raptor__object_get": true, "mcp__infra__cloud_identity_get": true, "mcp__infra__deployments_list": true, "mcp__infra__deployment_status_get": true}
 
+func ProgressToolAllowed(operation, tool string) bool {
+	if operation == "application.question" {
+		return liveTools[tool]
+	}
+	if operation != "db-proxy.replace-nodes" {
+		return false
+	}
+	if liveTools[tool] {
+		return true
+	}
+	switch tool {
+	case "resource_wait", "cloud_read", "deployment_read", "metrics_read", "db_connection_probe", "mcp__raptor__approval_request", "mcp__raptor__approval_get", "mcp__raptor__request_pause", "mcp__infra__db_proxy_scale", "mcp__infra__db_proxy_node_protection_set", "mcp__infra__db_proxy_nodes_deregister", "mcp__infra__deployment_restart":
+		return true
+	}
+	return false
+}
+
 func (b AttemptBinding) valid() bool {
 	modelValid := (b.ProviderID == "" && b.ConnectionVersion == 0 && b.Model == "gpt-5.6-luna") || (b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))
 	return b.RequestID != "" && b.AttemptID != "" && b.Operation == "application.question" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && modelValid
+}
+
+// Journal persistence supports both implemented profiles; live admission remains
+// separately gated by ParseLiveQuestion until replacement rollout is qualified.
+func (b AttemptBinding) journalValid() bool {
+	if b.valid() {
+		return true
+	}
+	return b.RequestID != "" && b.AttemptID != "" && b.Operation == "db-proxy.replace-nodes" && b.ObjectKind == "db-proxy" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && journalName.MatchString(b.ClusterID) && shaPattern.MatchString(b.DefinitionSHA256) && commitPattern.MatchString(b.SkillsCommit) && b.Model == "gpt-5.6-luna" && ((b.ProviderID == "" && b.ConnectionVersion == 0) || (b.ProviderID == "codex" && b.ConnectionVersion > 0))
 }
 func validJournalKind(k string) bool {
 	return k == "provider" || k == "probe_cleanup" || k == "prepare" || k == "restore" || (strings.HasPrefix(k, "reconcile_key:") && journalName.MatchString(k)) || k == "key" || k == "sandbox" || k == "command" || k == "access" || k == "checkpoint" || k == "terminate" || k == "revoke_key" || k == "revoke_access"
@@ -124,7 +151,13 @@ func (c VerifiedCheckpoint) valid() bool {
 }
 func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 	raw, e := json.Marshal(r)
-	if e != nil || len(raw) > 65536 || containsSensitive(string(raw), known) || !b.valid() || r.RequestID != b.RequestID || r.AttemptID != b.AttemptID || r.SelectedModel != b.Model || r.ActualModel != b.Model || (b.ProviderID == "codex" && (r.SelectedProvider != "codex" || r.ActualProvider != "openai-codex")) || strings.TrimSpace(r.Answer) == "" || len(r.Answer) > 16384 || r.GeneratedAt.IsZero() || len(r.Evidence) > 32 {
+	if e != nil || len(raw) > 65536 || containsSensitive(string(raw), known) || !b.journalValid() || r.RequestID != b.RequestID || r.AttemptID != b.AttemptID || r.SelectedModel != b.Model || r.ActualModel != b.Model || (b.ProviderID == "codex" && (r.SelectedProvider != "codex" || r.ActualProvider != "openai-codex")) || strings.TrimSpace(r.Answer) == "" || len(r.Answer) > 16384 || r.GeneratedAt.IsZero() || len(r.Evidence) > 32 {
+		return ErrInvalid
+	}
+	if b.Operation == "db-proxy.replace-nodes" {
+		return validateReplacementResult(r, b)
+	}
+	if r.Replacement != nil {
 		return ErrInvalid
 	}
 	seen := map[string]bool{}
@@ -171,15 +204,5 @@ func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 			return ErrInvalid
 		}
 	}
-	var input, output, total int64
-	const max int64 = 9007199254740991
-	for _, u := range r.Usage {
-		if u.Input < 0 || u.Output < 0 || u.TotalTokens < 0 || u.Input > max-input || u.Output > max-output || u.TotalTokens > max-total {
-			return ErrInvalid
-		}
-		input += u.Input
-		output += u.Output
-		total += u.TotalTokens
-	}
-	return nil
+	return validateUsage(r.Usage)
 }

@@ -1,28 +1,20 @@
 ---
 name: pgcat-replacement
-description: Use when reviewing or preparing replacement of PgCat ECS nodes managed by Aliyun ESS for one database proxy in a selected environment, or reconciling an interrupted replacement request.
+description: Use when replacing or reconciling PgCat ECS nodes in the dedicated two-node Aliyun ESS test proxy under an immutable Raptor request.
 ---
 
 # PgCat replacement
 
-Status: draft reference; local fixtures and metric qualification exist. Live tool names, approval consumption, durable operation reconciliation, image bootstrap and full traffic evidence are not bound. Read [contracts](references/contracts.md) first. Until all enablement checks there are satisfied, perform read-only preflight and report missing contracts; do not call example/proposed commands or substitute cloud CLI/direct ECS deletion.
+Use the [runtime contracts](references/contracts.md) and [recovery rules](references/recovery.md). These instructions match the implementation under qualification; they do not establish live deployment or authorize enablement. Begin only after controller preflight enables this dedicated request.
 
-The skill chooses strategy. Infra API independently enforces membership, approvals and safety checks. A pinned skill never expands permission. Record request/attempt IDs, proxy/environment/group/DB identities, original node IDs, desired capacity, protection states, app Deployment UIDs and exact selected skill commit. Re-discover all associations using catalog codes/tags; a proxy serves one same-environment DB, a DB can have several proxies.
+Keep the same request ID, definition, resolved scope and selected skill SHA across every resume. A fresh attempt is not a new request. Use only the supplied group, backend, database and application binding; never derive application dependencies from unrelated tags. Infra API independently enforces membership, exact approval and safety gates.
 
-## Initial two-node replacement reference
+## Two-node strategy
 
-The following is a strategy for the dedicated test stack, not a built-in end-to-end API operation. Resolve actual reviewed tools through the contracts document.
+1. Read request/environment/object, provider identity and proxy deployment. Read `cloud_read` fleet, capacity and backend plus `metrics_read` trafficFailures, connections and pgcatClients. Require original desired/fleet two, healthy registration, complete fresh pool triplets and running correctness traffic. Record both original IDs. Protect originals, then expand 2→4 once with a stable unique action ID.
+2. Observe readiness; use `resource_wait` with seconds 60 for boot/drain/rollout waits. Never resubmit an acknowledged or unknown action. Qualify both new nodes through healthy registered backend and SQL probes; protect both new nodes.
+3. At desired four, deregister only one original: three healthy registered nodes remain, strictly greater than 4/2. Restart only the associated client Deployment. Observe its readiness and traffic, then require that old node's active + idle + waiting clients across every reported pool/user equal zero. Missing series are not zero. Unprotect only that original; all other nodes remain protected.
+4. Request exact 4→3 approval, then immediately call `request_pause` with reason `waiting_approval`. Stop the completed tool round. After verified resume, check fresh approval/control and observations, then submit that exact action once. Observe removal of the selected old node and retained health.
+5. Repeat for the other original at desired three: deregistration leaves two healthy registered nodes, strictly greater than 3/2. Drain and unprotect only it. A distinct action ID and a new exact 3→2 approval are required. Finish at two new healthy, registered, protected nodes with both originals absent and associated client ready.
 
-1. Inspect current provider inventory and application/metric baseline. Require complete current nodes/pools, valid observations, known operation states and an actual running correctness workload. Protect original nodes. Scale 2→4 and wait for two distinct new healthy registered nodes, successful SQL readiness, qualified client metrics and traffic evidence. Protect retained new nodes as well.
-2. Select one original node. At desired 4, deregister only that node: three healthy registered nodes remain, and 3 > 4/2. Two at once would leave equality and must be refused. Deregistration needs no human approval, but Infra API checks the strict majority gate afresh.
-3. Restart only discovered associated application Deployments through the reviewed restart command, preserving target UID checks; await deployment status and traffic evidence. Wait for selected old node's connected clients (idle + active + waiting) to reach zero. Backend idle connections are irrelevant. Unprotect only the selected old node; node protection needs no approval but validates membership.
-4. Ask for a fresh approval bound to this request, logical operation, environment, proxy/group and exact target capacity 3. Scale 4→3. Infra API must check valid zero connected clients on EVERY unprotected node, not an assumed ESS selection. Confirm the old node was removed and retained nodes are healthy/protected. A timeout/partial/unknown result pauses mutations for reconciliation.
-5. Repeat for the other original node at desired 3: deregistration leaves two healthy nodes and 2 > 3/2. Restart/reobserve, unprotect that old node, obtain a distinct new approval for 3→2 and confirm removal. Record final node identities and restore recorded protection policy on retained nodes after replacement completes.
-
-## Measurements and pauses
-
-Raw metric mapping is `pgcat_pools_cl_active + pgcat_pools_cl_idle + pgcat_pools_cl_waiting`, summed across every expected static pool/user. Missing/duplicate series are not zero. Verify up=1, source observation age at most the reviewed threshold (proposed 15 seconds), full node/pool coverage and unchanged config revision. A fresh recording-rule timestamp does not freshen an old scrape. Pool reload/removal is outside current qualification.
-
-The owner accepted new connections arriving between zero-client observation and termination. Do not add mandatory deregistration/routing exclusion to the scale-in gate. Use deregistration as strategy and measure outcomes; never guarantee zero failures. Report scheduled/attempted/successful/failed/timeout/ambiguous/skipped work, counter resets, coverage and connection errors over baseline/replacement/recovery windows. Missing traffic is inconclusive, not success.
-
-Resume from [recovery](references/recovery.md), with fresh provider inventory and durable operation status. A retry retains logical operation identity and must reconcile a prior outcome; a new reduction always needs a new approval. Do not replay mutation steps from conversation text.
+The owner accepts connections arriving between zero-client observation and termination. Do not promise zero failures or add new mandatory scale-in conditions. Full retained traffic and approval/gate evidence determine PASS, FAIL or INCONCLUSIVE independently; fleet convergence alone is not acceptance.

@@ -84,7 +84,7 @@ func publicExecution(raw map[string]any, request domain.Request) (map[string]any
 		return nil, domain.ErrUnavailable
 	}
 	switch v.Status {
-	case "queued", "running", "waiting_approval", "waiting_review", "blocked", "interrupted", "completed", "failed", "cancelled":
+	case "queued", "running", "waiting_approval", "waiting_resource", "waiting_review", "blocked", "interrupted", "completed", "failed", "cancelled":
 	default:
 		return nil, domain.ErrUnavailable
 	}

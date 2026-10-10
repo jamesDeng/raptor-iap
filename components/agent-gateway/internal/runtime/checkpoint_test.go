@@ -71,3 +71,18 @@ func TestCheckpointVerifierRequiresRemoteEncryptedContent(t *testing.T) {
 		})
 	}
 }
+func TestOperationCheckpointVerificationBindsRequest(t *testing.T) {
+	sum := sha256.Sum256([]byte("archive"))
+	hash := hex.EncodeToString(sum[:])
+	v := CheckpointVerifier{Objects: fixtureObjects{archive: "archive", checksum: hash, encryption: "AES256", size: 7}, Prefix: "requests"}
+	b := execution.AttemptBinding{RequestID: "request", DefinitionSHA256: strings.Repeat("a", 64), SkillsCommit: strings.Repeat("b", 40), Model: "gpt-5.6-luna"}
+	c := execution.SessionCheckpoint{RequestID: b.RequestID, DefinitionSHA256: b.DefinitionSHA256, SkillsCommit: b.SkillsCommit, Model: b.Model, SessionID: "session", SessionFile: "session.jsonl", SessionSHA256: strings.Repeat("c", 64), Archive: execution.VerifiedCheckpoint{ArchiveKey: "requests/g.tgz", ChecksumKey: "requests/g.sha256", SHA256: hash, Bytes: 7, PiVersion: "0.99.2"}}
+	out, e := v.VerifyOperationCheckpoint(context.Background(), c, b)
+	if e != nil || out.Archive.Encryption != "AES256" {
+		t.Fatal("valid session checkpoint refused", e)
+	}
+	c.RequestID = "foreign"
+	if _, e = v.VerifyOperationCheckpoint(context.Background(), c, b); e == nil {
+		t.Fatal("foreign request checkpoint accepted")
+	}
+}

@@ -1,6 +1,8 @@
 package backend
 
 import (
+	"context"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
@@ -15,6 +17,16 @@ func (s *Server) RegisterService(user, password string) {
 		s.ModelProviders.RegisterPrivate(s.Mux, auth.Credentials{Username: user, Password: password})
 	}
 	access := &agentaccess.Service{Pool: s.Requests.Pool, RaptorMCPURL: os.Getenv("RAPTOR_AGENT_MCP_URL"), InfraMCPURL: os.Getenv("INFRA_AGENT_MCP_URL")}
+	if s.ReplacementScope != nil {
+		resolver := agentaccess.ReplacementResolver{Scope: *s.ReplacementScope, Read: func(ctx context.Context, kind, code, env string) ([]adapters.Deployment, error) {
+			object, err := s.Catalog.FindObject(ctx, kind, code)
+			if err != nil {
+				return nil, err
+			}
+			return s.Catalog.Deployments(ctx, object.ID, env)
+		}}
+		access.ResolveReplacement = resolver.Resolve
+	}
 	access.Register(s.Mux, auth.Credentials{Username: user, Password: password}, auth.Credentials{Username: os.Getenv("AGENT_INTROSPECTION_USERNAME"), Password: os.Getenv("AGENT_INTROSPECTION_PASSWORD")})
 	wrap := func(pattern string, h http.HandlerFunc) {
 		s.Mux.Handle(pattern, auth.BasicAuth(h, auth.Credentials{Username: user, Password: password}))
@@ -36,6 +48,12 @@ func (s *Server) RegisterService(user, password string) {
 		}
 		e := s.Requests.Pause(r.Context(), r.PathValue("id"), in.Reason)
 		httpx.Result(w, 200, map[string]bool{"accepted": e == nil}, e)
+	})
+	wrap("GET /v1/requests/{id}/control", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var status, control string
+		e := s.Requests.Pool.QueryRow(r.Context(), "SELECT status,control_state FROM raptor.requests WHERE id=$1", id).Scan(&status, &control)
+		httpx.Result(w, 200, map[string]string{"requestId": id, "status": status, "controlState": control}, e)
 	})
 	wrap("GET /v1/requests/{id}/context", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Requests.Get(r.Context(), r.PathValue("id"))

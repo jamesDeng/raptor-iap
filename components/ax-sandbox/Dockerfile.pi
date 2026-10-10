@@ -1,6 +1,15 @@
 # Existing verified Raptor Pi0.99.2 release. Extend it with the AX guest daemon.
 FROM ghcr.io/jamesdeng/raptor-iap-pi@sha256:4fc6772c0577156f5722d7474e3e1ea30173496f63acf5253f35c7c512535289
-RUN apt-get update && apt-get install -y --no-install-recommends python3 procps openssh-client && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 procps openssh-client postgresql-client ca-certificates curl && rm -rf /var/lib/apt/lists/*
+# Official version-pinned tools; hashes verified before executable installation.
+RUN curl -fsSL https://github.com/aliyun/aliyun-cli/releases/download/v3.5.1/aliyun-cli-linux-3.5.1-amd64.tgz -o /tmp/aliyun.tgz \
+    && echo "3a9a45b9c7899228074135612d2b7ebbf32abb97826d825787cb454cd3011bdc  /tmp/aliyun.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/aliyun.tgz -C /usr/local/bin aliyun \
+    && rm /tmp/aliyun.tgz \
+    && curl -fsSL https://dl.k8s.io/release/v1.36.2/bin/linux/amd64/kubectl -o /usr/local/bin/kubectl \
+    && echo "1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82  /usr/local/bin/kubectl" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/kubectl \
+    && aliyun version && kubectl version --client && psql --version
 COPY bin/linux_amd64/ax-task-runner /usr/local/bin/ax-task-runner
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]

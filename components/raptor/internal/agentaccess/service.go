@@ -21,6 +21,9 @@ type Service struct {
 	Pool                      *pgxpool.Pool
 	RaptorMCPURL, InfraMCPURL string
 	Now                       func() time.Time
+	// Nil keeps replacement admission disabled. The resolver must obtain live
+	// proxy/dependency identity from trusted configuration and provider reads.
+	ResolveReplacement func(context.Context, Binding) (ReplacementScope, error)
 }
 type IssueInput struct {
 	AttemptID        string    `json:"attemptId"`
@@ -42,11 +45,12 @@ type Binding struct {
 	ClusterID         string `json:"clusterId"`
 }
 type Issued struct {
-	Credential   string    `json:"credential"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	Binding      Binding   `json:"binding"`
-	RaptorMCPURL string    `json:"raptorMcpUrl"`
-	InfraMCPURL  string    `json:"infraMcpUrl"`
+	Credential       string            `json:"credential"`
+	ExpiresAt        time.Time         `json:"expiresAt"`
+	Binding          Binding           `json:"binding"`
+	RaptorMCPURL     string            `json:"raptorMcpUrl"`
+	InfraMCPURL      string            `json:"infraMcpUrl"`
+	ReplacementScope *ReplacementScope `json:"replacementScope,omitempty"`
 }
 type CheckInput struct {
 	Credential string            `json:"credential"`
@@ -55,9 +59,10 @@ type CheckInput struct {
 	Selectors  map[string]string `json:"selectors"`
 }
 type CheckResult struct {
-	Active    bool       `json:"active"`
-	Binding   *Binding   `json:"binding,omitempty"`
-	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	Active           bool              `json:"active"`
+	Binding          *Binding          `json:"binding,omitempty"`
+	ExpiresAt        *time.Time        `json:"expiresAt,omitempty"`
+	ReplacementScope *ReplacementScope `json:"replacementScope,omitempty"`
 }
 
 var uuid = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
@@ -95,6 +100,12 @@ func question(def domain.RequestInput) bool {
 	modelValid := (def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && def.Model != "")
 	return def.Type == "agent" && def.Object.Kind == "application" && len(def.Operations) == 1 && def.Operations[0].Name == "application.question" && modelValid && sha.MatchString(def.Skills.CommitSHA)
 }
+func supported(def domain.RequestInput) bool {
+	if question(def) {
+		return true
+	}
+	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && def.Operations[0].Parameters != nil && len(def.Operations[0].Parameters) == 0 && def.Model == "gpt-5.6-luna" && sha.MatchString(def.Skills.CommitSHA)
+}
 func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, error) {
 	var out Issued
 	now := s.now()
@@ -127,7 +138,7 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}
-	if !question(def) || fingerprint != in.DefinitionSHA256 {
+	if !supported(def) || fingerprint != in.DefinitionSHA256 {
 		return out, domain.ErrInvalid
 	}
 	if control != "" || (status != "queued" && status != "running") {
@@ -137,12 +148,27 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 	if e = tx.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
 		return out, domain.ErrUnavailable
 	}
-	out.Binding = Binding{RequestID: id, AttemptID: in.AttemptID, Operation: "application.question", ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}
+	out.Binding = Binding{RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}
+	var scopeRaw []byte
+	if !question(def) {
+		if s.ResolveReplacement == nil {
+			return out, domain.ErrUnavailable
+		}
+		scope, err := s.ResolveReplacement(ctx, out.Binding)
+		if err != nil {
+			return out, domain.ErrUnavailable
+		}
+		if !scope.ValidFor(out.Binding) {
+			return out, domain.ErrConflict
+		}
+		out.ReplacementScope = &scope
+		scopeRaw, _ = json.Marshal(scope)
+	}
 	binding, _ := json.Marshal(out.Binding)
-	var existing []byte
+	var existing, existingScope []byte
 	var deadline time.Time
 	var revoked bool
-	e = tx.QueryRow(ctx, "SELECT binding,expires_at,revoked FROM raptor.agent_attempt_access WHERE request_id=$1 AND attempt_id=$2 FOR UPDATE", id, in.AttemptID).Scan(&existing, &deadline, &revoked)
+	e = tx.QueryRow(ctx, "SELECT binding,expires_at,revoked,replacement_scope FROM raptor.agent_attempt_access WHERE request_id=$1 AND attempt_id=$2 FOR UPDATE", id, in.AttemptID).Scan(&existing, &deadline, &revoked, &existingScope)
 	if e == nil {
 		var old Binding
 		if json.Unmarshal(existing, &old) != nil {
@@ -151,8 +177,16 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 		if revoked || !deadline.After(now) || in.ExpiresAt.After(deadline) || old != out.Binding {
 			return out, domain.ErrConflict
 		}
+		if out.ReplacementScope != nil {
+			var oldScope ReplacementScope
+			if json.Unmarshal(existingScope, &oldScope) != nil || oldScope != *out.ReplacementScope {
+				return out, domain.ErrConflict
+			}
+		} else if len(existingScope) != 0 {
+			return out, domain.ErrConflict
+		}
 	} else if e == pgx.ErrNoRows {
-		_, e = tx.Exec(ctx, "INSERT INTO raptor.agent_attempt_access(request_id,attempt_id,binding,expires_at) VALUES($1,$2,$3,$4)", id, in.AttemptID, binding, in.ExpiresAt)
+		_, e = tx.Exec(ctx, "INSERT INTO raptor.agent_attempt_access(request_id,attempt_id,binding,expires_at,replacement_scope) VALUES($1,$2,$3,$4,$5)", id, in.AttemptID, binding, in.ExpiresAt, scopeRaw)
 		if e != nil {
 			return out, domain.ErrConflict
 		}
@@ -210,11 +244,11 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 	if !tokenPattern.MatchString(in.Credential) || (in.Audience != "raptor" && in.Audience != "infra") {
 		return out, nil
 	}
-	var body, definition []byte
+	var body, definition, scopeRaw []byte
 	var expiry, deadline time.Time
 	var tokenRevoked, attemptRevoked bool
 	var status, control string
-	e := s.Pool.QueryRow(ctx, `SELECT a.binding,t.expires_at,a.expires_at,t.revoked,a.revoked,r.definition,r.status,r.control_state FROM raptor.agent_tokens t JOIN raptor.agent_attempt_access a ON a.request_id=t.request_id AND a.attempt_id=t.attempt_id JOIN raptor.requests r ON r.id=t.request_id WHERE t.token_hash=$1`, digest(in.Credential)).Scan(&body, &expiry, &deadline, &tokenRevoked, &attemptRevoked, &definition, &status, &control)
+	e := s.Pool.QueryRow(ctx, `SELECT a.binding,t.expires_at,a.expires_at,t.revoked,a.revoked,r.definition,r.status,r.control_state,a.replacement_scope FROM raptor.agent_tokens t JOIN raptor.agent_attempt_access a ON a.request_id=t.request_id AND a.attempt_id=t.attempt_id JOIN raptor.requests r ON r.id=t.request_id WHERE t.token_hash=$1`, digest(in.Credential)).Scan(&body, &expiry, &deadline, &tokenRevoked, &attemptRevoked, &definition, &status, &control, &scopeRaw)
 	if e == pgx.ErrNoRows {
 		return out, nil
 	}
@@ -231,7 +265,7 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 		return out, domain.ErrUnavailable
 	}
 	hash, e := Fingerprint(def)
-	if e != nil || hash != binding.DefinitionSHA256 || !question(def) {
+	if e != nil || hash != binding.DefinitionSHA256 || !supported(def) || binding.Operation != def.Operations[0].Name || binding.ObjectKind != def.Object.Kind || binding.ObjectCode != def.Object.Code || binding.EnvCode != def.EnvCode || binding.SkillsCommit != def.Skills.CommitSHA || binding.Model != def.Model {
 		return out, nil
 	}
 	var cluster string
@@ -241,7 +275,32 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 	if cluster != binding.ClusterID {
 		return out, nil
 	}
-	if !SelectorsAllowed(binding, in.Audience, in.Tool, in.Selectors) {
+	if !question(def) {
+		var saved ReplacementScope
+		if s.ResolveReplacement == nil || json.Unmarshal(scopeRaw, &saved) != nil {
+			return out, nil
+		}
+		current, err := s.ResolveReplacement(ctx, binding)
+		if err != nil {
+			return out, domain.ErrUnavailable
+		}
+		if current != saved || !ReplacementSelectorsAllowed(binding, saved, in.Audience, in.Tool, in.Selectors) {
+			return out, nil
+		}
+		if in.Audience == "raptor" && in.Tool == "approval_get" {
+			var found bool
+			if !uuid.MatchString(in.Selectors["approvalId"]) {
+				return out, nil
+			}
+			if err = s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.approvals WHERE id=$1 AND request_id=$2)", in.Selectors["approvalId"], binding.RequestID).Scan(&found); err != nil {
+				return out, domain.ErrUnavailable
+			}
+			if !found {
+				return out, nil
+			}
+		}
+		out.ReplacementScope = &saved
+	} else if !SelectorsAllowed(binding, in.Audience, in.Tool, in.Selectors) {
 		return out, nil
 	}
 	out.Active = true
