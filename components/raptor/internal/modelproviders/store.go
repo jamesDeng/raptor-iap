@@ -42,7 +42,7 @@ func credentialExpiry(raw []byte) (time.Time, error) {
 	return time.UnixMilli(value.Expires), nil
 }
 
-func (s *CredentialStore) PutConnectedCredential(ctx context.Context, providerID ProviderID, label string, raw []byte) (CredentialRecord, error) {
+func (s *CredentialStore) PutConnectedCredential(ctx context.Context, providerID ProviderID, label string, raw []byte, actorID ...string) (CredentialRecord, error) {
 	expiry, e := credentialExpiry(raw)
 	if e != nil {
 		return CredentialRecord{}, e
@@ -67,6 +67,14 @@ func (s *CredentialStore) PutConnectedCredential(ctx context.Context, providerID
  ON CONFLICT(provider_id) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,nonce=EXCLUDED.nonce,key_version=EXCLUDED.key_version,credential_generation=1,expires_at=EXCLUDED.expires_at,updated_at=now()`, providerID, cipher.Data, cipher.Nonce, cipher.KeyVersion, expiry)
 	if e != nil {
 		return CredentialRecord{}, ErrCredentialStore
+	}
+	if len(actorID) > 0 {
+		if len(actorID) != 1 || actorID[0] == "" {
+			return CredentialRecord{}, ErrCredentialStore
+		}
+		if _, e = tx.Exec(ctx, `INSERT INTO raptor.model_provider_audit(actor_id,provider_id,action,result) VALUES($1,$2,'connect','success')`, actorID[0], providerID); e != nil {
+			return CredentialRecord{}, ErrCredentialStore
+		}
 	}
 	if tx.Commit(ctx) != nil {
 		return CredentialRecord{}, ErrCredentialStore

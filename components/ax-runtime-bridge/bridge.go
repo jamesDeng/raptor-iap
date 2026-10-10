@@ -22,16 +22,18 @@ var ErrConflict = errors.New("OwnershipConflict")
 var ErrInvalid = errors.New("InvalidRuntimeRequest")
 
 type Binding struct {
-	DefinitionSHA256 string `json:"definitionSha256"`
-	ClusterID        string `json:"clusterId"`
-	RequestID        string `json:"requestId"`
-	AttemptID        string `json:"attemptId"`
-	Operation        string `json:"operation"`
-	ObjectKind       string `json:"objectKind"`
-	ObjectCode       string `json:"objectCode"`
-	EnvCode          string `json:"envCode"`
-	SkillsCommit     string `json:"skillsCommit"`
-	Model            string `json:"model"`
+	DefinitionSHA256  string `json:"definitionSha256"`
+	ClusterID         string `json:"clusterId"`
+	RequestID         string `json:"requestId"`
+	AttemptID         string `json:"attemptId"`
+	Operation         string `json:"operation"`
+	ObjectKind        string `json:"objectKind"`
+	ObjectCode        string `json:"objectCode"`
+	EnvCode           string `json:"envCode"`
+	SkillsCommit      string `json:"skillsCommit"`
+	Model             string `json:"model"`
+	ProviderID        string `json:"providerId,omitempty"`
+	ConnectionVersion int64  `json:"connectionVersion,omitempty"`
 }
 type Request struct {
 	Action   string    `json:"action"`
@@ -87,7 +89,8 @@ var filePath = regexp.MustCompile(`^/[a-zA-Z0-9_./-]{1,512}$`)
 
 func (r Request) validate(mutation bool) error {
 	b := r.Binding
-	if !uuid.MatchString(b.RequestID) || !uuid.MatchString(b.AttemptID) || b.Operation != "application.question" || b.ObjectKind != "application" || b.EnvCode != "rdev.ali" || !label.MatchString(b.ObjectCode) || !commit.MatchString(b.SkillsCommit) || !digest.MatchString(b.DefinitionSHA256) || b.ClusterID == "" || b.Model != "gpt-5.6-luna" {
+	modelValid := (b.ProviderID == "" && b.ConnectionVersion == 0 && b.Model == "gpt-5.6-luna") || (b.ProviderID == "codex" && b.ConnectionVersion > 0 && label.MatchString(b.Model))
+	if !uuid.MatchString(b.RequestID) || !uuid.MatchString(b.AttemptID) || b.Operation != "application.question" || b.ObjectKind != "application" || b.EnvCode != "rdev.ali" || !label.MatchString(b.ObjectCode) || !commit.MatchString(b.SkillsCommit) || !digest.MatchString(b.DefinitionSHA256) || b.ClusterID == "" || !modelValid {
 		return ErrInvalid
 	}
 	if mutation && (!r.Deadline.After(time.Now()) || r.Deadline.After(time.Now().Add(16*time.Minute))) {
@@ -321,7 +324,7 @@ func (s *Service) File(ctx context.Context, r Request) (Response, error) {
 		return out, e
 	}
 	if r.Action == "write" {
-		if _, started := v.Processes["inference"]; started && r.Path != "/tmp/raptor-private/attempt-cancel" {
+		if _, started := v.Processes["inference"]; started && r.Path != "/tmp/raptor-private/attempt-cancel" && r.Path != "/tmp/raptor-private/model-refresh-ack.json" {
 			return out, ErrInvalid
 		}
 	}

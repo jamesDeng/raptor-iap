@@ -52,6 +52,17 @@ CREATE TABLE IF NOT EXISTS raptor.model_provider_audit (
   occurred_at timestamptz NOT NULL DEFAULT now()
 );
 
-REVOKE ALL ON raptor.model_provider_connections,raptor.model_provider_credentials,raptor.model_provider_models,raptor.model_provider_policy,raptor.model_provider_login_sessions,raptor.model_provider_audit FROM PUBLIC;
-GRANT SELECT,INSERT,UPDATE,DELETE ON raptor.model_provider_connections,raptor.model_provider_credentials,raptor.model_provider_models,raptor.model_provider_policy,raptor.model_provider_login_sessions,raptor.model_provider_audit TO raptor_app;
+CREATE TABLE IF NOT EXISTS raptor.model_provider_attempt_leases (
+  attempt_id uuid PRIMARY KEY,
+  request_id uuid NOT NULL REFERENCES raptor.requests(id),
+  provider_id text NOT NULL REFERENCES raptor.model_provider_connections(provider_id),
+  model_id text NOT NULL,
+  connection_version bigint NOT NULL,
+  credential_generation bigint NOT NULL,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+REVOKE ALL ON raptor.model_provider_connections,raptor.model_provider_credentials,raptor.model_provider_models,raptor.model_provider_policy,raptor.model_provider_login_sessions,raptor.model_provider_audit,raptor.model_provider_attempt_leases FROM PUBLIC;
+GRANT SELECT,INSERT,UPDATE,DELETE ON raptor.model_provider_connections,raptor.model_provider_credentials,raptor.model_provider_models,raptor.model_provider_policy,raptor.model_provider_login_sessions,raptor.model_provider_audit,raptor.model_provider_attempt_leases TO raptor_app;
 GRANT USAGE,SELECT ON SEQUENCE raptor.model_provider_audit_id_seq TO raptor_app;

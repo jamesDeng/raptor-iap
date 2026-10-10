@@ -8,16 +8,18 @@ import (
 )
 
 type AttemptBinding struct {
-	DefinitionSHA256 string `json:"definitionSha256,omitempty"`
-	ClusterID        string `json:"clusterId,omitempty"`
-	RequestID        string `json:"requestId"`
-	AttemptID        string `json:"attemptId"`
-	Operation        string `json:"operation"`
-	ObjectKind       string `json:"objectKind"`
-	ObjectCode       string `json:"objectCode"`
-	EnvCode          string `json:"envCode"`
-	SkillsCommit     string `json:"skillsCommit"`
-	Model            string `json:"model"`
+	DefinitionSHA256  string `json:"definitionSha256,omitempty"`
+	ClusterID         string `json:"clusterId,omitempty"`
+	RequestID         string `json:"requestId"`
+	AttemptID         string `json:"attemptId"`
+	Operation         string `json:"operation"`
+	ObjectKind        string `json:"objectKind"`
+	ObjectCode        string `json:"objectCode"`
+	EnvCode           string `json:"envCode"`
+	SkillsCommit      string `json:"skillsCommit"`
+	Model             string `json:"model"`
+	ProviderID        string `json:"providerId,omitempty"`
+	ConnectionVersion int64  `json:"connectionVersion,omitempty"`
 }
 type RuntimeIntent struct {
 	Kind string `json:"kind"`
@@ -96,7 +98,8 @@ var journalName = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,256}$`)
 var liveTools = map[string]bool{"mcp__raptor__request_get": true, "mcp__raptor__environment_get": true, "mcp__raptor__object_get": true, "mcp__infra__cloud_identity_get": true, "mcp__infra__deployments_list": true, "mcp__infra__deployment_status_get": true}
 
 func (b AttemptBinding) valid() bool {
-	return b.RequestID != "" && b.AttemptID != "" && b.Operation == "application.question" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && b.Model == "gpt-5.6-luna"
+	modelValid := (b.ProviderID == "" && b.ConnectionVersion == 0 && b.Model == "gpt-5.6-luna") || (b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))
+	return b.RequestID != "" && b.AttemptID != "" && b.Operation == "application.question" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && modelValid
 }
 func validJournalKind(k string) bool {
 	return k == "provider" || k == "probe_cleanup" || k == "prepare" || k == "restore" || (strings.HasPrefix(k, "reconcile_key:") && journalName.MatchString(k)) || k == "key" || k == "sandbox" || k == "command" || k == "access" || k == "checkpoint" || k == "terminate" || k == "revoke_key" || k == "revoke_access"

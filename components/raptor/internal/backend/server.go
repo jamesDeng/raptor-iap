@@ -30,8 +30,8 @@ func (s *Server) ConfigureModelProviders(key []byte, nodePath, helperPath string
 	flow := modelproviders.NewNodeFlow(nodePath, helperPath)
 	policy := modelproviders.PolicyStore{Pool: s.Requests.Pool}
 	s.Requests.ModelPolicy = policy
-	connect := modelproviders.NewService(flow, func(ctx context.Context, raw []byte) error {
-		_, err := store.PutConnectedCredential(ctx, "codex", "OpenAI Codex", raw)
+	connect := modelproviders.NewService(flow, func(ctx context.Context, adminID string, raw []byte) error {
+		_, err := store.PutConnectedCredential(ctx, "codex", "OpenAI Codex", raw, adminID)
 		return err
 	})
 	s.ModelProviders = &modelproviders.HTTPService{Pool: s.Requests.Pool, Policy: policy, Credentials: store, Connect: connect, Flow: flow}

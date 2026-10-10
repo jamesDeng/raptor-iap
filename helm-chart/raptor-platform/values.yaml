@@ -42,6 +42,9 @@ directRestart:
 conversation:
   gatewayEnabled: false
   raptorEnabled: false
+modelProviders:
+  enabled: false
+  credentialKeySecretName: ''
 progress:
   publicURL: ''
   origins: ''

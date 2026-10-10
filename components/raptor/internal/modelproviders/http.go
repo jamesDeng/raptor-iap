@@ -69,7 +69,7 @@ func (s *HTTPService) Register(m *http.ServeMux, a *auth.Service) {
 	m.Handle("POST /api/v1/admin/model-providers/codex/discover", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		models, err := s.Flow.Discover(r.Context())
 		if err == nil {
-			err = s.Policy.ReplaceCatalog(r.Context(), "codex", models)
+			err = s.Policy.ReplaceCatalog(r.Context(), "codex", models, auth.UserFrom(r).ID)
 		}
 		if err != nil {
 			httpx.Error(w, 503, "ModelDiscoveryFailed")
@@ -102,6 +102,7 @@ func (s *HTTPService) Register(m *http.ServeMux, a *auth.Service) {
 		httpx.Write(w, 200, map[string]bool{"updated": true})
 	})))
 	m.Handle("POST /api/v1/admin/model-providers/codex/disconnect", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.Connect.CancelPending()
 		err := s.Credentials.Disconnect(r.Context(), "codex", auth.UserFrom(r).ID)
 		if err != nil {
 			httpx.Error(w, 503, "Unavailable")
@@ -109,6 +110,48 @@ func (s *HTTPService) Register(m *http.ServeMux, a *auth.Service) {
 		}
 		httpx.Write(w, 200, map[string]bool{"disconnected": true})
 	})))
+}
+
+func (s *HTTPService) RegisterPrivate(m *http.ServeMux, credentials auth.Credentials) {
+	m.Handle("POST /internal/v1/model-credentials/validate", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var binding AttemptBinding
+		if !httpx.Decode(w, r, &binding) {
+			return
+		}
+		if s.ValidateAttempt(r.Context(), binding) != nil {
+			httpx.Error(w, 403, "ModelAttemptRevoked")
+			return
+		}
+		httpx.Write(w, 200, map[string]bool{"valid": true})
+	}), credentials))
+	m.Handle("POST /internal/v1/model-credentials/lease", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var binding AttemptBinding
+		if !httpx.Decode(w, r, &binding) {
+			return
+		}
+		lease, err := s.LeaseCredential(r.Context(), binding)
+		if err != nil {
+			httpx.Error(w, 403, "ModelCredentialDenied")
+			return
+		}
+		httpx.Write(w, 200, lease)
+	}), credentials))
+	m.Handle("POST /internal/v1/model-credentials/refresh", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Binding            AttemptBinding  `json:"binding"`
+			ExpectedGeneration int64           `json:"expectedGeneration"`
+			Credential         json.RawMessage `json:"credential"`
+		}
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		generation, err := s.RefreshCredential(r.Context(), in.Binding, in.ExpectedGeneration, in.Credential)
+		if err != nil {
+			httpx.Error(w, 403, "ModelCredentialRefreshDenied")
+			return
+		}
+		httpx.Write(w, 200, map[string]int64{"generation": generation})
+	}), credentials))
 }
 
 func (s *HTTPService) adminList(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +187,15 @@ func (s *HTTPService) adminList(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, 503, "Unavailable")
 			return
 		}
-		modelRows, e := s.Pool.Query(r.Context(), `SELECT model_id,display_name,available FROM raptor.model_provider_models WHERE provider_id=$1 ORDER BY model_id`, c.ProviderID)
+		out = append(out, c)
+	}
+	if rows.Err() != nil {
+		httpx.Error(w, 503, "Unavailable")
+		return
+	}
+	rows.Close()
+	for i := range out {
+		modelRows, e := s.Pool.Query(r.Context(), `SELECT model_id,display_name,available FROM raptor.model_provider_models WHERE provider_id=$1 ORDER BY model_id`, out[i].ProviderID)
 		if e != nil {
 			httpx.Error(w, 503, "Unavailable")
 			return
@@ -160,7 +211,7 @@ func (s *HTTPService) adminList(w http.ResponseWriter, r *http.Request) {
 				httpx.Error(w, 503, "Unavailable")
 				return
 			}
-			c.Models = append(c.Models, model)
+			out[i].Models = append(out[i].Models, model)
 		}
 		if modelRows.Err() != nil {
 			modelRows.Close()
@@ -168,11 +219,6 @@ func (s *HTTPService) adminList(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		modelRows.Close()
-		out = append(out, c)
-	}
-	if rows.Err() != nil {
-		httpx.Error(w, 503, "Unavailable")
-		return
 	}
 	if len(out) == 0 {
 		out = append(out, connection{ProviderID: "codex", Status: "disconnected", Enabled: []ModelID{}})

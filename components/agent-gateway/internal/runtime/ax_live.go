@@ -20,8 +20,11 @@ type AXLive struct {
 	axRuns map[string]*axRun
 }
 type axRun struct {
-	start    execution.LiveStart
-	terminal *terminalFile
+	start                 execution.LiveStart
+	terminal              *terminalFile
+	modelLease            ModelLease
+	modelRefreshProcessed bool
+	modelRevoked          bool
 }
 
 func (a *AXLive) call(ctx context.Context, r AXRequest) (AXResponse, error) {
@@ -94,13 +97,26 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	if e != nil {
 		return h, e
 	}
+	var modelLease ModelLease
+	if in.Binding.ProviderID != "" {
+		if a.ModelCredentials == nil {
+			return h, ErrConfiguration
+		}
+		if e = a.fence(ctx, in.Binding.AttemptID); e != nil {
+			return h, e
+		}
+		modelLease, e = a.ModelCredentials.Lease(ctx, in.Binding)
+		if e != nil {
+			return h, e
+		}
+	}
 	if a.axRuns == nil {
 		a.axRuns = map[string]*axRun{}
 	}
 	if a.axRuns[h.RequestID] != nil {
 		return h, ErrConfiguration
 	}
-	a.axRuns[h.RequestID] = &axRun{start: in}
+	a.axRuns[h.RequestID] = &axRun{start: in, modelLease: modelLease}
 	ctx, cancel := context.WithDeadline(ctx, in.Deadline)
 	defer cancel()
 	if e = a.intent(ctx, in.Binding, "sandbox", "raptor-"+in.Binding.AttemptID); e != nil {
@@ -135,12 +151,21 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		}
 	}
 	reference := map[string]any{"archive_key": cp.ArchiveKey, "checksum_key": cp.ChecksumKey, "sha256": cp.SHA256, "bytes": cp.Bytes, "pi_version": cp.PiVersion}
-	raw, _ := json.Marshal(map[string]any{"phase": "restore", "reference": reference, "state_root": "/workspace/raptor-state", "mount_root": "/tmp/raptor-oss", "prefix": a.Config.BucketPrefix})
+	raw, _ := json.Marshal(map[string]any{"phase": "restore", "reference": reference, "state_root": "/workspace/raptor-state", "mount_root": "/tmp/raptor-oss", "prefix": a.Config.BucketPrefix, "skip_auth_check": in.Binding.ProviderID == "codex"})
 	if e = a.write(ctx, in, "/tmp/raptor-private/restore-job.json", raw); e != nil {
 		return h, e
 	}
 	if e = a.phase(ctx, in, "restore", "restore", true); e != nil {
 		return h, e
+	}
+	if in.Binding.ProviderID == "codex" {
+		auth, marshalError := json.Marshal(map[string]json.RawMessage{"openai-codex": modelLease.Credential})
+		if marshalError != nil {
+			return h, ErrConfiguration
+		}
+		if e = a.write(ctx, in, "/tmp/raptor-private/model-credential.json", auth); e != nil {
+			return h, e
+		}
 	}
 	job, e := liveJob(a.Config, in)
 	if e != nil {
@@ -168,17 +193,46 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 	if r == nil || h.ID != "raptor-"+r.start.Binding.AttemptID {
 		return out, ErrRuntimeUnavailable
 	}
+	if r.start.Binding.ProviderID == "codex" && !r.modelRevoked && a.ModelCredentials.Valid(ctx, r.start.Binding) != nil {
+		r.modelRevoked = true
+		if e := a.Cancel(ctx, h); e != nil {
+			return out, e
+		}
+	}
+	if r.start.Binding.ProviderID == "codex" && !r.modelRefreshProcessed {
+		update, readError := a.read(ctx, r.start, "/tmp/raptor-private/model-refresh.json", 65536)
+		if readError != nil && !errors.Is(readError, ErrFileNotFound) {
+			return out, readError
+		}
+		if readError == nil {
+			r.modelRefreshProcessed = true
+			var body struct {
+				Credential json.RawMessage `json:"credential"`
+			}
+			ack := map[string]any{"status": "failed"}
+			if json.Unmarshal(update, &body) == nil && len(body.Credential) > 0 && a.ModelCredentials != nil {
+				generation, refreshError := a.ModelCredentials.Refresh(ctx, r.start.Binding, r.modelLease.Generation, body.Credential)
+				if refreshError == nil {
+					ack = map[string]any{"status": "published", "generation": generation}
+				}
+			}
+			ackBytes, _ := json.Marshal(ack)
+			if e := a.write(ctx, r.start, "/tmp/raptor-private/model-refresh-ack.json", ackBytes); e != nil {
+				return out, e
+			}
+		}
+	}
 	raw, e := a.read(ctx, r.start, "/tmp/raptor-private/attempt-progress.jsonl", 65536)
 	if e != nil && !errors.Is(e, ErrFileNotFound) {
 		return out, e
 	}
 	if e == nil {
-		out.Events, e = decodeProgress(raw, cursor, append(a.Config.RedactionValues(), r.start.Access.Credential)...)
+		out.Events, e = decodeProgress(raw, cursor, append(append(a.Config.RedactionValues(), r.start.Access.Credential), modelSecretValues(r.modelLease)...)...)
 		if e != nil {
 			return out, e
 		}
 	}
-	out.Turns, e = observeConversation(ctx, out.Events, r.start.Binding, func(c context.Context, p string, l int64) ([]byte, error) { return a.read(c, r.start, p, l) }, append(a.Config.RedactionValues(), r.start.Access.Credential))
+	out.Turns, e = observeConversation(ctx, out.Events, r.start.Binding, func(c context.Context, p string, l int64) ([]byte, error) { return a.read(c, r.start, p, l) }, append(append(a.Config.RedactionValues(), r.start.Access.Credential), modelSecretValues(r.modelLease)...))
 	if e != nil {
 		return out, e
 	}
@@ -195,7 +249,7 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 	if e != nil {
 		return out, e
 	}
-	terminal, e := decodeTerminal(raw, r.start.Binding, append(a.Config.RedactionValues(), r.start.Access.Credential))
+	terminal, e := decodeTerminal(raw, r.start.Binding, append(append(a.Config.RedactionValues(), r.start.Access.Credential), modelSecretValues(r.modelLease)...))
 	if e != nil || terminal.Passed && v.ExitCode != 0 {
 		return out, ErrCommandUnconfirmed
 	}

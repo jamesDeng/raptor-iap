@@ -1,12 +1,12 @@
 import fs from 'node:fs';import path from 'node:path';import {randomUUID,randomBytes} from 'node:crypto';import {createRequire} from 'node:module';import {pathToFileURL} from 'node:url';
 const require=createRequire(import.meta.url);
 async function modules(){const entry=new URL(import.meta.resolve('@earendil-works/pi-coding-agent'));return {sdk:await import(entry.href),auth:await import(new URL('./core/auth-storage.js',entry).href)};}
-export async function loadPiRuntime({stateRoot}){
+export async function loadPiRuntime({stateRoot,provider='openai'}){
  process.env.PI_CODING_AGENT_DIR=stateRoot;process.env.PI_OFFLINE='1';process.env.PI_TELEMETRY='0';delete process.env.OPENAI_API_KEY;
  fs.mkdirSync(stateRoot,{recursive:true,mode:0o700});fs.chmodSync(stateRoot,0o700);fs.mkdirSync(path.join(stateRoot,'sessions'),{recursive:true,mode:0o700});
  const file=path.join(stateRoot,'auth.json');if(!fs.existsSync(file)||fs.lstatSync(file).isSymbolicLink())throw Error('NeedsSignIn');fs.chmodSync(file,0o600);
  const host=path.join(stateRoot,'host-id');if(!fs.existsSync(host))fs.writeFileSync(host,randomUUID(),{mode:0o600,flag:'wx'});
- const {sdk,auth}=await modules(),credentials=auth.AuthStorage.create(file),record=await credentials.read('openai');if(record?.type!=='oauth')throw Error('NeedsSignIn');
+ const {sdk,auth}=await modules(),credentials=auth.AuthStorage.create(file),record=await credentials.read(provider);if(record?.type!=='oauth')throw Error('NeedsSignIn');
  const runtime=await sdk.ModelRuntime.create({credentials,modelsPath:null,modelsStorePath:path.join(stateRoot,'catalog.json'),allowModelNetwork:false});return {credentials,runtime};
 }
 export async function refreshCredentials({credentials,runtime,forceExpiry}){

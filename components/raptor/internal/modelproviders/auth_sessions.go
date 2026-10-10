@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,7 +17,7 @@ type DeviceAttempt interface {
 type DeviceFlow interface {
 	Start(context.Context) (DeviceAttempt, error)
 }
-type SaveCredential func(context.Context, []byte) error
+type SaveCredential func(context.Context, string, []byte) error
 
 type connectSession struct {
 	owner  string
@@ -28,6 +29,7 @@ type Service struct {
 	save     SaveCredential
 	mu       sync.Mutex
 	starting bool
+	epoch    uint64
 	sessions map[string]*connectSession
 }
 
@@ -51,6 +53,7 @@ func (s *Service) StartCodexConnect(ctx context.Context, adminID string) (Connec
 		}
 	}
 	s.starting = true
+	startEpoch := s.epoch
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.starting = false; s.mu.Unlock() }()
 	attempt, e := s.flow.Start(ctx)
@@ -69,6 +72,12 @@ func (s *Service) StartCodexConnect(ctx context.Context, adminID string) (Connec
 	runCtx, cancel := context.WithDeadline(context.Background(), challenge.ExpiresAt)
 	v := &connectSession{owner: adminID, status: ConnectStatus{SessionID: challenge.SessionID, Status: StatusPending, ExpiresAt: challenge.ExpiresAt}, cancel: cancel}
 	s.mu.Lock()
+	if s.epoch != startEpoch {
+		s.mu.Unlock()
+		cancel()
+		go attempt.Await(runCtx)
+		return ConnectChallenge{}, ErrClosed
+	}
 	s.sessions[challenge.SessionID] = v
 	s.mu.Unlock()
 	go s.await(runCtx, v, attempt)
@@ -97,7 +106,7 @@ func (s *Service) await(ctx context.Context, v *connectSession, attempt DeviceAt
 		v.cancel()
 		return
 	}
-	if s.save == nil || s.save(context.Background(), credential) != nil {
+	if s.save == nil || s.save(context.Background(), strings.SplitN(v.owner, ":", 2)[0], credential) != nil {
 		v.status.Status = StatusFailed
 		v.status.ErrorCode = "CredentialSaveFailed"
 		v.cancel()
@@ -134,4 +143,16 @@ func (s *Service) CancelCodexConnect(_ context.Context, adminID, sessionID strin
 	v.status.Status = StatusCancelled
 	v.cancel()
 	return nil
+}
+
+func (s *Service) CancelPending() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.epoch++
+	for _, v := range s.sessions {
+		if v.status.Status == StatusPending {
+			v.status.Status = StatusCancelled
+			v.cancel()
+		}
+	}
 }

@@ -27,7 +27,7 @@ type DiscoveredModel struct {
 
 type PolicyStore struct{ Pool *pgxpool.Pool }
 
-func (s PolicyStore) ReplaceCatalog(ctx context.Context, provider ProviderID, models []DiscoveredModel) error {
+func (s PolicyStore) ReplaceCatalog(ctx context.Context, provider ProviderID, models []DiscoveredModel, actorID ...string) error {
 	if provider != "codex" || len(models) == 0 {
 		return ErrInvalidModel
 	}
@@ -49,6 +49,14 @@ func (s PolicyStore) ReplaceCatalog(ctx context.Context, provider ProviderID, mo
 	for _, m := range models {
 		if _, err = tx.Exec(ctx, `INSERT INTO raptor.model_provider_models(provider_id,model_id,display_name,available,discovered_at) VALUES($1,$2,$3,true,$4)
 ON CONFLICT(provider_id,model_id) DO UPDATE SET display_name=EXCLUDED.display_name,available=true,discovered_at=EXCLUDED.discovered_at`, provider, m.ModelID, m.DisplayName, time.Now()); err != nil {
+			return err
+		}
+	}
+	if len(actorID) > 0 {
+		if len(actorID) != 1 || actorID[0] == "" {
+			return ErrInvalidModel
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO raptor.model_provider_audit(actor_id,provider_id,action,result) VALUES($1,$2,'discover','success')`, actorID[0], provider); err != nil {
 			return err
 		}
 	}

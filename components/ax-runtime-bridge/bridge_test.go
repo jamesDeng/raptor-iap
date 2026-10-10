@@ -153,6 +153,44 @@ func TestPrivateFileBoundary(t *testing.T) {
 	}
 }
 
+func TestCodexBindingAndRefreshAckBoundary(t *testing.T) {
+	f := &fakeBackend{}
+	s := service(t, f)
+	r := request()
+	r.Binding.ProviderID = "codex"
+	r.Binding.ConnectionVersion = 2
+	r.Binding.Model = "gpt-6-sol"
+	if _, e := s.Ensure(context.Background(), r); e != nil {
+		t.Fatal(e)
+	}
+	r.Phase = "prepare"
+	if _, e := s.Start(context.Background(), r); e != nil {
+		t.Fatal(e)
+	}
+	r.Phase = "restore"
+	if _, e := s.Start(context.Background(), r); e != nil {
+		t.Fatal(e)
+	}
+	r.Phase = "inference"
+	if _, e := s.Start(context.Background(), r); e != nil {
+		t.Fatal(e)
+	}
+	r.Action = "write"
+	r.Path = "/tmp/raptor-private/model-refresh-ack.json"
+	r.Data = []byte(`{"status":"published","generation":2}`)
+	if _, e := s.File(context.Background(), r); e != nil {
+		t.Fatalf("refresh acknowledgement denied: %v", e)
+	}
+	r.Path = "/tmp/raptor-private/model-credential.json"
+	if _, e := s.File(context.Background(), r); e == nil {
+		t.Fatal("credential overwrite during inference accepted")
+	}
+	r.Binding.ConnectionVersion = 0
+	if _, e := s.File(context.Background(), r); e == nil {
+		t.Fatal("unbound model accepted")
+	}
+}
+
 func TestInferenceRequiresSuccessfulRestore(t *testing.T) {
 	f := &fakeBackend{}
 	s := service(t, f)

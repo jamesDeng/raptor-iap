@@ -22,7 +22,7 @@ func (f blockingFlow) Start(context.Context) (DeviceAttempt, error) {
 func TestConnectConcurrentStartsAllowOnlyOne(t *testing.T) {
 	attempt := &fakeAttempt{challenge: ConnectChallenge{VerificationURL: "https://auth.openai.com/codex/device", UserCode: "ABCD-EFGH", ExpiresAt: time.Now().Add(time.Minute)}, result: make(chan []byte), failure: make(chan error)}
 	flow := blockingFlow{entered: make(chan struct{}), release: make(chan struct{}), attempt: attempt}
-	s := NewService(flow, func(context.Context, []byte) error { return nil })
+	s := NewService(flow, func(context.Context, string, []byte) error { return nil })
 	done := make(chan error, 1)
 	go func() { _, e := s.StartCodexConnect(context.Background(), "admin-1"); done <- e }()
 	<-flow.entered
@@ -59,7 +59,7 @@ func (f *fakeAttempt) Await(ctx context.Context) ([]byte, error) {
 func newFixture(expires time.Time) (*Service, *fakeAttempt, *[]byte) {
 	attempt := &fakeAttempt{challenge: ConnectChallenge{VerificationURL: "https://auth.openai.com/codex/device", UserCode: "ABCD-EFGH", ExpiresAt: expires}, result: make(chan []byte, 1), failure: make(chan error, 1)}
 	saved := []byte("old-credential")
-	service := NewService(fakeFlow{attempt}, func(_ context.Context, next []byte) error { saved = append([]byte(nil), next...); return nil })
+	service := NewService(fakeFlow{attempt}, func(_ context.Context, _ string, next []byte) error { saved = append([]byte(nil), next...); return nil })
 	return service, attempt, &saved
 }
 func waitStatus(t *testing.T, s *Service, admin, id string, want ConnectionStatus) {
