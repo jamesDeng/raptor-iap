@@ -9,6 +9,7 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/backend"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/modelproviders"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/skills"
 	"golang.org/x/term"
@@ -53,6 +54,11 @@ func main() {
 			log.Fatal("administrator creation failed")
 		}
 		return
+	}
+	if os.Getenv("RAPTOR_MODEL_PROVIDERS_ENABLED") == "true" {
+		if _, e := modelproviders.ReadEncryptionKey(os.Getenv("RAPTOR_MODEL_CREDENTIAL_KEY_FILE")); e != nil {
+			log.Fatal("model provider credential key unavailable")
+		}
 	}
 	addr := os.Getenv("RAPTOR_BACKEND_ADDR")
 	if addr == "" {
