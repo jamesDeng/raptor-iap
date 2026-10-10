@@ -14,6 +14,7 @@ def select_stack(name):
     choices = {
         'test-foundation': {'root':'infra-terraform/environments/rdev-test-foundation','prefix':'rdev.ali/test-pgcat','key':'terraform.tfstate','label':'Terraform test foundation','binding':'raptor-test-foundation-v1'},
         'infra-api': {'root':'infra-terraform/environments/rdev-infra-api','prefix':'rdev.ali','key':'infra-api.tfstate','label':'Terraform Infra API','binding':'raptor-infra-api-v1'},
+        'rdev-kong': {'root':'infra-terraform/environments/rdev.ali','prefix':'rdev.ali','key':'terraform.tfstate','label':'Terraform rdev Kong DNS','binding':'raptor-rdev-kong-v1'},
     }
     if name not in choices:raise ValueError('Unknown stack')
     return choices[name]
@@ -58,14 +59,31 @@ def command(args,cwd):
     print('GitOps step: '+stage, flush=True)
     r=subprocess.run(args,cwd=cwd,capture_output=True)
     if r.returncode:
+        plain = re.sub(rb'\x1b\[[0-9;]*m', b'', r.stdout+r.stderr)
+        diagnostic = plain.lower()
+        categories = [label for label, patterns in {
+            'access-denied': (b'accessdenied', b'access denied', b'status code: 403', b'statuscode: 403'),
+            'missing-backend-object': (b'nosuchbucket', b'nosuchkey', b'no such bucket'),
+            'backend-lock': (b'error acquiring the state lock', b'lockid'),
+            'provider-download': (b'failed to query available provider packages', b'failed to install provider'),
+            'module-path': (b'unreadable module directory', b'module not installed'),
+        }.items() if any(pattern in diagnostic for pattern in patterns)]
+        # Terraform's first error heading is static prose; discard any value-bearing suffix.
+        heading = re.search(rb'Error: ([A-Za-z ]{3,60})(?::|\r?\n)', plain)
+        safe_heading = heading.group(1).decode().strip() if heading else 'unavailable'
         codes=re.findall(rb'(?:ErrorCode|Code|code)[\s:=\"]+([A-Za-z][A-Za-z0-9_.]{2,80})', r.stdout+r.stderr)
         actions=re.findall(rb'\b(?:ram|ess|nlb|ecs|vpc|rds|oss|ots):[A-Za-z][A-Za-z0-9]{1,80}\b', r.stdout+r.stderr)
-        print('Failed step: '+stage+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable')+'; permission actions: '+(', '.join(sorted({a.decode() for a in actions})) or 'unavailable'), file=sys.stderr)
+        print('Failed step: '+stage+'; exit: '+str(r.returncode)+'; output bytes: '+str(len(r.stdout))+'/'+str(len(r.stderr))+'; heading: '+safe_heading+'; category: '+(', '.join(categories) or 'unclassified')+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable')+'; permission actions: '+(', '.join(sorted({a.decode() for a in actions})) or 'unavailable'), file=sys.stderr)
         raise RuntimeError('Terraform command failed; raw output withheld')
     return r.stdout
 
 def validate_inputs(config,stack="test-foundation"):
     select_stack(stack)
+    if stack == 'rdev-kong':
+        if set(config) != {'account_id','kubernetes_version'}:raise ValueError('Invalid stack inputs')
+        if not isinstance(config['account_id'],str) or not re.fullmatch(r'\d{8,20}',config['account_id']):raise ValueError('Invalid account ID')
+        if config['kubernetes_version'] != '1.35.7-aliyun.1':raise ValueError('Invalid Kubernetes version')
+        return
     if stack == 'infra-api':
         if set(config) != {'trigger_url','gateway_instance_id'}:raise ValueError('Invalid stack inputs')
         if not isinstance(config['trigger_url'],str) or not re.fullmatch(r'https://[a-zA-Z0-9.-]+\.ap-southeast-1\.fcapp\.run/?',config['trigger_url']):raise ValueError('Invalid trigger')

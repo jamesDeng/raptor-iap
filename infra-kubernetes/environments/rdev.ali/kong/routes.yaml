@@ -2,6 +2,29 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+  name: raptor-admin
+  namespace: raptor-system
+  annotations:
+    konghq.com/protocols: https
+    konghq.com/preserve-host: "true"
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: raptor-kong
+  tls:
+    - hosts: [admin.rdev.raptor-iap.top]
+      secretName: raptor-public-tls
+  rules:
+    - host: admin.rdev.raptor-iap.top
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: raptor-admin, port: {number: 8873}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
   name: raptor-public-browser
   namespace: raptor-system
   annotations:

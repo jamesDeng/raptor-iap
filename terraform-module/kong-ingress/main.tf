@@ -21,7 +21,7 @@ resource "alicloud_slb_load_balancer" "proxy" {
 }
 # ACK CCM owns the listener and backend groups. Do not declare them here.
 resource "alicloud_alidns_record" "public" {
-  for_each    = var.publish_dns ? toset(["raptor.rdev", "api.rdev"]) : toset([])
+  for_each    = var.publish_dns ? toset(["raptor.rdev", "api.rdev", "admin.rdev"]) : toset([])
   domain_name = "raptor-iap.top"
   rr          = each.key
   type        = "A"

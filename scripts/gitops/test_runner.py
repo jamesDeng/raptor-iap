@@ -58,4 +58,18 @@ class NetworkSummaryContracts(unittest.TestCase):
         s=summary(p,'a'*40)
         self.assertIn('redacted-key',s);self.assertNotIn('10.70.1.0',s)
 
+class RdevKongPlanContracts(unittest.TestCase):
+    def test_stack_uses_existing_rdev_state(self):
+        from runner import select_stack, validate_inputs
+        stack=select_stack('rdev-kong')
+        self.assertEqual((stack['root'],stack['prefix'],stack['key']),('infra-terraform/environments/rdev.ali','rdev.ali','terraform.tfstate'))
+        validate_inputs({'account_id':'1360282071200743','kubernetes_version':'1.35.7-aliyun.1'},'rdev-kong')
+        with self.assertRaises(ValueError):validate_inputs({'account_id':'1360282071200743','kubernetes_version':'1.35.7-aliyun.1','secret':'x'},'rdev-kong')
+    def test_admin_dns_plan_comment_withholds_values(self):
+        plan={'complete':True,'resource_changes':[{'mode':'managed','address':'module.kong_ingress[0].alicloud_alidns_record.public["admin.rdev"]','change':{'actions':['create'],'after':{'value':'PRIVATE_IP'}}}]}
+        comment=summary(plan,'a'*40,'rdev-kong')
+        self.assertIn('Terraform rdev Kong DNS',comment)
+        self.assertIn('create',comment)
+        self.assertNotIn('PRIVATE_IP',comment)
+
 if __name__=='__main__':unittest.main()
