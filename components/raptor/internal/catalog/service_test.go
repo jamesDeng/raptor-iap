@@ -118,3 +118,59 @@ func TestEnvironmentRejectsCredentialsPreservesReferences(t *testing.T) {
 		t.Fatal("secret reference rejected")
 	}
 }
+
+func TestStructuredEnvironmentAndLegacyConfigRoundTrip(t *testing.T) {
+	s, _ := setup(t)
+	ctx := context.Background()
+	if e := s.CreateGroup(ctx, "g", "Group"); e != nil {
+		t.Fatal(e)
+	}
+	original := domain.Environment{Code: "dev", GroupCode: "g", Stage: "dev", Config: map[string]any{"cloud": "aliyun", "region": "ap-southeast-1", "accountId": "123", "ackClusterId": "ack", "clusterId": "legacy", "namespace": "apps", "infraApiUrl": "https://infra.example", "unknown": map[string]any{"nested": []any{float64(1), true}}, "terraformRepo": "https://github.com/jamesDeng/raptor-iap", "terraformPath": "infra-terraform"}}
+	if e := s.SaveEnvironment(ctx, original, false); e != nil {
+		t.Fatal(e)
+	}
+	got, e := s.GetEnvironment(ctx, "dev")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got.Cloud != "aliyun" || got.ACKClusterID != "ack" || got.Config["clusterId"] != "legacy" || len(got.Repositories) != 1 {
+		t.Fatal("legacy adapter lost values", got)
+	}
+	got.Config = map[string]any{"region": "ap-southeast-2"}
+	if e = s.SaveEnvironment(ctx, got, true); e != nil {
+		t.Fatal(e)
+	}
+	got, e = s.GetEnvironment(ctx, "dev")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got.Config["region"] != "ap-southeast-2" || got.Config["unknown"] == nil || got.Config["infraApiUrl"] != "https://infra.example" {
+		t.Fatal("partial legacy update lost values", got.Config)
+	}
+	got.Config = nil
+	got.Repositories = []domain.EnvironmentRepository{{Purpose: "terraform", URL: "https://github.com/jamesDeng/raptor-iap", BaseBranch: "main", Directory: "infra-terraform"}, {Purpose: "terraform", URL: "https://github.com/jamesDeng/other", BaseBranch: "main", Directory: "terraform"}, {Purpose: "kubernetes", URL: "https://github.com/jamesDeng/raptor-iap", BaseBranch: "main", Directory: "infra-kubernetes"}}
+	if e = s.SaveEnvironment(ctx, got, true); e != nil {
+		t.Fatal(e)
+	}
+	got, e = s.GetEnvironment(ctx, "dev")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(got.Repositories) != 3 || got.Config["unknown"] == nil || got.Config["namespace"] != "apps" {
+		t.Fatal("structured update lost values", got)
+	}
+}
+
+func TestRepositoryMetadataRejectsCredentialsAndTraversal(t *testing.T) {
+	base := domain.EnvironmentRepository{Purpose: "terraform", URL: "https://github.com/jamesDeng/raptor-iap", BaseBranch: "main", Directory: "infra-terraform"}
+	if !validRepository(base) {
+		t.Fatal("valid repository rejected")
+	}
+	for _, change := range []func(*domain.EnvironmentRepository){func(r *domain.EnvironmentRepository) { r.URL = "https://token@github.com/jamesDeng/raptor-iap" }, func(r *domain.EnvironmentRepository) { r.URL = "https://github.com/jamesDeng/raptor-iap?token=secret" }, func(r *domain.EnvironmentRepository) { r.Directory = "../infra" }, func(r *domain.EnvironmentRepository) { r.BaseBranch = "" }} {
+		r := base
+		change(&r)
+		if validRepository(r) {
+			t.Fatal("unsafe repository accepted", r)
+		}
+	}
+}

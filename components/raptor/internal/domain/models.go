@@ -25,10 +25,21 @@ type Object struct {
 	Description string `json:"description"`
 }
 type Environment struct {
-	Code      string         `json:"code"`
-	GroupCode string         `json:"groupCode"`
-	Stage     string         `json:"stage"`
-	Config    map[string]any `json:"config"`
+	Code         string                  `json:"code"`
+	GroupCode    string                  `json:"groupCode"`
+	Stage        string                  `json:"stage"`
+	Cloud        string                  `json:"cloud,omitempty"`
+	Region       string                  `json:"region,omitempty"`
+	AccountID    string                  `json:"accountId,omitempty"`
+	ACKClusterID string                  `json:"ackClusterId,omitempty"`
+	Repositories []EnvironmentRepository `json:"repositories,omitempty"`
+	Config       map[string]any          `json:"config"`
+}
+type EnvironmentRepository struct {
+	Purpose    string `json:"purpose"`
+	URL        string `json:"url"`
+	BaseBranch string `json:"baseBranch"`
+	Directory  string `json:"directory"`
 }
 type Operation struct {
 	Name       string         `json:"name"`

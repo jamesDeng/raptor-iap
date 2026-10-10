@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"context"
-	"encoding/json"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -147,61 +146,13 @@ func validConfig(v any) bool {
 	return true
 }
 func (s *Service) SaveEnvironment(ctx context.Context, v domain.Environment, update bool) error {
-	if !codePattern.MatchString(v.Code) || !validName(v.Stage) || v.GroupCode == "" || v.Config == nil || !validConfig(v.Config) {
-		return domain.ErrInvalid
-	}
-	b, e := json.Marshal(v.Config)
-	if e != nil || len(b) > 16384 {
-		return domain.ErrInvalid
-	}
-	if update {
-		tag, e := s.Pool.Exec(ctx, "UPDATE raptor.environments SET group_code=$2,stage=$3,config=$4 WHERE code=$1", v.Code, v.GroupCode, v.Stage, b)
-		if e != nil {
-			return storeError(e)
-		}
-		if tag.RowsAffected() == 0 {
-			return domain.ErrNotFound
-		}
-		return nil
-	}
-	_, e = s.Pool.Exec(ctx, "INSERT INTO raptor.environments(code,group_code,stage,config) VALUES($1,$2,$3,$4)", v.Code, v.GroupCode, v.Stage, b)
-	return storeError(e)
+	return s.saveStructuredEnvironment(ctx, v, update)
 }
 func (s *Service) GetEnvironment(ctx context.Context, code string) (domain.Environment, error) {
-	var v domain.Environment
-	var b []byte
-	e := s.Pool.QueryRow(ctx, "SELECT code,group_code,stage,config FROM raptor.environments WHERE code=$1", code).Scan(&v.Code, &v.GroupCode, &v.Stage, &b)
-	if e != nil {
-		return v, storeError(e)
-	}
-	e = json.Unmarshal(b, &v.Config)
-	if e == nil && !validConfig(v.Config) {
-		return v, domain.ErrInvalid
-	}
-	return v, storeError(e)
+	return s.getStructuredEnvironment(ctx, code)
 }
 func (s *Service) ListEnvironments(ctx context.Context) ([]domain.Environment, error) {
-	rows, e := s.Pool.Query(ctx, "SELECT code,group_code,stage,config FROM raptor.environments ORDER BY group_code,code")
-	if e != nil {
-		return nil, storeError(e)
-	}
-	defer rows.Close()
-	out := []domain.Environment{}
-	for rows.Next() {
-		var v domain.Environment
-		var b []byte
-		if e = rows.Scan(&v.Code, &v.GroupCode, &v.Stage, &b); e != nil {
-			return nil, storeError(e)
-		}
-		if e = json.Unmarshal(b, &v.Config); e != nil {
-			return nil, domain.ErrUnavailable
-		}
-		if !validConfig(v.Config) {
-			return nil, domain.ErrInvalid
-		}
-		out = append(out, v)
-	}
-	return out, storeError(rows.Err())
+	return s.listStructuredEnvironments(ctx)
 }
 func (s *Service) Deployments(ctx context.Context, id, env string) ([]adapters.Deployment, error) {
 	o, e := s.GetObject(ctx, id)
