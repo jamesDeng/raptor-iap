@@ -10,6 +10,9 @@
 {{- required "agentAccess.secretName required for live runtime" .Values.agentAccess.secretName | quote | trunc 0 -}}
 {{- if not (regexMatch "^https://[^/?#]+$" .Values.gatewayLive.serviceURL) }}{{ fail "gatewayLive.serviceURL must use HTTPS" }}{{ end -}}
 {{- end -}}
+{{- if .Values.modelProviders.enabled -}}
+{{- required "modelProviders.credentialKeySecretName required" .Values.modelProviders.credentialKeySecretName | quote | trunc 0 -}}
+{{- end -}}
 {{- $revision := required "repository.revision must be a reviewed commit" .Values.repository.revision -}}
 {{- if not (regexMatch "^[a-f0-9]{40}$" $revision) }}{{ fail "invalid repository revision" }}{{ end -}}
 {{- range $name, $image := .Values.images -}}
@@ -75,6 +78,19 @@ spec:
           volumeMounts:
             - {name: repository, mountPath: /repo}
             - {name: temporary, mountPath: /tmp}
+        {{ if $.Values.modelProviders.enabled }}
+        - name: model-key
+          image: {{ $.Values.images.raptor | quote }}
+          command: ["/bin/sh", "-ec"]
+          args: ["umask 077; install -m 0600 /model-key-source/key /model-key-private/key"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: model-key-source, mountPath: /model-key-source, readOnly: true}
+            - {name: model-key-private, mountPath: /model-key-private}
+        {{ end }}
       {{ end }}
       {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
       initContainers:
@@ -128,6 +144,12 @@ spec:
             {{ if eq $service.name "raptor-backend" }}
             - {name: RAPTOR_CONVERSATION_ENABLED, value: {{ $.Values.conversation.raptorEnabled | quote }}}
             - {name: RAPTOR_ENABLE_RESTART, value: {{ $.Values.directRestart.enabled | quote }}}
+            - {name: RAPTOR_MODEL_PROVIDERS_ENABLED, value: {{ $.Values.modelProviders.enabled | quote }}}
+            {{ if $.Values.modelProviders.enabled }}
+            - {name: RAPTOR_MODEL_CREDENTIAL_KEY_FILE, value: '/run/raptor/model-key/key'}
+            - {name: RAPTOR_MODEL_NODE_PATH, value: '/usr/local/bin/node'}
+            - {name: RAPTOR_MODEL_AUTH_HELPER_PATH, value: '/opt/raptor-model-auth/model-auth-helper.mjs'}
+            {{ end }}
             {{ end }}
             - {name: RAPTOR_SIMULATION, value: 'false'}
             - {name: GATEWAY_SIMULATION, value: 'false'}
@@ -187,6 +209,9 @@ spec:
             {{ end }}
             {{ if eq $service.name "raptor-backend" }}
             - {name: repository, mountPath: /repo, readOnly: true}
+            {{ if $.Values.modelProviders.enabled }}
+            - {name: model-key-private, mountPath: /run/raptor/model-key, readOnly: true}
+            {{ end }}
             {{ end }}
       volumes:
         {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
@@ -217,6 +242,12 @@ spec:
         {{ if eq $service.name "raptor-backend" }}
         - name: repository
           emptyDir: {sizeLimit: 256Mi}
+        {{ if $.Values.modelProviders.enabled }}
+        - name: model-key-private
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        - name: model-key-source
+          secret: {secretName: {{ $.Values.modelProviders.credentialKeySecretName | quote }}, defaultMode: 0440}
+        {{ end }}
         {{ end }}
 ---
 apiVersion: v1

@@ -9,7 +9,7 @@ export async function runJob(job,dependencies={}){
  const deps={loadPiRuntime,refreshCredentials,runReadProbe,runAppQuestion,createCheckpoint,restoreCheckpoint,...dependencies};const result={phase:job.phase,passed:false};
  try{
   if(job.phase==='inference'&&job.request!==undefined)validateApplicationRequest(job.request);
-  if(job.phase==='restore'){await deps.restoreCheckpoint({reference:job.reference,stateRoot:job.state_root,mountRoot:job.mount_root,prefix:job.prefix});await deps.loadPiRuntime({stateRoot:job.state_root});return {...result,passed:true};}
+  if(job.phase==='restore'){await deps.restoreCheckpoint({reference:job.reference,stateRoot:job.state_root,mountRoot:job.mount_root,prefix:job.prefix});if(!job.skip_auth_check)await deps.loadPiRuntime({stateRoot:job.state_root});return {...result,passed:true};}
   const {credentials,runtime}=await deps.loadPiRuntime({stateRoot:job.state_root});
   if(job.phase==='refresh'){Object.assign(result,await deps.refreshCredentials({credentials,runtime,forceExpiry:true}));result.passed=true;}
   else if(job.phase==='inference'){Object.assign(result,await (job.request?deps.runAppQuestion({stateRoot:job.state_root,runtime,limits:job.limits,request:job.request}):deps.runReadProbe({stateRoot:job.state_root,runtime,limits:job.limits})));}

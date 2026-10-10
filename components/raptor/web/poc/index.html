@@ -35,7 +35,7 @@
     <div id="new-agent-request">
       <label>Environment<select id="new-request-environment"></select></label>
       <label>Operation<select id="operation" aria-label="Operation"></select></label>
-      <form id="operation-form"><div id="operation-fields"></div><label>Skills release<select id="request-skills"></select></label><label id="model-field" hidden>Model<select id="request-model"><option value="gpt-5.6-luna">gpt-5.6-luna</option></select></label><div class="actions"><button id="create-agent-request">Submit request</button></div></form>
+      <form id="operation-form"><div id="operation-fields"></div><label>Skills release<select id="request-skills"></select></label><label id="model-field" hidden>Model<select id="request-model"></select><small id="model-help"></small></label><div class="actions"><button id="create-agent-request">Submit request</button></div></form>
     </div>
     <div id="new-restart-request" hidden><h3>Restart targets</h3><p class="section-description">This request restarts the selected deployments in parallel. Review every target before submitting.</p><div id="restart-request-targets"></div><button id="create-restart-request">Submit restart request</button></div>
     <button id="cancel-new-request" class="secondary">Cancel</button>

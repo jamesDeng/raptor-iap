@@ -24,6 +24,7 @@ func NewHandler(c Client) (http.Handler, error) {
 	proxy.Director = func(r *http.Request) { director(r); r.SetBasicAuth(c.Username, c.Password) }
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) { httpx.Error(w, 503, "Unavailable") }
 	m.Handle("/v1/", proxy)
+	m.Handle("/internal/v1/model-credentials/",proxy)
 	service := auth.BasicAuth(m, auth.Credentials{Username: c.Username, Password: c.Password})
 	inspector := Client{BaseURL: c.BaseURL, AllowClusterHTTP: c.AllowClusterHTTP, Username: os.Getenv("AGENT_INTROSPECTION_USERNAME"), Password: os.Getenv("AGENT_INTROSPECTION_PASSWORD")}
 	privateProxy := httputil.NewSingleHostReverseProxy(u)

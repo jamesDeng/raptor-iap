@@ -121,14 +121,15 @@ func main() {
 		defer lease.Close()
 		owner := execution.NewID()
 		raptor := execution.HTTPRaptor{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
-		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease}
+		modelCredentials := runtimeadapter.HTTPModelCredentials{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
+		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials}
 		backends := map[string]execution.LiveRuntime{"aliyun": adapter}
 		if config.AX != nil {
 			bridge, err := runtimeadapter.NewAXClient(*config.AX)
 			if err != nil {
 				log.Fatal("AX private transport configuration invalid")
 			}
-			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease}, Bridge: bridge}
+			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials}, Bridge: bridge}
 		}
 		s.ConversationEnabled = os.Getenv("GATEWAY_CONVERSATION_ENABLED") == "true"
 		s.ConversationRuntime = true

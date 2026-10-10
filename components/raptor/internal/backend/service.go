@@ -11,6 +11,9 @@ import (
 )
 
 func (s *Server) RegisterService(user, password string) {
+	if s.ModelProviders != nil {
+		s.ModelProviders.RegisterPrivate(s.Mux, auth.Credentials{Username: user, Password: password})
+	}
 	access := &agentaccess.Service{Pool: s.Requests.Pool, RaptorMCPURL: os.Getenv("RAPTOR_AGENT_MCP_URL"), InfraMCPURL: os.Getenv("INFRA_AGENT_MCP_URL")}
 	access.Register(s.Mux, auth.Credentials{Username: user, Password: password}, auth.Credentials{Username: os.Getenv("AGENT_INTROSPECTION_USERNAME"), Password: os.Getenv("AGENT_INTROSPECTION_PASSWORD")})
 	wrap := func(pattern string, h http.HandlerFunc) {

@@ -125,3 +125,22 @@ class ConversationRollout(unittest.TestCase):
      if path['backend']['service']['name']=='agent-gateway':routes.append((d,path))
   self.assertEqual(len(routes),1)
   d,p=routes[0];self.assertEqual((p['path'],p['pathType']),('/v1/progress','Exact'));self.assertEqual(d['metadata']['annotations']['konghq.com/methods'],'GET');self.assertEqual(d['metadata']['annotations']['konghq.com/strip-path'],'false')
+
+class ModelProviderRollout(unittest.TestCase):
+ def render(self,*extra):
+  helm=os.environ.get('HELM',shutil.which('helm'))
+  if not helm:self.skipTest('Helm required')
+  args=[helm,'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
+  for item in extra:args+=['--set',item]
+  return subprocess.run(args,capture_output=True,text=True)
+ def test_model_auth_defaults_off_and_requires_private_key_secret(self):
+  p=self.render();self.assertEqual(p.returncode,0,p.stderr)
+  docs={d['metadata']['name']:d for d in yaml.safe_load_all(p.stdout) if d and d.get('kind')=='Deployment'}
+  backend=docs['raptor-backend']['spec']['template']['spec'];env={e['name']:e.get('value') for e in backend['containers'][0]['env']}
+  self.assertEqual(env['RAPTOR_MODEL_PROVIDERS_ENABLED'],'false');self.assertFalse(any(v['name']=='model-key-source' for v in backend['volumes']))
+  self.assertNotEqual(self.render('modelProviders.enabled=true').returncode,0)
+  p=self.render('modelProviders.enabled=true','modelProviders.credentialKeySecretName=private-model-key');self.assertEqual(p.returncode,0,p.stderr)
+  docs={d['metadata']['name']:d for d in yaml.safe_load_all(p.stdout) if d and d.get('kind')=='Deployment'};backend=docs['raptor-backend']['spec']['template']['spec'];env={e['name']:e.get('value') for e in backend['containers'][0]['env']}
+  self.assertEqual(env['RAPTOR_MODEL_PROVIDERS_ENABLED'],'true');self.assertEqual(env['RAPTOR_MODEL_CREDENTIAL_KEY_FILE'],'/run/raptor/model-key/key')
+  self.assertTrue(any(v['name']=='model-key-private' for v in backend['volumes']))
+  self.assertFalse(any(v['name']=='model-key-private' for v in docs['raptor-frontend']['spec']['template']['spec']['volumes']))

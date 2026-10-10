@@ -62,14 +62,16 @@ type RestartTarget struct {
 	UID       string `json:"uid"`
 }
 type RequestInput struct {
-	Type       string          `json:"type"`
-	Model      string          `json:"model,omitempty"`
-	Object     ObjectRef       `json:"object"`
-	EnvCode    string          `json:"envCode"`
-	Operations []Operation     `json:"operations"`
-	Skills     SkillsVersion   `json:"skills"`
-	Operation  string          `json:"operation,omitempty"`
-	Targets    []RestartTarget `json:"targets,omitempty"`
+	Type              string          `json:"type"`
+	ProviderID        string          `json:"providerId,omitempty"`
+	ConnectionVersion int64           `json:"connectionVersion,omitempty"`
+	Model             string          `json:"model,omitempty"`
+	Object            ObjectRef       `json:"object"`
+	EnvCode           string          `json:"envCode"`
+	Operations        []Operation     `json:"operations"`
+	Skills            SkillsVersion   `json:"skills"`
+	Operation         string          `json:"operation,omitempty"`
+	Targets           []RestartTarget `json:"targets,omitempty"`
 }
 type Request struct {
 	ID         string       `json:"id"`

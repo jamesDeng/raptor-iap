@@ -43,7 +43,8 @@ func NewHandler(backendURL string) (http.Handler, error) {
 		clean := path.Clean(r.URL.Path)
 		users := clean == "/api/v1/users" || strings.HasPrefix(clean, "/api/v1/users/")
 		envWrite := r.Method != "GET" && r.Method != "HEAD" && (clean == "/api/v1/environments" || strings.HasPrefix(clean, "/api/v1/environments/") || clean == "/api/v1/environment-groups" || strings.HasPrefix(clean, "/api/v1/environment-groups/"))
-		if public && (users || envWrite) {
+		modelAdmin := clean == "/api/v1/admin/model-providers" || strings.HasPrefix(clean, "/api/v1/admin/model-providers/")
+		if public && (users || envWrite || modelAdmin) {
 			httpx.Error(w, http.StatusForbidden, "PrivateManagementRequired")
 			return
 		}

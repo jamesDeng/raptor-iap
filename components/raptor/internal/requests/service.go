@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/modelproviders"
 	"time"
 )
 
@@ -16,12 +17,17 @@ type GatewayClient interface {
 	PutRequest(context.Context, string) error
 }
 type Service struct {
+	ModelPolicy         modelSelection
 	ConversationEnabled bool
 	Pool                *pgxpool.Pool
 	Catalog             *catalog.Service
 	ResolveSkills       func(context.Context, domain.SkillsVersion) (domain.SkillsVersion, error)
 	RestartNow          func() time.Time
 	Gateway             GatewayReader
+}
+
+type modelSelection interface {
+	ValidateSelection(context.Context, modelproviders.ProviderID, modelproviders.ModelID) (int64, error)
 }
 
 func NewService(p *pgxpool.Pool, c *catalog.Service) *Service { return &Service{Pool: p, Catalog: c} }
@@ -72,7 +78,7 @@ func (s *Service) List(ctx context.Context) ([]domain.Request, error) {
 	return out, nil
 }
 func (s *Service) Create(ctx context.Context, u domain.User, key string, in domain.RequestInput) (domain.Request, error) {
-	if u.ID == "" || key == "" || len(key) > 200 {
+	if u.ID == "" || key == "" || len(key) > 200 || in.ConnectionVersion != 0 {
 		return domain.Request{}, domain.ErrInvalid
 	}
 	original, e := json.Marshal(in)
@@ -98,6 +104,13 @@ func (s *Service) Create(ctx context.Context, u domain.User, key string, in doma
 	}
 	if e = s.Validate(input); e != nil {
 		return domain.Request{}, e
+	}
+	if s.ModelPolicy != nil && input.Type == "agent" && len(input.Operations) == 1 && input.Operations[0].Name == "application.question" {
+		version, selectionError := s.ModelPolicy.ValidateSelection(ctx, modelproviders.ProviderID(input.ProviderID), modelproviders.ModelID(input.Model))
+		if selectionError != nil {
+			return domain.Request{}, domain.ErrInvalid
+		}
+		input.ConnectionVersion = version
 	}
 	if input.Type == "agent" {
 		o, findError := s.Catalog.FindObject(ctx, input.Object.Kind, input.Object.Code)

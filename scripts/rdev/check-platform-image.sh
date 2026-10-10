@@ -22,6 +22,7 @@ if [[ "$component" == gateway ]]; then
   docker run --rm --network none --entrypoint /bin/sh "$image" -ec 'for file in package.json package-lock.json live-runner.mjs live-contract.mjs mcp-runtime.mjs; do test -r "/opt/raptor-harness/$file"; done'
 fi
 if [[ "$component" == raptor ]]; then
+  docker run --rm --network none --entrypoint /bin/sh "$image" -ec 'test "$(/usr/local/bin/node --version)" = v22.23.3; test -r /opt/raptor-model-auth/model-auth-helper.mjs; test -r /opt/raptor-model-auth/node_modules/@earendil-works/pi-coding-agent/package.json'
   if docker run --rm --network none --entrypoint /usr/local/bin/open-api "$image" > /dev/null 2>&1; then
     echo 'Open API unexpectedly started without authentication' >&2
     exit 1

@@ -88,11 +88,13 @@ func (w *LiveWorker) authorized(ctx context.Context) error {
 }
 func ParseLiveQuestion(in ExecutionInput, attempt string) (AttemptBinding, string, string, error) {
 	var d struct {
-		Type       string                      `json:"type"`
-		Model      string                      `json:"model"`
-		Object     struct{ Kind, Code string } `json:"object"`
-		EnvCode    string                      `json:"envCode"`
-		Operations []struct {
+		Type              string                      `json:"type"`
+		Model             string                      `json:"model"`
+		ProviderID        string                      `json:"providerId"`
+		ConnectionVersion int64                       `json:"connectionVersion"`
+		Object            struct{ Kind, Code string } `json:"object"`
+		EnvCode           string                      `json:"envCode"`
+		Operations        []struct {
 			Name       string                     `json:"name"`
 			Parameters map[string]json.RawMessage `json:"parameters"`
 		} `json:"operations"`
@@ -123,7 +125,7 @@ func ParseLiveQuestion(in ExecutionInput, attempt string) (AttemptBinding, strin
 	if !shaPattern.MatchString(in.DefinitionSHA256) || hash != in.DefinitionSHA256 {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
-	b := AttemptBinding{RequestID: in.RequestID, AttemptID: attempt, Operation: d.Operations[0].Name, ObjectKind: d.Object.Kind, ObjectCode: d.Object.Code, EnvCode: d.EnvCode, SkillsCommit: in.Skills.CommitSHA, Model: d.Model, DefinitionSHA256: hash, ClusterID: env.Config.ClusterID}
+	b := AttemptBinding{RequestID: in.RequestID, AttemptID: attempt, Operation: d.Operations[0].Name, ObjectKind: d.Object.Kind, ObjectCode: d.Object.Code, EnvCode: d.EnvCode, SkillsCommit: in.Skills.CommitSHA, Model: d.Model, ProviderID: d.ProviderID, ConnectionVersion: d.ConnectionVersion, DefinitionSHA256: hash, ClusterID: env.Config.ClusterID}
 	if !b.valid() {
 		return b, "", "", ErrInvalid
 	}

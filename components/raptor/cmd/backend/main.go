@@ -9,6 +9,7 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/backend"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/modelproviders"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/skills"
 	"golang.org/x/term"
@@ -59,6 +60,13 @@ func main() {
 		addr = "127.0.0.1:8871"
 	}
 	h := backend.New(p)
+	if os.Getenv("RAPTOR_MODEL_PROVIDERS_ENABLED") == "true" {
+		key, e := modelproviders.ReadEncryptionKey(os.Getenv("RAPTOR_MODEL_CREDENTIAL_KEY_FILE"))
+		if e != nil {
+			log.Fatal("model provider credential key unavailable")
+		}
+		h.ConfigureModelProviders(key, os.Getenv("RAPTOR_MODEL_NODE_PATH"), os.Getenv("RAPTOR_MODEL_AUTH_HELPER_PATH"))
+	}
 	if os.Getenv("INFRA_USERNAME") != "" && os.Getenv("INFRA_PASSWORD") != "" {
 		h.Catalog.Infra = adapters.HTTPInfra{Username: os.Getenv("INFRA_USERNAME"), Password: os.Getenv("INFRA_PASSWORD"), AuthHeader: os.Getenv("INFRA_AUTH_HEADER"), ResolveEnvironment: h.Catalog.GetEnvironment}
 	}

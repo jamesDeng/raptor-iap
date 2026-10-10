@@ -17,22 +17,26 @@ import (
 // NativeLive is deliberately separate from the legacy simulated Runtime.
 // A single leased worker calls it serially; no secret is recoverable from the journal.
 type NativeLive struct {
-	Config     LiveConfig
-	Management Management
-	Verifier   CheckpointVerifier
-	Store      *execution.Store
-	Owner      string
-	Lease      execution.WorkerLease
-	runs       map[string]*nativeRun
+	Config           LiveConfig
+	Management       Management
+	Verifier         CheckpointVerifier
+	Store            *execution.Store
+	Owner            string
+	Lease            execution.WorkerLease
+	ModelCredentials ModelCredentialClient
+	runs             map[string]*nativeRun
 }
 type nativeRun struct {
-	cancel    context.CancelFunc
-	start     execution.LiveStart
-	transport *SandboxTransport
-	sandbox   SandboxRef
-	key       ControlKey
-	done      chan error
-	terminal  *terminalFile
+	cancel                context.CancelFunc
+	start                 execution.LiveStart
+	transport             *SandboxTransport
+	sandbox               SandboxRef
+	key                   ControlKey
+	done                  chan error
+	terminal              *terminalFile
+	modelLease            ModelLease
+	modelRefreshProcessed bool
+	modelRevoked          bool
 }
 type terminalFile struct {
 	SessionID       string                `json:"sessionId,omitempty"`
@@ -49,6 +53,15 @@ type terminalFile struct {
 		Bytes       int64  `json:"bytes"`
 		PiVersion   string `json:"pi_version"`
 	} `json:"checkpoint"`
+}
+
+func modelSecretValues(lease ModelLease) []string {
+	var credential struct {
+		Access  string `json:"access"`
+		Refresh string `json:"refresh"`
+	}
+	_ = json.Unmarshal(lease.Credential, &credential)
+	return []string{credential.Access, credential.Refresh}
 }
 
 func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (terminalFile, error) {
@@ -73,7 +86,7 @@ func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (t
 	if out.Passed && (out.Result == nil || execution.ValidateLiveResult(*out.Result, b, secrets...) != nil) {
 		return out, ErrRuntimeUnavailable
 	}
-	allowed := map[string]bool{"NeedsSignIn": true, "Cancelled": true, "Timeout": true, "TurnLimit": true, "McpUnavailable": true, "ToolFailed": true, "MissingEvidence": true, "InvalidEvidence": true, "InvalidResult": true, "UnexpectedToolCatalog": true, "InvalidProgress": true, "ModelFailed": true, "RunnerFailed": true, "CheckpointFailed": true}
+	allowed := map[string]bool{"NeedsSignIn": true, "Cancelled": true, "Timeout": true, "TurnLimit": true, "McpUnavailable": true, "ToolFailed": true, "MissingEvidence": true, "InvalidEvidence": true, "InvalidResult": true, "UnexpectedToolCatalog": true, "InvalidProgress": true, "ModelFailed": true, "RunnerFailed": true, "CheckpointFailed": true, "CredentialRefreshUnconfirmed": true}
 	if !out.Passed && !allowed[out.Error] {
 		return out, ErrRuntimeUnavailable
 	}
@@ -149,6 +162,20 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	if _, e := n.Verifier.VerifyCheckpoint(ctx, in.Checkpoint); e != nil {
 		return h, e
 	}
+	var modelLease ModelLease
+	if b.ProviderID != "" {
+		if n.ModelCredentials == nil {
+			return h, ErrConfiguration
+		}
+		if e := n.fence(ctx, b.AttemptID); e != nil {
+			return h, e
+		}
+		var e error
+		modelLease, e = n.ModelCredentials.Lease(ctx, b)
+		if e != nil {
+			return h, e
+		}
+	}
 	if n.runs == nil {
 		n.runs = map[string]*nativeRun{}
 	}
@@ -157,7 +184,7 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	}
 	attemptCtx, cancelAttempt := context.WithDeadline(ctx, in.Deadline)
 	ctx = attemptCtx
-	r := &nativeRun{start: in, cancel: cancelAttempt}
+	r := &nativeRun{start: in, cancel: cancelAttempt, modelLease: modelLease}
 	n.runs[b.RequestID] = r
 	if e := n.intent(ctx, b, "key", "raptor-"+b.AttemptID); e != nil {
 		return h, e
@@ -253,7 +280,7 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	}
 	cp := r.start.Checkpoint
 	reference := map[string]any{"archive_key": cp.ArchiveKey, "checksum_key": cp.ChecksumKey, "sha256": cp.SHA256, "bytes": cp.Bytes, "pi_version": cp.PiVersion}
-	restore, _ := json.Marshal(map[string]any{"phase": "restore", "reference": reference, "state_root": "/tmp/raptor-state", "mount_root": "/mnt/oss", "prefix": n.Config.BucketPrefix})
+	restore, _ := json.Marshal(map[string]any{"phase": "restore", "reference": reference, "state_root": "/tmp/raptor-state", "mount_root": "/mnt/oss", "prefix": n.Config.BucketPrefix, "skip_auth_check": b.ProviderID == "codex"})
 	if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-restore.json", restore); e != nil {
 		return e
 	}
@@ -270,6 +297,18 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	}
 	if e = cmd.Wait(); e != nil {
 		return e
+	}
+	if b.ProviderID == "codex" {
+		if e = n.fence(ctx, b.AttemptID); e != nil {
+			return e
+		}
+		auth, marshalError := json.Marshal(map[string]json.RawMessage{"openai-codex": r.modelLease.Credential})
+		if marshalError != nil {
+			return ErrConfiguration
+		}
+		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/model-credential.json", auth); e != nil {
+			return e
+		}
 	}
 	job, e := liveJob(n.Config, r.start)
 	if e != nil {
@@ -289,19 +328,48 @@ func (n *NativeLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor
 	if e := n.fence(ctx, r.start.Binding.AttemptID); e != nil {
 		return out, e
 	}
+	if r.start.Binding.ProviderID == "codex" && !r.modelRevoked && n.ModelCredentials.Valid(ctx, r.start.Binding) != nil {
+		r.modelRevoked = true
+		if e := n.Cancel(ctx, h); e != nil {
+			return out, e
+		}
+	}
+	if r.start.Binding.ProviderID == "codex" && !r.modelRefreshProcessed {
+		update, e := r.transport.ReadFile(ctx, r.sandbox, "/tmp/raptor-private/model-refresh.json", 65536)
+		if e != nil && e != ErrFileNotFound {
+			return out, e
+		}
+		if e == nil {
+			r.modelRefreshProcessed = true
+			var body struct {
+				Credential json.RawMessage `json:"credential"`
+			}
+			ack := map[string]any{"status": "failed"}
+			if json.Unmarshal(update, &body) == nil && len(body.Credential) > 0 && n.ModelCredentials != nil {
+				generation, refreshError := n.ModelCredentials.Refresh(ctx, r.start.Binding, r.modelLease.Generation, body.Credential)
+				if refreshError == nil {
+					ack = map[string]any{"status": "published", "generation": generation}
+				}
+			}
+			ackBytes, _ := json.Marshal(ack)
+			if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/model-refresh-ack.json", ackBytes); e != nil {
+				return out, e
+			}
+		}
+	}
 	raw, e := r.transport.ReadFile(ctx, r.sandbox, "/tmp/raptor-private/attempt-progress.jsonl", 65536)
 	if e != nil && e != ErrFileNotFound {
 		return out, e
 	}
 	if e == nil {
-		out.Events, e = decodeProgress(raw, cursor, append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential)...)
+		out.Events, e = decodeProgress(raw, cursor, append(append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential), modelSecretValues(r.modelLease)...)...)
 		if e != nil {
 			return out, e
 		}
 	}
 	out.Turns, e = observeConversation(ctx, out.Events, r.start.Binding, func(c context.Context, p string, l int64) ([]byte, error) {
 		return r.transport.ReadFile(c, r.sandbox, p, l)
-	}, append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential))
+	}, append(append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential), modelSecretValues(r.modelLease)...))
 	if e != nil {
 		return out, e
 	}
@@ -312,7 +380,7 @@ func (n *NativeLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor
 		if e != nil {
 			return out, e
 		}
-		terminal, e := decodeTerminal(raw, r.start.Binding, append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential))
+		terminal, e := decodeTerminal(raw, r.start.Binding, append(append(n.Config.RedactionValues(), r.key.value, r.start.Access.Credential), modelSecretValues(r.modelLease)...))
 		if e != nil {
 			return out, e
 		}
@@ -379,6 +447,7 @@ func (n *NativeLive) Stop(ctx context.Context, h execution.RuntimeHandle) (execu
 		}
 		r.key = ControlKey{}
 		r.start.Access = execution.AgentAccess{}
+		r.modelLease = ModelLease{}
 		delete(n.runs, h.RequestID)
 	}
 	return out, err
