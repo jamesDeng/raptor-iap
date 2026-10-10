@@ -53,13 +53,13 @@
 
 ### Task 2: Provider domain and one-use authorization sessions
 
-**Files:** Create `components/raptor/internal/modelproviders/{types,auth_sessions,codex}.go` and focused tests; create `components/raptor/migrations/008_model_providers.sql`.
+**Files:** Create `components/raptor/internal/modelproviders/{types,auth_sessions,codex}.go` and focused tests; create `components/agent-harness/model-auth-helper.mjs` and test; create `components/raptor/migrations/008_model_providers.sql`.
 
 **Interfaces:** `type ProviderID string`, `type ModelID string`, `type ConnectionStatus string`; `StartCodexConnect(ctx, adminID string) (ConnectChallenge, error)`, `PollCodexConnect(ctx, adminID, sessionID string) (ConnectStatus, error)`, `CancelCodexConnect(ctx, adminID, sessionID string) error`. `ConnectChallenge` has `SessionID`, `VerificationURL`, `UserCode`, `ExpiresAt`; no tokens.
 
 - [ ] Write failing tests for admin/session binding, single use, cancellation, expiry, and old-credential preservation after failed sign-in.
 - [ ] Run `go test ./internal/modelproviders -run 'TestConnect' -count=1` from `components/raptor`; expect failure.
-- [ ] Add the migration and minimal Codex adapter/session implementation; keep provider protocol behind an interface and use only the supported path qualified by Task 1.
+- [ ] Add the migration, Go session/child-process adapter, and Pi SDK Node helper; keep provider protocol behind an interface and use only the supported path qualified by Task 1. Add the helper and Node runtime to the backend image in Task 8.
 - [ ] Rerun the focused tests; require pass. Commit migration, adapter, and tests.
 
 ### Task 3: Encrypted credential store and refresh serialization
