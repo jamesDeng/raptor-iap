@@ -65,14 +65,16 @@ type Usage struct {
 	TotalTokens int64 `json:"totalTokens"`
 }
 type LiveResult struct {
-	RequestID     string         `json:"requestId"`
-	AttemptID     string         `json:"attemptId"`
-	SelectedModel string         `json:"selectedModel"`
-	ActualModel   string         `json:"actualModel"`
-	Answer        string         `json:"answer"`
-	Evidence      []ToolEvidence `json:"evidence"`
-	Usage         []Usage        `json:"usage,omitempty"`
-	GeneratedAt   time.Time      `json:"generatedAt"`
+	RequestID        string         `json:"requestId"`
+	AttemptID        string         `json:"attemptId"`
+	SelectedModel    string         `json:"selectedModel"`
+	ActualModel      string         `json:"actualModel"`
+	SelectedProvider string         `json:"selectedProvider,omitempty"`
+	ActualProvider   string         `json:"actualProvider,omitempty"`
+	Answer           string         `json:"answer"`
+	Evidence         []ToolEvidence `json:"evidence"`
+	Usage            []Usage        `json:"usage,omitempty"`
+	GeneratedAt      time.Time      `json:"generatedAt"`
 }
 type VerifiedCheckpoint struct {
 	ArchiveKey  string    `json:"archiveKey"`
@@ -122,7 +124,7 @@ func (c VerifiedCheckpoint) valid() bool {
 }
 func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 	raw, e := json.Marshal(r)
-	if e != nil || len(raw) > 65536 || containsSensitive(string(raw), known) || !b.valid() || r.RequestID != b.RequestID || r.AttemptID != b.AttemptID || r.SelectedModel != b.Model || r.ActualModel != b.Model || strings.TrimSpace(r.Answer) == "" || len(r.Answer) > 16384 || r.GeneratedAt.IsZero() || len(r.Evidence) > 32 {
+	if e != nil || len(raw) > 65536 || containsSensitive(string(raw), known) || !b.valid() || r.RequestID != b.RequestID || r.AttemptID != b.AttemptID || r.SelectedModel != b.Model || r.ActualModel != b.Model || (b.ProviderID == "codex" && (r.SelectedProvider != "codex" || r.ActualProvider != "openai-codex")) || strings.TrimSpace(r.Answer) == "" || len(r.Answer) > 16384 || r.GeneratedAt.IsZero() || len(r.Evidence) > 32 {
 		return ErrInvalid
 	}
 	seen := map[string]bool{}

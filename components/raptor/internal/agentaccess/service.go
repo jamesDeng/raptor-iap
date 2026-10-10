@@ -28,16 +28,18 @@ type IssueInput struct {
 	ExpiresAt        time.Time `json:"expiresAt"`
 }
 type Binding struct {
-	RequestID        string `json:"requestId"`
-	AttemptID        string `json:"attemptId"`
-	Operation        string `json:"operation"`
-	ObjectKind       string `json:"objectKind"`
-	ObjectCode       string `json:"objectCode"`
-	EnvCode          string `json:"envCode"`
-	SkillsCommit     string `json:"skillsCommit"`
-	Model            string `json:"model"`
-	DefinitionSHA256 string `json:"definitionSha256"`
-	ClusterID        string `json:"clusterId"`
+	RequestID         string `json:"requestId"`
+	AttemptID         string `json:"attemptId"`
+	Operation         string `json:"operation"`
+	ObjectKind        string `json:"objectKind"`
+	ObjectCode        string `json:"objectCode"`
+	EnvCode           string `json:"envCode"`
+	SkillsCommit      string `json:"skillsCommit"`
+	Model             string `json:"model"`
+	ProviderID        string `json:"providerId,omitempty"`
+	ConnectionVersion int64  `json:"connectionVersion,omitempty"`
+	DefinitionSHA256  string `json:"definitionSha256"`
+	ClusterID         string `json:"clusterId"`
 }
 type Issued struct {
 	Credential   string    `json:"credential"`
@@ -90,7 +92,8 @@ func validURL(raw string) bool {
 	return e == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == ""
 }
 func question(def domain.RequestInput) bool {
-	return def.Type == "agent" && def.Object.Kind == "application" && len(def.Operations) == 1 && def.Operations[0].Name == "application.question" && def.Model == "gpt-5.6-luna" && sha.MatchString(def.Skills.CommitSHA)
+	modelValid := (def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && def.Model != "")
+	return def.Type == "agent" && def.Object.Kind == "application" && len(def.Operations) == 1 && def.Operations[0].Name == "application.question" && modelValid && sha.MatchString(def.Skills.CommitSHA)
 }
 func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, error) {
 	var out Issued
@@ -134,7 +137,7 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 	if e = tx.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
 		return out, domain.ErrUnavailable
 	}
-	out.Binding = Binding{RequestID: id, AttemptID: in.AttemptID, Operation: "application.question", ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, DefinitionSHA256: fingerprint, ClusterID: cluster}
+	out.Binding = Binding{RequestID: id, AttemptID: in.AttemptID, Operation: "application.question", ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}
 	binding, _ := json.Marshal(out.Binding)
 	var existing []byte
 	var deadline time.Time

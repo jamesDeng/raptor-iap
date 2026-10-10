@@ -125,6 +125,7 @@ func (s *HTTPService) RegisterPrivate(m *http.ServeMux, credentials auth.Credent
 		httpx.Write(w, 200, map[string]bool{"valid": true})
 	}), credentials))
 	m.Handle("POST /internal/v1/model-credentials/lease", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		var binding AttemptBinding
 		if !httpx.Decode(w, r, &binding) {
 			return

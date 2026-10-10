@@ -105,6 +105,14 @@ func (s *CredentialStore) LoadCredential(ctx context.Context, providerID Provide
 }
 
 func (s *CredentialStore) ReplaceCredential(ctx context.Context, providerID ProviderID, expectedVersion, expectedGeneration int64, next []byte) (CredentialRecord, error) {
+	return s.replaceCredential(ctx, s.Pool, providerID, expectedVersion, expectedGeneration, next)
+}
+
+type credentialQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func (s *CredentialStore) replaceCredential(ctx context.Context, query credentialQueryer, providerID ProviderID, expectedVersion, expectedGeneration int64, next []byte) (CredentialRecord, error) {
 	expiry, e := credentialExpiry(next)
 	if e != nil {
 		return CredentialRecord{}, e
@@ -114,7 +122,7 @@ func (s *CredentialStore) ReplaceCredential(ctx context.Context, providerID Prov
 		return CredentialRecord{}, e
 	}
 	var generation int64
-	e = s.Pool.QueryRow(ctx, `UPDATE raptor.model_provider_credentials c SET ciphertext=$4,nonce=$5,key_version=$6,expires_at=$7,credential_generation=c.credential_generation+1,updated_at=now()
+	e = query.QueryRow(ctx, `UPDATE raptor.model_provider_credentials c SET ciphertext=$4,nonce=$5,key_version=$6,expires_at=$7,credential_generation=c.credential_generation+1,updated_at=now()
  FROM raptor.model_provider_connections p WHERE c.provider_id=p.provider_id AND c.provider_id=$1 AND p.connection_version=$2 AND p.status='connected' AND c.credential_generation=$3
  RETURNING c.credential_generation`, providerID, expectedVersion, expectedGeneration, cipher.Data, cipher.Nonce, cipher.KeyVersion, expiry).Scan(&generation)
 	if e == pgx.ErrNoRows {

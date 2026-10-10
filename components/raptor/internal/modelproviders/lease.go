@@ -27,6 +27,7 @@ type CredentialLease struct {
 func (s *HTTPService) ValidateAttempt(ctx context.Context, b AttemptBinding) error {
 	var version int64
 	err := s.Pool.QueryRow(ctx, `SELECT c.connection_version FROM raptor.model_provider_attempt_leases l
+JOIN raptor.agent_attempt_access a ON a.request_id=l.request_id AND a.attempt_id=l.attempt_id AND NOT a.revoked AND a.expires_at>now()
 JOIN raptor.requests r ON r.id=l.request_id JOIN raptor.model_provider_connections c USING(provider_id) JOIN raptor.model_provider_policy p USING(provider_id)
 JOIN raptor.model_provider_models m ON m.provider_id=l.provider_id AND m.model_id=l.model_id
 WHERE l.attempt_id=$1 AND l.request_id=$2 AND l.provider_id=$3 AND l.model_id=$4 AND l.connection_version=$5 AND l.expires_at>now()
@@ -52,10 +53,11 @@ func (s *HTTPService) LeaseCredential(ctx context.Context, b AttemptBinding) (Cr
 	var encrypted Ciphertext
 	var expires time.Time
 	err = tx.QueryRow(ctx, `SELECT r.definition,r.status,c.connection_version,k.credential_generation,k.ciphertext,k.nonce,k.key_version,k.expires_at
-FROM raptor.requests r JOIN raptor.model_provider_connections c ON c.provider_id=$2 JOIN raptor.model_provider_policy p ON p.provider_id=c.provider_id
+FROM raptor.requests r JOIN raptor.agent_attempt_access a ON a.request_id=r.id AND a.attempt_id=$5 AND NOT a.revoked AND a.expires_at>now()
+JOIN raptor.model_provider_connections c ON c.provider_id=$2 JOIN raptor.model_provider_policy p ON p.provider_id=c.provider_id
 JOIN raptor.model_provider_models m ON m.provider_id=c.provider_id AND m.model_id=$3 JOIN raptor.model_provider_credentials k ON k.provider_id=c.provider_id
 WHERE r.id=$1 AND r.status NOT IN ('cancelled','failed') AND c.status='connected' AND c.connection_version=$4 AND m.available AND p.enabled_ids ? m.model_id
-FOR SHARE OF r,c,p,m,k`, b.RequestID, b.ProviderID, b.ModelID, b.ConnectionVersion).Scan(&definition, &status, &connectionVersion, &generation, &encrypted.Data, &encrypted.Nonce, &encrypted.KeyVersion, &expires)
+FOR SHARE OF r,a,c,p,m,k`, b.RequestID, b.ProviderID, b.ModelID, b.ConnectionVersion, b.AttemptID).Scan(&definition, &status, &connectionVersion, &generation, &encrypted.Data, &encrypted.Nonce, &encrypted.KeyVersion, &expires)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CredentialLease{}, ErrLeaseDenied
 	}
@@ -94,17 +96,25 @@ func (s *HTTPService) RefreshCredential(ctx context.Context, b AttemptBinding, e
 	if expectedGeneration < 1 || len(next) == 0 {
 		return 0, ErrLeaseDenied
 	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return 0, ErrCredentialStore
+	}
+	defer tx.Rollback(ctx)
 	var actualGeneration int64
-	err := s.Pool.QueryRow(ctx, `SELECT credential_generation FROM raptor.model_provider_attempt_leases WHERE attempt_id=$1 AND request_id=$2 AND provider_id=$3 AND model_id=$4 AND connection_version=$5 AND expires_at>now()`, b.AttemptID, b.RequestID, b.ProviderID, b.ModelID, b.ConnectionVersion).Scan(&actualGeneration)
+	err = tx.QueryRow(ctx, `SELECT l.credential_generation FROM raptor.model_provider_attempt_leases l JOIN raptor.agent_attempt_access a ON a.request_id=l.request_id AND a.attempt_id=l.attempt_id AND NOT a.revoked AND a.expires_at>now() WHERE l.attempt_id=$1 AND l.request_id=$2 AND l.provider_id=$3 AND l.model_id=$4 AND l.connection_version=$5 AND l.expires_at>now() FOR UPDATE OF l`, b.AttemptID, b.RequestID, b.ProviderID, b.ModelID, b.ConnectionVersion).Scan(&actualGeneration)
 	if err != nil || actualGeneration != expectedGeneration {
 		return 0, ErrLeaseDenied
 	}
-	updated, err := s.Credentials.ReplaceCredential(ctx, b.ProviderID, b.ConnectionVersion, expectedGeneration, next)
+	updated, err := s.Credentials.replaceCredential(ctx, tx, b.ProviderID, b.ConnectionVersion, expectedGeneration, next)
 	if err != nil {
 		return 0, err
 	}
-	_, err = s.Pool.Exec(ctx, `UPDATE raptor.model_provider_attempt_leases SET credential_generation=$2 WHERE attempt_id=$1`, b.AttemptID, updated.Generation)
+	_, err = tx.Exec(ctx, `UPDATE raptor.model_provider_attempt_leases SET credential_generation=$2 WHERE attempt_id=$1`, b.AttemptID, updated.Generation)
 	if err != nil {
+		return 0, ErrCredentialStore
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return 0, ErrCredentialStore
 	}
 	return updated.Generation, nil

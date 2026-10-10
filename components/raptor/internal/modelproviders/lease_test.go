@@ -37,6 +37,12 @@ func TestCredentialLeaseBindsRequestAttemptAndCurrentPolicy(t *testing.T) {
 	}
 	s := HTTPService{Pool: pool, Policy: policy, Credentials: store}
 	binding := AttemptBinding{RequestID: requestID, AttemptID: domain.NewID(), ProviderID: "codex", ModelID: "gpt-6-sol", ConnectionVersion: 1}
+	if _, err := s.LeaseCredential(ctx, binding); !errors.Is(err, ErrLeaseDenied) {
+		t.Fatalf("unscheduled attempt accepted: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO raptor.agent_attempt_access(request_id,attempt_id,binding,expires_at) VALUES($1,$2,'{}',now()+interval '20 minutes')`, requestID, binding.AttemptID); err != nil {
+		t.Fatal(err)
+	}
 	lease, err := s.LeaseCredential(ctx, binding)
 	if err != nil || string(lease.Credential) != string(raw) || lease.Generation != 1 {
 		t.Fatalf("lease: %v %v", lease, err)
