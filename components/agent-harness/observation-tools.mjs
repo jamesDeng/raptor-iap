@@ -44,10 +44,21 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
     if(data.status!=='success'||data.data?.resultType!=='vector'||!Array.isArray(rows)||rows.length!==targets.length)throw invalid();
     const seen=new Set();for(const row of rows){const instance=row.metric?.instance;if(row.metric?.job!=='test-client'||!targets.includes(instance)||seen.has(instance)||Number(row.value?.[1])!==1||!Number.isFinite(Number(row.value?.[0]))||Math.abs(Date.now()/1000-Number(row.value[0]))>30)throw invalid();seen.add(instance);}
    }catch{throw invalid();}
-   const url=new URL("/api/v1/query",config.prometheusURL);url.searchParams.set("query",queries[input.kind]);
-   try{const response=await fetch(url,{redirect:"error",signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);const rows=data.data?.result;if(data.status!=="success"||data.data?.resultType!=="vector"||!Array.isArray(rows)||!rows.length||rows.length>50)throw invalid();
-    return {observedAt:new Date().toISOString(),samples:rows.map(row=>{if(row.metric?.job!=="test-client"||!targets.includes(row.metric?.instance))throw invalid();const timestamp=Number(row.value?.[0]),value=Number(row.value?.[1]);if(!Number.isFinite(timestamp)||!Number.isFinite(value)||value<0||Math.abs(Date.now()/1000-timestamp)>30)throw invalid();return {timestamp,value,instance:row.metric.instance,...(row.metric.outcome?{outcome:row.metric.outcome}:{})};})};
-   }catch{throw invalid();}
+   const query=async expression=>{
+    try{const url=new URL('/api/v1/query',config.prometheusURL);url.searchParams.set('query',expression);const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);if(data.status!=='success'||data.data?.resultType!=='vector')throw invalid();return data.data.result;}catch{throw invalid();}
+   };
+   const rows=await query(queries[input.kind]),sources=await query('timestamp('+queries[input.kind]+')'),now=Date.now()/1000;
+   const outcomes=input.kind==='trafficFailures'?['failure','timeout','ambiguous']:[''];
+   const expected=new Set(targets.flatMap(target=>outcomes.map(outcome=>target+'|'+outcome)));
+   const validate=(samples,source=false)=>{
+    if(!Array.isArray(samples)||samples.length!==expected.size)throw invalid();
+    const seen=new Set();return samples.map(row=>{
+     const instance=row.metric?.instance,outcome=row.metric?.outcome??'',key=instance+'|'+outcome,timestamp=Number(row.value?.[0]),value=Number(row.value?.[1]);
+     if(row.metric?.job!=='test-client'||!expected.has(key)||seen.has(key)||!Number.isFinite(timestamp)||!Number.isFinite(value)||value<0||Math.abs(now-timestamp)>30||(source&&(now-value>15||value-now>2)))throw invalid();
+     seen.add(key);return {timestamp,value,instance,...(outcome?{outcome}:{})};
+    });
+   };
+   validate(sources,true);return {observedAt:new Date().toISOString(),samples:validate(rows)};
   },
   async cloudRead({kind}){
    if(!['fleet','backend','capacity'].includes(kind))throw invalid();

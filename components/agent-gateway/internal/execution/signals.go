@@ -39,7 +39,7 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 		return ErrInvalid
 	}
 
-	lateCancel := mode == "live" && (status == "completed" || status == "failed" || status == "cancelled")
+	lateCancel := v.Kind == "cancel" && mode == "live" && (status == "completed" || status == "failed" || status == "cancelled")
 	if lateCancel {
 		var cleanup []byte
 		var recovery bool

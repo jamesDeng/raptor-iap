@@ -17,8 +17,8 @@ test('metrics refuse stale or down client scrapes before reading counters',async
  await assert.rejects(tools.metricsRead({kind:'connections'}),/InvalidObservation/);
 });
 test('metrics queries are fixed and reject stale samples',async()=>{
- let url;const tools=createObservationTools({binding,config:config(),exec:clientRead,fetch:async value=>{url=new URL(value);return {ok:true,json:async()=>({status:'success',data:{resultType:'vector',result:[{metric:{job:'test-client',instance:'10.70.1.20:9090'},value:[Date.now()/1000,url.searchParams.get('query').startsWith('up{')?'1':'0']}]}})};}});
- const result=await tools.metricsRead({kind:'trafficFailures'});assert.equal(result.samples[0].value,0);assert.equal(url.hostname,'10.70.1.10');assert.match(url.searchParams.get('query'),/failure/);await assert.rejects(tools.metricsRead({kind:'arbitrary',query:'up'}),/InvalidObservation/);
+ let url;const tools=createObservationTools({binding,config:config(),exec:clientRead,fetch:async value=>{url=new URL(value);const q=url.searchParams.get('query'),now=Date.now()/1000;const rows=q.startsWith('up{')?[{metric:{job:'test-client',instance:'10.70.1.20:9090'},value:[now,'1']}]:['failure','timeout','ambiguous'].map(outcome=>({metric:{job:'test-client',instance:'10.70.1.20:9090',outcome},value:[now,q.startsWith('timestamp(')?String(now):'0']}));return {ok:true,json:async()=>({status:'success',data:{resultType:'vector',result:rows}})};}});
+ const result=await tools.metricsRead({kind:'trafficFailures'});assert.equal(result.samples.length,3);assert.equal(result.samples[0].value,0);assert.equal(url.hostname,'10.70.1.10');assert.match(url.searchParams.get('query'),/failure/);await assert.rejects(tools.metricsRead({kind:'arbitrary',query:'up'}),/InvalidObservation/);
  const stale=createObservationTools({binding,config:config(),exec:clientRead,fetch:async()=>({ok:true,json:async()=>({status:'success',data:{resultType:'vector',result:[{metric:{},value:[0,'0']}]}})})});await assert.rejects(stale.metricsRead({kind:'trafficFailures'}),/InvalidObservation/);
 });
 test('credentials expire between calls and truncated fleets never look complete',async()=>{
@@ -87,4 +87,18 @@ test('capacity reads exact provider desired count rather than inferring it from 
  let command;
  const tools=createObservationTools({binding,config:config(),exec:async(_c,args)=>{if(args.includes('GetCallerIdentity'))return {AccountId:'1360282071200743',Arn:'acs:ram::1360282071200743:assumed-role/raptor-rdev-agent-observer/session'};command=args;return {TotalCount:1,ScalingGroups:{ScalingGroup:[{ScalingGroupId:'group',RegionId:'ap-southeast-1',DesiredCapacity:4,MinSize:2,MaxSize:4}]}};}});
  assert.equal((await tools.cloudRead({kind:'capacity'})).desiredCapacity,4);assert.ok(command.includes('DescribeScalingGroups'));assert.ok(command.includes('["group"]'));
+});
+
+test('traffic counters require every outcome and fresh source samples for the current client',async()=>{
+ for(const defect of ['missing','duplicate','source-stale']) {
+  const tools=createObservationTools({binding,config:config(),exec:clientRead,fetch:async value=>{
+   const q=new URL(value).searchParams.get('query'),now=Date.now()/1000;
+   const metric=outcome=>({job:'test-client',instance:'10.70.1.20:9090',outcome});
+   let rows=q.startsWith('up{')?[{metric:{job:'test-client',instance:'10.70.1.20:9090'},value:[now,'1']}]:['failure','timeout','ambiguous'].map(o=>({metric:metric(o),value:[now,q.startsWith('timestamp(')?String(defect==='source-stale'?now-60:now):'0']}));
+   if(!q.startsWith('up{')&&defect==='missing')rows=rows.slice(0,1);
+   if(!q.startsWith('up{')&&defect==='duplicate')rows[2]=rows[0];
+   return {ok:true,json:async()=>({status:'success',data:{resultType:'vector',result:rows}})};
+  }});
+  await assert.rejects(tools.metricsRead({kind:'trafficFailures'}),/InvalidObservation/,defect);
+ }
 });

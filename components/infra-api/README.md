@@ -25,3 +25,27 @@ The subsequent Pi runtime will connect directly to Raptor and Infra API MCP with
 A model-free probe is available with `go run ./cmd/mcp-probe`. Supply `INFRA_MCP_URL` (HTTPS endpoint ending in `/mcp`), `INFRA_USERNAME`, `INFRA_PASSWORD`, `INFRA_ENV_CODE` and `INFRA_APP_CODE` privately through the environment. It refuses redirects, prints deployment evidence only, and does not print credentials.
 
 References: [API Gateway pass-through rules](https://www.alibabacloud.com/help/en/api-gateway/traditional-api-gateway/user-guide/parameter-mapping-and-verification-rules), [FC web functions](https://www.alibabacloud.com/help/en/functioncompute/web-functions).
+
+### Request-scoped agent authentication
+
+Trusted Raptor backend calls retain service Basic Auth. Sandbox calls instead
+use Basic Auth with username `agent` and the opaque, short-lived Raptor attempt
+token as password, sent in `X-Infra-Authorization`. The shared Infra service
+password must never be staged in a sandbox. HTTP and MCP both introspect every
+request and each typed operation; there is no positive authorization cache.
+Question attempts expose no mutations. Replacement attempts are restricted to
+the resolved environment, proxy/ESS/backend group and associated client
+Deployment. Scale-in retains its separate exact human-approval gate.
+
+Set `INFRA_AGENT_INSPECTOR_ORIGIN`, `INFRA_AGENT_INSPECTOR_USERNAME` and
+`INFRA_AGENT_INSPECTOR_PASSWORD` privately during FC packaging/deployment.
+The latter two match Raptor Open API's dedicated agent-introspection service
+credentials; they are distinct from ordinary backend/approval credentials.
+No secret belongs in Terraform input/state, source, a PR comment or model input.
+Partial inspector configuration fails startup; absent configuration rejects
+all sandbox credentials while preserving trusted service calls.
+
+Roll out Infra API and verify a revoked/foreign token is denied first. Then
+roll out Gateway's attempt-token transport, with replacement still disabled,
+and verify a real read-only application question. Enable replacement only
+after the actual sandbox image and approval/checkpoint preflight pass.

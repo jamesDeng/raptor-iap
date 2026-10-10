@@ -489,6 +489,7 @@ func (n *NativeLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor
 		r.terminal = &terminal
 		settled := terminal.observation()
 		settled.Events = out.Events
+		settled.Turns = out.Turns
 		out = settled
 		return out, nil
 	default:
@@ -765,7 +766,7 @@ func liveJob(config LiveConfig, in execution.LiveStart) ([]byte, error) {
 		}
 	}
 	token := "Bearer " + in.Access.Credential
-	job := map[string]any{"observation_config_path": observationConfigPath(in), "skills_bundle_path": skillsBundlePath(in), "skills_release": in.Skills, "replacement_scope": in.Access.ReplacementScope, "decision_context": in.DecisionContext, "session_reference": reference, "phase": "live-inference", "state_root": "/tmp/raptor-state", "private_root": "/tmp/raptor-private", "mount_root": "/mnt/oss", "prefix": config.BucketPrefix, "generation": in.Binding.AttemptID, "request": map[string]any{"binding": in.Binding, "question": in.Question}, "limits": map[string]any{"model_seconds": 90, "max_turns": 10, "max_output_tokens": 1024}, "mcp": map[string]any{"raptor": map[string]any{"url": config.RaptorMcpURL, "headers": map[string]string{"Authorization": token}}, "infra": map[string]any{"url": config.InfraMcpURL, "headers": map[string]string{"X-Infra-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(config.InfraUsername+":"+config.InfraPassword))}}}}
+	job := map[string]any{"observation_config_path": observationConfigPath(in), "skills_bundle_path": skillsBundlePath(in), "skills_release": in.Skills, "replacement_scope": in.Access.ReplacementScope, "decision_context": in.DecisionContext, "session_reference": reference, "phase": "live-inference", "state_root": "/tmp/raptor-state", "private_root": "/tmp/raptor-private", "mount_root": "/mnt/oss", "prefix": config.BucketPrefix, "generation": in.Binding.AttemptID, "request": map[string]any{"binding": in.Binding, "question": in.Question}, "limits": map[string]any{"model_seconds": 90, "max_turns": 10, "max_output_tokens": 1024}, "mcp": map[string]any{"raptor": map[string]any{"url": config.RaptorMcpURL, "headers": map[string]string{"Authorization": token}}, "infra": map[string]any{"url": config.InfraMcpURL, "headers": map[string]string{"X-Infra-Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("agent:"+in.Access.Credential))}}}}
 	if in.ConversationEnabled {
 		v := map[string]any{"enabled": true}
 		if in.Conversation != nil {

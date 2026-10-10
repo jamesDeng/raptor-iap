@@ -13,11 +13,12 @@ import (
 
 type runtimeOptions struct{ Restart, Proxy bool }
 type runtimeDependencies struct {
-	Backend  commands.Backend
-	Metrics  commands.Metrics
-	Approval commands.Approval
-	Claims   commands.Claims
-	Fleet    commands.Fleet
+	AgentCheck api.AgentCheck
+	Backend    commands.Backend
+	Metrics    commands.Metrics
+	Approval   commands.Approval
+	Claims     commands.Claims
+	Fleet      commands.Fleet
 }
 
 func absent(v any) bool {
@@ -55,7 +56,7 @@ func liveDependencies(scopes map[string]domain.Environment, opts runtimeOptions,
 }
 func buildRuntimeHandler(reader api.Reader, scopes map[string]domain.Environment, user, password, header string, opts runtimeOptions, deps runtimeDependencies) (http.Handler, error) {
 	if !opts.Proxy {
-		return buildHandler(reader, scopes, user, password, header, opts.Restart)
+		return buildHandlerWithAgent(reader, scopes, user, password, header, opts.Restart, deps.AgentCheck)
 	}
 	if absent(deps.Backend) || absent(deps.Metrics) || absent(deps.Approval) || absent(deps.Claims) || absent(deps.Fleet) {
 		return nil, domain.ErrNotConfigured
@@ -82,5 +83,5 @@ func buildRuntimeHandler(reader api.Reader, scopes map[string]domain.Environment
 		runtime.Restarter = r
 		paths = append(paths, "/v1/deployment-restart")
 	}
-	return api.NewWithCommands(reader, scopes, user, password, header, runtime, api.NewServiceAuthorizer(user, paths...))
+	return api.NewWithAgentCommands(reader, scopes, user, password, header, runtime, api.NewServiceAuthorizer(user, paths...), deps.AgentCheck)
 }

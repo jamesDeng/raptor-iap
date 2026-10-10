@@ -285,6 +285,7 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 	r.terminal = &terminal
 	settled := terminal.observation()
 	settled.Events = out.Events
+	settled.Turns = out.Turns
 	out = settled
 	return out, nil
 }
