@@ -59,9 +59,17 @@ def command(args,cwd):
     print('GitOps step: '+stage, flush=True)
     r=subprocess.run(args,cwd=cwd,capture_output=True)
     if r.returncode:
+        diagnostic = (r.stdout+r.stderr).lower()
+        categories = [label for label, patterns in {
+            'access-denied': (b'accessdenied', b'access denied', b'status code: 403', b'statuscode: 403'),
+            'missing-backend-object': (b'nosuchbucket', b'nosuchkey', b'no such bucket'),
+            'backend-lock': (b'error acquiring the state lock', b'lockid'),
+            'provider-download': (b'failed to query available provider packages', b'failed to install provider'),
+            'module-path': (b'unreadable module directory', b'module not installed'),
+        }.items() if any(pattern in diagnostic for pattern in patterns)]
         codes=re.findall(rb'(?:ErrorCode|Code|code)[\s:=\"]+([A-Za-z][A-Za-z0-9_.]{2,80})', r.stdout+r.stderr)
         actions=re.findall(rb'\b(?:ram|ess|nlb|ecs|vpc|rds|oss|ots):[A-Za-z][A-Za-z0-9]{1,80}\b', r.stdout+r.stderr)
-        print('Failed step: '+stage+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable')+'; permission actions: '+(', '.join(sorted({a.decode() for a in actions})) or 'unavailable'), file=sys.stderr)
+        print('Failed step: '+stage+'; category: '+(', '.join(categories) or 'unclassified')+'; error codes: '+(', '.join(sorted({c.decode() for c in codes})) or 'unavailable')+'; permission actions: '+(', '.join(sorted({a.decode() for a in actions})) or 'unavailable'), file=sys.stderr)
         raise RuntimeError('Terraform command failed; raw output withheld')
     return r.stdout
 
