@@ -8,10 +8,13 @@ variable "publish_kong_dns" {
   default = false
 }
 module "kong_ingress" {
-  count       = var.enable_kong_ingress ? 1 : 0
-  source      = "../../../terraform-module/kong-ingress"
-  vswitch_id  = "vsw-t4nop9qf6v46gw2sa8l7d"
-  publish_dns = var.publish_kong_dns
+  count              = var.enable_kong_ingress ? 1 : 0
+  source             = "../../../terraform-module/kong-ingress"
+  vswitch_id         = "vsw-t4nop9qf6v46gw2sa8l7d"
+  publish_dns        = var.publish_kong_dns
+  enable_plan_access = true
+  account_id         = var.account_id
+  state_bucket       = "raptor-iap-tfstate-sg-200743"
 }
 output "kong_ingress" {
   value = var.enable_kong_ingress ? {

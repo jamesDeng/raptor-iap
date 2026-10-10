@@ -9,3 +9,15 @@ variable "publish_dns" {
   type    = bool
   default = false
 }
+variable "enable_plan_access" {
+  type    = bool
+  default = false
+}
+variable "account_id" {
+  type    = string
+  default = ""
+}
+variable "state_bucket" {
+  type    = string
+  default = ""
+}
