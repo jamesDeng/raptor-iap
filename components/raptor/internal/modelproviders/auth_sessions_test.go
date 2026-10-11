@@ -125,3 +125,44 @@ func TestConnectExpiryAndFailurePreserveOldCredential(t *testing.T) {
 		t.Fatalf("failure leaked or changed state: %+v", v)
 	}
 }
+
+type fakeBrowserFlow struct{ attempt *fakeBrowserAttempt }
+
+func (f fakeBrowserFlow) Start(context.Context) (DeviceAttempt, error) {
+	return nil, errors.New("device not used")
+}
+func (f fakeBrowserFlow) StartBrowser(context.Context) (BrowserAttempt, error) { return f.attempt, nil }
+
+type fakeBrowserAttempt struct {
+	fakeAttempt
+	submitted string
+}
+
+func (f *fakeBrowserAttempt) SubmitRedirect(v string) error {
+	f.submitted = v
+	f.result <- []byte("browser-credential")
+	return nil
+}
+func TestBrowserConnectRequiresOwnerAndSingleSubmission(t *testing.T) {
+	a := &fakeBrowserAttempt{fakeAttempt: fakeAttempt{challenge: ConnectChallenge{AuthorizationURL: "https://auth.openai.com/oauth/authorize?state=s", ExpiresAt: time.Now().Add(time.Minute)}, result: make(chan []byte, 1)}}
+	saved := []byte("old")
+	s := NewService(fakeBrowserFlow{a}, func(_ context.Context, _ string, b []byte) error { saved = b; return nil })
+	c, e := s.StartCodexBrowserConnect(context.Background(), "admin-1")
+	if e != nil {
+		t.Fatal(e)
+	}
+	redirect := "http://localhost:1455/auth/callback?code=one-time&state=s"
+	if e = s.SubmitCodexBrowserRedirect("admin-2", c.SessionID, redirect); !errors.Is(e, ErrForbidden) {
+		t.Fatalf("other owner: %v", e)
+	}
+	if e = s.SubmitCodexBrowserRedirect("admin-1", c.SessionID, redirect); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.SubmitCodexBrowserRedirect("admin-1", c.SessionID, redirect); !errors.Is(e, ErrClosed) {
+		t.Fatalf("replay: %v", e)
+	}
+	waitStatus(t, s, "admin-1", c.SessionID, StatusConnected)
+	if a.submitted != redirect || string(saved) != "browser-credential" {
+		t.Fatal("browser credential not saved")
+	}
+}

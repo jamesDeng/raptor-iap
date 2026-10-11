@@ -18,17 +18,19 @@ const (
 )
 
 var (
-	ErrForbidden = errors.New("forbidden")
-	ErrBusy      = errors.New("connection already pending")
-	ErrClosed    = errors.New("connection session closed")
-	ErrNotFound  = errors.New("connection session not found")
+	ErrForbidden       = errors.New("forbidden")
+	ErrBusy            = errors.New("connection already pending")
+	ErrClosed          = errors.New("connection session closed")
+	ErrNotFound        = errors.New("connection session not found")
+	ErrInvalidRedirect = errors.New("invalid browser redirect")
 )
 
 type ConnectChallenge struct {
-	SessionID       string    `json:"sessionId"`
-	VerificationURL string    `json:"verificationUrl"`
-	UserCode        string    `json:"userCode"`
-	ExpiresAt       time.Time `json:"expiresAt"`
+	SessionID        string    `json:"sessionId"`
+	VerificationURL  string    `json:"verificationUrl"`
+	AuthorizationURL string    `json:"authorizationUrl,omitempty"`
+	UserCode         string    `json:"userCode"`
+	ExpiresAt        time.Time `json:"expiresAt"`
 }
 
 type ConnectStatus struct {
