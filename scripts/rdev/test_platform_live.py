@@ -7,7 +7,7 @@ class LiveManifest(unittest.TestCase):
   if not live:args+=['--set','gatewayLive.enabled=false']
   if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.credentialMode=static-sts','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
   if replacement:args += ['--set','replacement.scopeConfigMapName=pgcat-replacement-scope']
-  if observer:args += ['--set','gatewayLive.observer.enabled=true']
+  args += ['--set','gatewayLive.observer.enabled='+str(observer).lower()]
   if ax:args += ["--set","gatewayLive.axTLSSecretName=gateway-ax-client-tls"]
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
  def test_observer_gateway_has_pinned_readonly_skill_checkout(self):

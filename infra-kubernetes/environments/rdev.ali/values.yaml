@@ -30,6 +30,8 @@ gatewayLive:
     roleARN: acs:ram::1360282071200743:role/raptor-rdev-gateway-controller
     providerARN: acs:ram::1360282071200743:oidc-provider/ack-rrsa-c92787e953503492ea141a744c81498f1
   axTLSSecretName: gateway-ax-client-tls
+  observer:
+    enabled: true
 
 # Validated Infra API route and two-target Kubernetes restart permission.
 directRestart:
