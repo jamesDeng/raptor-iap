@@ -42,7 +42,7 @@ func TestAdminPages(t *testing.T) {
 			if !strings.Contains(body, `href="`+tc.path+`" aria-current="page"`) {
 				t.Fatal("active navigation missing")
 			}
-			if !strings.Contains(body, "async function refreshPage()") {
+			if !strings.Contains(body, "refresh().then(()=>refreshPage()).catch(()=>{});") || !strings.Contains(body, "async function refreshPage()") {
 				t.Fatal("page refresh missing")
 			}
 		})
