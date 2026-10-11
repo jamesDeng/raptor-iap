@@ -18,6 +18,7 @@ import (
 // A single leased worker calls it serially; no secret is recoverable from the journal.
 type NativeLive struct {
 	Observe          ObservationPreparer
+	Observations     *ObservationProxy
 	Config           LiveConfig
 	Management       Management
 	Verifier         CheckpointVerifier
@@ -324,7 +325,7 @@ const privatePermissionsCommand = `set -eu; umask 077; for file in /tmp/raptor-p
 
 const prepareCommand = "umask 077; test \"$(node --version)\" = v22.23.3 && python3 --version >/dev/null && test ! -e /tmp/raptor-state && mkdir -p /tmp/raptor-harness /tmp/raptor-private && chmod 700 /tmp/raptor-harness /tmp/raptor-private"
 
-var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "mcp-runtime.mjs", "conversation.mjs", "operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "skills-bundle.mjs", "client-targets.mjs", "replacement-trace.mjs", "pgcat-metrics.mjs", "replacement-completion.mjs", "observation-tools.mjs", "observation-extension.mjs", "observation-config.mjs"}
+var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "mcp-runtime.mjs", "conversation.mjs", "operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "skills-bundle.mjs", "client-targets.mjs", "replacement-trace.mjs", "pgcat-metrics.mjs", "replacement-completion.mjs", "observation-tools.mjs", "observation-extension.mjs", "observation-config.mjs", "observation-proxy.mjs"}
 
 func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	b := r.start.Binding
@@ -401,8 +402,10 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/observation.json", r.observation.Config); e != nil {
 			return e
 		}
-		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/kubeconfig", r.observation.Kubeconfig); e != nil {
-			return e
+		if len(r.observation.Kubeconfig) > 0 {
+			if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/kubeconfig", r.observation.Kubeconfig); e != nil {
+				return e
+			}
 		}
 	}
 	job, e := liveJob(n.Config, r.start)
@@ -565,6 +568,7 @@ func (n *NativeLive) Stop(ctx context.Context, h execution.RuntimeHandle) (execu
 	return out, err
 }
 func (n *NativeLive) cleanup(ctx context.Context, record execution.RecoveryRecord, t *SandboxTransport) (execution.LiveCleanup, error) {
+	n.Observations.Remove(record.Binding.AttemptID)
 	out := execution.LiveCleanup{}
 	b := record.Binding
 	sandboxIntent, keyIntent := false, false

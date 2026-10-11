@@ -94,10 +94,17 @@ func main() {
 		}()
 	}
 
+	var observations *runtimeadapter.ObservationProxy
 	if mode == "live" {
 		var config runtimeadapter.LiveConfig
 		if runtimeadapter.ReadPrivateJSON(os.Getenv("GATEWAY_LIVE_CONFIG_FILE"), &config) != nil {
 			log.Fatal("private live configuration required")
+		}
+		if config.ObservationURL != "" {
+			observations, e = runtimeadapter.NewObservationProxy(config.ObservationURL, runtimeadapter.ExecuteGatewayObservation)
+			if e != nil {
+				log.Fatal("observation endpoint configuration invalid")
+			}
 		}
 		s.KnownSecrets = append(s.KnownSecrets, config.RedactionValues()...)
 		management, verifier, e := runtimeadapter.CloudClientsFromEnvironment(config)
@@ -126,7 +133,7 @@ func main() {
 		owner := execution.NewID()
 		raptor := execution.HTTPRaptor{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
 		modelCredentials := runtimeadapter.HTTPModelCredentials{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
-		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe}
+		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe, Observations: observations}
 		s.ResolveLiveDecision = raptor.ResolveLiveDecision
 		backends := map[string]execution.LiveRuntime{"aliyun": adapter}
 		if config.AX != nil {
@@ -134,7 +141,7 @@ func main() {
 			if err != nil {
 				log.Fatal("AX private transport configuration invalid")
 			}
-			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe}, Bridge: bridge}
+			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe, Observations: observations}, Bridge: bridge}
 		}
 		s.ConversationEnabled = os.Getenv("GATEWAY_CONVERSATION_ENABLED") == "true"
 		s.ConversationRuntime = true
@@ -171,7 +178,11 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8874"
 	}
-	server := &http.Server{Addr: addr, Handler: httpapi.New(s, user, password, httpapi.ProgressConfig{URL: os.Getenv("GATEWAY_PROGRESS_PUBLIC_URL"), Origins: strings.Split(os.Getenv("GATEWAY_PROGRESS_ORIGINS"), ",")}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	progressConfig := httpapi.ProgressConfig{URL: os.Getenv("GATEWAY_PROGRESS_PUBLIC_URL"), Origins: strings.Split(os.Getenv("GATEWAY_PROGRESS_ORIGINS"), ",")}
+	if observations != nil {
+		progressConfig.Observation = observations
+	}
+	server := &http.Server{Addr: addr, Handler: httpapi.New(s, user, password, progressConfig), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	log.Printf("Gateway listening on %s", addr)
 	log.Fatal(server.ListenAndServe())
 }

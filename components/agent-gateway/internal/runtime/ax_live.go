@@ -189,8 +189,10 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		if e = a.write(ctx, in, "/tmp/raptor-private/observation.json", observation.Config); e != nil {
 			return h, e
 		}
-		if e = a.write(ctx, in, "/tmp/raptor-private/kubeconfig", observation.Kubeconfig); e != nil {
-			return h, e
+		if len(observation.Kubeconfig) > 0 {
+			if e = a.write(ctx, in, "/tmp/raptor-private/kubeconfig", observation.Kubeconfig); e != nil {
+				return h, e
+			}
 		}
 	}
 	job, e := liveJob(a.Config, in)
@@ -360,6 +362,7 @@ func (a *AXLive) Cancel(ctx context.Context, h execution.RuntimeHandle) error {
 	return a.write(ctx, r.start, "/tmp/raptor-private/attempt-cancel", []byte("cancel"))
 }
 func (a *AXLive) cleanup(ctx context.Context, record execution.RecoveryRecord) (execution.LiveCleanup, error) {
+	a.Observations.Remove(record.Binding.AttemptID)
 	out := execution.LiveCleanup{}
 	has := false
 	for _, v := range record.Intents {

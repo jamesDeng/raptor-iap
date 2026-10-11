@@ -15,8 +15,9 @@ import (
 )
 
 type ProgressConfig struct {
-	URL     string
-	Origins []string
+	Observation http.Handler
+	URL         string
+	Origins     []string
 }
 type progressServer struct {
 	store  *execution.Store
