@@ -4,3 +4,7 @@ image: ghcr.io/jamesdeng/raptor-iap-test-client@sha256:5c0532840aa4a0b023f357294
 dsnSecretName: traffic-db-dsn
 allowPlaintextPOC: true
 headless: true
+
+# Scoped observer identity and TokenRequest issuer; replacement admission stays disabled.
+observer:
+  enabled: true
