@@ -117,9 +117,18 @@ func observerSQLRead(ctx context.Context, in ObserverProbeInput) (json.RawMessag
 		return nil, ErrRuntimeUnavailable
 	}
 	defer connection.Close(context.Background())
-	var one int
-	if connection.QueryRow(ctx, "SELECT 1").Scan(&one) != nil || one != 1 {
+	if observerSelectOne(ctx, connection) != nil {
 		return nil, ErrRuntimeUnavailable
 	}
 	return json.RawMessage(`{"connected":true}`), nil
+}
+
+// A fixed literal query needs no named prepared statement; transaction poolers
+// may not retain those statements across backend connections.
+func observerSelectOne(ctx context.Context, connection *pgx.Conn) error {
+	var one int
+	if connection.QueryRow(ctx, "SELECT 1", pgx.QueryExecModeSimpleProtocol).Scan(&one) != nil || one != 1 {
+		return ErrRuntimeUnavailable
+	}
+	return nil
 }
