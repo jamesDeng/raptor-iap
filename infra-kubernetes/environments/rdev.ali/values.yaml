@@ -42,7 +42,8 @@ conversation:
   gatewayEnabled: true
   raptorEnabled: true
 modelProviders:
-  enabled: false
+  enabled: true
+  credentialKeySecretName: raptor-model-credential-key
 progress:
   publicURL: wss://raptor.rdev.raptor-iap.top/v1/progress
   origins: https://raptor.rdev.raptor-iap.top
