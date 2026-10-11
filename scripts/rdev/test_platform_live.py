@@ -10,6 +10,22 @@ class LiveManifest(unittest.TestCase):
   if observer:args += ['--set','gatewayLive.observer.enabled=true']
   if ax:args += ["--set","gatewayLive.axTLSSecretName=gateway-ax-client-tls"]
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
+ def test_observer_gateway_has_pinned_readonly_skill_checkout(self):
+  for enabled in (False,True):
+   docs=self.render(True,observer=enabled)
+   pod=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']=='agent-gateway')['spec']['template']['spec']
+   clones=[c for c in pod.get('initContainers',[]) if c['name']=='skills-repository']
+   if not enabled:
+    self.assertFalse(clones);continue
+   self.assertEqual(len(clones),1)
+   clone=clones[0]
+   self.assertIn('git clone --no-checkout https://github.com/jamesDeng/raptor-iap.git',clone['args'][0])
+   self.assertIn('checkout --detach "$SOURCE_REVISION"',clone['args'][0])
+   revision=next(e['value'] for e in clone['env'] if e['name']=='SOURCE_REVISION')
+   self.assertRegex(revision,r'^[a-f0-9]{40}$')
+   mount=next(v for v in pod['containers'][0]['volumeMounts'] if v['name']=='skills-repository')
+   self.assertEqual(mount['mountPath'],'/repo');self.assertTrue(mount['readOnly'])
+   self.assertTrue(any(v['name']=='skills-repository' and 'emptyDir' in v for v in pod['volumes']))
  def test_default_disables_runtime(self):
   d=next(d for d in self.render(False) if d and d.get('kind')=='Deployment' and d['metadata']['name']=='agent-gateway');env={v['name']:v.get('value') for v in d['spec']['template']['spec']['containers'][0]['env']};self.assertEqual(env.get('GATEWAY_RUNTIME_MODE'),'disabled')
  def test_live_private_files_and_auth_wiring(self):

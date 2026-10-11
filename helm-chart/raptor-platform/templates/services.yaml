@@ -111,6 +111,25 @@ spec:
             {{ if $.Values.gatewayLive.axTLSSecretName }}
             - {name: ax-tls-source, mountPath: /ax-tls-source, readOnly: true}
             {{ end }}
+        {{ if $.Values.gatewayLive.observer.enabled }}
+        - name: skills-repository
+          image: {{ $.Values.images.gateway | quote }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - git clone --no-checkout https://github.com/jamesDeng/raptor-iap.git /repo/source; git -C /repo/source checkout --detach "$SOURCE_REVISION"
+          env:
+            - {name: SOURCE_REVISION, value: {{ $revision | quote }}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 256Mi}
+          volumeMounts:
+            - {name: skills-repository, mountPath: /repo}
+            - {name: temporary, mountPath: /tmp}
+        {{ end }}
       {{ end }}
       containers:
         - name: {{ $service.name }}
@@ -208,6 +227,7 @@ spec:
             - {name: live-private, mountPath: /run/raptor/live, readOnly: true}
             {{ if $.Values.gatewayLive.observer.enabled }}
             - {name: observer-api-token, mountPath: /run/raptor/observer-api, readOnly: true}
+            - {name: skills-repository, mountPath: /repo, readOnly: true}
             {{ end }}
             {{ if eq $.Values.gatewayLive.credentialMode "rrsa" }}
             - {name: rrsa-token, mountPath: /run/raptor/rrsa, readOnly: true}
@@ -225,6 +245,8 @@ spec:
       volumes:
         {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
         {{ if $.Values.gatewayLive.observer.enabled }}
+        - name: skills-repository
+          emptyDir: {sizeLimit: 256Mi}
         - name: observer-api-token
           projected:
             defaultMode: 0440
