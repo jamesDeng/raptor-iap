@@ -29,6 +29,7 @@ jobs:
           terraform -chdir=infra-terraform/environments/rdev.ali/agent-gateway fmt -check
           terraform -chdir=infra-terraform/environments/rdev.ali/agent-gateway init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra-terraform/environments/rdev.ali/agent-gateway validate
+          terraform -chdir=infra-terraform/environments/rdev.ali/agent-gateway test
           terraform -chdir=terraform-module/agent-gateway fmt -check -recursive
           terraform -chdir=terraform-module/agent-gateway init -backend=false -input=false -lockfile=readonly
           terraform -chdir=terraform-module/agent-gateway test
