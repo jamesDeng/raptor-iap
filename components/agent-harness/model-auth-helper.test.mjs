@@ -22,3 +22,18 @@ test('Codex helper suppresses provider error bodies',async()=>{
  await runLogin({login:async()=>{throw Error('private provider body')}},value=>lines.push(value));
  assert.deepEqual(lines,[{type:'failure',code:'ProviderAuthorizationFailed'}]);
 });
+
+test('browser login emits authorization URL and accepts one pasted redirect URL',async()=>{
+ const lines=[];let submitted;
+ const redirect='http://localhost:1455/auth/callback?code=one-time&state=state-1';
+ const runtime={async login(_provider,_type,interaction){
+  assert.equal(await interaction.prompt({type:'select'}),'browser');
+  interaction.notify({type:'auth_url',url:'https://auth.openai.com/oauth/authorize?state=state-1'});
+  submitted=await interaction.prompt({type:'manual_code'});
+  return {type:'oauth',access:'synthetic-access',refresh:'synthetic-refresh',expires:1234};
+ }};
+ await runLogin(runtime,value=>lines.push(value),undefined,{method:'browser',readRedirect:async()=>redirect});
+ assert.equal(submitted,redirect);
+ assert.deepEqual(lines.map(value=>value.type),['browser_challenge','credential']);
+ assert.equal(lines[0].authorizationUrl,'https://auth.openai.com/oauth/authorize?state=state-1');
+});

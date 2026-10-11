@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,20 +48,42 @@ type nodeAttempt struct {
 	command   *exec.Cmd
 	scanner   *bufio.Scanner
 	challenge ConnectChallenge
+	stdin     io.WriteCloser
+	state     string
+	submitted bool
 }
 
 func (a *nodeAttempt) Challenge() ConnectChallenge { return a.challenge }
 
 func (f NodeFlow) Start(ctx context.Context) (DeviceAttempt, error) {
+	return f.start(ctx, false)
+}
+
+func (f NodeFlow) StartBrowser(ctx context.Context) (BrowserAttempt, error) {
+	return f.start(ctx, true)
+}
+
+func (f NodeFlow) start(ctx context.Context, browser bool) (*nodeAttempt, error) {
 	if !filepath.IsAbs(f.NodePath) || !filepath.IsAbs(f.HelperPath) {
 		return nil, errors.New("invalid auth helper path")
 	}
-	cmd := exec.Command(f.NodePath, f.HelperPath)
+	args := []string{f.HelperPath}
+	if browser {
+		args = append(args, "--browser")
+	}
+	cmd := exec.Command(f.NodePath, args...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=/nonexistent", "PI_OFFLINE=1", "PI_TELEMETRY=0"}
 	cmd.Stderr = io.Discard
 	stdout, e := cmd.StdoutPipe()
 	if e != nil {
 		return nil, e
+	}
+	var stdin io.WriteCloser
+	if browser {
+		stdin, e = cmd.StdinPipe()
+		if e != nil {
+			return nil, e
+		}
 	}
 	if e = cmd.Start(); e != nil {
 		return nil, e
@@ -91,19 +114,51 @@ func (f NodeFlow) Start(ctx context.Context) (DeviceAttempt, error) {
 		_ = cmd.Wait()
 		return nil, line.err
 	}
-	var wire struct{ Type, VerificationURL, UserCode, ExpiresAt string }
-	if json.Unmarshal(line.raw, &wire) != nil || wire.Type != "challenge" || wire.VerificationURL != "https://auth.openai.com/codex/device" || wire.UserCode == "" {
+	var wire struct{ Type, VerificationURL, AuthorizationURL, UserCode, ExpiresAt string }
+	if json.Unmarshal(line.raw, &wire) != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, errors.New("invalid auth challenge")
+	}
+	var state string
+	if browser {
+		u, e := url.Parse(wire.AuthorizationURL)
+		if e != nil || wire.Type != "browser_challenge" || u.Scheme != "https" || u.Host != "auth.openai.com" || u.Path != "/oauth/authorize" || u.Query().Get("redirect_uri") != "http://localhost:1455/auth/callback" || u.Query().Get("client_id") == "" || u.Query().Get("code_challenge") == "" || u.Query().Get("state") == "" {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return nil, errors.New("invalid browser challenge")
+		}
+		state = u.Query().Get("state")
+	} else if wire.Type != "challenge" || wire.VerificationURL != "https://auth.openai.com/codex/device" || wire.UserCode == "" {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return nil, errors.New("invalid auth challenge")
 	}
 	expires, e := time.Parse(time.RFC3339Nano, wire.ExpiresAt)
-	if e != nil || !expires.After(time.Now()) || expires.After(time.Now().Add(16*time.Minute)) {
+	max := 16 * time.Minute
+	if browser {
+		max = 6 * time.Minute
+	}
+	if e != nil || !expires.After(time.Now()) || expires.After(time.Now().Add(max)) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return nil, errors.New("invalid auth challenge expiry")
 	}
-	return &nodeAttempt{command: cmd, scanner: scanner, challenge: ConnectChallenge{VerificationURL: wire.VerificationURL, UserCode: wire.UserCode, ExpiresAt: expires}}, nil
+	return &nodeAttempt{command: cmd, scanner: scanner, stdin: stdin, state: state, challenge: ConnectChallenge{VerificationURL: wire.VerificationURL, AuthorizationURL: wire.AuthorizationURL, UserCode: wire.UserCode, ExpiresAt: expires}}, nil
+}
+
+func (a *nodeAttempt) SubmitRedirect(raw string) error {
+	if a.stdin == nil || a.submitted || len(raw) > 4096 {
+		return ErrClosed
+	}
+	u, e := url.Parse(raw)
+	if e != nil || u.Scheme != "http" || u.Host != "localhost:1455" || u.Path != "/auth/callback" || u.User != nil || u.Fragment != "" || u.Query().Get("state") != a.state || u.Query().Get("code") == "" {
+		return ErrInvalidRedirect
+	}
+	a.submitted = true
+	_, e = io.WriteString(a.stdin, raw+"\n")
+	_ = a.stdin.Close()
+	return e
 }
 
 func (a *nodeAttempt) Await(ctx context.Context) ([]byte, error) {

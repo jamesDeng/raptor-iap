@@ -17,12 +17,21 @@ type DeviceAttempt interface {
 type DeviceFlow interface {
 	Start(context.Context) (DeviceAttempt, error)
 }
+type BrowserAttempt interface {
+	DeviceAttempt
+	SubmitRedirect(string) error
+}
+type BrowserFlow interface {
+	StartBrowser(context.Context) (BrowserAttempt, error)
+}
 type SaveCredential func(context.Context, string, []byte) error
 
 type connectSession struct {
-	owner  string
-	status ConnectStatus
-	cancel context.CancelFunc
+	owner     string
+	status    ConnectStatus
+	cancel    context.CancelFunc
+	attempt   BrowserAttempt
+	submitted bool
 }
 type Service struct {
 	flow     DeviceFlow
@@ -38,6 +47,12 @@ func NewService(flow DeviceFlow, save SaveCredential) *Service {
 }
 
 func (s *Service) StartCodexConnect(ctx context.Context, adminID string) (ConnectChallenge, error) {
+	return s.start(ctx, adminID, false)
+}
+func (s *Service) StartCodexBrowserConnect(ctx context.Context, adminID string) (ConnectChallenge, error) {
+	return s.start(ctx, adminID, true)
+}
+func (s *Service) start(ctx context.Context, adminID string, browser bool) (ConnectChallenge, error) {
 	if adminID == "" {
 		return ConnectChallenge{}, ErrForbidden
 	}
@@ -56,12 +71,24 @@ func (s *Service) StartCodexConnect(ctx context.Context, adminID string) (Connec
 	startEpoch := s.epoch
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.starting = false; s.mu.Unlock() }()
-	attempt, e := s.flow.Start(ctx)
+	var attempt DeviceAttempt
+	var browserAttempt BrowserAttempt
+	var e error
+	if browser {
+		flow, ok := s.flow.(BrowserFlow)
+		if !ok {
+			return ConnectChallenge{}, errors.New("browser flow unavailable")
+		}
+		browserAttempt, e = flow.StartBrowser(ctx)
+		attempt = browserAttempt
+	} else {
+		attempt, e = s.flow.Start(ctx)
+	}
 	if e != nil {
 		return ConnectChallenge{}, e
 	}
 	challenge := attempt.Challenge()
-	if challenge.VerificationURL == "" || challenge.UserCode == "" || challenge.ExpiresAt.IsZero() {
+	if (browser && challenge.AuthorizationURL == "") || (!browser && (challenge.VerificationURL == "" || challenge.UserCode == "")) || challenge.ExpiresAt.IsZero() {
 		return ConnectChallenge{}, errors.New("invalid device challenge")
 	}
 	var id [16]byte
@@ -70,7 +97,7 @@ func (s *Service) StartCodexConnect(ctx context.Context, adminID string) (Connec
 	}
 	challenge.SessionID = hex.EncodeToString(id[:])
 	runCtx, cancel := context.WithDeadline(context.Background(), challenge.ExpiresAt)
-	v := &connectSession{owner: adminID, status: ConnectStatus{SessionID: challenge.SessionID, Status: StatusPending, ExpiresAt: challenge.ExpiresAt}, cancel: cancel}
+	v := &connectSession{owner: adminID, status: ConnectStatus{SessionID: challenge.SessionID, Status: StatusPending, ExpiresAt: challenge.ExpiresAt}, cancel: cancel, attempt: browserAttempt}
 	s.mu.Lock()
 	if s.epoch != startEpoch {
 		s.mu.Unlock()
@@ -82,6 +109,29 @@ func (s *Service) StartCodexConnect(ctx context.Context, adminID string) (Connec
 	s.mu.Unlock()
 	go s.await(runCtx, v, attempt)
 	return challenge, nil
+}
+func (s *Service) SubmitCodexBrowserRedirect(adminID, sessionID, redirect string) error {
+	s.mu.Lock()
+	v := s.sessions[sessionID]
+	if v == nil {
+		s.mu.Unlock()
+		return ErrNotFound
+	}
+	if v.owner != adminID {
+		s.mu.Unlock()
+		return ErrForbidden
+	}
+	if v.status.Status != StatusPending || v.attempt == nil || v.submitted || time.Now().After(v.status.ExpiresAt) {
+		s.mu.Unlock()
+		return ErrClosed
+	}
+	// Hold the session lock through the bounded pipe write so concurrent submissions cannot race.
+	e := v.attempt.SubmitRedirect(redirect)
+	if e == nil {
+		v.submitted = true
+	}
+	s.mu.Unlock()
+	return e
 }
 func (s *Service) await(ctx context.Context, v *connectSession, attempt DeviceAttempt) {
 	credential, e := attempt.Await(ctx)
