@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: rdev-infra-api-state
+  group: ${{ github.event_name == 'pull_request' && format('rdev-infra-api-state-pr-{0}', github.event.pull_request.number) || 'rdev-infra-api-state' }}
   cancel-in-progress: false
 jobs:
   check:

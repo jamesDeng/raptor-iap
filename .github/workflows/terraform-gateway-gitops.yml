@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: rdev-gateway-state
+  group: ${{ github.event_name == 'pull_request' && format('rdev-gateway-state-pr-{0}', github.event.pull_request.number) || 'rdev-gateway-state' }}
   cancel-in-progress: false
 jobs:
   check:
