@@ -73,7 +73,7 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
     return {groupId:config.groupId,desiredCapacity:group.DesiredCapacity,minSize:group.MinSize,maxSize:group.MaxSize,observedAt:new Date().toISOString()};
    }
    if(kind==='backend'){
-    if(!id(config.listenerId))throw invalid();
+    if(!id(config.listenerId)&&!(typeof config.listenerId==='string'&&/^lsn-[A-Za-z0-9]+@6432$/.test(config.listenerId)))throw invalid();
     const fleet=await tools.cloudRead({kind:'fleet'}),members=new Set(fleet.instances.map(node=>node.instanceId)),eligible=new Set(fleet.instances.filter(node=>['InService','Protected'].includes(node.lifecycleState)&&node.healthStatus==='Healthy').map(node=>node.instanceId));
     const read=(action,field,value)=>execute('aliyun',['nlb',action,'--RegionId',config.region,'--'+field,value],config.private?.aliyunEnv);
     const servers=await read('ListServerGroupServers','ServerGroupId',config.serverGroupId);

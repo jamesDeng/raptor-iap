@@ -58,7 +58,7 @@ func buildObservationPreparer(c LiveConfig, m Management, mount func(string, int
 	scope := cfg.Scope
 	binding := execution.AttemptBinding{Operation: "db-proxy.replace-nodes", ObjectKind: "db-proxy", ObjectCode: scope.ProxyCode, EnvCode: scope.EnvCode, ClusterID: scope.Application.ClusterID}
 	validID := regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
-	if c.AccountID != "1360282071200743" || c.Region != "ap-southeast-1" || scope.EnvCode != "rdev.ali" || scope.Application.Namespace != "raptor-test" || !scope.ValidFor(binding) || !regexp.MustCompile(`^asg-[A-Za-z0-9]+$`).MatchString(scope.GroupID) || !validID.MatchString(cfg.DBInstanceID) || !regexp.MustCompile(`^lsn-[A-Za-z0-9]+$`).MatchString(cfg.ListenerID) || !regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`).MatchString(cfg.SQLBucket) || cfg.SQLKey == "" || strings.Contains(cfg.SQLKey, "..") || strings.HasPrefix(cfg.SQLKey, "/") {
+	if c.AccountID != "1360282071200743" || c.Region != "ap-southeast-1" || scope.EnvCode != "rdev.ali" || scope.Application.Namespace != "raptor-test" || !scope.ValidFor(binding) || !regexp.MustCompile(`^asg-[A-Za-z0-9]+$`).MatchString(scope.GroupID) || !validID.MatchString(cfg.DBInstanceID) || !regexp.MustCompile(`^lsn-[A-Za-z0-9]+(?:@6432)?$`).MatchString(cfg.ListenerID) || !regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`).MatchString(cfg.SQLBucket) || cfg.SQLKey == "" || strings.Contains(cfg.SQLKey, "..") || strings.HasPrefix(cfg.SQLKey, "/") {
 		return nil, ErrConfiguration
 	}
 	issuer, err := m.ObserverIssuer(scope.ServerGroupID, cfg.LoadBalancerID)
