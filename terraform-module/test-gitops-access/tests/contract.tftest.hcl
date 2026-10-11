@@ -52,7 +52,7 @@ run "catalog_tag_migration_exact_resources" {
       { Effect = "Allow", Action = ["ess:UntagResources"], Resource = ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"] },
       { Effect = "Allow", Action = ["ecs:UntagResources"], Resource = ["acs:ecs:ap-southeast-1:123456789012:securitygroup/sg-test"] },
       { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:123456789012:loadbalancer/nlb-test", "acs:nlb:ap-southeast-1:123456789012:servergroup/sgp-test"] },
-      { Effect = "Allow", Action = ["rds:UnTagResources"], Resource = ["acs:rds:ap-southeast-1:123456789012:dbinstance/pgm-test"] }
+      { Effect = "Allow", Action = ["rds:UntagResources"], Resource = ["acs:rds:ap-southeast-1:123456789012:dbinstance/pgm-test"] }
     ]
     error_message = "Untag permissions must bind only the five existing Singapore POC resources."
   }
