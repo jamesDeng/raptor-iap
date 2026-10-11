@@ -1,0 +1,69 @@
+name: POC NLB permission diagnostic
+on:
+  pull_request:
+    paths: ['components/agent-gateway/cmd/nlb-auth-probe/**', '.github/workflows/nlb-permission-diagnostic.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: components/agent-gateway/go.mod
+          cache-dependency-path: components/agent-gateway/go.sum
+      - run: go test -race ./cmd/nlb-auth-probe
+        working-directory: components/agent-gateway
+  diagnose:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    environment: rdev.ali-apply
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: components/agent-gateway/go.mod
+          cache-dependency-path: components/agent-gateway/go.sum
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.RDEV_APPLY_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-expiration: 900
+      - name: Permission-only probe
+        working-directory: components/agent-gateway
+        env:
+          PROBE_PRIVATE_OUTPUT: ${{ runner.temp }}/nlb-diagnostic.private.json
+        run: go run ./cmd/nlb-auth-probe
+      - name: Encrypt diagnostic before artifact upload
+        env:
+          TF_PLAN_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+        run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          python3 - <<'PY'
+          import base64, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/gitops')
+          from runner import seal
+          p = Path(os.environ['RUNNER_TEMP'])
+          raw = p / 'nlb-diagnostic.private.json'
+          (p / 'nlb-diagnostic.enc').write_bytes(seal(raw.read_bytes(), base64.b64decode(os.environ['TF_PLAN_KEY'], validate=True), os.environ['GITHUB_SHA']))
+          raw.unlink()
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: encrypted-nlb-diagnostic
+          path: ${{ runner.temp }}/nlb-diagnostic.enc
+          if-no-files-found: error
+          retention-days: 1
