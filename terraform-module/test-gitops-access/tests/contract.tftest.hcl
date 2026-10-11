@@ -48,7 +48,7 @@ run "catalog_tag_migration_exact_resources" {
     }
   }
   assert {
-    condition = jsondecode(alicloud_ram_policy.catalog_untag[0].policy_document).Statement == [
+    condition = slice(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement, 5, length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement)) == [
       { Effect = "Allow", Action = ["ess:UntagResources"], Resource = ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"] },
       { Effect = "Allow", Action = ["ecs:UntagResources"], Resource = ["acs:ecs:ap-southeast-1:123456789012:securitygroup/sg-test"] },
       { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:123456789012:loadbalancer/nlb-test", "acs:nlb:ap-southeast-1:123456789012:servergroup/sgp-test"] },
@@ -57,14 +57,14 @@ run "catalog_tag_migration_exact_resources" {
     error_message = "Untag permissions must bind only the five existing Singapore POC resources."
   }
   assert {
-    condition     = alicloud_ram_role_policy_attachment.catalog_untag[0].role_name == "test-apply"
+    condition     = alicloud_ram_role_policy_attachment.fleet_apply.role_name == "test-apply"
     error_message = "The read-only plan identity must never receive untag permissions."
   }
 }
 run "catalog_untag_absent_by_default" {
   command = plan
   assert {
-    condition     = length(alicloud_ram_policy.catalog_untag) == 0 && length(alicloud_ram_role_policy_attachment.catalog_untag) == 0
+    condition     = length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement) == 5
     error_message = "No catalog migration grant should exist without explicit target configuration."
   }
 }

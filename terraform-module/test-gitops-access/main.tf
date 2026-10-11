@@ -65,13 +65,18 @@ resource "alicloud_ram_policy" "fleet_apply" {
   force       = false
   policy_document = jsonencode({
     Version = "1"
-    Statement = [
+    Statement = concat([
       { Effect = "Allow", Action = ["ess:CreateScalingGroup", "ess:CreateScalingConfiguration", "ess:ModifyScalingConfiguration", "ess:EnableScalingGroup", "ess:ModifyScalingGroup", "ess:AttachServerGroups", "ess:TagResources"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/*", "acs:ess:ap-southeast-1:${var.account_id}:scalingconfiguration/*"] },
       { Effect = "Allow", Action = ["nlb:CreateLoadBalancer", "nlb:CreateServerGroup", "nlb:CreateListener", "nlb:StartListener", "nlb:UpdateLoadBalancerProtection", "nlb:TagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:*", "acs:vpc:ap-southeast-1:${var.account_id}:vpc/*", "acs:vpc:ap-southeast-1:${var.account_id}:vswitch/*"] },
       { Effect = "Allow", Action = ["ecs:CreateSecurityGroup", "ecs:AuthorizeSecurityGroup", "ecs:TagResources"], Resource = ["acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/*", "acs:vpc:ap-southeast-1:${var.account_id}:vpc/*"] },
       { Effect = "Allow", Action = ["ram:CreateServiceLinkedRole"], Resource = ["*"], Condition = { StringEquals = { "ram:ServiceName" = "nlb.aliyuncs.com" } } },
       { Effect = "Allow", Action = ["ram:PassRole"], Resource = ["acs:ram::${var.account_id}:role/raptor-iap-rdev-pgcat-config"] }
-    ]
+      ], var.catalog_untag_targets == null ? [] : [
+      { Effect = "Allow", Action = ["ess:UntagResources"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/${var.catalog_untag_targets.scaling_group_id}"] },
+      { Effect = "Allow", Action = ["ecs:UntagResources"], Resource = ["acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/${var.catalog_untag_targets.security_group_id}"] },
+      { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:loadbalancer/${var.catalog_untag_targets.load_balancer_id}", "acs:nlb:ap-southeast-1:${var.account_id}:servergroup/${var.catalog_untag_targets.server_group_id}"] },
+      { Effect = "Allow", Action = ["rds:UntagResources"], Resource = ["acs:rds:ap-southeast-1:${var.account_id}:dbinstance/${var.catalog_untag_targets.db_instance_id}"] }
+    ])
   })
   depends_on = [terraform_data.account_guard]
 }
@@ -102,25 +107,4 @@ variable "catalog_untag_targets" {
     ])
     error_message = "Catalog untag targets must be exact resource IDs, without wildcards."
   }
-}
-resource "alicloud_ram_policy" "catalog_untag" {
-  count       = var.catalog_untag_targets == null ? 0 : 1
-  policy_name = "raptor-iap-test-gitops-catalog-untag"
-  force       = false
-  policy_document = jsonencode({
-    Version = "1"
-    Statement = [
-      { Effect = "Allow", Action = ["ess:UntagResources"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/${var.catalog_untag_targets.scaling_group_id}"] },
-      { Effect = "Allow", Action = ["ecs:UntagResources"], Resource = ["acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/${var.catalog_untag_targets.security_group_id}"] },
-      { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:loadbalancer/${var.catalog_untag_targets.load_balancer_id}", "acs:nlb:ap-southeast-1:${var.account_id}:servergroup/${var.catalog_untag_targets.server_group_id}"] },
-      { Effect = "Allow", Action = ["rds:UntagResources"], Resource = ["acs:rds:ap-southeast-1:${var.account_id}:dbinstance/${var.catalog_untag_targets.db_instance_id}"] }
-    ]
-  })
-  depends_on = [terraform_data.account_guard]
-}
-resource "alicloud_ram_role_policy_attachment" "catalog_untag" {
-  count       = var.catalog_untag_targets == null ? 0 : 1
-  role_name   = var.apply_role_name
-  policy_name = alicloud_ram_policy.catalog_untag[0].policy_name
-  policy_type = "Custom"
 }
