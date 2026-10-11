@@ -26,6 +26,19 @@ class LiveManifest(unittest.TestCase):
    mount=next(v for v in pod['containers'][0]['volumeMounts'] if v['name']=='skills-repository')
    self.assertEqual(mount['mountPath'],'/repo');self.assertTrue(mount['readOnly'])
    self.assertTrue(any(v['name']=='skills-repository' and 'emptyDir' in v for v in pod['volumes']))
+ def test_observation_route_exposes_only_fixed_authenticated_post(self):
+  for enabled in (False,True):
+   docs=self.render(True,observer=enabled)
+   routes=[d for d in docs if d and d.get('kind')=='Ingress' and d['metadata']['name']=='raptor-gateway-observations']
+   if not enabled:
+    self.assertFalse(routes);continue
+   self.assertEqual(len(routes),1);route=routes[0]
+   self.assertEqual(route['metadata']['annotations']['konghq.com/protocols'],'https')
+   self.assertEqual(route['metadata']['annotations']['konghq.com/methods'],'POST')
+   rules=route['spec']['rules'];self.assertEqual(len(rules),1);self.assertEqual(rules[0]['host'],'api.rdev.raptor-iap.top')
+   paths=rules[0]['http']['paths'];self.assertEqual(len(paths),1)
+   self.assertEqual((paths[0]['path'],paths[0]['pathType']),('/v1/gateway-observations','Exact'))
+   self.assertEqual(paths[0]['backend']['service']['name'],'agent-gateway')
  def test_default_disables_runtime(self):
   d=next(d for d in self.render(False) if d and d.get('kind')=='Deployment' and d['metadata']['name']=='agent-gateway');env={v['name']:v.get('value') for v in d['spec']['template']['spec']['containers'][0]['env']};self.assertEqual(env.get('GATEWAY_RUNTIME_MODE'),'disabled')
  def test_live_private_files_and_auth_wiring(self):

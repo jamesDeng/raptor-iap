@@ -56,6 +56,18 @@ func (n *NativeLive) prepareObservation(ctx context.Context, in execution.LiveSt
 	if err != nil || material.Validate(in.Binding, *in.Access.ReplacementScope) != nil {
 		return ObservationMaterial{}, ErrConfiguration
 	}
+	if n.Observations != nil {
+		return n.Observations.Register(in, material, func(call context.Context) error {
+			if err := n.fence(call, in.Binding.AttemptID); err != nil {
+				return err
+			}
+			cancelled, err := n.Store.LiveCancelled(call, in.Binding.RequestID)
+			if err != nil || cancelled {
+				return ErrRuntimeUnavailable
+			}
+			return nil
+		})
+	}
 	return material, nil
 }
 func observationConfigPath(in execution.LiveStart) string {

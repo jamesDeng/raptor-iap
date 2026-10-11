@@ -73,6 +73,14 @@ func New(s *execution.Store, user, password string, options ...ProgressConfig) h
 		write(w, 200, map[string]any{"data": v, "nextAfter": next, "hasMore": more})
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/gateway-observations" {
+			if cfg.Observation == nil {
+				write(w, 401, map[string]string{"error": "Unauthorized"})
+				return
+			}
+			cfg.Observation.ServeHTTP(w, r)
+			return
+		}
 		if r.Method == "GET" && r.URL.Path == "/v1/progress" {
 			progress.connect(w, r)
 			return

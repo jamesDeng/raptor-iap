@@ -12,6 +12,7 @@ import (
 )
 
 type LiveConfig struct {
+	ObservationURL      string                       `json:"observationUrl,omitempty"`
 	ReplacementEnabled  bool                         `json:"replacementEnabled,omitempty"`
 	ReplacementObserver *ReplacementObserverConfig   `json:"replacementObserver,omitempty"`
 	SkillsRepository    string                       `json:"skillsRepository,omitempty"`
@@ -63,6 +64,12 @@ func ReadPrivateJSON(file string, value any) error {
 	return nil
 }
 func (c LiveConfig) Validate() error {
+	if c.ObservationURL != "" && c.ObservationURL != "https://api.rdev.raptor-iap.top/v1/gateway-observations" {
+		return ErrConfiguration
+	}
+	if c.Provider == "ax" && c.ReplacementObserver != nil && c.ObservationURL == "" {
+		return ErrConfiguration
+	}
 	if c.ReplacementEnabled && (c.ReplacementObserver == nil || c.SkillsRepository == "") {
 		return ErrConfiguration
 	}

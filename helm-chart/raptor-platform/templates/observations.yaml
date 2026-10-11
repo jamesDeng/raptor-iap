@@ -1,0 +1,27 @@
+{{- if and .Values.gatewayLive.enabled .Values.gatewayLive.observer.enabled }}
+# A per-attempt token authorizes four bounded read probes; no Gateway API prefix.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: raptor-gateway-observations
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    konghq.com/protocols: https
+    konghq.com/methods: POST
+    konghq.com/preserve-host: "true"
+    konghq.com/strip-path: "false"
+    konghq.com/read-timeout: "30000"
+spec:
+  ingressClassName: raptor-kong
+  tls:
+    - hosts: [api.rdev.raptor-iap.top]
+      secretName: raptor-public-tls
+  rules:
+    - host: api.rdev.raptor-iap.top
+      http:
+        paths:
+          - path: /v1/gateway-observations
+            pathType: Exact
+            backend:
+              service: {name: agent-gateway, port: {number: 8874}}
+{{- end }}
