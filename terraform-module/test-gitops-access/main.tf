@@ -74,7 +74,8 @@ resource "alicloud_ram_policy" "fleet_apply" {
       ], var.catalog_untag_targets == null ? [] : [
       { Effect = "Allow", Action = ["ess:UntagResources"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/${var.catalog_untag_targets.scaling_group_id}"] },
       { Effect = "Allow", Action = ["ecs:UntagResources"], Resource = ["acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/${var.catalog_untag_targets.security_group_id}"] },
-      { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:loadbalancer/${var.catalog_untag_targets.load_balancer_id}", "acs:nlb:ap-southeast-1:${var.account_id}:servergroup/${var.catalog_untag_targets.server_group_id}"] },
+      # Live RAM DecodeDiagnosticMessage requires serverGroup (API documentation uses servergroup).
+      { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:loadbalancer/${var.catalog_untag_targets.load_balancer_id}", "acs:nlb:ap-southeast-1:${var.account_id}:serverGroup/${var.catalog_untag_targets.server_group_id}"] },
       { Effect = "Allow", Action = ["rds:UntagResources"], Resource = ["acs:rds:ap-southeast-1:${var.account_id}:dbinstance/${var.catalog_untag_targets.db_instance_id}"] }
     ])
   })
