@@ -14,7 +14,7 @@ module "infra_api_read" {
   deployment_user       = "raptor-rdev-infra-deploy"
   enable_proxy_commands = true
   proxy_targets = {
-    "b5267fa4-33b9-408c-a799-0ed56501061f" = {
+    "DP00001" = {
       group_id         = "asg-t4necb4dfmu6o3z2rn0g"
       server_group_id  = "sgp-xs5s42tihtl6ja2a67"
       load_balancer_id = "nlb-jqbxi42nurq0qkb7e9"

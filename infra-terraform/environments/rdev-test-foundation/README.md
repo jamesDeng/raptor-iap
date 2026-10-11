@@ -34,3 +34,9 @@ RAM cannot bind that bucket-level operation to a prefix; a future lifecycle
 configuration change could therefore affect configuration objects and must keep
 this prefix contract. Plan credentials cannot alter retention. No object-content
 read/write permission is added to either GitOps identity by this change.
+
+## Catalog identity migration
+
+The existing private inputs retain legacy UUID deployment/bootstrap identity and physical names. Current catalog association tags are DP00001 (proxy) and D00002 (database); the client GitOps label is A00003. Optional module catalog inputs update discovery tags only. Existing ECS configuration tags and version-bound bootstrap metadata remain legacy until a separately reviewed configuration migration; they are not the authoritative catalog association. Reject a migration plan that replaces resources or changes userdata/credentials.
+
+After GitOps synchronization, regenerate the external `pgcat-provider-inventory` ConfigMap from fresh ESS/ECS reads with DP00001/D00002 labels. Metrics filtering deliberately rejects the previous UUID labels. Keep replacement disabled until the refreshed inventory contains all current healthy members and controller/native AX qualification passes.

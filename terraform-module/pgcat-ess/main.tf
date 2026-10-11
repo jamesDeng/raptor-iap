@@ -14,8 +14,9 @@ resource "terraform_data" "account_guard" {
   }
 }
 locals {
-  tags      = { Project = "raptor-iap", Owner = "test-env-skills", env = var.env_code, db-proxy-code = var.proxy_code, target-db-code = var.target_db_code }
-  bootstrap = jsonencode({ env = var.env_code, proxy_code = var.proxy_code, target_db_code = var.target_db_code, db_host = var.target_db_host, database = var.target_database, secret_reference = var.secret_reference, revision = var.bootstrap_revision })
+  bootstrap_tags = { Project = "raptor-iap", Owner = "test-env-skills", env = var.env_code, db-proxy-code = var.proxy_code, target-db-code = var.target_db_code }
+  tags           = merge(local.bootstrap_tags, { db-proxy-code = coalesce(var.catalog_proxy_code, var.proxy_code), target-db-code = coalesce(var.catalog_target_db_code, var.target_db_code) })
+  bootstrap      = jsonencode({ env = var.env_code, proxy_code = var.proxy_code, target_db_code = var.target_db_code, db_host = var.target_db_host, database = var.target_database, secret_reference = var.secret_reference, revision = var.bootstrap_revision })
 }
 # Shared Alibaba-managed NLB prerequisite, retained when this POC is removed.
 resource "alicloud_resource_manager_service_linked_role" "nlb" {
@@ -94,7 +95,7 @@ resource "alicloud_ess_scaling_configuration" "proxy" {
   spot_strategy              = "NoSpot"
   active                     = true
   enable                     = true
-  tags                       = local.tags
+  tags                       = local.bootstrap_tags
   user_data = base64encode(templatefile("${path.module}/startup.sh.tftpl", {
     metadata_b64    = base64encode(local.bootstrap)
     container_image = var.container_image

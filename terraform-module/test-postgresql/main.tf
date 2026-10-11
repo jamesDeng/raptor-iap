@@ -29,6 +29,6 @@ resource "alicloud_db_instance" "test" {
   security_ips             = var.client_cidrs
   storage_auto_scale       = "Disable"
   deletion_protection      = true
-  tags                     = { Project = "raptor-iap", Owner = "test-env-skills", env = var.env_code, db-code = var.db_code }
+  tags                     = { Project = "raptor-iap", Owner = "test-env-skills", env = var.env_code, db-code = coalesce(var.catalog_db_code, var.db_code) }
   depends_on               = [terraform_data.account_guard]
 }

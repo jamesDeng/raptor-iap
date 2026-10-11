@@ -93,3 +93,19 @@ run "reject_public_nonzero_source" {
   variables { sql_client_cidrs = ["8.8.8.0/24"] }
   expect_failures = [var.sql_client_cidrs]
 }
+
+run "catalog_migration_preserves_bootstrap_identity" {
+  command = plan
+  variables {
+    catalog_proxy_code     = "DP00001"
+    catalog_target_db_code = "D00002"
+  }
+  assert {
+    condition     = alicloud_ess_scaling_group.proxy.tags["db-proxy-code"] == "DP00001" && alicloud_ess_scaling_group.proxy.tags["target-db-code"] == "D00002" && alicloud_nlb_load_balancer.proxy.tags["db-proxy-code"] == "DP00001" && alicloud_nlb_server_group.proxy.tags["target-db-code"] == "D00002"
+    error_message = "Authoritative discovery tags must use current catalog identity."
+  }
+  assert {
+    condition     = alicloud_ess_scaling_group.proxy.scaling_group_name == "raptor-test-proxy-fixture" && alicloud_nlb_load_balancer.proxy.load_balancer_name == "raptor-test-proxy-fixture" && alicloud_nlb_server_group.proxy.server_group_name == "raptor-test-proxy-fixture" && alicloud_ess_scaling_configuration.proxy.scaling_configuration_name == "raptor-test-proxy-fixture" && alicloud_ess_scaling_configuration.proxy.tags["db-proxy-code"] == "proxy-fixture" && jsondecode(local.bootstrap).proxy_code == "proxy-fixture" && jsondecode(local.bootstrap).target_db_code == "db-fixture"
+    error_message = "Catalog migration must preserve physical names and version-bound bootstrap identity."
+  }
+}
