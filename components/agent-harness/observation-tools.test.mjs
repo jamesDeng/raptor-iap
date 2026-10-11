@@ -74,8 +74,8 @@ function observerCloudFixture(c,args){
  if(args.includes('GetCallerIdentity'))return {AccountId:c.accountId,Arn:`acs:ram::${c.accountId}:assumed-role/raptor-rdev-agent-observer/session`};
  if(args.includes('DescribeScalingInstances'))return {TotalCount:1,ScalingInstances:[{InstanceId:'i-one',ScalingGroupId:'group',ProtectedFromScaleIn:true,LifecycleState:'InService',HealthStatus:'Healthy'}]};
  if(args.includes('ListServerGroupServers'))return {TotalCount:1,Servers:[{ServerId:'i-one',ServerIp:'10.70.1.30',ServerGroupId:'backend',ServerType:'Ecs',Port:6432,Status:'Available',Weight:100}]};
- if(args.includes('GetListenerAttribute'))return {ListenerId:'listener',ServerGroupId:'backend',ListenerPort:6432,ListenerStatus:'Running'};
- return {ListenerHealthStatus:[{ListenerId:'listener',ListenerPort:6432,ServerGroupInfos:[{ServerGroupId:'backend',HeathCheckEnabled:true,NonNormalServers:[]}]}]};
+ if(args.includes('GetListenerAttribute'))return {ListenerId:c.listenerId,ServerGroupId:'backend',ListenerPort:6432,ListenerStatus:'Running'};
+ return {ListenerHealthStatus:[{ListenerId:c.listenerId,ListenerPort:6432,ServerGroupInfos:[{ServerGroupId:'backend',HeathCheckEnabled:true,NonNormalServers:[]}]}]};
 }
 
 test('fleet reads provider protection from LifecycleState, never a fabricated response field',async()=>{
@@ -101,4 +101,10 @@ test('traffic counters require every outcome and fresh source samples for the cu
   }});
   await assert.rejects(tools.metricsRead({kind:'trafficFailures'}),/InvalidObservation/,defect);
  }
+});
+
+test('NLB backend supports documented listener ID with its 6432 port suffix',async()=>{
+ const c=config();c.listenerId='lsn-7kuvcqkaz5o3z2w376@6432';const tools=createObservationTools({binding,config:c,exec:async(_command,args)=>observerCloudFixture(c,args)});
+ const backend=await tools.cloudRead({kind:'backend'});assert.equal(backend.listenerId,c.listenerId);assert.equal(backend.nodes.length,1);
+ for(const invalidId of ['lsn-test@6443','lsn-test@6432/evil','lsn-test@6432?secret']){c.listenerId=invalidId;await assert.rejects(tools.cloudRead({kind:'backend'}),/InvalidObservation/);}
 });

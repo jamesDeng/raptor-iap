@@ -31,7 +31,7 @@ func TestObserverFactoryBuildsWithoutAmbientIdentityAndRejectsForeignScope(t *te
 		t.Fatal(err)
 	}
 	scope := execution.ReplacementScope{EnvCode: "rdev.ali", ProxyCode: "proxy", GroupID: "asg-test", ServerGroupID: "sgp-test", TargetDBCode: "db", Application: execution.ApplicationScope{EnvCode: "rdev.ali", AppCode: "app", ClusterID: "cluster", Namespace: "raptor-test", Name: "client", UID: "uid"}}
-	c.ReplacementObserver = &ReplacementObserverConfig{Scope: scope, ClusterServer: "https://10.70.0.1", DBInstanceID: "db-instance", LoadBalancerID: "nlb-test", ListenerID: "lsn-test", PrometheusURL: "http://10.70.1.10:9090", ClientTargets: []string{"10.70.1.20:9090"}, SQLBucket: "raptor-observer-private", SQLKey: "observer/sql.json"}
+	c.ReplacementObserver = &ReplacementObserverConfig{Scope: scope, ClusterServer: "https://10.70.0.1", DBInstanceID: "db-instance", LoadBalancerID: "nlb-test", ListenerID: "lsn-test@6432", PrometheusURL: "http://10.70.1.10:9090", ClientTargets: []string{"10.70.1.20:9090"}, SQLBucket: "raptor-observer-private", SQLKey: "observer/sql.json"}
 	server := httptest.NewTLSServer(nil)
 	defer server.Close()
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
