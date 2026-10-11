@@ -47,6 +47,36 @@ func (s *HTTPService) Register(m *http.ServeMux, a *auth.Service) {
 		}
 		httpx.Write(w, 202, challenge)
 	})))
+	m.Handle("POST /api/v1/admin/model-providers/codex/browser-connect", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		challenge, err := s.Connect.StartCodexBrowserConnect(r.Context(), sessionOwner(r))
+		if err != nil {
+			httpx.Error(w, 503, "ProviderAuthorizationUnavailable")
+			return
+		}
+		httpx.Write(w, 202, challenge)
+	})))
+	m.Handle("POST /api/v1/admin/model-providers/codex/connect/{sessionId}/complete", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			RedirectURL string `json:"redirectUrl"`
+		}
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		err := s.Connect.SubmitCodexBrowserRedirect(sessionOwner(r), r.PathValue("sessionId"), in.RedirectURL)
+		if errors.Is(err, ErrForbidden) {
+			httpx.Error(w, 403, "Forbidden")
+			return
+		}
+		if errors.Is(err, ErrInvalidRedirect) {
+			httpx.Error(w, 400, "InvalidRedirectURL")
+			return
+		}
+		if err != nil {
+			httpx.Error(w, 409, "CannotComplete")
+			return
+		}
+		httpx.Write(w, 202, map[string]bool{"submitted": true})
+	})))
 	m.Handle("GET /api/v1/admin/model-providers/codex/connect/{sessionId}", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		state, err := s.Connect.PollCodexConnect(r.Context(), sessionOwner(r), r.PathValue("sessionId"))
 		if errors.Is(err, ErrForbidden) {
