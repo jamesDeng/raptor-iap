@@ -21,6 +21,12 @@ variable "observer" {
     sql_bucket       = string
     sql_key          = string
   })
-  default     = null
-  description = "Opt-in dedicated fleet observation; null preserves question-only deployment."
+  default = {
+    group_id         = "asg-t4necb4dfmu6o3z2rn0g"
+    backend_group_id = "sgp-xs5s42tihtl6ja2a67"
+    load_balancer_id = "nlb-jqbxi42nurq0qkb7e9"
+    sql_bucket       = "raptor-iap-rdev-pgcat-config-1360282071200743"
+    sql_key          = "rdev.ali/pgcat-test/observer-sql.json"
+  }
+  description = "Verified dedicated rdev fleet references; explicit null disables initial observer provisioning. Runtime replacement remains separately disabled."
 }
