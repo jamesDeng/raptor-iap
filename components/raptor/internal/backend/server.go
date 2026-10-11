@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
@@ -15,14 +16,15 @@ import (
 )
 
 type Server struct {
-	Mux            *http.ServeMux
-	Auth           *auth.Service
-	Catalog        *catalog.Service
-	Requests       *requests.Service
-	Approvals      *approvals.Service
-	GitHub         *githubservice.Service
-	Skills         *skills.Service
-	ModelProviders *modelproviders.HTTPService
+	ReplacementScope *agentaccess.ReplacementScope
+	Mux              *http.ServeMux
+	Auth             *auth.Service
+	Catalog          *catalog.Service
+	Requests         *requests.Service
+	Approvals        *approvals.Service
+	GitHub           *githubservice.Service
+	Skills           *skills.Service
+	ModelProviders   *modelproviders.HTTPService
 }
 
 func (s *Server) ConfigureModelProviders(key []byte, nodePath, helperPath string) {

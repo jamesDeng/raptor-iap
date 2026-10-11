@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: rdev-test-pgcat-state
+  group: ${{ github.event_name == 'pull_request' && format('rdev-test-pgcat-state-pr-{0}', github.event.pull_request.number) || 'rdev-test-pgcat-state' }}
   cancel-in-progress: false
 jobs:
   check:

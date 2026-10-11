@@ -12,6 +12,9 @@ import (
 )
 
 type LiveConfig struct {
+	ReplacementEnabled  bool                         `json:"replacementEnabled,omitempty"`
+	ReplacementObserver *ReplacementObserverConfig   `json:"replacementObserver,omitempty"`
+	SkillsRepository    string                       `json:"skillsRepository,omitempty"`
 	Provider            string                       `json:"provider,omitempty"`
 	AX                  *AXConfig                    `json:"ax,omitempty"`
 	InfraUsername       string                       `json:"infraUsername"`
@@ -60,6 +63,9 @@ func ReadPrivateJSON(file string, value any) error {
 	return nil
 }
 func (c LiveConfig) Validate() error {
+	if c.ReplacementEnabled && (c.ReplacementObserver == nil || c.SkillsRepository == "") {
+		return ErrConfiguration
+	}
 	if c.Provider != "" && !validProvider(c.Provider) {
 		return ErrConfiguration
 	}

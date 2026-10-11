@@ -2,21 +2,18 @@ package execution
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"github.com/jackc/pgx/v5"
 	"time"
-	"unicode/utf8"
 )
 
 type WorkerLease interface{ Valid(context.Context) bool }
 type AgentAccess struct {
-	Credential   string         `json:"-"`
-	ExpiresAt    time.Time      `json:"expiresAt"`
-	Binding      AttemptBinding `json:"binding"`
-	RaptorMcpURL string         `json:"raptorMcpUrl"`
-	InfraMcpURL  string         `json:"infraMcpUrl"`
+	ReplacementScope *ReplacementScope `json:"replacementScope,omitempty"`
+	Credential       string            `json:"-"`
+	ExpiresAt        time.Time         `json:"expiresAt"`
+	Binding          AttemptBinding    `json:"binding"`
+	RaptorMcpURL     string            `json:"raptorMcpUrl"`
+	InfraMcpURL      string            `json:"infraMcpUrl"`
 }
 
 func (a AgentAccess) String() string   { return "[request-bound agent access]" }
@@ -33,6 +30,9 @@ type LiveStart struct {
 	ConversationEnabled bool
 	Conversation        *ConversationSession
 	InitialMessage      *ConversationInput
+	Skills              SkillsVersion
+	DecisionContext     *ContinuationContext
+	SessionCheckpoint   *SessionCheckpoint
 	Binding             AttemptBinding
 	Question            string
 	Checkpoint          VerifiedCheckpoint
@@ -43,6 +43,8 @@ type LiveObservation struct {
 	SessionID   string
 	SessionFile string
 	Turns       []ConversationTurn
+	Paused      *LiveWait
+	Usage       []Usage
 	Events      []RuntimeEvent
 	Terminal    bool
 	Result      *LiveResult
@@ -50,6 +52,7 @@ type LiveObservation struct {
 }
 type LiveCleanup struct{ SandboxAbsent, KeyAbsent bool }
 type RecoveryRecord struct {
+	Wait       *LiveWait
 	Binding    AttemptBinding
 	Intents    []RuntimeIntentRecord
 	Result     *LiveResult
@@ -71,13 +74,14 @@ type LiveRuntime interface {
 	Reconcile(context.Context, RecoveryRecord) (RecoveredRun, error)
 }
 type LiveWorker struct {
-	Store     *Store
-	Owner     string
-	Lease     WorkerLease
-	Runtime   LiveRuntime
-	Access    AgentAccessClient
-	Raptor    RaptorClient
-	Bootstrap VerifiedCheckpoint
+	ReplacementScope *ReplacementScope
+	Store            *Store
+	Owner            string
+	Lease            WorkerLease
+	Runtime          LiveRuntime
+	Access           AgentAccessClient
+	Raptor           RaptorClient
+	Bootstrap        VerifiedCheckpoint
 }
 
 func (w *LiveWorker) authorized(ctx context.Context) error {
@@ -86,51 +90,29 @@ func (w *LiveWorker) authorized(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ParseLiveQuestion preserves the existing question-only live admission.
 func ParseLiveQuestion(in ExecutionInput, attempt string) (AttemptBinding, string, string, error) {
-	var d struct {
-		Type              string                      `json:"type"`
-		Model             string                      `json:"model"`
-		ProviderID        string                      `json:"providerId"`
-		ConnectionVersion int64                       `json:"connectionVersion"`
-		Object            struct{ Kind, Code string } `json:"object"`
-		EnvCode           string                      `json:"envCode"`
-		Operations        []struct {
-			Name       string                     `json:"name"`
-			Parameters map[string]json.RawMessage `json:"parameters"`
-		} `json:"operations"`
-		Skills SkillsVersion `json:"skills"`
-	}
-	var env struct {
-		Config struct {
-			ClusterID string `json:"ackClusterId"`
-		} `json:"config"`
-	}
-	if json.Unmarshal(in.Definition, &d) != nil || json.Unmarshal(in.Environment, &env) != nil || d.Type != "agent" || len(d.Operations) != 1 || d.Skills != in.Skills || env.Config.ClusterID == "" {
+	b, operation, err := ParseLiveOperation(in, attempt)
+	if err != nil || b.Operation != "application.question" || !b.valid() {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
-	var question string
-	if len(d.Operations[0].Parameters) != 1 || json.Unmarshal(d.Operations[0].Parameters["question"], &question) != nil || question == "" || !utf8.ValidString(question) || utf8.RuneCountInString(question) > 2000 || len(question) > 8192 {
-		return AttemptBinding{}, "", "", ErrInvalid
-	}
-	var canonical any
-	if json.Unmarshal(in.Definition, &canonical) != nil {
-		return AttemptBinding{}, "", "", ErrInvalid
-	}
-	raw, e := json.Marshal(canonical)
+	return b, operation.Question, b.DefinitionSHA256, nil
+}
+func (w *LiveWorker) admit(in ExecutionInput, attempt string) (AttemptBinding, string, string, error) {
+	b, operation, e := ParseLiveOperation(in, attempt)
 	if e != nil {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
-	sum := sha256.Sum256(raw)
-	hash := hex.EncodeToString(sum[:])
-	if !shaPattern.MatchString(in.DefinitionSHA256) || hash != in.DefinitionSHA256 {
+	if b.Operation == "application.question" {
+		return ParseLiveQuestion(in, attempt)
+	}
+	if w.ReplacementScope == nil || !w.ReplacementScope.ValidFor(b) {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
-	b := AttemptBinding{RequestID: in.RequestID, AttemptID: attempt, Operation: d.Operations[0].Name, ObjectKind: d.Object.Kind, ObjectCode: d.Object.Code, EnvCode: d.EnvCode, SkillsCommit: in.Skills.CommitSHA, Model: d.Model, ProviderID: d.ProviderID, ConnectionVersion: d.ConnectionVersion, DefinitionSHA256: hash, ClusterID: env.Config.ClusterID}
-	if !b.valid() {
-		return b, "", "", ErrInvalid
-	}
-	return b, question, hash, nil
+	return b, operation.Question, b.DefinitionSHA256, nil
 }
+
 func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e := w.authorized(ctx); e != nil {
 		return e
@@ -143,7 +125,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e != nil || in.RequestID != x.RequestID {
 		return w.Store.RejectLiveClaim(ctx, x.AttemptID, w.Owner, "InvalidResult")
 	}
-	b, question, hash, e := ParseLiveQuestion(in, x.AttemptID)
+	b, question, hash, e := w.admit(in, x.AttemptID)
 	if e != nil {
 		return w.Store.RejectLiveClaim(ctx, x.AttemptID, w.Owner, "InvalidResult")
 	}
@@ -164,7 +146,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 
 	var conversation *ConversationSession
 	var initial *ConversationInput
-	if w.Store.ConversationEnabled && w.Store.ConversationRuntime {
+	if b.Operation == "application.question" && w.Store.ConversationEnabled && w.Store.ConversationRuntime {
 		session, err := w.Store.RequestConversationSession(ctx, b.RequestID)
 		if err == nil {
 			conversation = &session
@@ -182,6 +164,17 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 			}
 		}
 	}
+	sessionCheckpoint, e := w.Store.OperationSession(ctx, b)
+	if e != nil {
+		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "CheckpointFailed")
+	}
+	if sessionCheckpoint != nil {
+		checkpoint = sessionCheckpoint.Archive
+	}
+	continuation, e := w.Store.LiveContinuationContext(ctx, b)
+	if e != nil {
+		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "InvalidResult")
+	}
 	if e = w.authorized(ctx); e != nil {
 		return e
 	}
@@ -192,13 +185,16 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e != nil {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
 	}
+	if b.Operation == "db-proxy.replace-nodes" && (access.Binding != b || access.ReplacementScope == nil || w.ReplacementScope == nil || *access.ReplacementScope != *w.ReplacementScope) {
+		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
+	}
 	if access.ExpiresAt.Before(time.Now()) || access.ExpiresAt.After(record.Deadline) {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
 	}
 	if e = w.authorized(ctx); e != nil {
 		return e
 	}
-	h, e := w.Runtime.Start(ctx, LiveStart{Binding: b, Question: question, Checkpoint: checkpoint, Access: access, Deadline: record.Deadline, ConversationEnabled: w.Store.ConversationEnabled && w.Store.ConversationRuntime, Conversation: conversation, InitialMessage: initial})
+	h, e := w.Runtime.Start(ctx, LiveStart{Skills: in.Skills, DecisionContext: continuation, SessionCheckpoint: sessionCheckpoint, Binding: b, Question: question, Checkpoint: checkpoint, Access: access, Deadline: record.Deadline, ConversationEnabled: b.Operation == "application.question" && w.Store.ConversationEnabled && w.Store.ConversationRuntime, Conversation: conversation, InitialMessage: initial})
 	if e != nil {
 		return w.finish(ctx, b, h, "failed", "PreparationFailed")
 	}
@@ -249,6 +245,21 @@ func (w *LiveWorker) RunActive(ctx context.Context) error {
 	if e = w.Store.AppendRuntimeEvents(ctx, x.AttemptID, w.Owner, o.Events, o.Turns...); e != nil {
 		return e
 	}
+	if o.Paused != nil || o.Terminal {
+		usage := o.Usage
+		if o.Result != nil {
+			usage = o.Result.Usage
+		}
+		if e = w.Store.SaveSegmentUsage(ctx, x.AttemptID, w.Owner, usage); e != nil {
+			return w.finish(ctx, b, h, "failed", "InvalidResult")
+		}
+	}
+	if o.Paused != nil {
+		if cancel {
+			return w.finish(ctx, b, h, "cancelled", "Cancelled")
+		}
+		return w.pause(ctx, b, h, *o.Paused)
+	}
 	if !o.Terminal {
 		return w.deliverConversation(ctx, h, b)
 	}
@@ -267,6 +278,44 @@ func (w *LiveWorker) RunActive(ctx context.Context) error {
 		status, code = "failed", "InvalidResult"
 	}
 	return w.finish(ctx, b, h, status, code)
+}
+
+// A settled Pi segment may be checkpointed immediately (within the 120-second
+// maximum hold). Never release the slot until sandbox, key and access cleanup
+// are confirmed. Replacement live admission is still disabled separately.
+func (w *LiveWorker) pause(ctx context.Context, b AttemptBinding, h RuntimeHandle, wait LiveWait) error {
+	if e := w.authorized(ctx); e != nil {
+		return e
+	}
+	if b.Operation != "db-proxy.replace-nodes" || !wait.Valid() {
+		return w.finish(ctx, b, h, "failed", "InvalidResult")
+	}
+	checkpoint, e := w.Runtime.Checkpoint(ctx, h)
+	if e != nil {
+		return w.finish(ctx, b, h, "failed", "CheckpointFailed")
+	}
+	cp, e := w.Store.OperationSession(ctx, b)
+	if e != nil || cp == nil || cp.Archive.SHA256 != checkpoint.SHA256 || cp.Archive.ArchiveKey != checkpoint.ArchiveKey {
+		return w.finish(ctx, b, h, "failed", "CheckpointFailed")
+	}
+	if e = w.Store.SaveLiveCheckpoint(ctx, b.AttemptID, w.Owner, checkpoint); e != nil {
+		return e
+	}
+	if e = w.Store.SaveLiveWait(ctx, b.AttemptID, w.Owner, wait, *cp); e != nil {
+		return e
+	}
+	cleanup, stopErr := w.Runtime.Stop(ctx, h)
+	if e = w.authorized(ctx); e != nil {
+		return e
+	}
+	revokeErr := w.Access.Revoke(ctx, b)
+	if e = w.authorized(ctx); e != nil {
+		return e
+	}
+	if stopErr != nil {
+		cleanup = LiveCleanup{}
+	}
+	return w.Store.ReleaseLiveWait(ctx, b.AttemptID, w.Owner, cleanup, revokeErr == nil)
 }
 func (w *LiveWorker) finish(ctx context.Context, b AttemptBinding, h RuntimeHandle, status, code string) error {
 	if e := w.authorized(ctx); e != nil {
@@ -346,8 +395,18 @@ func (w *LiveWorker) Reconcile(ctx context.Context) error {
 		revokeErr := w.Access.Revoke(ctx, record.Binding)
 		return w.Store.FinalizeLive(ctx, x.AttemptID, w.Owner, LiveOutcome{Status: "failed", FailureCode: "CleanupUnconfirmed", AccessRevoked: revokeErr == nil})
 	}
+	if record.Wait != nil {
+		if e = w.authorized(ctx); e != nil {
+			return e
+		}
+		revokeErr := w.Access.Revoke(ctx, record.Binding)
+		if e = w.authorized(ctx); e != nil {
+			return e
+		}
+		return w.Store.ReleaseLiveWait(ctx, x.AttemptID, w.Owner, recovered.Cleanup, revokeErr == nil)
+	}
 	status, code := "failed", "Interrupted"
-	if recovered.Result != nil && recovered.Checkpoint.valid() {
+	if recovered.Result != nil && recovered.Checkpoint.valid() && (record.Binding.Operation != "db-proxy.replace-nodes" || (w.ReplacementScope != nil && w.ReplacementScope.ValidFor(record.Binding) && recovered.Result.Replacement != nil && recovered.Result.Replacement.Scope == *w.ReplacementScope)) {
 		if e = w.Store.SaveLiveResult(ctx, x.AttemptID, w.Owner, *recovered.Result); e == nil {
 			status, code = "completed", ""
 		}

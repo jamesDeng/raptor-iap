@@ -25,7 +25,11 @@ func New(reader Reader, envs map[string]domain.Environment, username, password, 
 }
 
 func NewWithCommands(reader Reader, envs map[string]domain.Environment, username, password, authHeader string, commander Commander, authorizer Authorizer) (http.Handler, error) {
-	if reader == nil || username == "" || password == "" || strings.Contains(username, ":") || (authHeader != "Authorization" && authHeader != "X-Infra-Authorization") {
+	return NewWithAgentCommands(reader, envs, username, password, authHeader, commander, authorizer, nil)
+}
+
+func NewWithAgentCommands(reader Reader, envs map[string]domain.Environment, username, password, authHeader string, commander Commander, authorizer Authorizer, check AgentCheck) (http.Handler, error) {
+	if reader == nil || username == "agent" || username == "" || password == "" || strings.Contains(username, ":") || (authHeader != "Authorization" && authHeader != "X-Infra-Authorization") {
 		return nil, errors.New("invalid server configuration")
 	}
 	scopes := make(map[string]domain.Environment, len(envs))
@@ -58,12 +62,28 @@ func NewWithCommands(reader Reader, envs map[string]domain.Environment, username
 		}
 		decoded, e := base64.StdEncoding.Strict().DecodeString(strings.TrimPrefix(values[0], "Basic "))
 		sum := sha256.Sum256(decoded)
-		if e != nil || subtle.ConstantTimeCompare(sum[:], expected[:]) != 1 {
+		requestOp := op
+		requestMCP := mcpHandler
+		agentUser, credential, isBasic := strings.Cut(string(decoded), ":")
+		if e == nil && isBasic && agentUser == "agent" {
+			if check == nil || !agentToken.MatchString(credential) {
+				fail(401, "Unauthenticated")
+				return
+			}
+			identity, err := check(r.Context(), credential, "", map[string]string{})
+			if err != nil || !identity.permits("", map[string]string{}) {
+				fail(401, "Unauthenticated")
+				return
+			}
+			requestOp.authorizer = agentAuthorizer{credential: credential, check: check, base: authorizer, identity: identity}
+			requestOp.principal = "agent"
+			requestMCP = newMCPHandler(requestOp)
+		} else if e != nil || subtle.ConstantTimeCompare(sum[:], expected[:]) != 1 {
 			fail(401, "Unauthenticated")
 			return
 		}
 		if r.URL.Path == "/mcp" {
-			mcpHandler.ServeHTTP(w, r)
+			requestMCP.ServeHTTP(w, r)
 			return
 		}
 		if commandPath(r.URL.Path) {
@@ -76,7 +96,7 @@ func NewWithCommands(reader Reader, envs map[string]domain.Environment, username
 				fail(400, "InvalidInput")
 				return
 			}
-			data, e := op.command(r.Context(), r.URL.Path, raw)
+			data, e := requestOp.command(r.Context(), r.URL.Path, raw)
 			if e != nil {
 				oe := e.(*operationError)
 				fail(oe.status, oe.code)
@@ -90,7 +110,7 @@ func NewWithCommands(reader Reader, envs map[string]domain.Environment, username
 			fail(400, "InvalidInput")
 			return
 		}
-		data, e := op.execute(r.Context(), r.URL.Path, q)
+		data, e := requestOp.execute(r.Context(), r.URL.Path, q)
 		if e != nil {
 			oe := e.(*operationError)
 			fail(oe.status, oe.code)

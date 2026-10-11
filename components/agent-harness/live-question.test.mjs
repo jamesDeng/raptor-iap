@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {loadPiRuntime} from './pi-adapter.mjs';
-const binding={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',operation:'application.question',objectKind:'application',objectCode:'app',envCode:'rdev.ali',skillsCommit:'0123456789012345678901234567890123456789',model:'gpt-5.6-luna'};
+const binding={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',operation:'application.question',objectKind:'application',objectCode:'app',envCode:'rdev.ali',skillsCommit:'0123456789012345678901234567890123456789',definitionSha256:'a'.repeat(64),clusterId:'cluster',model:'gpt-5.6-luna'};
 const limits={model_seconds:90,max_turns:10,max_output_tokens:1024};
 function fixtureFetch(mode='normal'){return async(url,init)=>{if(mode==='expired')return new Response('McpRequestFailed',{status:401});const rpc=JSON.parse(init.body),server=String(url).includes('raptor')?'raptor':'infra',names=server==='raptor'?['request_get','environment_get','object_get']:['cloud_identity_get','deployments_list','deployment_status_get'];let result;
  if(rpc.method==='notifications/initialized')return new Response(null,{status:202});

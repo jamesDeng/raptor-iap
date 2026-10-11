@@ -24,6 +24,9 @@ resources:
         INFRA_USERNAME: ${env(INFRA_USERNAME)}
         INFRA_PASSWORD: ${env(INFRA_PASSWORD)}
         INFRA_AUTH_HEADER: "X-Infra-Authorization"
+        INFRA_AGENT_INSPECTOR_ORIGIN: "https://api.rdev.raptor-iap.top"
+        INFRA_AGENT_INSPECTOR_USERNAME: ${env(INFRA_AGENT_INSPECTOR_USERNAME)}
+        INFRA_AGENT_INSPECTOR_PASSWORD: ${env(INFRA_AGENT_INSPECTOR_PASSWORD)}
       triggers:
         - triggerName: read-http
           triggerType: http

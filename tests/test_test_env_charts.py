@@ -55,3 +55,18 @@ class Charts(unittest.TestCase):
   vals['infraReaderUser']='system:admin';self.render('infra-test-metrics',vals,False)
  def test_metrics_reader_rbac_is_opt_in(self):
   docs=self.render('infra-test-metrics',self.metrics());self.assertFalse(any(x['kind'] in ['Role','RoleBinding'] for x in docs))
+
+ def test_runtime_observer_has_no_secret_or_mutation_permissions(self):
+  vals=self.client();vals['observer.enabled']=True
+  docs=self.render('infra-test-client',vals)
+  roles=[x for x in docs if x['kind']=='Role'];self.assertEqual(len(roles),2)
+  observer=next(x for x in roles if x['metadata']['name']=='fixture-observer')
+  self.assertEqual(observer['rules'],[{'apiGroups':['apps'],'resources':['deployments'],'resourceNames':['fixture-client'],'verbs':['get']},{'apiGroups':['apps'],'resources':['replicasets'],'verbs':['get','list']},{'apiGroups':[''],'resources':['pods'],'verbs':['get','list']}])
+  issuer=next(x for x in roles if x['metadata']['name']=='fixture-observer-issuer')
+  self.assertEqual(issuer['rules'],[{'apiGroups':[''],'resources':['serviceaccounts/token'],'resourceNames':['fixture-observer'],'verbs':['create']}])
+  binding=next(x for x in docs if x['kind']=='RoleBinding' and x['metadata']['name']=='fixture-observer-issuer')
+  self.assertEqual(binding['subjects'],[{'kind':'ServiceAccount','name':'agent-gateway','namespace':'raptor-system'}])
+  sa=next(x for x in docs if x['kind']=='ServiceAccount');self.assertFalse(sa['automountServiceAccountToken'])
+  self.assertFalse(any(x['kind'].startswith('ClusterRole') for x in docs))
+ def test_runtime_observer_is_disabled_by_default(self):
+  docs=self.render('infra-test-client',self.client());self.assertFalse(any(x['kind'] in ['Role','RoleBinding','ServiceAccount'] for x in docs))

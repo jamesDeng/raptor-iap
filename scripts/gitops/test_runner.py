@@ -73,3 +73,18 @@ class RdevKongPlanContracts(unittest.TestCase):
         self.assertNotIn('PRIVATE_IP',comment)
 
 if __name__=='__main__':unittest.main()
+
+class GatewayObserverContracts(unittest.TestCase):
+    def test_owning_gateway_stack_and_plan_binding(self):
+        from runner import select_stack, validate_inputs
+        s=select_stack('agent-gateway')
+        self.assertEqual((s['root'],s['prefix'],s['key']),('infra-terraform/environments/rdev.ali/agent-gateway','gateway.ali','terraform.tfstate'))
+        validate_inputs({'rrsa_enabled':False},'agent-gateway')
+        inputs={'rrsa_enabled':True,'oidc_provider_arn':'acs:ram::123456789:oidc-provider/ack-rrsa','oidc_issuer':'https://oidc-ack-ap-southeast-1.oss-ap-southeast-1.aliyuncs.com/cluster','observer':{'group_id':'asg-test','backend_group_id':'sgp-test','load_balancer_id':'nlb-test','sql_bucket':'raptor-private','sql_key':'private/pgcat/sql.json'}}
+        validate_inputs(inputs,'agent-gateway')
+        blob=seal(b'private',b'k'*32,'a'*40,'agent-gateway')
+        with self.assertRaises(Exception):unseal(blob,b'k'*32,'a'*40,'test-foundation')
+    def test_unknown_inputs_and_unbound_observer_rejected(self):
+        from runner import validate_inputs
+        for x in ({'rrsa_enabled':False,'password':'SECRET'}, {'rrsa_enabled':False,'observer':{}}, {'rrsa_enabled':True,'oidc_provider_arn':'foreign','oidc_issuer':'http://invalid'}):
+            with self.assertRaises(ValueError):validate_inputs(x,'agent-gateway')

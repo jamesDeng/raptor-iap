@@ -59,13 +59,27 @@ func (s *Store) RecoveryRecord(ctx context.Context, attempt string) (RecoveryRec
 	if e := s.Pool.QueryRow(ctx, "SELECT binding,live_result,verified_checkpoint,started_at FROM gateway.attempts WHERE id=$1", attempt).Scan(&binding, &result, &checkpoint, &started); e != nil {
 		return r, e
 	}
-	if json.Unmarshal(binding, &r.Binding) != nil || !r.Binding.valid() {
+	if json.Unmarshal(binding, &r.Binding) != nil || !r.Binding.journalValid() {
 		return r, ErrInvalid
 	}
 	if len(checkpoint) > 0 {
 		if json.Unmarshal(checkpoint, &r.Checkpoint) != nil || !r.Checkpoint.valid() {
 			return r, ErrInvalid
 		}
+	}
+	var waitRaw, waitCheckpoint []byte
+	waitErr := s.Pool.QueryRow(ctx, "SELECT wait,checkpoint FROM gateway.live_waits WHERE attempt_id=$1 AND phase='checkpointed'", attempt).Scan(&waitRaw, &waitCheckpoint)
+	if waitErr != nil && waitErr != pgx.ErrNoRows {
+		return r, waitErr
+	}
+	if waitErr == nil {
+		var wait LiveWait
+		var cp SessionCheckpoint
+		if json.Unmarshal(waitRaw, &wait) != nil || !wait.Valid() || json.Unmarshal(waitCheckpoint, &cp) != nil || !cp.validFor(r.Binding) {
+			return r, ErrInvalid
+		}
+		r.Wait = &wait
+		r.Checkpoint = cp.Archive
 	}
 	r.Deadline = started.Add(600 * time.Second)
 	if len(result) > 0 && json.Unmarshal(result, &r.Result) != nil {

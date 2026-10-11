@@ -10,3 +10,6 @@ resources:
 allowPlaintextPOC: false
 
 headless: false
+
+observer:
+  enabled: false

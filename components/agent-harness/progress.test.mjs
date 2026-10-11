@@ -14,3 +14,7 @@ test('only public pre-tool assistant text becomes progress; reasoning and final 
  const boundary='x'.repeat(490)+'fixture-sensitive-value';
  assert.equal(mod.publicProgressFromMessage({role:'assistant',stopReason:'toolUse',content:[{type:'text',text:boundary}]}),boundary);
 });
+test('replacement progress catalog is explicit and does not broaden default question tools',async()=>{
+ const {ProgressWriter}=await import('./progress.mjs');const root=fs.mkdtempSync(path.join(os.tmpdir(),'operation-progress-'));
+ try{const event={kind:'tool_start',tool:'mcp__raptor__approval_request',outcome:'started'};const question=new ProgressWriter(path.join(root,'question'));assert.throws(()=>question.append(event));const replacement=new ProgressWriter(path.join(root,'replacement'),['mcp__raptor__approval_request']);replacement.append(event);assert.throws(()=>replacement.append({...event,tool:'bash'}));}finally{fs.rmSync(root,{recursive:true,force:true})}
+});

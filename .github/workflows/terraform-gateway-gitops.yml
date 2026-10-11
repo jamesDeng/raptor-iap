@@ -1,0 +1,149 @@
+name: Terraform Gateway GitOps
+on:
+  pull_request:
+    branches: [main]
+    paths: ['infra-terraform/environments/rdev.ali/agent-gateway/**', 'terraform-module/agent-gateway/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-gateway-gitops.yml']
+  push:
+    branches: [main]
+    paths: ['infra-terraform/environments/rdev.ali/agent-gateway/**', 'terraform-module/agent-gateway/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-gateway-gitops.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('rdev-gateway-state-pr-{0}', github.event.pull_request.number) || 'rdev-gateway-state' }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          python3 -m unittest discover -s scripts/gitops -v
+          terraform -chdir=infra-terraform/environments/rdev.ali/agent-gateway fmt -check
+          terraform -chdir=infra-terraform/environments/rdev.ali/agent-gateway init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infra-terraform/environments/rdev.ali/agent-gateway validate
+          terraform -chdir=terraform-module/agent-gateway fmt -check -recursive
+          terraform -chdir=terraform-module/agent-gateway init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform-module/agent-gateway test
+  plan:
+    needs: check
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.ref == 'refs/heads/main'
+    environment: rdev.ali-plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Install plan dependencies
+        run: python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.RDEV_PLAN_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-expiration: 1800
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Private plan and sanitized summary
+        env:
+          TF_STACK_NAME: agent-gateway
+          TF_SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          TF_STACK_INPUTS: ${{ secrets.TF_GATEWAY_STACK_INPUTS }}
+          TF_STATE_BUCKET: ${{ vars.RDEV_STATE_BUCKET }}
+          TF_LOCK_ENDPOINT: ${{ vars.RDEV_LOCK_ENDPOINT }}
+          TF_SUMMARY_PATH: ${{ runner.temp }}/summary.md
+          TF_PLAN_KEY: ${{ github.event_name != 'pull_request' && secrets.TF_PLAN_ENCRYPTION_KEY || '' }}
+          TF_ENCRYPTED_PLAN_PATH: ${{ github.event_name != 'pull_request' && format('{0}/plan.enc', runner.temp) || '' }}
+        run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          python3 scripts/gitops/runner.py plan
+          cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Post plan result to PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ ! -f "$RUNNER_TEMP/summary.md" ]; then
+            # shellcheck disable=SC2016
+            printf 'Terraform plan failed for `%s`. Private output withheld; check the workflow run.\n' "$SOURCE_SHA" > "$RUNNER_TEMP/summary.md"
+          fi
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/summary.md"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: github.event_name != 'pull_request'
+        with:
+          name: encrypted-gateway-plan
+          path: ${{ runner.temp }}/plan.enc
+          if-no-files-found: error
+          retention-days: 1
+  apply:
+    needs: plan
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    environment: rdev.ali-apply
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          persist-credentials: false
+      - name: Download this run's encrypted plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run download "$RUN_ID" --name encrypted-gateway-plan --dir "$RUNNER_TEMP/saved-plan"
+      - name: Verify required environment review gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          gh api "repos/$GH_REPO/environments/${{ github.job == 'apply' && 'rdev.ali-apply' || 'rdev.ali-plan' }}" | python3 scripts/gitops/runner.py guard
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.RDEV_APPLY_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-expiration: 3600
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Apply reviewed saved plan
+        env:
+          TF_STACK_NAME: agent-gateway
+          TF_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+          TF_STACK_INPUTS: ${{ secrets.TF_GATEWAY_STACK_INPUTS }}
+          TF_STATE_BUCKET: ${{ vars.RDEV_STATE_BUCKET }}
+          TF_LOCK_ENDPOINT: ${{ vars.RDEV_LOCK_ENDPOINT }}
+          TF_PLAN_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+          TF_ENCRYPTED_PLAN_PATH: ${{ runner.temp }}/saved-plan/plan.enc
+        run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          python3 scripts/gitops/runner.py apply

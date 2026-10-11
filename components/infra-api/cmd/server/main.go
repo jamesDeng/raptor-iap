@@ -30,6 +30,12 @@ func main() {
 	if e != nil {
 		log.Fatal("proxy runtime configuration unavailable")
 	}
+	if origin := os.Getenv("INFRA_AGENT_INSPECTOR_ORIGIN"); origin != "" || os.Getenv("INFRA_AGENT_INSPECTOR_USERNAME") != "" || os.Getenv("INFRA_AGENT_INSPECTOR_PASSWORD") != "" {
+		deps.AgentCheck, e = api.NewAgentInspector(origin, os.Getenv("INFRA_AGENT_INSPECTOR_USERNAME"), os.Getenv("INFRA_AGENT_INSPECTOR_PASSWORD"), nil)
+		if e != nil {
+			log.Fatal("agent authorization configuration unavailable")
+		}
+	}
 	h, e := buildRuntimeHandler(reader, envs, os.Getenv("INFRA_USERNAME"), os.Getenv("INFRA_PASSWORD"), header, opts, deps)
 	if e != nil {
 		log.Fatal("authentication configuration unavailable")
@@ -60,12 +66,15 @@ func (restartOnly) Deregister(context.Context, domain.Environment, domain.Deregi
 	return domain.NodeReceipt{}, domain.ErrScope
 }
 func buildHandler(reader api.Reader, envs map[string]domain.Environment, username, password, header string, enabled bool) (http.Handler, error) {
+	return buildHandlerWithAgent(reader, envs, username, password, header, enabled, nil)
+}
+func buildHandlerWithAgent(reader api.Reader, envs map[string]domain.Environment, username, password, header string, enabled bool, check api.AgentCheck) (http.Handler, error) {
 	if !enabled {
-		return api.New(reader, envs, username, password, header)
+		return api.NewWithAgentCommands(reader, envs, username, password, header, nil, nil, check)
 	}
 	r, ok := reader.(restarter)
 	if !ok {
 		return nil, domain.ErrNotConfigured
 	}
-	return api.NewWithCommands(reader, envs, username, password, header, restartOnly{r}, api.NewServiceAuthorizer(username, "/v1/deployment-restart"))
+	return api.NewWithAgentCommands(reader, envs, username, password, header, restartOnly{r}, api.NewServiceAuthorizer(username, "/v1/deployment-restart"), check)
 }

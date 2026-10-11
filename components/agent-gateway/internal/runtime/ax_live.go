@@ -25,6 +25,7 @@ type axRun struct {
 	modelLease            ModelLease
 	modelRefreshProcessed bool
 	modelRevoked          bool
+	observation           ObservationMaterial
 }
 
 func (a *AXLive) call(ctx context.Context, r AXRequest) (AXResponse, error) {
@@ -90,8 +91,20 @@ func (a *AXLive) phase(ctx context.Context, in execution.LiveStart, phase, kind 
 }
 func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.RuntimeHandle, error) {
 	h := execution.RuntimeHandle{RequestID: in.Binding.RequestID}
+	var skillsBundle []byte
+	if in.Binding.Operation == "db-proxy.replace-nodes" {
+		var e error
+		skillsBundle, e = BuildSkillsBundle(ctx, a.Config.SkillsRepository, in.Skills)
+		if e != nil || in.Skills.CommitSHA != in.Binding.SkillsCommit || in.Access.ReplacementScope == nil {
+			return h, ErrConfiguration
+		}
+	}
 	if a.Config.Validate() != nil || in.Access.Binding != in.Binding || in.Access.RaptorMcpURL != a.Config.RaptorMcpURL || in.Access.InfraMcpURL != a.Config.InfraMcpURL || len(in.Access.Credential) < 32 || !in.Deadline.After(time.Now()) {
 		return h, ErrConfiguration
+	}
+	observation, e := a.prepareObservation(ctx, in)
+	if e != nil {
+		return h, e
 	}
 	cp, e := a.Verifier.VerifyCheckpoint(ctx, in.Checkpoint)
 	if e != nil {
@@ -116,7 +129,7 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	if a.axRuns[h.RequestID] != nil {
 		return h, ErrConfiguration
 	}
-	a.axRuns[h.RequestID] = &axRun{start: in, modelLease: modelLease}
+	a.axRuns[h.RequestID] = &axRun{start: in, observation: observation, modelLease: modelLease}
 	ctx, cancel := context.WithDeadline(ctx, in.Deadline)
 	defer cancel()
 	if e = a.intent(ctx, in.Binding, "sandbox", "raptor-"+in.Binding.AttemptID); e != nil {
@@ -151,7 +164,7 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		}
 	}
 	reference := map[string]any{"archive_key": cp.ArchiveKey, "checksum_key": cp.ChecksumKey, "sha256": cp.SHA256, "bytes": cp.Bytes, "pi_version": cp.PiVersion}
-	raw, _ := json.Marshal(map[string]any{"phase": "restore", "reference": reference, "state_root": "/workspace/raptor-state", "mount_root": "/tmp/raptor-oss", "prefix": a.Config.BucketPrefix, "skip_auth_check": in.Binding.ProviderID == "codex"})
+	raw, _ := json.Marshal(map[string]any{"phase": "restore", "reference": reference, "state_root": "/workspace/raptor-state", "mount_root": "/tmp/raptor-oss", "prefix": a.Config.BucketPrefix, "bootstrap_only": in.SessionCheckpoint == nil && in.Conversation == nil, "skip_auth_check": in.Binding.ProviderID == "codex"})
 	if e = a.write(ctx, in, "/tmp/raptor-private/restore-job.json", raw); e != nil {
 		return h, e
 	}
@@ -164,6 +177,19 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 			return h, ErrConfiguration
 		}
 		if e = a.write(ctx, in, "/tmp/raptor-private/model-credential.json", auth); e != nil {
+			return h, e
+		}
+	}
+	if len(skillsBundle) > 0 {
+		if e = a.write(ctx, in, "/tmp/raptor-private/skills-bundle.json", skillsBundle); e != nil {
+			return h, e
+		}
+	}
+	if len(observation.Config) > 0 {
+		if e = a.write(ctx, in, "/tmp/raptor-private/observation.json", observation.Config); e != nil {
+			return h, e
+		}
+		if e = a.write(ctx, in, "/tmp/raptor-private/kubeconfig", observation.Kubeconfig); e != nil {
 			return h, e
 		}
 	}
@@ -227,7 +253,7 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 		return out, e
 	}
 	if e == nil {
-		out.Events, e = decodeProgress(raw, cursor, append(append(a.Config.RedactionValues(), r.start.Access.Credential), modelSecretValues(r.modelLease)...)...)
+		out.Events, e = decodeProgress(raw, cursor, append(append(append(a.Config.RedactionValues(), r.observation.Secrets...), r.start.Access.Credential), modelSecretValues(r.modelLease)...)...)
 		if e != nil {
 			return out, e
 		}
@@ -249,14 +275,18 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 	if e != nil {
 		return out, e
 	}
-	terminal, e := decodeTerminal(raw, r.start.Binding, append(append(a.Config.RedactionValues(), r.start.Access.Credential), modelSecretValues(r.modelLease)...))
-	if e != nil || terminal.Passed && v.ExitCode != 0 {
+	terminal, e := decodeTerminal(raw, r.start.Binding, append(append(append(a.Config.RedactionValues(), r.observation.Secrets...), r.start.Access.Credential), modelSecretValues(r.modelLease)...))
+	if e == nil {
+		e = checkTerminalScope(terminal, r.start.Access.ReplacementScope)
+	}
+	if e != nil || (terminal.Passed || terminal.Paused != nil) && v.ExitCode != 0 {
 		return out, ErrCommandUnconfirmed
 	}
 	r.terminal = &terminal
-	out.Terminal = true
-	out.Result = terminal.Result
-	out.FailureCode = terminal.Error
+	settled := terminal.observation()
+	settled.Events = out.Events
+	settled.Turns = out.Turns
+	out = settled
 	return out, nil
 }
 func (a *AXLive) publish(ctx context.Context, in execution.LiveStart, t *terminalFile) (execution.VerifiedCheckpoint, error) {
@@ -300,7 +330,20 @@ func (a *AXLive) publish(ctx context.Context, in execution.LiveStart, t *termina
 			return bad, e
 		}
 	}
-	return a.Verifier.VerifyCheckpoint(ctx, execution.VerifiedCheckpoint{ArchiveKey: c.ArchiveKey, ChecksumKey: c.ChecksumKey, SHA256: c.SHA256, Bytes: c.Bytes, PiVersion: c.PiVersion})
+	verified, e := a.Verifier.VerifyCheckpoint(ctx, execution.VerifiedCheckpoint{ArchiveKey: c.ArchiveKey, ChecksumKey: c.ChecksumKey, SHA256: c.SHA256, Bytes: c.Bytes, PiVersion: c.PiVersion})
+	if e != nil {
+		return bad, e
+	}
+	if t.SessionReference != nil {
+		cp, e := a.Verifier.VerifyOperationCheckpoint(ctx, t.SessionReference.checkpoint(verified), in.Binding)
+		if e != nil {
+			return bad, e
+		}
+		if e = a.Store.SaveOperationSession(ctx, in.Binding.AttemptID, a.Owner, cp); e != nil {
+			return bad, e
+		}
+	}
+	return verified, nil
 }
 func (a *AXLive) Checkpoint(ctx context.Context, h execution.RuntimeHandle) (execution.VerifiedCheckpoint, error) {
 	r := a.axRuns[h.RequestID]
@@ -361,7 +404,7 @@ func (a *AXLive) Reconcile(ctx context.Context, record execution.RecoveryRecord)
 			raw, e := a.read(ctx, in, "/tmp/raptor-private/attempt-result.json", 65536)
 			if e == nil {
 				t, e := decodeTerminal(raw, in.Binding, a.Config.RedactionValues())
-				if e == nil && (!t.Passed || v.ExitCode == 0) {
+				if e == nil && (!(t.Passed || t.Paused != nil) || v.ExitCode == 0) {
 					out.Result = t.Result
 					if cp, e := a.publish(ctx, in, &t); e == nil {
 						out.Checkpoint = cp

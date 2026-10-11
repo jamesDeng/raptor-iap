@@ -36,7 +36,14 @@ func (p agentPrincipal) check(ctx context.Context, tool string, selectors map[st
 	if json.Unmarshal(raw, &out) != nil {
 		return nil, errors.New("Unavailable")
 	}
-	if !out.Active || out.Binding == nil || out.ExpiresAt == nil || !out.ExpiresAt.After(time.Now()) || !agentaccess.SelectorsAllowed(*out.Binding, "raptor", tool, selectors) {
+	if !out.Active || out.Binding == nil || out.ExpiresAt == nil || !out.ExpiresAt.After(time.Now()) {
+		return nil, errors.New("Forbidden")
+	}
+	if out.Binding.Operation == "db-proxy.replace-nodes" {
+		if out.ReplacementScope == nil || !agentaccess.ReplacementSelectorsAllowed(*out.Binding, *out.ReplacementScope, "raptor", tool, selectors) {
+			return nil, errors.New("Forbidden")
+		}
+	} else if !agentaccess.SelectorsAllowed(*out.Binding, "raptor", tool, selectors) {
 		return nil, errors.New("Forbidden")
 	}
 	return out.Binding, nil
@@ -50,6 +57,10 @@ func agentHandler(backend, inspector Client, credential string) http.Handler {
 		}
 		if r.Method != "POST" {
 			httpx.Error(w, 405, "MethodNotAllowed")
+			return
+		}
+		if principal.inspector.Username == "" || principal.inspector.Password == "" {
+			httpx.Error(w, 503, "Unavailable")
 			return
 		}
 		body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 32768))
@@ -74,20 +85,25 @@ func agentHandler(backend, inspector Client, credential string) http.Handler {
 		case "initialize", "notifications/initialized", "ping", "tools/list":
 		case "tools/call":
 			var params struct {
-				Name      string            `json:"name"`
-				Arguments map[string]string `json:"arguments"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
 			}
 			if json.Unmarshal(envelope.Params, &params) != nil || params.Name == "" {
 				httpx.Error(w, 400, "InvalidInput")
 				return
 			}
 			tool = params.Name
-			selectors = params.Arguments
+			selectors, e = agentToolSelectors(tool, params.Arguments)
+			if e != nil {
+				httpx.Error(w, 400, "InvalidInput")
+				return
+			}
 		default:
 			httpx.Error(w, 403, "Forbidden")
 			return
 		}
-		if _, e = principal.check(r.Context(), tool, selectors); e != nil {
+		binding, checkError := principal.check(r.Context(), tool, selectors)
+		if e = checkError; e != nil {
 			if e.Error() == "Forbidden" {
 				httpx.Error(w, 403, "Forbidden")
 			} else {
@@ -97,6 +113,9 @@ func agentHandler(backend, inspector Client, credential string) http.Handler {
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		server := newAgentMCP(principal)
+		if binding.Operation == "db-proxy.replace-nodes" {
+			addReplacementAgentTools(server, principal)
+		}
 		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}).ServeHTTP(w, r)
 	})
 }

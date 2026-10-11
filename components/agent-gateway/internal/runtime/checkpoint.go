@@ -76,3 +76,18 @@ func (v CheckpointVerifier) VerifyCheckpoint(ctx context.Context, r execution.Ve
 	}
 	return r, nil
 }
+
+func (v CheckpointVerifier) VerifyOperationCheckpoint(ctx context.Context, c execution.SessionCheckpoint, b execution.AttemptBinding) (execution.SessionCheckpoint, error) {
+	bad := func() (execution.SessionCheckpoint, error) {
+		return execution.SessionCheckpoint{}, ErrCheckpointVerification
+	}
+	if c.RequestID != b.RequestID || c.DefinitionSHA256 != b.DefinitionSHA256 || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(c.DefinitionSHA256) || c.SkillsCommit != b.SkillsCommit || !regexp.MustCompile(`^[a-f0-9]{40}$`).MatchString(c.SkillsCommit) || c.Model != b.Model || c.Model != "gpt-5.6-luna" || c.SessionID == "" || path.Base(c.SessionFile) != c.SessionFile || !strings.HasSuffix(c.SessionFile, ".jsonl") || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(c.SessionSHA256) {
+		return bad()
+	}
+	verified, e := v.VerifyCheckpoint(ctx, c.Archive)
+	if e != nil {
+		return bad()
+	}
+	c.Archive = verified
+	return c, nil
+}

@@ -121,7 +121,7 @@ func TestMixedMCPAuthentication(t *testing.T) {
 		MCP     map[string]struct{ Headers map[string]string }
 	}
 	json.Unmarshal(raw, &job)
-	if job.MCP["raptor"].Headers["Authorization"] != "Bearer opaque-fixture" || job.MCP["infra"].Headers["X-Infra-Authorization"] != "Basic "+base64.StdEncoding.EncodeToString([]byte("reader:fixture-only")) {
+	if job.MCP["raptor"].Headers["Authorization"] != "Bearer opaque-fixture" || job.MCP["infra"].Headers["X-Infra-Authorization"] != "Basic "+base64.StdEncoding.EncodeToString([]byte("agent:opaque-fixture")) {
 		t.Fatal("MCP authentication not separated")
 	}
 	if strings.Contains(string(job.Request), "fixture-only") || strings.Contains(string(job.Request), "opaque-fixture") {

@@ -12,9 +12,11 @@ import (
 )
 
 type fixtureBridge struct {
-	calls      []AXRequest
-	files      map[string][]byte
-	failEnsure bool
+	calls             []AXRequest
+	files             map[string][]byte
+	failEnsure        bool
+	inferenceTerminal bool
+	exitCode          int
 }
 
 func (f *fixtureBridge) Call(_ context.Context, r AXRequest) (AXResponse, error) {
@@ -28,7 +30,7 @@ func (f *fixtureBridge) Call(_ context.Context, r AXRequest) (AXResponse, error)
 	case "start":
 		return AXResponse{ProcessID: "proc-" + r.Phase}, nil
 	case "poll":
-		return AXResponse{Terminal: r.Phase != "inference"}, nil
+		return AXResponse{Terminal: r.Phase != "inference" || f.inferenceTerminal, ExitCode: f.exitCode}, nil
 	case "write":
 		f.files[r.Path] = r.Data
 	case "read":
@@ -144,5 +146,47 @@ func TestAXInvalidExportNeverPublishes(t *testing.T) {
 	f.files["/tmp/raptor-oss/lifecycle/"+in.Binding.AttemptID+".sha256"] = []byte(strings.Repeat("0", 64))
 	if _, e := a.publish(context.Background(), in, &terminal); e == nil || objects.puts != 0 {
 		t.Fatal("invalid guest export reached OSS")
+	}
+}
+func TestAXNewRequestRestoresAuthOnly(t *testing.T) {
+	a, f, in := axFixture(t)
+	if _, e := a.Start(context.Background(), in); e != nil {
+		t.Fatal(e)
+	}
+	var restore map[string]any
+	json.Unmarshal(f.files["/tmp/raptor-private/restore-job.json"], &restore)
+	if restore["bootstrap_only"] != true {
+		t.Fatal("new AX request would inherit bootstrap history")
+	}
+}
+func TestAXPauseRequiresCleanExitAndIsNotTerminalCompletion(t *testing.T) {
+	for _, exit := range []int{0, 1} {
+		t.Run(string(rune('0'+exit)), func(t *testing.T) {
+			a, f, in := axFixture(t)
+			b := in.Binding
+			b.Operation = "db-proxy.replace-nodes"
+			b.ObjectKind = "db-proxy"
+			b.ClusterID = "cluster"
+			b.DefinitionSHA256 = strings.Repeat("a", 64)
+			in.Binding = b
+			in.Access.Binding = b
+			raw, _ := json.Marshal(b)
+			a.Store.Pool.Exec(context.Background(), "UPDATE gateway.attempts SET binding=$2,definition_sha256=$3 WHERE id=$1", b.AttemptID, raw, b.DefinitionSHA256)
+			a.axRuns = map[string]*axRun{b.RequestID: {start: in}}
+			f.inferenceTerminal = true
+			f.exitCode = exit
+			payload := map[string]any{"phase": "live-inference", "passed": false, "paused": map[string]any{"kind": "approval", "approvalId": "33333333-3333-4333-8333-333333333333", "actionId": "scale-three", "bindingDigest": strings.Repeat("b", 64), "requestId": b.RequestID, "definitionSha256": b.DefinitionSHA256, "startedAt": time.Now().UTC()}, "sessionReference": map[string]any{"version": 1, "requestId": b.RequestID, "definitionSha256": b.DefinitionSHA256, "skillsCommit": b.SkillsCommit, "model": b.Model, "sessionId": "session", "file": "session.jsonl", "sha256": strings.Repeat("d", 64)}}
+			f.files["/tmp/raptor-private/attempt-result.json"], _ = json.Marshal(payload)
+			out, e := a.Poll(context.Background(), execution.RuntimeHandle{RequestID: b.RequestID, ID: "raptor-" + b.AttemptID}, 0)
+			if exit != 0 {
+				if e == nil {
+					t.Fatal("unconfirmed paused exit accepted")
+				}
+				return
+			}
+			if e != nil || out.Terminal || out.Paused == nil || out.Result != nil {
+				t.Fatal("AX pause misclassified", out, e)
+			}
+		})
 	}
 }

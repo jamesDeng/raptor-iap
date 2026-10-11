@@ -15,9 +15,10 @@ export async function createCheckpoint({stateRoot,mountRoot,generation,prefix='a
  return {archive_key:prefix+'/lifecycle/'+generation+'.tgz',checksum_key:prefix+'/lifecycle/'+generation+'.sha256',...meta,pi_version:'0.99.2'};
  }finally{if(fs.existsSync(tmp))fs.unlinkSync(tmp);}
 }
-export async function restoreCheckpoint({reference,stateRoot,mountRoot,prefix='auth'}){
+export async function restoreCheckpoint({reference,stateRoot,mountRoot,prefix='auth',bootstrapOnly=false}){
  const file=safe(path.join(mountRoot,relative(reference.archive_key,prefix))),checksum=safe(path.join(mountRoot,relative(reference.checksum_key,prefix)));
  if(reference.checksum_key!==reference.archive_key.slice(0,-4)+'.sha256'||reference.pi_version!=='0.99.2'||!Number.isInteger(reference.bytes)||reference.bytes<1||reference.bytes>limit||!/^[a-f0-9]{64}$/.test(reference.sha256))throw Error('InvalidCheckpoint');
  if(fs.statSync(file).size!==reference.bytes||fs.readFileSync(checksum,'utf8').trim()!==reference.sha256)throw Error('CheckpointMismatch');
  archive('restore',safe(stateRoot),file,reference.sha256);
+ if(bootstrapOnly){const sessions=safe(path.join(stateRoot,'sessions'));fs.rmSync(sessions,{recursive:true});fs.mkdirSync(sessions,{mode:0o700});}
 }

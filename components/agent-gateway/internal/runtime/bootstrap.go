@@ -63,7 +63,7 @@ func newCloudClients(c LiveConfig, source *lockedCredential) (Management, Checkp
 	if e != nil {
 		return Management{}, CheckpointVerifier{}, ErrConfiguration
 	}
-	return Management{Client: client, TeamID: c.TeamID, AccountID: c.AccountID}, CheckpointVerifier{Objects: OSSObjects{Client: ossClient, Bucket: bucket, BucketName: c.Bucket}, Prefix: c.BucketPrefix}, nil
+	return Management{credential: source, Client: client, TeamID: c.TeamID, AccountID: c.AccountID}, CheckpointVerifier{Objects: OSSObjects{Client: ossClient, Bucket: bucket, BucketName: c.Bucket}, Prefix: c.BucketPrefix}, nil
 }
 func (m Management) Preflight(ctx context.Context, c LiveConfig) error {
 	if m.Client == nil || c.Validate() != nil {

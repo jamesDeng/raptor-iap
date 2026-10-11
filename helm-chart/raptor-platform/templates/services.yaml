@@ -47,7 +47,7 @@ spec:
         raptor.env: {{ $.Values.environment | quote }}
     spec:
       automountServiceAccountToken: false
-      {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled (eq $.Values.gatewayLive.credentialMode "rrsa") }}
+      {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled (or (eq $.Values.gatewayLive.credentialMode "rrsa") $.Values.gatewayLive.observer.enabled) }}
       serviceAccountName: agent-gateway
       {{ end }}
       securityContext:
@@ -143,6 +143,9 @@ spec:
             {{ end }}
             {{ if eq $service.name "raptor-backend" }}
             - {name: RAPTOR_CONVERSATION_ENABLED, value: {{ $.Values.conversation.raptorEnabled | quote }}}
+            {{ if $.Values.replacement.scopeConfigMapName }}
+            - {name: RAPTOR_REPLACEMENT_SCOPE_FILE, value: '/run/raptor/replacement/scope.json'}
+            {{ end }}
             - {name: RAPTOR_ENABLE_RESTART, value: {{ $.Values.directRestart.enabled | quote }}}
             - {name: RAPTOR_MODEL_PROVIDERS_ENABLED, value: {{ $.Values.modelProviders.enabled | quote }}}
             {{ if $.Values.modelProviders.enabled }}
@@ -203,6 +206,9 @@ spec:
             - {name: temporary, mountPath: /tmp}
             {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
             - {name: live-private, mountPath: /run/raptor/live, readOnly: true}
+            {{ if $.Values.gatewayLive.observer.enabled }}
+            - {name: observer-api-token, mountPath: /run/raptor/observer-api, readOnly: true}
+            {{ end }}
             {{ if eq $.Values.gatewayLive.credentialMode "rrsa" }}
             - {name: rrsa-token, mountPath: /run/raptor/rrsa, readOnly: true}
             {{ end }}
@@ -212,9 +218,24 @@ spec:
             {{ if $.Values.modelProviders.enabled }}
             - {name: model-key-private, mountPath: /run/raptor/model-key, readOnly: true}
             {{ end }}
+            {{ if $.Values.replacement.scopeConfigMapName }}
+            - {name: replacement-scope, mountPath: /run/raptor/replacement, readOnly: true}
+            {{ end }}
             {{ end }}
       volumes:
         {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
+        {{ if $.Values.gatewayLive.observer.enabled }}
+        - name: observer-api-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  expirationSeconds: 900
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]
+        {{ end }}
         - name: live-private
           emptyDir: {medium: Memory, sizeLimit: 1Mi}
         - name: live-config-source
@@ -240,6 +261,12 @@ spec:
         - name: temporary
           emptyDir: {sizeLimit: 64Mi}
         {{ if eq $service.name "raptor-backend" }}
+        {{ if $.Values.replacement.scopeConfigMapName }}
+        - name: replacement-scope
+          configMap:
+            name: {{ $.Values.replacement.scopeConfigMapName | quote }}
+            items: [{key: scope.json, path: scope.json}]
+        {{ end }}
         - name: repository
           emptyDir: {sizeLimit: 256Mi}
         {{ if $.Values.modelProviders.enabled }}
