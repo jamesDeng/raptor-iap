@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestAdminDelegatesAndDoesNotLeakUpstreamErrors(t *testing.T) {
+func TestAdminPages(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/users" {
 			t.Error("wrong delegation")
@@ -16,22 +16,45 @@ func TestAdminDelegatesAndDoesNotLeakUpstreamErrors(t *testing.T) {
 		w.WriteHeader(403)
 	}))
 	defer upstream.Close()
-	h, e := NewHandler(upstream.URL)
-	if e != nil {
-		t.Fatal(e)
+	h, err := NewHandler(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:8873/api/v1/users", nil))
 	if w.Code != 403 {
 		t.Fatal("backend admin denial not preserved")
 	}
+	for _, tc := range []struct{ path, want, absent string }{
+		{"/users", `id="users-section"`, `id="groups-section"`},
+		{"/environment-groups", `id="groups-section"`, `id="environments-section"`},
+		{"/environments", `id="environments-section"`, `id="groups-section"`},
+		{"/ai-models", `id="model-admin"`, `id="users-section"`},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:8873"+tc.path, nil))
+			b, _ := io.ReadAll(w.Result().Body)
+			body := string(b)
+			if w.Code != 200 || !strings.Contains(body, tc.want) || strings.Contains(body, tc.absent) {
+				t.Fatalf("wrong page %s: status %d", tc.path, w.Code)
+			}
+			if !strings.Contains(body, `href="`+tc.path+`" aria-current="page"`) {
+				t.Fatal("active navigation missing")
+			}
+			if !strings.Contains(body, "async function refreshPage()") {
+				t.Fatal("page refresh missing")
+			}
+		})
+	}
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:8873/", nil))
-	b, _ := io.ReadAll(w.Result().Body)
-	if !strings.Contains(string(b), "Raptor Admin") {
-		t.Fatal("admin page missing")
+	if !strings.Contains(w.Body.String(), "location.hash") {
+		t.Fatal("legacy section links not mapped")
 	}
-	if !strings.Contains(string(b), "refresh().then(()=>refreshModelProviders()).catch(()=>{});") {
-		t.Fatal("model provider refresh must wait until its script is loaded")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:8873/unknown", nil))
+	if w.Code != 404 {
+		t.Fatal("unknown page should be 404")
 	}
 }

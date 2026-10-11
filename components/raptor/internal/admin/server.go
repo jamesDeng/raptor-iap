@@ -8,6 +8,15 @@ import (
 	"strings"
 )
 
+type adminPage struct{ title, description, panel, script, refresh string }
+
+var adminPages = map[string]adminPage{
+	"/users":              {"Users", "Manage platform accounts and access levels.", usersPanel, "", ""},
+	"/environment-groups": {"Environment groups", "Organize deployment environments under platform groups.", groupPanel, environmentScript, "refreshEnvironments()"},
+	"/environments":       {"Environments", "Manage cloud targets and source repositories for each stage.", environmentPanel, environmentScript, "refreshEnvironments()"},
+	"/ai-models":          {"AI models", "Connect model providers and configure available models.", `<div id="model-admin"></div>`, modelScript, "refreshModelProviders()"},
+}
+
 func NewHandler(backendURL string) (http.Handler, error) {
 	u, e := url.Parse(backendURL)
 	if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -21,17 +30,22 @@ func NewHandler(backendURL string) (http.Handler, error) {
 			proxy.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path != "/" {
+		if r.URL.Path == "/" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Raptor Admin</title></head><body><script>const routes={'#users-section':'/users','#groups-section':'/environment-groups','#environments-section':'/environments','#model-admin':'/ai-models'};location.replace(routes[location.hash]||'/users')</script><a href="/users">Continue to Users</a></body></html>`))
+			return
+		}
+		config, ok := adminPages[r.URL.Path]
+		if !ok {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		content := strings.Replace(page, `<div id="environment-admin"></div>`, `<div id="environment-admin">`+environmentPanel+`</div>`, 1)
-		content = strings.Replace(content, "await refresh()", "await refresh();await refreshEnvironments();await refreshModelProviders()", -1)
-		content = strings.Replace(content, "refresh().catch(()=>{});", "refresh().then(()=>refreshModelProviders()).catch(()=>{});", 1)
-		content = strings.Replace(content, environmentPanel+`</div>`, environmentPanel+`</div><div id="model-admin"></div>`, 1)
-		content = strings.Replace(content, "</body>", environmentScript+"</body>", 1)
-		content = strings.Replace(content, "</body>", modelScript+"</body>", 1)
+		content := strings.Replace(page, "<!-- PAGE_CONTENT -->", config.panel, 1)
+		content = strings.Replace(content, "<!-- PAGE_TITLE -->", config.title, 1)
+		content = strings.Replace(content, "<!-- PAGE_DESCRIPTION -->", config.description, 1)
+		content = strings.Replace(content, `href="`+r.URL.Path+`"`, `href="`+r.URL.Path+`" aria-current="page"`, 1)
+		content = strings.Replace(content, "<!-- PAGE_SCRIPT -->", config.script+`<script>async function refreshPage(){`+config.refresh+`}</script>`, 1)
 		_, _ = w.Write([]byte(content))
 	}), nil
 }
