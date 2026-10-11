@@ -1,9 +1,9 @@
 environment: rdev.ali
 images:
   raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:5d9189f22c28f282916887175c5c51a6179a3c01da31190138e68759662cbd73
-  gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:e2f0011f1421e5cf0287605e8f162bfbd3316d6dc7110374745beb578345051e
+  gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:6207cd149e486b3349be383cb0030672f52ceb95227d742edbafb745583c310b
 repository:
-  revision: d1d07a7c1a2da7e64c9245f149282fce43126da4
+  revision: 2206c0ac76067e7c756855de6e23f9d6659aff90
 appCodes:
   raptor-admin: A00006
   agent-gateway: A00005
