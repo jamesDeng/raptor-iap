@@ -106,3 +106,23 @@ variable "bootstrap_reviewed" {
     error_message = "Reviewed Docker artifact and actual versioned credential binding required; live first-boot acceptance is checked after deployment."
   }
 }
+
+variable "catalog_proxy_code" {
+  type        = string
+  default     = null
+  description = "Optional current catalog association; legacy deployment/bootstrap identity remains unchanged."
+  validation {
+    condition     = var.catalog_proxy_code == null ? true : can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$", var.catalog_proxy_code))
+    error_message = "Catalog association code must be a valid generated code."
+  }
+}
+
+variable "catalog_target_db_code" {
+  type        = string
+  default     = null
+  description = "Optional current catalog association; legacy deployment/bootstrap identity remains unchanged."
+  validation {
+    condition     = var.catalog_target_db_code == null ? true : can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$", var.catalog_target_db_code))
+    error_message = "Catalog association code must be a valid generated code."
+  }
+}

@@ -46,3 +46,13 @@ variable "client_cidrs" {
     error_message = "Explicit bounded RFC1918 IPv4 client CIDRs required."
   }
 }
+
+variable "catalog_db_code" {
+  type        = string
+  default     = null
+  description = "Optional current catalog association; legacy deployment/bootstrap identity remains unchanged."
+  validation {
+    condition     = var.catalog_db_code == null ? true : can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$", var.catalog_db_code))
+    error_message = "Catalog association code must be a valid generated code."
+  }
+}

@@ -55,3 +55,12 @@ run "changed_apply_account" {
   }
   expect_failures = [terraform_data.account_guard]
 }
+
+run "catalog_migration_preserves_database" {
+  command = plan
+  variables { catalog_db_code = "D00002" }
+  assert {
+    condition     = alicloud_db_instance.test.tags["db-code"] == "D00002" && alicloud_db_instance.test.instance_name == "raptor-test-db-fixture" && output.association["db-code"] == "D00002"
+    error_message = "Update database discovery without renaming its physical deployment."
+  }
+}
