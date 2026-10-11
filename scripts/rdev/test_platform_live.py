@@ -1,19 +1,23 @@
 import os,shutil,subprocess,unittest,yaml,pathlib
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 class LiveManifest(unittest.TestCase):
- def render(self,live,restart=None,ax=False,observer=False,replacement=False):
+ def render(self,live,restart=None,ax=False,observer=False,replacement=False,scope=None):
   args=[os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
   if restart is not None:args+=['--set','directRestart.enabled='+str(restart).lower()]
   if not live:args+=['--set','gatewayLive.enabled=false']
   if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.credentialMode=static-sts','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
   if replacement:args += ['--set','replacement.scopeConfigMapName=pgcat-replacement-scope']
+  else:args += ['--set','replacement.scopeConfigMapName=','--set-json','replacement.scope={}']
+  if scope is not None:
+   import json
+   args += ['--set-json','replacement.scope='+json.dumps(scope)]
   args += ['--set','gatewayLive.observer.enabled='+str(observer).lower()]
   if ax:args += ["--set","gatewayLive.axTLSSecretName=gateway-ax-client-tls"]
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
  def test_observer_resources_are_permitted_by_owning_project(self):
   project=yaml.safe_load((ROOT/'infra-kubernetes/environments/rdev.ali/project.yaml').read_text())
   allowed={(v['group'],v['kind']) for v in project['spec']['namespaceResourceWhitelist']}
-  for d in self.render(True,observer=True):
+  for d in self.render(True,observer=True,replacement=True):
    if d:
     group=d['apiVersion'].split('/')[0] if '/' in d['apiVersion'] else ''
     self.assertIn((group,d['kind']),allowed)
@@ -84,4 +88,15 @@ class LiveManifest(unittest.TestCase):
   volume=next(v for v in pod['volumes'] if v['name']=='observer-api-token')
   source=volume['projected']['sources'][0]['serviceAccountToken'];self.assertEqual(source['expirationSeconds'],900);self.assertNotIn('audience',source)
   self.assertTrue(any(d and d.get('kind')=='ServiceAccount' and d['metadata']['name']=='agent-gateway' for d in docs))
+
+ def test_catalog_replacement_scope_is_gitops_owned(self):
+  import json
+  scope={'envCode':'rdev.ali','proxyCode':'DP00001','groupId':'asg-fixture','serverGroupId':'sgp-fixture','targetDbCode':'D00002','application':{'envCode':'rdev.ali','appCode':'A00003','clusterId':'cluster-fixture','namespace':'raptor-test','name':'client','uid':'fixture-uid'}}
+  docs=self.render(True,replacement=True,scope=scope)
+  config=next(d for d in docs if d and d.get('kind')=='ConfigMap' and d['metadata']['name']=='pgcat-replacement-scope')
+  self.assertEqual(json.loads(config['data']['scope.json']),scope)
+  backend=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']=='raptor-backend')
+  self.assertTrue(backend['spec']['template']['metadata']['annotations']['checksum/replacement-scope'])
+  self.assertFalse(any(d and d.get('kind')=='Secret' for d in docs))
+
 if __name__=='__main__':unittest.main()

@@ -13,4 +13,5 @@ spec:
     - {group: apps, kind: Deployment}
     - {group: '', kind: Service}
     - {group: '', kind: ServiceAccount}
+    - {group: '', kind: ConfigMap}
     - {group: networking.k8s.io, kind: Ingress}
