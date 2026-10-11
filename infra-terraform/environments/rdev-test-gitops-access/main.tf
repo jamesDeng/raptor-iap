@@ -14,4 +14,12 @@ module "access" {
   config_bucket   = var.config_bucket
   plan_role_name  = "raptor-iap-rdev-plan"
   apply_role_name = "raptor-iap-rdev-apply"
+  # Existing resources: no instance or deployment recreation is authorized.
+  catalog_untag_targets = {
+    scaling_group_id  = "asg-t4necb4dfmu6o3z2rn0g"
+    security_group_id = "sg-t4ncnd03mvg78yw36g1j"
+    load_balancer_id  = "nlb-jqbxi42nurq0qkb7e9"
+    server_group_id   = "sgp-xs5s42tihtl6ja2a67"
+    db_instance_id    = "pgm-t4nq66x7pr6s55w6"
+  }
 }
