@@ -10,6 +10,13 @@ class LiveManifest(unittest.TestCase):
   args += ['--set','gatewayLive.observer.enabled='+str(observer).lower()]
   if ax:args += ["--set","gatewayLive.axTLSSecretName=gateway-ax-client-tls"]
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
+ def test_observer_resources_are_permitted_by_owning_project(self):
+  project=yaml.safe_load((ROOT/'infra-kubernetes/environments/rdev.ali/project.yaml').read_text())
+  allowed={(v['group'],v['kind']) for v in project['spec']['namespaceResourceWhitelist']}
+  for d in self.render(True,observer=True):
+   if d:
+    group=d['apiVersion'].split('/')[0] if '/' in d['apiVersion'] else ''
+    self.assertIn((group,d['kind']),allowed)
  def test_observer_gateway_has_pinned_readonly_skill_checkout(self):
   for enabled in (False,True):
    docs=self.render(True,observer=enabled)
