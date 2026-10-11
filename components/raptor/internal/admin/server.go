@@ -13,7 +13,7 @@ type adminPage struct{ title, description, panel, script, refresh string }
 var adminPages = map[string]adminPage{
 	"/users":              {"Users", "Manage platform accounts and access levels.", usersPanel, "", ""},
 	"/environment-groups": {"Environment groups", "Organize deployment environments under platform groups.", groupPanel, environmentScript, "refreshEnvironments()"},
-	"/environments":       {"Environments", "Manage cloud targets and source repositories for each stage.", environmentPanel, environmentScript, "refreshEnvironments()"},
+	"/environments":       {"Environments", "Manage cloud targets and source repositories for each stage.", environmentListPanel, environmentScript, "refreshEnvironmentPage()"},
 	"/ai-models":          {"AI models", "Connect model providers and configure available models.", `<div id="model-admin"></div>`, modelScript, "refreshModelProviders()"},
 }
 
@@ -36,15 +36,34 @@ func NewHandler(backendURL string) (http.Handler, error) {
 			return
 		}
 		config, ok := adminPages[r.URL.Path]
+		if r.URL.Path == "/environments" && r.URL.Query().Get("mode") == "create" {
+			config = adminPage{"Create environment", "Set the cloud target and source repositories.", environmentFormPanel, environmentScript, "refreshEnvironmentPage()"}
+		}
+		if !ok && strings.HasPrefix(r.URL.Path, "/environments/") {
+			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/environments/"), "/")
+			if parts[0] != "" && (len(parts) == 1 || (len(parts) == 2 && parts[1] == "edit")) {
+				if len(parts) == 1 {
+					config = adminPage{"Environment details", "Cloud target and source repositories.", environmentDetailPanel, environmentScript, "refreshEnvironmentPage()"}
+				} else {
+					config = adminPage{"Edit environment", "Update the cloud target and source repositories.", environmentFormPanel, environmentScript, "refreshEnvironmentPage()"}
+				}
+				ok = true
+			}
+		}
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		content := strings.Replace(page, "<!-- PAGE_CONTENT -->", config.panel, 1)
+		content = strings.Replace(content, "</style>", environmentStyles+"</style>", 1)
 		content = strings.Replace(content, "<!-- PAGE_TITLE -->", config.title, 1)
 		content = strings.Replace(content, "<!-- PAGE_DESCRIPTION -->", config.description, 1)
-		content = strings.Replace(content, `href="`+r.URL.Path+`"`, `href="`+r.URL.Path+`" aria-current="page"`, 1)
+		activePath := r.URL.Path
+		if strings.HasPrefix(activePath, "/environments/") {
+			activePath = "/environments"
+		}
+		content = strings.Replace(content, `href="`+activePath+`"`, `href="`+activePath+`" aria-current="page"`, 1)
 		content = strings.Replace(content, "<!-- PAGE_SCRIPT -->", config.script+`<script>async function refreshPage(){`+config.refresh+`}</script>`, 1)
 		_, _ = w.Write([]byte(content))
 	}), nil
