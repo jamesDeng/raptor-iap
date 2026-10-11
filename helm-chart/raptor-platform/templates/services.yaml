@@ -41,6 +41,10 @@ spec:
       app.kubernetes.io/name: {{ $service.name }}
   template:
     metadata:
+      {{ if and (eq $service.name "raptor-backend") $.Values.replacement.scope }}
+      annotations:
+        checksum/replacement-scope: {{ $.Values.replacement.scope | toJson | sha256sum | quote }}
+      {{ end }}
       labels:
         app.kubernetes.io/name: {{ $service.name }}
         raptor.appcode: {{ $code | quote }}

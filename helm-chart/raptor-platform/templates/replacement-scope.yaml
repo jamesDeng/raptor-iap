@@ -1,0 +1,9 @@
+{{- if .Values.replacement.scope }}
+{{- $name := required "replacement.scopeConfigMapName required for managed scope" .Values.replacement.scopeConfigMapName }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name | quote }}
+data:
+  scope.json: {{ .Values.replacement.scope | toJson | quote }}
+{{- end }}

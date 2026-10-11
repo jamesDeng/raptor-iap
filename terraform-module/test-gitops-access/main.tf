@@ -80,3 +80,47 @@ resource "alicloud_ram_role_policy_attachment" "fleet_apply" {
   policy_name = alicloud_ram_policy.fleet_apply.policy_name
   policy_type = "Custom"
 }
+
+# Optional, exact-resource supplement for Terraform's in-place catalog tag migration.
+# Resource types follow the Alibaba Cloud ECS/ESS/NLB/RDS RAM references.
+variable "catalog_untag_targets" {
+  type = object({
+    scaling_group_id  = string
+    security_group_id = string
+    load_balancer_id  = string
+    server_group_id   = string
+    db_instance_id    = string
+  })
+  default = null
+  validation {
+    condition = var.catalog_untag_targets == null ? true : alltrue([
+      can(regex("^asg-[a-zA-Z0-9]+$", var.catalog_untag_targets.scaling_group_id)),
+      can(regex("^sg-[a-zA-Z0-9]+$", var.catalog_untag_targets.security_group_id)),
+      can(regex("^nlb-[a-zA-Z0-9]+$", var.catalog_untag_targets.load_balancer_id)),
+      can(regex("^sgp-[a-zA-Z0-9]+$", var.catalog_untag_targets.server_group_id)),
+      can(regex("^pgm-[a-zA-Z0-9]+$", var.catalog_untag_targets.db_instance_id))
+    ])
+    error_message = "Catalog untag targets must be exact resource IDs, without wildcards."
+  }
+}
+resource "alicloud_ram_policy" "catalog_untag" {
+  count       = var.catalog_untag_targets == null ? 0 : 1
+  policy_name = "raptor-iap-test-gitops-catalog-untag"
+  force       = false
+  policy_document = jsonencode({
+    Version = "1"
+    Statement = [
+      { Effect = "Allow", Action = ["ess:UntagResources"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/${var.catalog_untag_targets.scaling_group_id}"] },
+      { Effect = "Allow", Action = ["ecs:UntagResources"], Resource = ["acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/${var.catalog_untag_targets.security_group_id}"] },
+      { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:loadbalancer/${var.catalog_untag_targets.load_balancer_id}", "acs:nlb:ap-southeast-1:${var.account_id}:servergroup/${var.catalog_untag_targets.server_group_id}"] },
+      { Effect = "Allow", Action = ["rds:UntagResources"], Resource = ["acs:rds:ap-southeast-1:${var.account_id}:dbinstance/${var.catalog_untag_targets.db_instance_id}"] }
+    ]
+  })
+  depends_on = [terraform_data.account_guard]
+}
+resource "alicloud_ram_role_policy_attachment" "catalog_untag" {
+  count       = var.catalog_untag_targets == null ? 0 : 1
+  role_name   = var.apply_role_name
+  policy_name = alicloud_ram_policy.catalog_untag[0].policy_name
+  policy_type = "Custom"
+}
