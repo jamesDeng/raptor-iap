@@ -175,6 +175,20 @@ func TestRepositoryMetadataRejectsCredentialsAndTraversal(t *testing.T) {
 	}
 }
 
+func TestEnvironmentRepositoriesRejectConflictingBaseBranches(t *testing.T) {
+	s, _ := setup(t)
+	ctx := context.Background()
+	if e := s.CreateGroup(ctx, "g", "Group"); e != nil { t.Fatal(e) }
+	base := domain.EnvironmentRepository{Purpose: "terraform", URL: "https://github.com/jamesDeng/raptor-iap", BaseBranch: "main", Directory: "infra-terraform"}
+	v := domain.Environment{Code: "rdev", GroupCode: "g", Stage: "dev", Repositories: []domain.EnvironmentRepository{base,
+		{Purpose: "kubernetes", URL: base.URL, BaseBranch: "release", Directory: "infra-kubernetes"}}}
+	if e := s.SaveEnvironment(ctx, v, false); !errors.Is(e, domain.ErrInvalid) {
+		t.Fatalf("same URL with different base branches accepted: %v", e)
+	}
+	v.Repositories[1].BaseBranch = "main"
+	if e := s.SaveEnvironment(ctx, v, false); e != nil { t.Fatalf("same URL with one base branch rejected: %v", e) }
+}
+
 func TestLegacyBootstrapAliasesRemainReadable(t *testing.T) {
 	s, _ := setup(t)
 	ctx := context.Background()

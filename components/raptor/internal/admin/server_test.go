@@ -86,6 +86,9 @@ func TestAdminPages(t *testing.T) {
 			t.Errorf("%s: contains %s", tc.path, tc.absent)
 		}
 	}
+	if !strings.Contains(environmentFormPanel, "All configured repositories") || !strings.Contains(environmentFormPanel, "same base branch") {
+		t.Fatal("repository attachment and shared-branch rule missing from Admin form")
+	}
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:8873/", nil))
 	if !strings.Contains(w.Body.String(), "location.hash") {
