@@ -69,6 +69,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out.Error = "ResourceAbsent"
 			code = 404
 		}
+		log.Printf("AX bridge action=%s status=%d reason=%s", req.Action, code, out.Error)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
