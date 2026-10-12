@@ -2,6 +2,13 @@ import {fileURLToPath} from 'node:url';
 import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {createInterface} from 'node:readline';
 
+export function readRedirectFromInput(input){
+ return new Promise((resolve,reject)=>{
+  input.once('line',line=>{resolve(line);input.close()});
+  input.once('close',()=>reject(Error('RedirectUnavailable')));
+ });
+}
+
 export async function runLogin(runtime,emit,signal,{method='device_code',readRedirect}={}) {
  try {
   const credential=await runtime.login('openai-codex','oauth',{
@@ -31,10 +38,7 @@ if(process.argv[1]===fileURLToPath(import.meta.url)) {
   const browser=process.argv[2]==='--browser';
   const input=browser?createInterface({input:process.stdin,terminal:false}):null;
   let readRedirect;
-  if(input)readRedirect=()=>new Promise((resolve,reject)=>{
-   input.once('line',line=>{input.close();resolve(line)});
-   input.once('close',()=>reject(Error('RedirectUnavailable')));
-  });
+  if(input)readRedirect=()=>readRedirectFromInput(input);
   await runLogin(runtime,value=>process.stdout.write(JSON.stringify(value)+'\n'),undefined,{method:browser?'browser':'device_code',readRedirect});
  }
 }
