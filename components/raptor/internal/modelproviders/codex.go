@@ -137,7 +137,7 @@ func (f NodeFlow) start(ctx context.Context, browser bool) (*nodeAttempt, error)
 	expires, e := time.Parse(time.RFC3339Nano, wire.ExpiresAt)
 	max := 16 * time.Minute
 	if browser {
-		max = 6 * time.Minute
+		max = 16 * time.Minute
 	}
 	if e != nil || !expires.After(time.Now()) || expires.After(time.Now().Add(max)) {
 		_ = cmd.Process.Kill()

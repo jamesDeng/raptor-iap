@@ -13,7 +13,7 @@ export async function runLogin(runtime,emit,signal,{method='device_code',readRed
    },
    notify:event=>{
     if(event.type==='device_code')emit({type:'challenge',verificationUrl:event.verificationUri,userCode:event.userCode,expiresAt:new Date(Date.now()+(event.expiresInSeconds??900)*1000).toISOString()});
-    if(method==='browser'&&event.type==='auth_url')emit({type:'browser_challenge',authorizationUrl:event.url,expiresAt:new Date(Date.now()+5*60*1000).toISOString()});
+    if(method==='browser'&&event.type==='auth_url')emit({type:'browser_challenge',authorizationUrl:event.url,expiresAt:new Date(Date.now()+15*60*1000).toISOString()});
    },
   });
   if(credential?.type!=='oauth'||!credential.access||!credential.refresh||!Number.isFinite(credential.expires))throw Error('InvalidCredential');

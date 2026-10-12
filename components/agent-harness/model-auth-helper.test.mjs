@@ -36,4 +36,6 @@ test('browser login emits authorization URL and accepts one pasted redirect URL'
  assert.equal(submitted,redirect);
  assert.deepEqual(lines.map(value=>value.type),['browser_challenge','credential']);
  assert.equal(lines[0].authorizationUrl,'https://auth.openai.com/oauth/authorize?state=state-1');
+ const remaining=Date.parse(lines[0].expiresAt)-Date.now();
+ assert.ok(remaining>14*60*1000&&remaining<=15*60*1000,'browser challenge allows fifteen minutes to sign in');
 });
