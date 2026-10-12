@@ -27,14 +27,15 @@ type PublicExecution struct {
 	Cleanup          string               `json:"cleanup,omitempty"`
 }
 type PublicResult struct {
-	RequestID     string           `json:"requestId"`
-	AttemptID     string           `json:"attemptId"`
-	SelectedModel string           `json:"selectedModel,omitempty"`
-	ActualModel   string           `json:"actualModel"`
-	Answer        string           `json:"answer"`
-	Evidence      []PublicEvidence `json:"evidence,omitempty"`
-	GeneratedAt   *time.Time       `json:"generatedAt,omitempty"`
-	Usage         []PublicUsage    `json:"usage,omitempty"`
+	Qualification *PublicQualification `json:"qualification,omitempty"`
+	RequestID     string               `json:"requestId"`
+	AttemptID     string               `json:"attemptId"`
+	SelectedModel string               `json:"selectedModel,omitempty"`
+	ActualModel   string               `json:"actualModel"`
+	Answer        string               `json:"answer"`
+	Evidence      []PublicEvidence     `json:"evidence,omitempty"`
+	GeneratedAt   *time.Time           `json:"generatedAt,omitempty"`
+	Usage         []PublicUsage        `json:"usage,omitempty"`
 }
 type PublicCleanup struct {
 	SandboxAbsent bool `json:"sandboxAbsent"`
@@ -116,6 +117,9 @@ func publicExecution(raw map[string]any, request domain.Request) (map[string]any
 				}
 			}
 		}
+	}
+	if v.Result != nil && v.RuntimeMode == "live" && ((isQualification(request.Definition) && !validQualificationView(v, request)) || (!isQualification(request.Definition) && v.Result.Qualification != nil)) {
+		return nil, domain.ErrUnavailable
 	}
 	if isQuestion(request.Definition) && v.RuntimeMode == "live" && v.Result != nil && !validQuestionResult(v.Result, request) {
 		return nil, domain.ErrUnavailable

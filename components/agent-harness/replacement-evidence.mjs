@@ -6,7 +6,7 @@ export function replacementEvidence(server,tool,data,b,scope,args){
  if(server==='raptor'){
   if(tool==='request_get'){
    const d=data?.definition;
-   if(data?.requestId!==b.requestId||d?.envCode!==b.envCode||d?.object?.kind!==b.objectKind||d?.object?.code!==b.objectCode||d?.operations?.length!==1||d.operations[0].name!==b.operation)throw Error('ScopeMismatch');
+   if(data?.requestId!==b.requestId||d?.envCode!==b.envCode||d?.object?.kind!==b.objectKind||d?.object?.code!==b.objectCode||d?.operations?.length!==1||d.operations[0].name!==b.operation||(d.operations[0].parameters?.mode??'')!==(b.executionMode??''))throw Error('ScopeMismatch');
   }
   if(tool==='approval_request'||tool==='approval_get'){
    if(data?.requestId!==b.requestId||typeof data.approvalId!=='string'||!data.approvalId||(tool==='approval_get'&&data.approvalId!==args.approvalId))throw Error('IdentityChanged');

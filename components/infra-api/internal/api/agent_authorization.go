@@ -16,13 +16,14 @@ import (
 )
 
 type AgentBinding struct {
-	RequestID  string `json:"requestId"`
-	AttemptID  string `json:"attemptId"`
-	Operation  string `json:"operation"`
-	ObjectKind string `json:"objectKind"`
-	ObjectCode string `json:"objectCode"`
-	EnvCode    string `json:"envCode"`
-	ClusterID  string `json:"clusterId"`
+	ExecutionMode string `json:"executionMode,omitempty"`
+	RequestID     string `json:"requestId"`
+	AttemptID     string `json:"attemptId"`
+	Operation     string `json:"operation"`
+	ObjectKind    string `json:"objectKind"`
+	ObjectCode    string `json:"objectCode"`
+	EnvCode       string `json:"envCode"`
+	ClusterID     string `json:"clusterId"`
 }
 type AgentApplication struct {
 	EnvCode   string `json:"envCode"`
@@ -52,6 +53,12 @@ var agentToken = regexp.MustCompile(`^raptor_at_[A-Za-z0-9_-]{43}$`)
 
 func (i AgentIdentity) permits(tool string, selectors map[string]string) bool {
 	b := i.Binding
+	if b != nil && b.ExecutionMode != "" && b.ExecutionMode != "qualification" && b.ExecutionMode != "replacement" {
+		return false
+	}
+	if b != nil && b.ExecutionMode == "qualification" && (tool == "db_proxy_scale" || tool == "db_proxy_node_protection_set" || tool == "db_proxy_nodes_deregister" || tool == "deployment_restart") {
+		return false
+	}
 	if !i.Active || b == nil || i.ExpiresAt == nil || !i.ExpiresAt.After(time.Now()) || !textOK(b.RequestID) || !textOK(b.AttemptID) || !textOK(b.EnvCode) || !textOK(b.ObjectCode) || !textOK(b.ClusterID) {
 		return false
 	}
@@ -136,7 +143,7 @@ type agentAuthorizer struct {
 }
 
 func (a agentAuthorizer) VisibleCommand(path string) bool {
-	if a.identity.Binding == nil || a.identity.Binding.Operation != "db-proxy.replace-nodes" {
+	if a.identity.Binding == nil || a.identity.Binding.Operation != "db-proxy.replace-nodes" || a.identity.Binding.ExecutionMode == "qualification" {
 		return false
 	}
 	if f, ok := a.base.(interface{ VisibleCommand(string) bool }); ok {

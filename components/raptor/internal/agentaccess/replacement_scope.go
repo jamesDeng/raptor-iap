@@ -22,7 +22,7 @@ type ApplicationScope struct {
 
 func scopeText(s string) bool { return s != "" && len(s) <= 256 && strings.TrimSpace(s) == s }
 func (s ReplacementScope) ValidFor(b Binding) bool {
-	if b.Operation != "db-proxy.replace-nodes" || b.ObjectKind != "db-proxy" || s.EnvCode != b.EnvCode || s.ProxyCode != b.ObjectCode || s.Application.EnvCode != b.EnvCode || s.Application.ClusterID != b.ClusterID {
+	if (b.ExecutionMode != "" && b.ExecutionMode != "replacement" && b.ExecutionMode != "qualification") || b.Operation != "db-proxy.replace-nodes" || b.ObjectKind != "db-proxy" || s.EnvCode != b.EnvCode || s.ProxyCode != b.ObjectCode || s.Application.EnvCode != b.EnvCode || s.Application.ClusterID != b.ClusterID {
 		return false
 	}
 	for _, v := range []string{s.EnvCode, s.ProxyCode, s.GroupID, s.ServerGroupID, s.TargetDBCode, s.Application.AppCode, s.Application.ClusterID, s.Application.Namespace, s.Application.Name, s.Application.UID} {
@@ -37,6 +37,9 @@ func (s ReplacementScope) ValidFor(b Binding) bool {
 // handlers validate parameters; Infra independently checks current membership.
 func ReplacementSelectorsAllowed(b Binding, s ReplacementScope, audience, tool string, selectors map[string]string) bool {
 	if !s.ValidFor(b) {
+		return false
+	}
+	if b.ExecutionMode == "qualification" && audience == "infra" && (tool == "db_proxy_scale" || tool == "db_proxy_node_protection_set" || tool == "db_proxy_nodes_deregister" || tool == "deployment_restart") {
 		return false
 	}
 	expected := map[string]string{}
@@ -59,6 +62,9 @@ func ReplacementSelectorsAllowed(b Binding, s ReplacementScope, audience, tool s
 			}
 			expected["approvalId"] = selectors["approvalId"]
 		case "approval_request":
+			if b.ExecutionMode == "qualification" {
+				expected["interface"] = "runtime.qualification-resume"
+			}
 			expected["envCode"] = b.EnvCode
 			expected["proxyCode"] = s.ProxyCode
 			expected["groupId"] = s.GroupID

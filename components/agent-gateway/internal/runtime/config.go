@@ -12,27 +12,28 @@ import (
 )
 
 type LiveConfig struct {
-	ObservationURL      string                       `json:"observationUrl,omitempty"`
-	ReplacementEnabled  bool                         `json:"replacementEnabled,omitempty"`
-	ReplacementObserver *ReplacementObserverConfig   `json:"replacementObserver,omitempty"`
-	SkillsRepository    string                       `json:"skillsRepository,omitempty"`
-	Provider            string                       `json:"provider,omitempty"`
-	AX                  *AXConfig                    `json:"ax,omitempty"`
-	InfraUsername       string                       `json:"infraUsername"`
-	InfraPassword       string                       `json:"infraPassword"`
-	AccountID           string                       `json:"accountId"`
-	Region              string                       `json:"region"`
-	TeamID              string                       `json:"teamId"`
-	TemplateID          string                       `json:"templateId"`
-	Bucket              string                       `json:"bucket"`
-	BucketPrefix        string                       `json:"bucketPrefix"`
-	VolumeName          string                       `json:"volumeName"`
-	VolumeID            string                       `json:"volumeId"`
-	ExecutionRoleARN    string                       `json:"executionRoleArn"`
-	BootstrapCheckpoint execution.VerifiedCheckpoint `json:"bootstrapCheckpoint"`
-	RaptorMcpURL        string                       `json:"raptorMcpUrl"`
-	InfraMcpURL         string                       `json:"infraMcpUrl"`
-	HarnessDir          string                       `json:"harnessDir"`
+	QualificationEnabled bool                         `json:"qualificationEnabled,omitempty"`
+	ObservationURL       string                       `json:"observationUrl,omitempty"`
+	ReplacementEnabled   bool                         `json:"replacementEnabled,omitempty"`
+	ReplacementObserver  *ReplacementObserverConfig   `json:"replacementObserver,omitempty"`
+	SkillsRepository     string                       `json:"skillsRepository,omitempty"`
+	Provider             string                       `json:"provider,omitempty"`
+	AX                   *AXConfig                    `json:"ax,omitempty"`
+	InfraUsername        string                       `json:"infraUsername"`
+	InfraPassword        string                       `json:"infraPassword"`
+	AccountID            string                       `json:"accountId"`
+	Region               string                       `json:"region"`
+	TeamID               string                       `json:"teamId"`
+	TemplateID           string                       `json:"templateId"`
+	Bucket               string                       `json:"bucket"`
+	BucketPrefix         string                       `json:"bucketPrefix"`
+	VolumeName           string                       `json:"volumeName"`
+	VolumeID             string                       `json:"volumeId"`
+	ExecutionRoleARN     string                       `json:"executionRoleArn"`
+	BootstrapCheckpoint  execution.VerifiedCheckpoint `json:"bootstrapCheckpoint"`
+	RaptorMcpURL         string                       `json:"raptorMcpUrl"`
+	InfraMcpURL          string                       `json:"infraMcpUrl"`
+	HarnessDir           string                       `json:"harnessDir"`
 }
 type ControllerCredential struct {
 	AccessKeyID     string `json:"accessKeyId"`
@@ -70,7 +71,7 @@ func (c LiveConfig) Validate() error {
 	if c.Provider == "ax" && c.ReplacementObserver != nil && c.ObservationURL == "" {
 		return ErrConfiguration
 	}
-	if c.ReplacementEnabled && (c.ReplacementObserver == nil || c.SkillsRepository == "") {
+	if (c.ReplacementEnabled || c.QualificationEnabled) && (c.ReplacementObserver == nil || c.SkillsRepository == "") {
 		return ErrConfiguration
 	}
 	if c.Provider != "" && !validProvider(c.Provider) {

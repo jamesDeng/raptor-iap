@@ -20,9 +20,11 @@ function replacementScope(b,s){
  return s;
 }
 export function operationCapabilities(b,scope){
+ if(b?.executionMode!==undefined && !["qualification","replacement"].includes(b.executionMode))throw Error("UnsupportedOperation");
  if(b?.operation==='application.question'&&b.objectKind==='application')return {raptor:[...readRaptor],infra:[...readInfra]};
  if(b?.operation==='db-proxy.replace-nodes'&&b.objectKind==='db-proxy'){
   replacementScope(b,scope);
+  if(b.executionMode==="qualification")return {raptor:[...readRaptor,"approval_request","approval_get","request_pause"],infra:[...readInfra]};
   return {raptor:[...readRaptor,'approval_request','approval_get','request_pause'],infra:[...readInfra,'db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart']};
  }
  throw Error('UnsupportedOperation');
@@ -43,10 +45,9 @@ export function checkOperationSelectors(server,tool,args,b,scope){
   case 'approval_get':exact(args,{requestId:b.requestId},['approvalId']);if(!text(args.approvalId))throw Error('ScopeMismatch');break;
   case 'request_pause':exact(args,{requestId:b.requestId},['reason']);if(!['waiting_approval','waiting_review'].includes(args.reason))throw Error('ScopeMismatch');break;
   case 'approval_request':
-   exact(args,{requestId:b.requestId,envCode:b.envCode,interface:'ess.scale-in'},['actionId','target','parameters']);
+   exact(args,{requestId:b.requestId,envCode:b.envCode,interface:b.executionMode==='qualification'?'runtime.qualification-resume':'ess.scale-in'},['actionId','target','parameters']);
    exact(args.target,{proxyCode:scope.proxyCode,groupId:scope.groupId});
-   exact(args.parameters,{},['desiredCapacity']);
-   if(!text(args.actionId)||!capacity(args.parameters.desiredCapacity))throw Error('ScopeMismatch');break;
+   if(b.executionMode==='qualification'){exact(args.parameters,{phase:'resume'});if(!text(args.actionId))throw Error('ScopeMismatch');}else{exact(args.parameters,{},['desiredCapacity']);if(!text(args.actionId)||!capacity(args.parameters.desiredCapacity))throw Error('ScopeMismatch');}break;
   }
   return;
  }

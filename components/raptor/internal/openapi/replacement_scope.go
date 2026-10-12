@@ -64,7 +64,7 @@ func agentToolSelectors(tool string, raw json.RawMessage) (map[string]string, er
 			}
 			out[key] = v
 		}
-		if out["interface"] != "ess.scale-in" {
+		if out["interface"] != "ess.scale-in" && out["interface"] != "runtime.qualification-resume" {
 			return bad()
 		}
 		target, e := strictAgentObject(fields["target"])
@@ -82,12 +82,19 @@ func agentToolSelectors(tool string, raw json.RawMessage) (map[string]string, er
 		if e != nil || len(params) != 1 {
 			return bad()
 		}
-		var capacity *int
-		if json.Unmarshal(params["desiredCapacity"], &capacity) != nil || capacity == nil || *capacity < 0 {
-			return bad()
+		if out["interface"] == "runtime.qualification-resume" {
+			var phase string
+			if json.Unmarshal(params["phase"], &phase) != nil || phase != "resume" {
+				return bad()
+			}
+		} else {
+			var capacity *int
+			if json.Unmarshal(params["desiredCapacity"], &capacity) != nil || capacity == nil || *capacity < 0 {
+				return bad()
+			}
+			delete(out, "interface")
 		}
 		delete(out, "actionId")
-		delete(out, "interface")
 		return out, nil
 	}
 	out := map[string]string{}
@@ -108,7 +115,7 @@ func agentToolSelectors(tool string, raw json.RawMessage) (map[string]string, er
 }
 
 func addReplacementAgentTools(s *mcp.Server, p agentPrincipal) {
-	mcp.AddTool(s, &mcp.Tool{Name: "approval_request", Description: "Request human approval for one exact scale-in target and desired capacity"}, func(ctx context.Context, r *mcp.CallToolRequest, in approvals.ApprovalInput) (*mcp.CallToolResult, any, error) {
+	mcp.AddTool(s, &mcp.Tool{Name: "approval_request", Description: "Request one exact scale-in approval, or a qualification-only continuation approval"}, func(ctx context.Context, r *mcp.CallToolRequest, in approvals.ApprovalInput) (*mcp.CallToolResult, any, error) {
 		raw, err := json.Marshal(in)
 		if err != nil {
 			return nil, nil, err
