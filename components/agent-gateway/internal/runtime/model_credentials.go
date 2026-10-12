@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -43,10 +44,12 @@ func (c HTTPModelCredentials) call(ctx context.Context, route string, payload an
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(r)
 	if err != nil {
+		log.Printf("model credential service unavailable route=%s stage=transport", route)
 		return ErrRuntimeUnavailable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
+		log.Printf("model credential service unavailable route=%s status=%d", route, resp.StatusCode)
 		return ErrRuntimeUnavailable
 	}
 	var envelope struct {

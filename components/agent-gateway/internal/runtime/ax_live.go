@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
+	"log"
 	"strings"
 	"time"
 )
@@ -100,26 +101,32 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		}
 	}
 	if a.Config.Validate() != nil || in.Access.Binding != in.Binding || in.Access.RaptorMcpURL != a.Config.RaptorMcpURL || in.Access.InfraMcpURL != a.Config.InfraMcpURL || len(in.Access.Credential) < 32 || !in.Deadline.After(time.Now()) {
+		log.Printf("live preparation failed request=%s provider=ax stage=config", in.Binding.RequestID)
 		return h, ErrConfiguration
 	}
 	observation, e := a.prepareObservation(ctx, in)
 	if e != nil {
+		log.Printf("live preparation failed request=%s provider=ax stage=observation", in.Binding.RequestID)
 		return h, e
 	}
 	cp, e := a.Verifier.VerifyCheckpoint(ctx, in.Checkpoint)
 	if e != nil {
+		log.Printf("live preparation failed request=%s provider=ax stage=checkpoint", in.Binding.RequestID)
 		return h, e
 	}
 	var modelLease ModelLease
 	if in.Binding.ProviderID != "" {
 		if a.ModelCredentials == nil {
+			log.Printf("live preparation failed request=%s provider=ax stage=model-client", in.Binding.RequestID)
 			return h, ErrConfiguration
 		}
 		if e = a.fence(ctx, in.Binding.AttemptID); e != nil {
+			log.Printf("live preparation failed request=%s provider=ax stage=model-fence", in.Binding.RequestID)
 			return h, e
 		}
 		modelLease, e = a.ModelCredentials.Lease(ctx, in.Binding)
 		if e != nil {
+			log.Printf("live preparation failed request=%s provider=ax stage=model-lease", in.Binding.RequestID)
 			return h, e
 		}
 	}
@@ -133,6 +140,7 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	ctx, cancel := context.WithDeadline(ctx, in.Deadline)
 	defer cancel()
 	if e = a.intent(ctx, in.Binding, "sandbox", "raptor-"+in.Binding.AttemptID); e != nil {
+		log.Printf("live preparation failed request=%s provider=ax stage=sandbox-intent", in.Binding.RequestID)
 		return h, e
 	}
 	out, e := a.call(ctx, a.request(in, "ensure"))
