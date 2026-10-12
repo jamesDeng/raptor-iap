@@ -42,6 +42,23 @@ func TestParseLiveOperationPreservesQuestion(t *testing.T) {
 	}
 }
 
+func TestParseRepositoryChangeKeepsQuestionAdapterClosed(t *testing.T) {
+	in := producerInput(t)
+	var d map[string]any
+	json.Unmarshal(in.Definition, &d)
+	d["operations"] = []any{map[string]any{"name": "repository.change", "parameters": map[string]any{"instruction": "Update the manifest"}}}
+	in.Definition, _ = json.Marshal(d)
+	sum := sha256.Sum256(in.Definition)
+	in.DefinitionSHA256 = hex.EncodeToString(sum[:])
+	b, op, err := ParseLiveOperation(in, "attempt")
+	if err != nil || b.Operation != "repository.change" || op.Question != "" {
+		t.Fatalf("change rejected: %+v %+v %v", b, op, err)
+	}
+	if _, _, _, err := ParseLiveQuestion(in, "attempt"); err == nil {
+		t.Fatal("question adapter admitted repository mutation")
+	}
+}
+
 func TestParseLiveOperationRejectsInvalidDefinition(t *testing.T) {
 	for _, which := range []string{"hash", "skills", "environment", "kind", "operation", "model", "parameters", "two", "definition-field"} {
 		t.Run(which, func(t *testing.T) {

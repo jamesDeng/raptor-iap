@@ -16,6 +16,7 @@ type LiveOperationInput struct {
 	Parameters  map[string]json.RawMessage `json:"parameters"`
 	Environment json.RawMessage            `json:"environment"`
 	Question    string                     `json:"question,omitempty"`
+	Instruction string                     `json:"instruction,omitempty"`
 }
 
 func ParseLiveOperation(in ExecutionInput, attempt string) (AttemptBinding, LiveOperationInput, error) {
@@ -72,6 +73,10 @@ func ParseLiveOperation(in ExecutionInput, attempt string) (AttemptBinding, Live
 	switch b.Operation {
 	case "application.question":
 		if !b.valid() || b.ObjectKind != "application" || len(op.Parameters) != 1 || json.Unmarshal(op.Parameters["question"], &op.Question) != nil || op.Question == "" || !utf8.ValidString(op.Question) || utf8.RuneCountInString(op.Question) > 2000 || len(op.Question) > 8192 {
+			return AttemptBinding{}, LiveOperationInput{}, ErrInvalid
+		}
+	case "repository.change":
+		if !b.repositoryChangeValid() || len(op.Parameters) != 1 || json.Unmarshal(op.Parameters["instruction"], &op.Instruction) != nil || op.Instruction == "" || !utf8.ValidString(op.Instruction) || utf8.RuneCountInString(op.Instruction) > 2000 || len(op.Instruction) > 8192 {
 			return AttemptBinding{}, LiveOperationInput{}, ErrInvalid
 		}
 	case "db-proxy.replace-nodes":

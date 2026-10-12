@@ -101,8 +101,12 @@ func question(def domain.RequestInput) bool {
 	modelValid := (def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && def.Model != "")
 	return def.Type == "agent" && def.Object.Kind == "application" && len(def.Operations) == 1 && def.Operations[0].Name == "application.question" && modelValid && sha.MatchString(def.Skills.CommitSHA)
 }
+func repositoryChange(def domain.RequestInput) bool {
+	modelValid := (def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && def.Model != "")
+	return def.Type == "agent" && def.Object.Kind == "application" && len(def.Operations) == 1 && def.Operations[0].Name == "repository.change" && modelValid && sha.MatchString(def.Skills.CommitSHA)
+}
 func supported(def domain.RequestInput) bool {
-	if question(def) {
+	if question(def) || repositoryChange(def) {
 		return true
 	}
 	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && validReplacementParameters(def.Operations[0].Parameters) && ((def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && def.Model == "gpt-5.6-luna")) && sha.MatchString(def.Skills.CommitSHA)
@@ -151,7 +155,7 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 	}
 	out.Binding = Binding{ExecutionMode: replacementMode(def), RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}
 	var scopeRaw []byte
-	if !question(def) {
+	if !question(def) && !repositoryChange(def) {
 		if s.ResolveReplacement == nil {
 			return out, domain.ErrUnavailable
 		}
@@ -276,7 +280,7 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 	if cluster != binding.ClusterID {
 		return out, nil
 	}
-	if !question(def) {
+	if !question(def) && !repositoryChange(def) {
 		var saved ReplacementScope
 		if s.ResolveReplacement == nil || json.Unmarshal(scopeRaw, &saved) != nil {
 			return out, nil
@@ -301,7 +305,9 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 			}
 		}
 		out.ReplacementScope = &saved
-	} else if !SelectorsAllowed(binding, in.Audience, in.Tool, in.Selectors) {
+	} else if repositoryChange(def) && !RepositorySelectorsAllowed(binding, in.Audience, in.Tool, in.Selectors) {
+		return out, nil
+	} else if question(def) && !SelectorsAllowed(binding, in.Audience, in.Tool, in.Selectors) {
 		return out, nil
 	}
 	out.Active = true
@@ -367,4 +373,18 @@ func SelectorsAllowed(b Binding, audience, tool string, selectors map[string]str
 		}
 	}
 	return true
+}
+
+func RepositorySelectorsAllowed(b Binding, audience, tool string, selectors map[string]string) bool {
+	if b.Operation != "repository.change" || audience != "raptor" {
+		return false
+	}
+	switch tool {
+	case "request_get", "environment_get", "object_get":
+		return SelectorsAllowed(b, audience, tool, selectors)
+	case "pull_request_attach":
+		return len(selectors) == 2 && selectors["requestId"] == b.RequestID && selectors["attemptId"] == b.AttemptID
+	default:
+		return false
+	}
 }

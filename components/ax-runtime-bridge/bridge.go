@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,13 +38,22 @@ type Binding struct {
 	ConnectionVersion int64  `json:"connectionVersion,omitempty"`
 }
 type Request struct {
-	Action   string    `json:"action"`
-	Binding  Binding   `json:"binding"`
-	Deadline time.Time `json:"deadline"`
-	Phase    string    `json:"phase,omitempty"`
-	Path     string    `json:"path,omitempty"`
-	Data     []byte    `json:"data,omitempty"`
-	Limit    int64     `json:"limit,omitempty"`
+	Action       string       `json:"action"`
+	Binding      Binding      `json:"binding"`
+	Repositories []Repository `json:"repositories,omitempty"`
+	Deadline     time.Time    `json:"deadline"`
+	Phase        string       `json:"phase,omitempty"`
+	Path         string       `json:"path,omitempty"`
+	Data         []byte       `json:"data,omitempty"`
+	Limit        int64        `json:"limit,omitempty"`
+}
+type Repository struct {
+	EnvironmentCode string `json:"environmentCode"`
+	Purpose         string `json:"purpose"`
+	URL             string `json:"url"`
+	Directory       string `json:"directory"`
+	BaseBranch      string `json:"baseBranch"`
+	BaseCommit      string `json:"baseCommit"`
 }
 type Response struct {
 	Name      string `json:"name,omitempty"`
@@ -53,7 +64,7 @@ type Response struct {
 	Absent    bool   `json:"absent"`
 	Error     string `json:"error,omitempty"`
 }
-type TaskView struct{ Name, Seal, Image, Phase string }
+type TaskView struct{ Name, Seal, Image, Phase, Workspace string }
 type Backend interface {
 	Get(context.Context, string) (*TaskView, error)
 	Create(context.Context, string, string) (*TaskView, error)
@@ -64,6 +75,10 @@ type Backend interface {
 	Process(context.Context, string, string) (bool, int, error)
 	Read(context.Context, string, string, int64) ([]byte, error)
 	Write(context.Context, string, string, []byte) error
+}
+type RepositoryBackend interface {
+	CreateWithRepositories(context.Context, string, string, []Repository) (*TaskView, error)
+	DeleteRepositoryWorkspace(context.Context, string, []Repository) error
 }
 type processRecord struct {
 	ID      string `json:"id"`
@@ -86,21 +101,75 @@ var commit = regexp.MustCompile(`^[a-f0-9]{40}$`)
 var digest = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var label = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,128}$`)
 var filePath = regexp.MustCompile(`^/[a-zA-Z0-9_./-]{1,512}$`)
+var repositoryPath = regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*(\.git)?$`)
+var branchPath = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,200}$`)
+
+func validRepository(v Repository) bool {
+	u, e := url.Parse(v.URL)
+	if e != nil || u.Scheme != "https" || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || v.URL != "https://github.com"+u.Path || !repositoryPath.MatchString(u.Path) || strings.Contains(u.Path, "..") || (v.Purpose != "terraform" && v.Purpose != "kubernetes") || !branchPath.MatchString(v.BaseBranch) || strings.Contains(v.BaseBranch, "..") || strings.HasPrefix(v.BaseBranch, "-") || strings.HasSuffix(v.BaseBranch, ".") || !commit.MatchString(v.BaseCommit) || v.Directory == "" || path.IsAbs(v.Directory) || path.Clean(v.Directory) != v.Directory || v.Directory == ".." || strings.HasPrefix(v.Directory, "../") || strings.Contains(v.Directory, "\\") {
+		return false
+	}
+	for _, p := range strings.Split(v.BaseBranch, "/") {
+		if p == "" || p == "." || strings.HasSuffix(p, ".lock") {
+			return false
+		}
+	}
+	return true
+}
 
 func (r Request) validate(mutation bool) error {
 	b := r.Binding
 	modelValid := (b.ProviderID == "" && b.ConnectionVersion == 0 && b.Model == "gpt-5.6-luna") || (b.ProviderID == "codex" && b.ConnectionVersion > 0 && label.MatchString(b.Model))
-	if !uuid.MatchString(b.RequestID) || !uuid.MatchString(b.AttemptID) || b.Operation != "application.question" || b.ObjectKind != "application" || b.EnvCode != "rdev.ali" || !label.MatchString(b.ObjectCode) || !commit.MatchString(b.SkillsCommit) || !digest.MatchString(b.DefinitionSHA256) || b.ClusterID == "" || !modelValid {
+	if !uuid.MatchString(b.RequestID) || !uuid.MatchString(b.AttemptID) || (b.Operation != "application.question" && b.Operation != "repository.change") || b.ObjectKind != "application" || (b.Operation == "application.question" && b.EnvCode != "rdev.ali") || (b.Operation == "repository.change" && !label.MatchString(b.EnvCode)) || !label.MatchString(b.ObjectCode) || !commit.MatchString(b.SkillsCommit) || !digest.MatchString(b.DefinitionSHA256) || b.ClusterID == "" || !modelValid {
 		return ErrInvalid
+	}
+	if b.Operation == "application.question" && len(r.Repositories) != 0 {
+		return ErrInvalid
+	}
+	if b.Operation == "repository.change" {
+		if len(r.Repositories) == 0 || len(r.Repositories) > 32 {
+			return ErrInvalid
+		}
+		branches := map[string]string{}
+		seen := map[string]bool{}
+		for _, repo := range r.Repositories {
+			if repo.EnvironmentCode != b.EnvCode {
+				return ErrInvalid
+			}
+			if !validRepository(repo) {
+				return ErrInvalid
+			}
+			key := repo.Purpose + "\x00" + repo.URL + "\x00" + repo.Directory
+			if seen[key] || (branches[repo.URL] != "" && branches[repo.URL] != repo.BaseBranch) {
+				return ErrInvalid
+			}
+			seen[key] = true
+			branches[repo.URL] = repo.BaseBranch
+		}
 	}
 	if mutation && (!r.Deadline.After(time.Now()) || r.Deadline.After(time.Now().Add(16*time.Minute))) {
 		return ErrInvalid
 	}
 	return nil
 }
-func (r Request) name() string { return "raptor-" + r.Binding.AttemptID }
+func (r Request) name() string          { return "raptor-" + r.Binding.AttemptID }
+func (r Request) workspaceName() string { return "raptor-repositories-" + r.Binding.AttemptID }
+func (r Request) ownsTask(t *TaskView, image string) bool {
+	if t == nil || t.Name != r.name() || t.Seal != r.seal() || t.Image != image {
+		return false
+	}
+	return r.Binding.Operation != "repository.change" || t.Workspace == r.workspaceName()
+}
 func (r Request) seal() string {
-	raw, _ := json.Marshal(r.Binding)
+	var raw []byte
+	if r.Binding.Operation == "repository.change" {
+		raw, _ = json.Marshal(struct {
+			Binding      Binding      `json:"binding"`
+			Repositories []Repository `json:"repositories"`
+		}{r.Binding, r.Repositories})
+	} else {
+		raw, _ = json.Marshal(r.Binding)
+	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
@@ -176,7 +245,7 @@ func (s *Service) owned(ctx context.Context, r Request) (*TaskView, *state, erro
 	if e != nil {
 		return nil, v, e
 	}
-	if task == nil || task.Name != r.name() || task.Seal != r.seal() || task.Image != v.Image {
+	if !r.ownsTask(task, v.Image) {
 		return nil, v, ErrConflict
 	}
 	if !v.Confirmed {
@@ -194,10 +263,18 @@ func (s *Service) Ensure(ctx context.Context, r Request) (Response, error) {
 	if e := r.validate(true); e != nil {
 		return out, e
 	}
+	var repositoryBackend RepositoryBackend
+	if r.Binding.Operation == "repository.change" {
+		var ok bool
+		repositoryBackend, ok = s.Backend.(RepositoryBackend)
+		if !ok {
+			return out, ErrInvalid
+		}
+	}
 	v, loadErr := s.load(r)
 	task, getErr := s.Backend.Get(ctx, r.name())
 	if getErr == nil {
-		if loadErr != nil || task.Name != r.name() || task.Seal != r.seal() || task.Image != v.Image {
+		if loadErr != nil || !r.ownsTask(task, v.Image) {
 			return out, ErrConflict
 		}
 		v.Confirmed = true
@@ -222,14 +299,18 @@ func (s *Service) Ensure(ctx context.Context, r Request) (Response, error) {
 		if e = s.save(r, v); e != nil {
 			return out, e
 		}
-		task, e = s.Backend.Create(ctx, r.name(), r.seal())
+		if repositoryBackend != nil {
+			task, e = repositoryBackend.CreateWithRepositories(ctx, r.name(), r.seal(), r.Repositories)
+		} else {
+			task, e = s.Backend.Create(ctx, r.name(), r.seal())
+		}
 		if e != nil {
 			task, e = s.Backend.Get(ctx, r.name())
 			if e != nil {
 				return out, ErrUnknown
 			}
 		}
-		if task == nil || task.Name != r.name() || task.Seal != r.seal() || task.Image != v.Image {
+		if !r.ownsTask(task, v.Image) {
 			return out, ErrConflict
 		}
 		v.Confirmed = true
@@ -371,7 +452,7 @@ func (s *Service) Remove(ctx context.Context, r Request) (Response, error) {
 	}
 	task, e := s.Backend.Get(ctx, r.name())
 	if e == nil {
-		if task == nil || task.Name != r.name() || task.Seal != r.seal() || task.Image != v.Image {
+		if !r.ownsTask(task, v.Image) {
 			return out, ErrConflict
 		}
 		v.Confirmed = true
@@ -393,6 +474,15 @@ func (s *Service) Remove(ctx context.Context, r Request) (Response, error) {
 	absent, e := s.Backend.ActorAbsent(ctx, r.name())
 	if e != nil || !absent {
 		return out, ErrUnknown
+	}
+	if r.Binding.Operation == "repository.change" {
+		repositoryBackend, ok := s.Backend.(RepositoryBackend)
+		if !ok {
+			return out, ErrInvalid
+		}
+		if e = repositoryBackend.DeleteRepositoryWorkspace(ctx, r.name(), r.Repositories); e != nil {
+			return out, ErrUnknown
+		}
 	}
 	// Keep a nonsecret tombstone: a repeated cleanup verifies absence again and
 	// a delayed ensure cannot recreate this attempt or replay inference.

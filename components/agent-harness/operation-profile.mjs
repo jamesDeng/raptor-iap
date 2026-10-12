@@ -3,7 +3,7 @@
 const readRaptor=['request_get','environment_get','object_get'];
 const readInfra=['cloud_identity_get','deployments_list','deployment_status_get'];
 const schemas={
- raptor:{request_get:{requestId:'string'},environment_get:{requestId:'string',envCode:'string'},object_get:{requestId:'string',kind:'string',code:'string'},approval_request:{requestId:'string',actionId:'string',interface:'string',envCode:'string',target:'object',parameters:'object'},approval_get:{requestId:'string',approvalId:'string'},request_pause:{requestId:'string',reason:'string'}},
+ raptor:{request_get:{requestId:'string'},environment_get:{requestId:'string',envCode:'string'},object_get:{requestId:'string',kind:'string',code:'string'},pull_request_attach:{requestId:'string',attemptId:'string',repository:'string',number:'integer',url:'string',headSha:'string',baseCommit:'string',baseBranch:'string',workingBranch:'string'},approval_request:{requestId:'string',actionId:'string',interface:'string',envCode:'string',target:'object',parameters:'object'},approval_get:{requestId:'string',approvalId:'string'},request_pause:{requestId:'string',reason:'string'}},
  infra:{cloud_identity_get:{envCode:'string'},deployments_list:{envCode:'string',kind:'string',code:'string'},deployment_status_get:{envCode:'string',appCode:'string',clusterId:'string',namespace:'string',name:'string',uid:'string'},deployment_restart:{requestId:'string',envCode:'string',appCode:'string',clusterId:'string',namespace:'string',name:'string',uid:'string'},db_proxy_scale:{requestId:'string',envCode:'string',proxyCode:'string',groupId:'string',actionId:'string',desiredCapacity:'integer'},db_proxy_node_protection_set:{requestId:'string',envCode:'string',proxyCode:'string',groupId:'string',instanceIds:'array',protected:'boolean'},db_proxy_nodes_deregister:{requestId:'string',envCode:'string',proxyCode:'string',groupId:'string',serverGroupId:'string',instanceIds:'array'}}
 };
 export function operationToolSchema(server,tool){
@@ -22,6 +22,7 @@ function replacementScope(b,s){
 export function operationCapabilities(b,scope){
  if(b?.executionMode!==undefined && !["qualification","replacement"].includes(b.executionMode))throw Error("UnsupportedOperation");
  if(b?.operation==='application.question'&&b.objectKind==='application')return {raptor:[...readRaptor],infra:[...readInfra]};
+ if(b?.operation==='repository.change'&&b.objectKind==='application')return {raptor:[...readRaptor,'pull_request_attach'],infra:[]};
  if(b?.operation==='db-proxy.replace-nodes'&&b.objectKind==='db-proxy'){
   replacementScope(b,scope);
   if(b.executionMode==="qualification")return {raptor:[...readRaptor,"approval_request","approval_get","request_pause"],infra:[...readInfra]};
@@ -42,6 +43,9 @@ export function checkOperationSelectors(server,tool,args,b,scope){
   case 'request_get':exact(args,{requestId:b.requestId});break;
   case 'environment_get':exact(args,{requestId:b.requestId,envCode:b.envCode});break;
   case 'object_get':exact(args,{requestId:b.requestId,kind:b.objectKind,code:b.objectCode});break;
+  case 'pull_request_attach':
+   exact(args,{requestId:b.requestId,attemptId:b.attemptId},['repository','number','url','headSha','baseCommit','baseBranch','workingBranch']);
+   if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repository)||!Number.isSafeInteger(args.number)||args.number<1||!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(args.url)||!['headSha','baseCommit'].every(k=>/^[a-f0-9]{40}$/.test(args[k]))||!text(args.baseBranch)||!text(args.workingBranch))throw Error('ScopeMismatch');break;
   case 'approval_get':exact(args,{requestId:b.requestId},['approvalId']);if(!text(args.approvalId))throw Error('ScopeMismatch');break;
   case 'request_pause':exact(args,{requestId:b.requestId},['reason']);if(!['waiting_approval','waiting_review'].includes(args.reason))throw Error('ScopeMismatch');break;
   case 'approval_request':

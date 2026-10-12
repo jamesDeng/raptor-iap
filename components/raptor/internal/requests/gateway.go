@@ -19,6 +19,24 @@ type HTTPGateway struct {
 	Client                      *http.Client
 	AllowClusterHTTP            bool
 }
+type RepositorySnapshot struct {
+	EnvironmentCode string `json:"environmentCode"`
+	Purpose         string `json:"purpose"`
+	URL             string `json:"url"`
+	Directory       string `json:"directory"`
+	BaseBranch      string `json:"baseBranch"`
+	BaseCommit      string `json:"baseCommit"`
+}
+
+func (g HTTPGateway) RepositorySnapshot(ctx context.Context, request, attempt string) ([]RepositorySnapshot, error) {
+	var envelope struct {
+		Data []RepositorySnapshot `json:"data"`
+	}
+	if err := g.read(ctx, "/v1/requests/"+url.PathEscape(request)+"/repository-snapshot?attemptId="+url.QueryEscape(attempt), &envelope); err != nil || len(envelope.Data) == 0 {
+		return nil, domain.ErrUnavailable
+	}
+	return envelope.Data, nil
+}
 
 func (g HTTPGateway) read(ctx context.Context, path string, out any) error {
 	if !transportpolicy.Allowed(g.BaseURL, "http://agent-gateway:8874", g.AllowClusterHTTP) || g.Username == "" || g.Password == "" {

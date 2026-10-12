@@ -24,13 +24,14 @@ type AXConfig struct {
 	KeyFile  string `json:"keyFile"`
 }
 type AXRequest struct {
-	Action   string                   `json:"action"`
-	Binding  execution.AttemptBinding `json:"binding"`
-	Deadline time.Time                `json:"deadline"`
-	Phase    string                   `json:"phase,omitempty"`
-	Path     string                   `json:"path,omitempty"`
-	Data     []byte                   `json:"data,omitempty"`
-	Limit    int64                    `json:"limit,omitempty"`
+	Action       string                         `json:"action"`
+	Binding      execution.AttemptBinding       `json:"binding"`
+	Repositories []execution.RepositorySnapshot `json:"repositories,omitempty"`
+	Deadline     time.Time                      `json:"deadline"`
+	Phase        string                         `json:"phase,omitempty"`
+	Path         string                         `json:"path,omitempty"`
+	Data         []byte                         `json:"data,omitempty"`
+	Limit        int64                          `json:"limit,omitempty"`
 }
 type AXResponse struct {
 	Name      string `json:"name,omitempty"`

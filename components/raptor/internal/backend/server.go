@@ -9,6 +9,8 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	githubservice "github.com/jamesDeng/raptor-iap/components/raptor/internal/github"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/githubcredentials"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/modelproviders"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/skills"
@@ -16,15 +18,16 @@ import (
 )
 
 type Server struct {
-	ReplacementScope *agentaccess.ReplacementScope
-	Mux              *http.ServeMux
-	Auth             *auth.Service
-	Catalog          *catalog.Service
-	Requests         *requests.Service
-	Approvals        *approvals.Service
-	GitHub           *githubservice.Service
-	Skills           *skills.Service
-	ModelProviders   *modelproviders.HTTPService
+	ReplacementScope  *agentaccess.ReplacementScope
+	Mux               *http.ServeMux
+	Auth              *auth.Service
+	Catalog           *catalog.Service
+	Requests          *requests.Service
+	Approvals         *approvals.Service
+	GitHub            *githubservice.Service
+	Skills            *skills.Service
+	ModelProviders    *modelproviders.HTTPService
+	GitHubCredentials *githubcredentials.HTTPService
 }
 
 func (s *Server) ConfigureModelProviders(key []byte, nodePath, helperPath string) {
@@ -40,6 +43,12 @@ func (s *Server) ConfigureModelProviders(key []byte, nodePath, helperPath string
 	s.ModelProviders.Register(s.Mux, s.Auth)
 }
 
+func (s *Server) ConfigureGitHubCredentials(secrets githubcredentials.SecretStore, verify func(context.Context, string) (string, error), gateway auth.Credentials) {
+	s.GitHubCredentials = &githubcredentials.HTTPService{Service: &githubcredentials.Service{Pool: s.Requests.Pool, Secrets: secrets, Verify: verify}}
+	s.GitHub.Tokens = s.GitHubCredentials.Service
+	s.GitHubCredentials.Register(s.Mux, s.Auth, gateway)
+}
+
 func New(p *pgxpool.Pool) *Server {
 	s := &Server{Mux: http.NewServeMux(), Auth: auth.NewService(p)}
 	s.Auth.Register(s.Mux)
@@ -50,6 +59,15 @@ func New(p *pgxpool.Pool) *Server {
 	s.Approvals = &approvals.Service{Pool: p}
 	s.Approvals.RegisterBrowser(s.Mux, s.Auth)
 	s.GitHub = &githubservice.Service{Pool: p}
+	s.Mux.Handle("GET /api/v1/requests/{id}/pull-request-actions", s.Auth.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, e := s.Requests.Get(r.Context(), r.PathValue("id"))
+		if e != nil {
+			httpx.Result(w, 200, nil, e)
+			return
+		}
+		states, e := s.GitHub.PRActionStates(r.Context(), r.PathValue("id"))
+		httpx.Result(w, 200, states, e)
+	})))
 	s.Skills = &skills.Service{Pool: p}
 	s.Skills.Register(s.Mux, s.Auth)
 	s.Requests.ResolveSkills = s.Skills.Validate

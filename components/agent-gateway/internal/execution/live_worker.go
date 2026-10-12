@@ -27,6 +27,7 @@ type ConversationRuntime interface {
 	DeliverMessage(context.Context, RuntimeHandle, ConversationInput) error
 }
 type LiveStart struct {
+	Repositories        []RepositorySnapshot
 	ConversationEnabled bool
 	Conversation        *ConversationSession
 	InitialMessage      *ConversationInput
@@ -73,8 +74,11 @@ type LiveRuntime interface {
 	Stop(context.Context, RuntimeHandle) (LiveCleanup, error)
 	Reconcile(context.Context, RecoveryRecord) (RecoveredRun, error)
 }
+type RepositoryChangeRuntime interface{ RepositoryChangeReady() bool }
+type repositoryFailure interface{ PublicRepositoryURL() string }
 type LiveWorker struct {
 	QualificationScope *ReplacementScope
+	RepositoryResolver BaseCommitResolver
 	ReplacementScope   *ReplacementScope
 	Store              *Store
 	Owner              string
@@ -108,6 +112,13 @@ func (w *LiveWorker) admit(in ExecutionInput, attempt string) (AttemptBinding, s
 	if b.Operation == "application.question" {
 		return ParseLiveQuestion(in, attempt)
 	}
+	if b.Operation == "repository.change" {
+		ready, ok := w.Runtime.(RepositoryChangeRuntime)
+		if !ok || !ready.RepositoryChangeReady() || w.RepositoryResolver == nil {
+			return AttemptBinding{}, "", "", ErrInvalid
+		}
+		return b, operation.Instruction, b.DefinitionSHA256, nil
+	}
 	if w.scopeFor(b) == nil || !w.scopeFor(b).ValidFor(b) {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
@@ -135,6 +146,25 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	}
 	if e = w.Store.SaveLiveInput(ctx, x.AttemptID, w.Owner, in); e != nil {
 		return e
+	}
+	var repositories []RepositorySnapshot
+	if b.Operation == "repository.change" {
+		repositories, e = w.Store.RepositorySnapshot(ctx, b.AttemptID)
+		if e != nil {
+			return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "PreparationFailed")
+		}
+		if len(repositories) == 0 {
+			repositories, e = BuildRepositorySnapshot(ctx, in.Environment, b.EnvCode, w.RepositoryResolver)
+			if e != nil {
+				if report := w.reportRepositoryFailure(ctx, b, e); report != nil {
+					return report
+				}
+				return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "PreparationFailed")
+			}
+			if e = w.Store.SaveRepositorySnapshot(ctx, b.AttemptID, w.Owner, repositories); e != nil {
+				return e
+			}
+		}
 	}
 	record, e := w.Store.RecoveryRecord(ctx, x.AttemptID)
 	if e != nil {
@@ -195,11 +225,24 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e = w.authorized(ctx); e != nil {
 		return e
 	}
-	h, e := w.Runtime.Start(ctx, LiveStart{Skills: in.Skills, DecisionContext: continuation, SessionCheckpoint: sessionCheckpoint, Binding: b, Question: question, Checkpoint: checkpoint, Access: access, Deadline: record.Deadline, ConversationEnabled: b.Operation == "application.question" && w.Store.ConversationEnabled && w.Store.ConversationRuntime, Conversation: conversation, InitialMessage: initial})
+	h, e := w.Runtime.Start(ctx, LiveStart{Repositories: repositories, Skills: in.Skills, DecisionContext: continuation, SessionCheckpoint: sessionCheckpoint, Binding: b, Question: question, Checkpoint: checkpoint, Access: access, Deadline: record.Deadline, ConversationEnabled: b.Operation == "application.question" && w.Store.ConversationEnabled && w.Store.ConversationRuntime, Conversation: conversation, InitialMessage: initial})
 	if e != nil {
+		if report := w.reportRepositoryFailure(ctx, b, e); report != nil {
+			return report
+		}
 		return w.finish(ctx, b, h, "failed", "PreparationFailed")
 	}
 	return w.Store.SetLiveStage(ctx, b.AttemptID, w.Owner, "running")
+}
+func (w *LiveWorker) reportRepositoryFailure(ctx context.Context, b AttemptBinding, err error) error {
+	if b.Operation != "repository.change" {
+		return nil
+	}
+	v, ok := err.(repositoryFailure)
+	if !ok || !validPublicRepo(v.PublicRepositoryURL()) {
+		return nil
+	}
+	return w.Store.AppendRuntimeEvents(ctx, b.AttemptID, w.Owner, []RuntimeEvent{{RuntimeSequence: 1, Kind: "progress", Outcome: "running", Summary: "Repository unavailable: " + v.PublicRepositoryURL(), OccurredAt: time.Now()}})
 }
 func (w *LiveWorker) RunActive(ctx context.Context) error {
 	if e := w.authorized(ctx); e != nil {

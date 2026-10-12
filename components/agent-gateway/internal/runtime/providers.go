@@ -15,6 +15,14 @@ type Providers struct {
 	Lease    execution.WorkerLease
 }
 
+func (r *Providers) RepositoryChangeReady() bool {
+	if r == nil || r.Default != "ax" {
+		return false
+	}
+	ready, ok := r.Backends["ax"].(execution.RepositoryChangeRuntime)
+	return ok && ready.RepositoryChangeReady()
+}
+
 func validProvider(p string) bool { return p == "aliyun" || p == "ax" }
 func (r *Providers) provider(record execution.RecoveryRecord) (string, error) {
 	p := "aliyun"

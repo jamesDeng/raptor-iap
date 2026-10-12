@@ -10,6 +10,7 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/backend"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/githubcredentials"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/modelproviders"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/skills"
@@ -61,6 +62,19 @@ func main() {
 		addr = "127.0.0.1:8871"
 	}
 	h := backend.New(p)
+	if os.Getenv("RAPTOR_GITHUB_PAT_BUCKET") != "" {
+		secrets, err := githubcredentials.NewRRSAOSSSecrets(os.Getenv("ALIBABA_CLOUD_ACCOUNT_ID"), os.Getenv("RAPTOR_GITHUB_PAT_BUCKET"), os.Getenv("ALIBABA_CLOUD_ROLE_ARN"), os.Getenv("ALIBABA_CLOUD_OIDC_PROVIDER_ARN"), os.Getenv("ALIBABA_CLOUD_OIDC_TOKEN_FILE"))
+		if err != nil {
+			log.Fatal("GitHub credential storage unavailable")
+		}
+		if os.Getenv("GATEWAY_GITHUB_PAT_USERNAME") == "" || os.Getenv("GATEWAY_GITHUB_PAT_PASSWORD") == "" {
+			log.Fatal("Gateway GitHub credential identity unavailable")
+		}
+		if os.Getenv("GATEWAY_GITHUB_PAT_USERNAME") == os.Getenv("SERVICE_USERNAME") && os.Getenv("GATEWAY_GITHUB_PAT_PASSWORD") == os.Getenv("SERVICE_PASSWORD") {
+			log.Fatal("Gateway GitHub credential identity must be dedicated")
+		}
+		h.ConfigureGitHubCredentials(secrets, githubcredentials.VerifyGitHubPAT(githubcredentials.GitHubHTTPClient()), auth.Credentials{Username: os.Getenv("GATEWAY_GITHUB_PAT_USERNAME"), Password: os.Getenv("GATEWAY_GITHUB_PAT_PASSWORD")})
+	}
 	if os.Getenv("RAPTOR_MODEL_PROVIDERS_ENABLED") == "true" {
 		key, e := modelproviders.ReadEncryptionKey(os.Getenv("RAPTOR_MODEL_CREDENTIAL_KEY_FILE"))
 		if e != nil {
@@ -76,6 +90,7 @@ func main() {
 	if gatewayURL := os.Getenv("GATEWAY_URL"); gatewayURL != "" {
 		client := requests.HTTPGateway{BaseURL: gatewayURL, AllowClusterHTTP: os.Getenv("RAPTOR_CLUSTER_HTTP") == "true", Username: os.Getenv("SERVICE_USERNAME"), Password: os.Getenv("SERVICE_PASSWORD")}
 		h.Requests.Gateway = client
+		h.GitHub.Snapshots = client
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()

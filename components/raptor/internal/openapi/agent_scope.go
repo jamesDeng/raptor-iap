@@ -43,6 +43,10 @@ func (p agentPrincipal) check(ctx context.Context, tool string, selectors map[st
 		if out.ReplacementScope == nil || !agentaccess.ReplacementSelectorsAllowed(*out.Binding, *out.ReplacementScope, "raptor", tool, selectors) {
 			return nil, errors.New("Forbidden")
 		}
+	} else if out.Binding.Operation == "repository.change" {
+		if !agentaccess.RepositorySelectorsAllowed(*out.Binding, "raptor", tool, selectors) {
+			return nil, errors.New("Forbidden")
+		}
 	} else if !agentaccess.SelectorsAllowed(*out.Binding, "raptor", tool, selectors) {
 		return nil, errors.New("Forbidden")
 	}
@@ -115,6 +119,8 @@ func agentHandler(backend, inspector Client, credential string) http.Handler {
 		server := newAgentMCP(principal)
 		if binding.Operation == "db-proxy.replace-nodes" {
 			addReplacementAgentTools(server, principal)
+		} else if binding.Operation == "repository.change" {
+			addRepositoryAgentTools(server, principal)
 		}
 		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}).ServeHTTP(w, r)
 	})

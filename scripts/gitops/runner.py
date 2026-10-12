@@ -13,6 +13,7 @@ ROOT = Path(os.environ.get('TF_CANDIDATE_ROOT', Path(__file__).resolve().parents
 def select_stack(name):
     choices = {
         'agent-gateway': {'root':'infra-terraform/environments/rdev.ali/agent-gateway','prefix':'gateway.ali','key':'terraform.tfstate','label':'Terraform Gateway observer','binding':'raptor-agent-gateway-v1'},
+        'raptor-github-pat': {'root':'infra-terraform/environments/rdev.ali/raptor-github-pat','prefix':'raptor-github-pat.ali','key':'terraform.tfstate','label':'Terraform Raptor GitHub PAT storage','binding':'raptor-github-pat-v1'},
         'test-foundation': {'root':'infra-terraform/environments/rdev-test-foundation','prefix':'rdev.ali/test-pgcat','key':'terraform.tfstate','label':'Terraform test foundation','binding':'raptor-test-foundation-v1'},
         'infra-api': {'root':'infra-terraform/environments/rdev-infra-api','prefix':'rdev.ali','key':'infra-api.tfstate','label':'Terraform Infra API','binding':'raptor-infra-api-v1'},
         'rdev-kong': {'root':'infra-terraform/environments/rdev.ali','prefix':'rdev.ali','key':'terraform.tfstate','label':'Terraform rdev Kong DNS','binding':'raptor-rdev-kong-v1'},
@@ -99,6 +100,11 @@ def validate_inputs(config,stack="test-foundation"):
             for k,v in observer.items():
                 pattern=r'[A-Za-z0-9_.-]{1,200}' if k!='sql_key' else r'[A-Za-z0-9_./-]{1,240}'
                 if not isinstance(v,str) or not re.fullmatch(pattern,v) or any(part in ('','..','.') for part in v.split('/')):raise ValueError('Invalid observer reference')
+        return
+    if stack == 'raptor-github-pat':
+        if set(config) != {'oidc_provider_arn','oidc_issuer'}:raise ValueError('Invalid Raptor GitHub PAT inputs')
+        if not re.fullmatch(r'acs:ram::1360282071200743:oidc-provider/[A-Za-z0-9_.-]+',config['oidc_provider_arn']):raise ValueError('Invalid OIDC provider')
+        if not re.fullmatch(r'https://oidc-ack-ap-southeast-1\.oss-ap-southeast-1\.aliyuncs\.com/[A-Za-z0-9_.-]+',config['oidc_issuer']):raise ValueError('Invalid OIDC issuer')
         return
     if stack == 'infra-api':
         if set(config) != {'trigger_url','gateway_instance_id'}:raise ValueError('Invalid stack inputs')

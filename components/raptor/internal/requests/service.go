@@ -105,7 +105,7 @@ func (s *Service) Create(ctx context.Context, u domain.User, key string, in doma
 	if e = s.Validate(input); e != nil {
 		return domain.Request{}, e
 	}
-	if s.ModelPolicy != nil && input.Type == "agent" && len(input.Operations) == 1 && (input.Operations[0].Name == "application.question" || input.Operations[0].Name == "db-proxy.replace-nodes") {
+	if s.ModelPolicy != nil && input.Type == "agent" && len(input.Operations) == 1 && (input.Operations[0].Name == "application.question" || input.Operations[0].Name == "repository.change" || input.Operations[0].Name == "db-proxy.replace-nodes") {
 		version, selectionError := s.ModelPolicy.ValidateSelection(ctx, modelproviders.ProviderID(input.ProviderID), modelproviders.ModelID(input.Model))
 		if selectionError != nil {
 			return domain.Request{}, domain.ErrInvalid

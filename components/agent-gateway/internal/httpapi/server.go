@@ -72,6 +72,15 @@ func New(s *execution.Store, user, password string, options ...ProgressConfig) h
 		}
 		write(w, 200, map[string]any{"data": v, "nextAfter": next, "hasMore": more})
 	})
+	m.HandleFunc("GET /v1/requests/{id}/repository-snapshot", func(w http.ResponseWriter, r *http.Request) {
+		attempt := r.URL.Query().Get("attemptId")
+		if attempt == "" {
+			write(w, 400, map[string]string{"error": "InvalidInput"})
+			return
+		}
+		rows, err := s.BoundRepositorySnapshot(r.Context(), r.PathValue("id"), attempt)
+		result(w, rows, err)
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/gateway-observations" {
 			if cfg.Observation == nil {

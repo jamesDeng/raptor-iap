@@ -325,7 +325,7 @@ const privatePermissionsCommand = `set -eu; umask 077; for file in /tmp/raptor-p
 
 const prepareCommand = "umask 077; test \"$(node --version)\" = v22.23.3 && python3 --version >/dev/null && test ! -e /tmp/raptor-state && mkdir -p /tmp/raptor-harness /tmp/raptor-private && chmod 700 /tmp/raptor-harness /tmp/raptor-private"
 
-var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "mcp-runtime.mjs", "conversation.mjs", "operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "skills-bundle.mjs", "client-targets.mjs", "replacement-trace.mjs", "pgcat-metrics.mjs", "replacement-completion.mjs", "observation-tools.mjs", "observation-extension.mjs", "observation-config.mjs", "observation-proxy.mjs"}
+var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "live-repository.mjs", "mcp-runtime.mjs", "conversation.mjs", "operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "skills-bundle.mjs", "client-targets.mjs", "replacement-trace.mjs", "pgcat-metrics.mjs", "replacement-completion.mjs", "observation-tools.mjs", "observation-extension.mjs", "observation-config.mjs", "observation-proxy.mjs"}
 
 func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	b := r.start.Binding
@@ -787,7 +787,7 @@ func liveJob(config LiveConfig, in execution.LiveStart) ([]byte, error) {
 }
 
 func skillsBundlePath(in execution.LiveStart) string {
-	if in.Binding.Operation == "db-proxy.replace-nodes" {
+	if in.Binding.Operation == "db-proxy.replace-nodes" || in.Binding.Operation == "repository.change" {
 		return "/tmp/raptor-private/skills-bundle.json"
 	}
 	return ""

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,6 +15,107 @@ type fakeBackend struct {
 	createError            error
 	visibleOnError         bool
 	runError               error
+}
+type fakeRepositoryBackend struct {
+	fakeBackend
+	repositoryCreates int
+	workspaceDeletes  int
+	received          []Repository
+}
+
+func (f *fakeRepositoryBackend) DeleteRepositoryWorkspace(context.Context, string, []Repository) error {
+	f.workspaceDeletes++
+	return nil
+}
+
+func (f *fakeRepositoryBackend) CreateWithRepositories(_ context.Context, n, seal string, repos []Repository) (*TaskView, error) {
+	f.repositoryCreates++
+	f.received = append([]Repository(nil), repos...)
+	v, err := f.fakeBackend.Create(context.Background(), n, seal)
+	v.Workspace = "raptor-repositories-" + strings.TrimPrefix(n, "raptor-")
+	return v, err
+}
+func TestRepositoryChangeUsesDedicatedCreate(t *testing.T) {
+	f := &fakeRepositoryBackend{}
+	s := service(t, &f.fakeBackend)
+	s.Backend = f
+	r := repositoryRequest()
+	if _, err := s.Ensure(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if f.repositoryCreates != 1 || len(f.received) != 1 || f.received[0] != r.Repositories[0] {
+		t.Fatal("repository snapshot not delivered")
+	}
+	if _, err := s.Ensure(context.Background(), r); err != nil || f.repositoryCreates != 1 {
+		t.Fatalf("idempotent ensure: %v", err)
+	}
+	changed := r
+	changed.Repositories = append([]Repository(nil), r.Repositories...)
+	changed.Repositories[0].BaseCommit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if _, err := s.Ensure(context.Background(), changed); err == nil {
+		t.Fatal("changed snapshot adopted existing task")
+	}
+}
+func TestRepositoryChangeAcceptsSelectedEnvironmentWithoutBroadeningQuestion(t *testing.T) {
+	r := repositoryRequest()
+	r.Binding.EnvCode = "prod.ali"
+	r.Repositories[0].EnvironmentCode = "prod.ali"
+	if err := r.validate(true); err != nil { t.Fatal("selected environment rejected",err) }
+	r.Binding.Operation = "application.question"
+	r.Repositories = nil
+	if err := r.validate(true); err == nil { t.Fatal("question admitted outside existing environment") }
+}
+func TestRepositoryTaskWrongWorkspaceCannotBeAdopted(t *testing.T) {
+	f := &fakeRepositoryBackend{}
+	s := service(t, &f.fakeBackend)
+	s.Backend = f
+	r := repositoryRequest()
+	if _, err := s.Ensure(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	f.task.Workspace = "raptor-runtime"
+	if _, err := s.Ensure(context.Background(), r); err == nil {
+		t.Fatal("foreign workspace accepted")
+	}
+}
+func TestRepositoryRemoveDeletesWorkspaceAfterTask(t *testing.T) {
+	f := &fakeRepositoryBackend{}
+	s := service(t, &f.fakeBackend)
+	s.Backend = f
+	r := repositoryRequest()
+	if _, err := s.Ensure(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := s.Remove(context.Background(), r); err != nil || !out.Absent || f.workspaceDeletes != 1 || f.deletes != 1 {
+		t.Fatalf("cleanup: %+v %v workspaceDeletes=%d", out, err, f.workspaceDeletes)
+	}
+}
+
+func TestRepositoryWorkspaceSpecClonesEachURLOnce(t *testing.T) {
+	r := repositoryRequest()
+	r.Repositories = append(r.Repositories, Repository{EnvironmentCode: "rdev.ali", Purpose: "kubernetes", URL: r.Repositories[0].URL, Directory: "kubernetes", BaseBranch: "main", BaseCommit: r.Repositories[0].BaseCommit})
+	r.Repositories = append(r.Repositories, Repository{EnvironmentCode: "rdev.ali", Purpose: "kubernetes", URL: "https://github.com/example/apps.git", Directory: ".", BaseBranch: "release", BaseCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})
+	w, err := repositoryWorkspace(r)
+	if err != nil || w.Metadata.Name != "raptor-repositories-"+r.Binding.AttemptID || len(w.Spec.Git) != 2 || len(w.Spec.Files) != 1 {
+		t.Fatalf("workspace: %+v %v", w, err)
+	}
+	if w.Spec.Git[0].Repo != r.Repositories[0].URL || w.Spec.Git[0].Dir == w.Spec.Git[1].Dir {
+		t.Fatal("clones not unique")
+	}
+	var metadata []map[string]any
+	if json.Unmarshal([]byte(w.Spec.Files[0].Content), &metadata) != nil || len(metadata) != 3 || metadata[1]["path"] != "/workspace/repositories/repo-0/kubernetes" {
+		t.Fatalf("workspace path metadata: %+v", metadata)
+	}
+}
+func TestRepositoryInferenceUsesPrivateGitConfigPaths(t *testing.T) {
+	cmd, err := commandForPhase("inference", "raptor-repositories-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb")
+	if err != nil || len(cmd) < 5 || cmd[0] != "env" || !strings.Contains(strings.Join(cmd, " "), "GIT_CONFIG_GLOBAL=/tmp/raptor-private/gitconfig") || !strings.Contains(strings.Join(cmd, " "), "GH_CONFIG_DIR=/tmp/raptor-private/gh") {
+		t.Fatalf("repository command: %v %v", cmd, err)
+	}
+	question, err := commandForPhase("inference", "raptor-runtime")
+	if err != nil || question[0] != "node" {
+		t.Fatalf("question command changed: %v %v", question, err)
+	}
 }
 
 func (f *fakeBackend) Get(context.Context, string) (*TaskView, error) {
@@ -49,6 +152,29 @@ func (f *fakeBackend) Write(context.Context, string, string, []byte) error { ret
 
 func request() Request {
 	return Request{Binding: Binding{RequestID: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", AttemptID: "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb", Operation: "application.question", ObjectKind: "application", ObjectCode: "app", EnvCode: "rdev.ali", SkillsCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Model: "gpt-5.6-luna", DefinitionSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ClusterID: "platform-ack"}, Deadline: time.Now().Add(time.Minute)}
+}
+func repositoryRequest() Request {
+	r := request()
+	r.Binding.Operation = "repository.change"
+	r.Repositories = []Repository{{EnvironmentCode: "rdev.ali", Purpose: "terraform", URL: "https://github.com/example/infra.git", Directory: ".", BaseBranch: "main", BaseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	return r
+}
+func TestRepositoryChangeRequiresBoundSnapshotAndDedicatedBackend(t *testing.T) {
+	s := service(t, &fakeBackend{})
+	r := repositoryRequest()
+	if _, err := s.Ensure(context.Background(), r); err == nil {
+		t.Fatal("question-only backend accepted repository change")
+	}
+	r = request()
+	r.Repositories = repositoryRequest().Repositories
+	if _, err := s.Ensure(context.Background(), r); err == nil {
+		t.Fatal("question path accepted repositories")
+	}
+	r = repositoryRequest()
+	r.Repositories[0].URL = "https://github.com/example/infra.git?token=secret"
+	if _, err := s.Ensure(context.Background(), r); err == nil {
+		t.Fatal("credential-bearing URL accepted")
+	}
 }
 func service(t *testing.T, f *fakeBackend) *Service {
 	t.Helper()

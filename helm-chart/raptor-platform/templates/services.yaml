@@ -13,6 +13,14 @@
 {{- if .Values.modelProviders.enabled -}}
 {{- required "modelProviders.credentialKeySecretName required" .Values.modelProviders.credentialKeySecretName | quote | trunc 0 -}}
 {{- end -}}
+{{- if .Values.githubPAT.enabled -}}
+{{- required "githubPAT.bucket required" .Values.githubPAT.bucket | quote | trunc 0 -}}
+{{- required "githubPAT.roleARN required" .Values.githubPAT.roleARN | quote | trunc 0 -}}
+{{- required "githubPAT.providerARN required" .Values.githubPAT.providerARN | quote | trunc 0 -}}
+{{- required "githubPAT.authSecretName required" .Values.githubPAT.authSecretName | quote | trunc 0 -}}
+{{- end -}}
+{{- if and .Values.repositoryChange.enabled (not .Values.githubPAT.enabled) -}}{{ fail "repositoryChange requires githubPAT" }}{{- end -}}
+{{- if and .Values.repositoryChange.enabled (not .Values.gatewayLive.enabled) -}}{{ fail "repositoryChange requires gatewayLive" }}{{- end -}}
 {{- $revision := required "repository.revision must be a reviewed commit" .Values.repository.revision -}}
 {{- if not (regexMatch "^[a-f0-9]{40}$" $revision) }}{{ fail "invalid repository revision" }}{{ end -}}
 {{- range $name, $image := .Values.images -}}
@@ -53,6 +61,9 @@ spec:
       automountServiceAccountToken: false
       {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled (or (eq $.Values.gatewayLive.credentialMode "rrsa") $.Values.gatewayLive.observer.enabled) }}
       serviceAccountName: agent-gateway
+      {{ end }}
+      {{ if and (eq $service.name "raptor-backend") $.Values.githubPAT.enabled }}
+      serviceAccountName: raptor-backend
       {{ end }}
       securityContext:
         runAsNonRoot: true
@@ -166,6 +177,13 @@ spec:
             {{ end }}
             {{ if eq $service.name "raptor-backend" }}
             - {name: RAPTOR_CONVERSATION_ENABLED, value: {{ $.Values.conversation.raptorEnabled | quote }}}
+            {{ if $.Values.githubPAT.enabled }}
+            - {name: RAPTOR_GITHUB_PAT_BUCKET, value: {{ $.Values.githubPAT.bucket | quote }}}
+            - {name: ALIBABA_CLOUD_ACCOUNT_ID, value: '1360282071200743'}
+            - {name: ALIBABA_CLOUD_ROLE_ARN, value: {{ $.Values.githubPAT.roleARN | quote }}}
+            - {name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN, value: {{ $.Values.githubPAT.providerARN | quote }}}
+            - {name: ALIBABA_CLOUD_OIDC_TOKEN_FILE, value: '/run/raptor/github-pat-rrsa/token'}
+            {{ end }}
             {{ if $.Values.replacement.scopeConfigMapName }}
             - {name: RAPTOR_REPLACEMENT_SCOPE_FILE, value: '/run/raptor/replacement/scope.json'}
             {{ end }}
@@ -181,6 +199,7 @@ spec:
             - {name: GATEWAY_SIMULATION, value: 'false'}
             {{ if eq $service.name "agent-gateway" }}
             - {name: GATEWAY_CONVERSATION_ENABLED, value: {{ $.Values.conversation.gatewayEnabled | quote }}}
+            - {name: GATEWAY_REPOSITORY_CHANGE_ENABLED, value: {{ $.Values.repositoryChange.enabled | quote }}}
             - {name: GATEWAY_PROGRESS_PUBLIC_URL, value: {{ $.Values.progress.publicURL | quote }}}
             - {name: GATEWAY_PROGRESS_ORIGINS, value: {{ $.Values.progress.origins | quote }}}
             - name: GATEWAY_RUNTIME_MODE
@@ -210,6 +229,10 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ if eq $service.name "raptor-backend" }}raptor-runtime{{ else if eq $service.name "agent-gateway" }}gateway-runtime{{ else }}platform-service-auth{{ end }}
+            {{ if and $.Values.githubPAT.enabled (or (eq $service.name "raptor-backend") (eq $service.name "agent-gateway")) }}
+            - secretRef:
+                name: {{ $.Values.githubPAT.authSecretName | quote }}
+            {{ end }}
           {{ end }}
           startupProbe:
             tcpSocket: {port: http}
@@ -240,6 +263,9 @@ spec:
             {{ end }}
             {{ if eq $service.name "raptor-backend" }}
             - {name: repository, mountPath: /repo, readOnly: true}
+            {{ if $.Values.githubPAT.enabled }}
+            - {name: github-pat-rrsa-token, mountPath: /run/raptor/github-pat-rrsa, readOnly: true}
+            {{ end }}
             {{ if $.Values.modelProviders.enabled }}
             - {name: model-key-private, mountPath: /run/raptor/model-key, readOnly: true}
             {{ end }}
@@ -288,6 +314,16 @@ spec:
         - name: temporary
           emptyDir: {sizeLimit: 64Mi}
         {{ if eq $service.name "raptor-backend" }}
+        {{ if $.Values.githubPAT.enabled }}
+        - name: github-pat-rrsa-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: sts.aliyuncs.com
+                  expirationSeconds: 3600
+                  path: token
+        {{ end }}
         {{ if $.Values.replacement.scopeConfigMapName }}
         - name: replacement-scope
           configMap:

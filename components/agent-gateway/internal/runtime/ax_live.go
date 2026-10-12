@@ -18,8 +18,14 @@ type ObjectWriter interface {
 type AXLive struct {
 	NativeLive
 	Bridge AXCaller
+	PAT    PATClient
 	axRuns map[string]*axRun
 }
+
+func (a *AXLive) RepositoryChangeReady() bool {
+	return a.Bridge != nil && a.PAT != nil && a.Config.SkillsRepository != ""
+}
+
 type axRun struct {
 	start                 execution.LiveStart
 	terminal              *terminalFile
@@ -40,7 +46,7 @@ func (a *AXLive) call(ctx context.Context, r AXRequest) (AXResponse, error) {
 	return a.Bridge.Call(ctx, r)
 }
 func (a *AXLive) request(in execution.LiveStart, action string) AXRequest {
-	return AXRequest{Action: action, Binding: in.Binding, Deadline: in.Deadline}
+	return AXRequest{Action: action, Binding: in.Binding, Repositories: in.Repositories, Deadline: in.Deadline}
 }
 func (a *AXLive) write(ctx context.Context, in execution.LiveStart, path string, data []byte) error {
 	r := a.request(in, "write")
@@ -93,11 +99,21 @@ func (a *AXLive) phase(ctx context.Context, in execution.LiveStart, phase, kind 
 }
 func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.RuntimeHandle, error) {
 	h := execution.RuntimeHandle{RequestID: in.Binding.RequestID}
+	if in.Binding.Operation == "repository.change" && (!a.RepositoryChangeReady() || len(in.Repositories) == 0) {
+		return h, ErrConfiguration
+	}
 	var skillsBundle []byte
 	if in.Binding.Operation == "db-proxy.replace-nodes" {
 		var e error
 		skillsBundle, e = BuildSkillsBundle(ctx, a.Config.SkillsRepository, in.Skills)
 		if e != nil || in.Skills.CommitSHA != in.Binding.SkillsCommit || in.Access.ReplacementScope == nil {
+			return h, ErrConfiguration
+		}
+	}
+	if in.Binding.Operation == "repository.change" {
+		var e error
+		skillsBundle, e = BuildRepositorySkillsBundle(ctx, a.Config.SkillsRepository, in.Skills)
+		if e != nil || in.Skills.CommitSHA != in.Binding.SkillsCommit {
 			return h, ErrConfiguration
 		}
 	}
@@ -149,6 +165,20 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		return h, e
 	}
 	if e = a.phase(ctx, in, "prepare", "prepare", true); e != nil {
+		if in.Binding.Operation == "repository.change" {
+			if raw, readErr := a.read(ctx, in, "/tmp/raptor-private/repository-error.json", 4096); readErr == nil {
+				var failure struct {
+					URL string `json:"url"`
+				}
+				if json.Unmarshal(raw, &failure) == nil {
+					for _, repository := range in.Repositories {
+						if failure.URL == repository.URL {
+							return h, execution.RepositoryPreparationError{URL: failure.URL}
+						}
+					}
+				}
+			}
+		}
 		return h, e
 	}
 	for key, size := range map[string]int64{cp.ArchiveKey: cp.Bytes, cp.ChecksumKey: 64} {
@@ -180,6 +210,27 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		}
 		if e = a.write(ctx, in, "/tmp/raptor-private/model-credential.json", auth); e != nil {
 			return h, e
+		}
+	}
+	if in.Binding.Operation == "repository.change" {
+		token, loadErr := a.PAT.Load(ctx)
+		if loadErr != nil {
+			return h, ErrRuntimeUnavailable
+		}
+		files, fileErr := privatePATFiles(token)
+		clear(token)
+		if fileErr != nil {
+			return h, fileErr
+		}
+		defer func() {
+			for _, raw := range files {
+				clear(raw)
+			}
+		}()
+		for _, path := range []string{"/tmp/raptor-private/github-pat", "/tmp/raptor-private/git-credential-helper", "/tmp/raptor-private/gitconfig", "/tmp/raptor-private/gh/hosts.yml"} {
+			if e = a.write(ctx, in, path, files[path]); e != nil {
+				return h, e
+			}
 		}
 	}
 	if len(skillsBundle) > 0 {
@@ -377,7 +428,15 @@ func (a *AXLive) cleanup(ctx context.Context, record execution.RecoveryRecord) (
 		log.Printf("AX runtime termination intent failure unavailable=%t invalid=%t", errors.Is(e, execution.ErrUnavailable), errors.Is(e, execution.ErrInvalid))
 		return out, e
 	}
-	v, e := a.call(ctx, AXRequest{Action: "remove", Binding: record.Binding})
+	request := AXRequest{Action: "remove", Binding: record.Binding}
+	if record.Binding.Operation == "repository.change" {
+		repositories, readErr := a.Store.RepositorySnapshot(ctx, record.Binding.AttemptID)
+		if readErr != nil || len(repositories) == 0 {
+			return out, ErrTerminationUnconfirmed
+		}
+		request.Repositories = repositories
+	}
+	v, e := a.call(ctx, request)
 	if e != nil || !v.Absent {
 		return out, ErrTerminationUnconfirmed
 	}

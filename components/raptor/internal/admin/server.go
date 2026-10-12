@@ -15,6 +15,7 @@ var adminPages = map[string]adminPage{
 	"/environment-groups": {"Environment groups", "Organize deployment environments under platform groups.", groupPanel, environmentScript, "refreshEnvironments()"},
 	"/environments":       {"Environments", "Manage cloud targets and source repositories for each stage.", environmentListPanel, environmentScript, "refreshEnvironmentPage()"},
 	"/ai-models":          {"AI models", "Connect model providers and configure available models.", `<div id="model-admin"></div>`, modelScript, "refreshModelProviders()"},
+	"/github-pat":         {"GitHub token", "Manage the credential for repository change attempts.", githubPATPanel, githubPATScript, "refreshGitHubPAT()"},
 }
 
 func NewHandler(backendURL string) (http.Handler, error) {

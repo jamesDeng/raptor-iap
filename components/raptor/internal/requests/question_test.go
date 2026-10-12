@@ -57,6 +57,25 @@ func TestQuestionSelectedModelIsBoundAndStaleSelectionRejected(t *testing.T) {
 	}
 }
 
+func TestRepositoryChangeSelectedModelIsBound(t *testing.T) {
+	s, _, u := setup(t)
+	ctx := context.Background()
+	obj, err := s.Catalog.CreateObject(ctx, catalog.CreateObjectInput{Kind: "application", Name: "Git Bound"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ModelPolicy = &selectedModel{enabled: true, version: 7}
+	in := questionInput(t, "change", "gpt-6-sol")
+	in.ProviderID = "codex"
+	in.Object.Code = obj.Code
+	in.EnvCode = "adev"
+	in.Operations = []domain.Operation{{Name: "repository.change", Parameters: map[string]any{"instruction": "Update the manifest"}}}
+	r, err := s.Create(ctx, u, "repo-model-bound", in)
+	if err != nil || r.Definition.ConnectionVersion != 7 {
+		t.Fatalf("model binding lost: %+v %v", r.Definition, err)
+	}
+}
+
 func questionInput(t *testing.T, question, model string) domain.RequestInput {
 	t.Helper()
 	b, _ := json.Marshal(map[string]any{"type": "agent", "object": map[string]string{"kind": "application", "code": "existing"}, "envCode": "rdev.ali", "model": model, "operations": []any{map[string]any{"name": "application.question", "parameters": map[string]string{"question": question}}}})
@@ -65,6 +84,24 @@ func questionInput(t *testing.T, question, model string) domain.RequestInput {
 		t.Fatal(err)
 	}
 	return in
+}
+
+func TestRepositoryChangeRequiresOneBoundInstruction(t *testing.T) {
+	in := questionInput(t, "health?", "gpt-5.6-luna")
+	in.Operations = []domain.Operation{{Name: "repository.change", Parameters: map[string]any{"instruction": "Update the Terraform module"}}}
+	s := &Service{}
+	if err := s.Validate(in); err != nil {
+		t.Fatalf("valid change rejected: %v", err)
+	}
+	in.Operations[0].Parameters["instruction"] = " "
+	if err := s.Validate(in); err == nil {
+		t.Fatal("blank change accepted")
+	}
+	in.Operations[0].Parameters["instruction"] = "Update the Terraform module"
+	in.Operations = append(in.Operations, in.Operations[0])
+	if err := s.Validate(in); err == nil {
+		t.Fatal("multiple change operations accepted")
+	}
 }
 func TestQuestionUnicodeAndModelValidation(t *testing.T) {
 	s := &Service{}

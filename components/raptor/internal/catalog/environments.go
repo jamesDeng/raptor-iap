@@ -128,6 +128,7 @@ func (s *Service) saveStructuredEnvironment(ctx context.Context, v domain.Enviro
 	// new structured submissions must provide complete repository metadata.
 	if v.Config == nil {
 		seen := map[string]bool{}
+		branches := map[string]string{}
 		for _, r := range v.Repositories {
 			unchanged := false
 			for _, old := range previousRepos {
@@ -140,7 +141,11 @@ func (s *Service) saveStructuredEnvironment(ctx context.Context, v domain.Enviro
 			if seen[identity] || (!unchanged && !validRepository(r)) {
 				return domain.ErrInvalid
 			}
+			if branch, ok := branches[r.URL]; ok && branch != r.BaseBranch {
+				return domain.ErrInvalid
+			}
 			seen[identity] = true
+			branches[r.URL] = r.BaseBranch
 		}
 	}
 	if !validConfig(v.Config) {

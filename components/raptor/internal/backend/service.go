@@ -39,6 +39,14 @@ func (s *Server) RegisterService(user, password string) {
 		e := s.GitHub.AttachPR(r.Context(), r.PathValue("id"), in)
 		httpx.Result(w, 201, map[string]bool{"attached": e == nil}, e)
 	})
+	wrap("POST /v1/requests/{id}/bound-pull-requests", func(w http.ResponseWriter, r *http.Request) {
+		var in githubservice.BoundPRInput
+		if !httpx.Decode(w, r, &in) {
+			return
+		}
+		e := s.GitHub.AttachBoundPR(r.Context(), r.PathValue("id"), in)
+		httpx.Result(w, 201, map[string]bool{"attached": e == nil}, e)
+	})
 	wrap("POST /v1/requests/{id}/pause", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Reason string `json:"reason"`

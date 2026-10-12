@@ -6,10 +6,73 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type fixturePAT struct{ token []byte }
+
+func (f fixturePAT) Load(context.Context) ([]byte, error) {
+	return append([]byte(nil), f.token...), nil
+}
+func TestAXRepositoryChangeStagesPATOnlyInPrivateFiles(t *testing.T) {
+	a, f, in := axFixture(t)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		out, e := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
+		if e != nil {
+			t.Fatal(e, string(out))
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init")
+	git("config", "user.name", "fixture")
+	git("config", "user.email", "fixture@example.invalid")
+	if err = os.MkdirAll(filepath.Join(root, "agent-skills/repository-change"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "agent-skills/repository-change/SKILL.md"), []byte("---\nname: repository-change\n---\nfixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-m", "fixture")
+	commit := git("rev-parse", "HEAD")
+	git("tag", "skills-v1.0.0")
+	a.Config.SkillsRepository = root
+	in.Skills = execution.SkillsVersion{Tag: "skills-v1.0.0", CommitSHA: commit}
+	b := in.Binding
+	b.Operation = "repository.change"
+	b.SkillsCommit = commit
+	b.DefinitionSHA256 = strings.Repeat("a", 64)
+	in.Binding = b
+	in.Access.Binding = b
+	in.Repositories = []execution.RepositorySnapshot{{EnvironmentCode: b.EnvCode, Purpose: "terraform", URL: "https://github.com/example/infra.git", Directory: ".", BaseBranch: "main", BaseCommit: strings.Repeat("a", 40)}}
+	raw, _ := json.Marshal(b)
+	a.Store.Pool.Exec(context.Background(), "UPDATE gateway.attempts SET binding=$2,definition_sha256=$3 WHERE id=$1", b.AttemptID, raw, b.DefinitionSHA256)
+	a.PAT = fixturePAT{token: []byte("github_pat_private_fixture")}
+	_, err = a.Start(context.Background(), in)
+	if err != nil {
+		t.Fatalf("repository start: %v", err)
+	}
+	if string(f.files["/tmp/raptor-private/github-pat"]) != "github_pat_private_fixture" {
+		t.Fatal("PAT not staged privately")
+	}
+	for _, call := range f.calls {
+		if call.Action != "write" && strings.Contains(string(call.Data), "github_pat_private_fixture") {
+			t.Fatal("PAT in bridge non-write request")
+		}
+		if call.Binding.Operation == "repository.change" && len(call.Repositories) != 1 {
+			t.Fatal("snapshot omitted from bridge request")
+		}
+	}
+}
 
 type fixtureBridge struct {
 	calls             []AXRequest
@@ -32,7 +95,7 @@ func (f *fixtureBridge) Call(_ context.Context, r AXRequest) (AXResponse, error)
 	case "poll":
 		return AXResponse{Terminal: r.Phase != "inference" || f.inferenceTerminal, ExitCode: f.exitCode}, nil
 	case "write":
-		f.files[r.Path] = r.Data
+		f.files[r.Path] = append([]byte(nil), r.Data...)
 	case "read":
 		v, ok := f.files[r.Path]
 		if !ok {
