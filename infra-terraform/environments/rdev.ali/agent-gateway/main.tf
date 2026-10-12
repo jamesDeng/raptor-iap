@@ -4,6 +4,7 @@ module "gateway" {
   team_id                   = "db28b89e-6cbd-53f8-a4a3-c33600d52aa7"
   volume_id                 = "34381ac2-c693-45d9-9a24-9ddbf7b91da2"
   bucket                    = "raptor-pi-auth-1360282071200743-20261004"
+  github_pat_bucket         = "raptor-rdev-github-pat-1360282071200743"
   gitops_state_bucket       = "raptor-iap-tfstate-sg-200743"
   gitops_plan_role          = "raptor-iap-rdev-plan"
   gitops_apply_role         = "raptor-iap-rdev-apply"

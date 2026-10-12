@@ -47,6 +47,12 @@ conversation:
 modelProviders:
   enabled: false
   credentialKeySecretName: ''
+githubPAT:
+  enabled: false
+  bucket: ''
+  roleARN: ''
+  providerARN: ''
+  authSecretName: ''
 progress:
   publicURL: ''
   origins: ''
