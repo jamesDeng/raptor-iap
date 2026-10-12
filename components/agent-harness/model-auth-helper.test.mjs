@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {PassThrough} from 'node:stream';
+import {createInterface} from 'node:readline';
 import {runLogin} from './model-auth-helper.mjs';
+import * as authHelper from './model-auth-helper.mjs';
 
 test('Codex helper selects device code and emits only a challenge then credential',async()=>{
  const lines=[];
@@ -38,4 +41,13 @@ test('browser login emits authorization URL and accepts one pasted redirect URL'
  assert.equal(lines[0].authorizationUrl,'https://auth.openai.com/oauth/authorize?state=state-1');
  const remaining=Date.parse(lines[0].expiresAt)-Date.now();
  assert.ok(remaining>14*60*1000&&remaining<=15*60*1000,'browser challenge allows fifteen minutes to sign in');
+});
+
+test('browser callback line resolves before closing stdin',async()=>{
+ assert.equal(typeof authHelper.readRedirectFromInput,'function');
+ const stream=new PassThrough();
+ const input=createInterface({input:stream,terminal:false});
+ const result=authHelper.readRedirectFromInput(input);
+ stream.end('http://localhost:1455/auth/callback?code=fixture&state=fixture\n');
+ assert.equal(await result,'http://localhost:1455/auth/callback?code=fixture&state=fixture');
 });
