@@ -1,4 +1,4 @@
-import os,shutil,subprocess,unittest,yaml,pathlib
+import os,shutil,subprocess,tempfile,unittest,yaml,pathlib
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 class LiveManifest(unittest.TestCase):
  def render(self,live,restart=None,ax=False,observer=False,replacement=False,scope=None):
@@ -37,6 +37,24 @@ class LiveManifest(unittest.TestCase):
    mount=next(v for v in pod['containers'][0]['volumeMounts'] if v['name']=='skills-repository')
    self.assertEqual(mount['mountPath'],'/repo');self.assertTrue(mount['readOnly'])
    self.assertTrue(any(v['name']=='skills-repository' and 'emptyDir' in v for v in pod['volumes']))
+ def test_repository_init_can_run_again_in_same_volume(self):
+  docs=self.render(True,observer=True)
+  with tempfile.TemporaryDirectory() as directory:
+   source=pathlib.Path(directory)/'source';source.mkdir()
+   subprocess.run(['git','init','-q',str(source)],check=True)
+   (source/'README').write_text('test')
+   subprocess.run(['git','-C',str(source),'add','README'],check=True)
+   subprocess.run(['git','-C',str(source),'-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','initial'],check=True)
+   revision=subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()
+   for service,init_name in [('raptor-backend','repository'),('agent-gateway','skills-repository')]:
+    with self.subTest(service=service):
+     pod=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']==service)['spec']['template']['spec']
+     clone=next(c for c in pod['initContainers'] if c['name']==init_name)
+     checkout=pathlib.Path(directory)/service/'source';checkout.parent.mkdir()
+     command=clone['args'][0].replace('https://github.com/jamesDeng/raptor-iap.git',str(source)).replace('/repo/source',str(checkout))
+     for _ in range(2):
+      result=subprocess.run(['/bin/sh','-ec',command],env={**os.environ,'SOURCE_REVISION':revision},capture_output=True,text=True)
+      self.assertEqual(result.returncode,0,result.stderr)
  def test_observation_route_exposes_only_fixed_authenticated_post(self):
   for enabled in (False,True):
    docs=self.render(True,observer=enabled)
