@@ -55,18 +55,3 @@ resource "alicloud_ram_role_policy_attachment" "checkpoint" {
   policy_type = "Custom"
   lifecycle { prevent_destroy = true }
 }
-resource "alicloud_ram_policy" "github_pat_read" {
-  count           = var.github_pat_bucket == "" ? 0 : 1
-  policy_name     = "raptor-rdev-gateway-github-pat-read"
-  description     = "Read only dedicated GitHub PAT objects for repository change attempts"
-  policy_document = jsonencode({ Version = "1", Statement = [{ Effect = "Allow", Action = ["oss:GetObject"], Resource = ["acs:oss:*:${var.account_id}:${var.github_pat_bucket}/github-pat/*"] }] })
-  depends_on      = [terraform_data.guard]
-  lifecycle { prevent_destroy = true }
-}
-resource "alicloud_ram_role_policy_attachment" "github_pat_read" {
-  count       = var.github_pat_bucket == "" ? 0 : 1
-  role_name   = alicloud_ram_role.controller.role_name
-  policy_name = alicloud_ram_policy.github_pat_read[0].policy_name
-  policy_type = "Custom"
-  lifecycle { prevent_destroy = true }
-}

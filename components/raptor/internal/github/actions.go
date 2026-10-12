@@ -56,6 +56,9 @@ func (s *Service) actionState(ctx context.Context, repository, sha string) strin
 		return "unavailable"
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	if s.authorize(ctx, req) != nil {
+		return "unavailable"
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "unavailable"

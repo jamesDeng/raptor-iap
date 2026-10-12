@@ -45,6 +45,7 @@ func (s *Server) ConfigureModelProviders(key []byte, nodePath, helperPath string
 
 func (s *Server) ConfigureGitHubCredentials(secrets githubcredentials.SecretStore, verify func(context.Context, string) (string, error), gateway auth.Credentials) {
 	s.GitHubCredentials = &githubcredentials.HTTPService{Service: &githubcredentials.Service{Pool: s.Requests.Pool, Secrets: secrets, Verify: verify}}
+	s.GitHub.Tokens = s.GitHubCredentials.Service
 	s.GitHubCredentials.Register(s.Mux, s.Auth, gateway)
 }
 

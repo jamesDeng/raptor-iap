@@ -37,11 +37,3 @@ run "reject_wrong_account" {
   }
   expect_failures = [terraform_data.guard]
 }
-run "github_pat_read_is_prefix_only" {
-  command = plan
-  variables { github_pat_bucket = "raptor-rdev-github-pat-1360282071200743" }
-  assert {
-    condition     = jsondecode(alicloud_ram_policy.github_pat_read[0].policy_document).Statement[0].Action == ["oss:GetObject"] && jsondecode(alicloud_ram_policy.github_pat_read[0].policy_document).Statement[0].Resource == ["acs:oss:*:1360282071200743:raptor-rdev-github-pat-1360282071200743/github-pat/*"]
-    error_message = "Gateway may read only PAT objects in the dedicated bucket."
-  }
-}

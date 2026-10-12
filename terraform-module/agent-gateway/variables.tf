@@ -9,10 +9,6 @@ variable "account_id" {
 variable "team_id" { type = string }
 variable "volume_id" { type = string }
 variable "bucket" { type = string }
-variable "github_pat_bucket" {
-  type    = string
-  default = ""
-}
 variable "rrsa_enabled" {
   type    = bool
   default = false

@@ -17,11 +17,31 @@ import (
 type SnapshotReader interface {
 	RepositorySnapshot(context.Context, string, string) ([]requests.RepositorySnapshot, error)
 }
+type TokenReader interface {
+	Load(context.Context) ([]byte, error)
+}
 type Service struct {
 	Pool      *pgxpool.Pool
 	Snapshots SnapshotReader
 	Client    *http.Client
+	Tokens    TokenReader
 }
+
+func (s *Service) authorize(ctx context.Context, req *http.Request) error {
+	if s.Tokens == nil {
+		return nil
+	}
+	token, err := s.Tokens.Load(ctx)
+	if err != nil || len(token) == 0 {
+		return domain.ErrUnavailable
+	}
+	req.Header.Set("Authorization", "Bearer "+string(token))
+	for i := range token {
+		token[i] = 0
+	}
+	return nil
+}
+
 type PRInput struct {
 	Repository string `json:"repository"`
 	Number     int    `json:"number"`
@@ -67,6 +87,9 @@ func (s *Service) AttachBoundPR(ctx context.Context, request string, in BoundPRI
 		return domain.ErrUnavailable
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	if err = s.authorize(ctx, req); err != nil {
+		return err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return domain.ErrUnavailable
