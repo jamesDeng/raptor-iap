@@ -356,6 +356,7 @@ func (a *AXLive) publish(ctx context.Context, in execution.LiveStart, t *termina
 	c := t.Checkpoint
 	expected := a.Config.BucketPrefix + "/lifecycle/" + in.Binding.AttemptID
 	if c.ArchiveKey != expected+".tgz" || c.ChecksumKey != expected+".sha256" || c.Bytes < 1 || c.Bytes > 16*1024*1024 || c.PiVersion != "0.99.2" || len(c.SHA256) != 64 {
+		log.Printf("AX checkpoint metadata archive=%t checksum=%t bytes=%t version=%t digest=%t", c.ArchiveKey == expected+".tgz", c.ChecksumKey == expected+".sha256", c.Bytes >= 1 && c.Bytes <= 16*1024*1024, c.PiVersion == "0.99.2", len(c.SHA256) == 64)
 		return fail("metadata")
 	}
 	writer, ok := a.Verifier.Objects.(ObjectWriter)
