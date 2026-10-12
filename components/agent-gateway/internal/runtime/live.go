@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -235,32 +234,26 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 		}
 	}
 	if n.Config.Validate() != nil || in.Access.Binding != b || in.Access.RaptorMcpURL != n.Config.RaptorMcpURL || in.Access.InfraMcpURL != n.Config.InfraMcpURL || len(in.Access.Credential) < 32 || !in.Deadline.After(time.Now()) {
-		log.Printf("live preparation failed request=%s stage=config", b.RequestID)
 		return h, ErrConfiguration
 	}
 	observation, e := n.prepareObservation(ctx, in)
 	if e != nil {
-		log.Printf("live preparation failed request=%s stage=observation", b.RequestID)
 		return h, e
 	}
 	if _, e := n.Verifier.VerifyCheckpoint(ctx, in.Checkpoint); e != nil {
-		log.Printf("live preparation failed request=%s stage=checkpoint", b.RequestID)
 		return h, e
 	}
 	var modelLease ModelLease
 	if b.ProviderID != "" {
 		if n.ModelCredentials == nil {
-			log.Printf("live preparation failed request=%s stage=model-client", b.RequestID)
 			return h, ErrConfiguration
 		}
 		if e := n.fence(ctx, b.AttemptID); e != nil {
-			log.Printf("live preparation failed request=%s stage=model-fence", b.RequestID)
 			return h, e
 		}
 		var e error
 		modelLease, e = n.ModelCredentials.Lease(ctx, b)
 		if e != nil {
-			log.Printf("live preparation failed request=%s stage=model-lease", b.RequestID)
 			return h, e
 		}
 	}
@@ -275,7 +268,6 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	r := &nativeRun{start: in, cancel: cancelAttempt, skillsBundle: skillsBundle, observation: observation, modelLease: modelLease}
 	n.runs[b.RequestID] = r
 	if e := n.intent(ctx, b, "key", "raptor-"+b.AttemptID); e != nil {
-		log.Printf("live preparation failed request=%s stage=key-intent", b.RequestID)
 		return h, e
 	}
 	key, e := n.managementFor(b).CreateKey(ctx, "raptor-"+b.AttemptID, in.Deadline)

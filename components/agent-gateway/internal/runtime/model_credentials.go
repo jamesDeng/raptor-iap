@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,11 +23,23 @@ type ModelCredentialClient interface {
 	Refresh(context.Context, execution.AttemptBinding, int64, json.RawMessage) (int64, error)
 	Valid(context.Context, execution.AttemptBinding) error
 }
-type HTTPModelCredentials struct{ BaseURL, Username, Password string }
+type HTTPModelCredentials struct {
+	BaseURL, Username, Password string
+	AllowClusterHTTP            bool
+}
+
+func (c HTTPModelCredentials) validURL() bool {
+	u, err := url.Parse(c.BaseURL)
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	loopback := u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")
+	cluster := c.AllowClusterHTTP && u.Scheme == "http" && u.Host == "raptor-open-api:8872"
+	return u.Scheme == "https" || loopback || cluster
+}
 
 func (c HTTPModelCredentials) call(ctx context.Context, route string, payload any, out any) error {
-	u, err := url.Parse(c.BaseURL)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"))) || c.Username == "" || c.Password == "" {
+	if !c.validURL() || c.Username == "" || c.Password == "" {
 		return ErrConfiguration
 	}
 	body, err := json.Marshal(payload)
@@ -44,12 +55,10 @@ func (c HTTPModelCredentials) call(ctx context.Context, route string, payload an
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(r)
 	if err != nil {
-		log.Printf("model credential service unavailable route=%s stage=transport", route)
 		return ErrRuntimeUnavailable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		log.Printf("model credential service unavailable route=%s status=%d", route, resp.StatusCode)
 		return ErrRuntimeUnavailable
 	}
 	var envelope struct {

@@ -132,7 +132,7 @@ func main() {
 		defer lease.Close()
 		owner := execution.NewID()
 		raptor := execution.HTTPRaptor{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
-		modelCredentials := runtimeadapter.HTTPModelCredentials{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
+		modelCredentials := runtimeadapter.HTTPModelCredentials{BaseURL: os.Getenv("RAPTOR_MODEL_CREDENTIALS_URL"), Username: user, Password: password, AllowClusterHTTP: os.Getenv("RAPTOR_CLUSTER_HTTP") == "true"}
 		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe, Observations: observations}
 		s.ResolveLiveDecision = raptor.ResolveLiveDecision
 		backends := map[string]execution.LiveRuntime{"aliyun": adapter}

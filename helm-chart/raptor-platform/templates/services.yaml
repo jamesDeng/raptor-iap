@@ -187,6 +187,7 @@ spec:
               value: {{ if $.Values.gatewayLive.enabled }}'live'{{ else }}'disabled'{{ end }}
             {{ if $.Values.gatewayLive.enabled }}
             - {name: GATEWAY_LIVE_CONFIG_FILE, value: '/run/raptor/live/config.json'}
+            - {name: RAPTOR_MODEL_CREDENTIALS_URL, value: 'http://raptor-open-api:8872'}
             - {name: GATEWAY_CONTROLLER_CREDENTIAL_MODE, value: {{ $.Values.gatewayLive.credentialMode | quote }}}
             {{ if eq $.Values.gatewayLive.credentialMode "static-sts" }}
             - {name: GATEWAY_CONTROLLER_CREDENTIAL_FILE, value: '/run/raptor/live/credential.json'}

@@ -49,3 +49,24 @@ func TestModelCredentialClientBindsPrivateRouteAndRejectsRedirect(t *testing.T) 
 		t.Fatal("redirect or secret-bearing error accepted")
 	}
 }
+
+func TestModelCredentialURLAllowsOnlyExplicitClusterServiceOverHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		url     string
+		cluster bool
+		valid   bool
+	}{
+		{"http://raptor-open-api:8872", false, false},
+		{"http://raptor-open-api:8872", true, true},
+		{"http://raptor-backend:8871", true, false},
+		{"http://raptor-open-api:8872/other", true, false},
+		{"http://raptor-open-api:8872?target=external", true, false},
+		{"http://example.com", true, false},
+		{"https://api.example.com", false, true},
+	} {
+		client := HTTPModelCredentials{BaseURL: tc.url, AllowClusterHTTP: tc.cluster}
+		if got := client.validURL(); got != tc.valid {
+			t.Errorf("URL %q with cluster=%t: valid=%t, want %t", tc.url, tc.cluster, got, tc.valid)
+		}
+	}
+}
