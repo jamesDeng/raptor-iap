@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
+	"log"
 	"strings"
 	"time"
 )
@@ -33,6 +34,7 @@ func (a *AXLive) call(ctx context.Context, r AXRequest) (AXResponse, error) {
 		return AXResponse{}, ErrConfiguration
 	}
 	if e := a.fence(ctx, r.Binding.AttemptID); e != nil {
+		log.Printf("AX runtime fence failure action=%s unavailable=%t invalid=%t", r.Action, errors.Is(e, execution.ErrUnavailable), errors.Is(e, execution.ErrInvalid))
 		return AXResponse{}, e
 	}
 	return a.Bridge.Call(ctx, r)
@@ -372,6 +374,7 @@ func (a *AXLive) cleanup(ctx context.Context, record execution.RecoveryRecord) (
 		return execution.LiveCleanup{SandboxAbsent: true, KeyAbsent: true}, nil
 	}
 	if e := a.intent(ctx, record.Binding, "terminate", record.Binding.AttemptID); e != nil {
+		log.Printf("AX runtime termination intent failure unavailable=%t invalid=%t", errors.Is(e, execution.ErrUnavailable), errors.Is(e, execution.ErrInvalid))
 		return out, e
 	}
 	v, e := a.call(ctx, AXRequest{Action: "remove", Binding: record.Binding})

@@ -104,6 +104,7 @@ func (c *AXClient) Call(ctx context.Context, in AXRequest) (AXResponse, error) {
 	d.DisallowUnknownFields()
 	var extra any
 	if d.Decode(&out) != nil || d.Decode(&extra) != io.EOF {
+		log.Printf("AX runtime invalid response action=%s status=%d", in.Action, resp.StatusCode)
 		return AXResponse{}, ErrRuntimeUnavailable
 	}
 	if resp.StatusCode == 404 && out.Error == "ResourceAbsent" {
