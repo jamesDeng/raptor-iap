@@ -50,7 +50,10 @@ func TestAdminPages(t *testing.T) {
 			if !strings.Contains(body, `href="`+active+`" aria-current="page"`) {
 				t.Fatal("active navigation missing")
 			}
-			if !strings.Contains(body, "refresh().then(()=>refreshPage()).catch(()=>{});") || !strings.Contains(body, "async function refreshPage()") {
+			if !strings.Contains(body, `id="sign-in-section" hidden`) || !strings.Contains(body, `id="loading-section" role="status"`) {
+				t.Fatal("session check should be visible before sign-in")
+			}
+			if !strings.Contains(body, "refresh().then(()=>refreshPage().catch(x=>{") || !strings.Contains(body, "async function refreshPage()") {
 				t.Fatal("page refresh missing")
 			}
 		})
