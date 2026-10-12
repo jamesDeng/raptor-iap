@@ -74,6 +74,11 @@ func ParseLiveOperation(in ExecutionInput, attempt string) (AttemptBinding, Live
 		if !b.valid() || b.ObjectKind != "application" || len(op.Parameters) != 1 || json.Unmarshal(op.Parameters["question"], &op.Question) != nil || op.Question == "" || !utf8.ValidString(op.Question) || utf8.RuneCountInString(op.Question) > 2000 || len(op.Question) > 8192 {
 			return AttemptBinding{}, LiveOperationInput{}, ErrInvalid
 		}
+	case "repository.change":
+		var instruction string
+		if !b.repositoryChangeValid() || len(op.Parameters) != 1 || json.Unmarshal(op.Parameters["instruction"], &instruction) != nil || instruction == "" || !utf8.ValidString(instruction) || utf8.RuneCountInString(instruction) > 2000 || len(instruction) > 8192 {
+			return AttemptBinding{}, LiveOperationInput{}, ErrInvalid
+		}
 	case "db-proxy.replace-nodes":
 		if len(op.Parameters) > 0 {
 			if len(op.Parameters) != 1 || json.Unmarshal(op.Parameters["mode"], &b.ExecutionMode) != nil || (b.ExecutionMode != "qualification" && b.ExecutionMode != "replacement") {

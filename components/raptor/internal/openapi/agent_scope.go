@@ -43,6 +43,10 @@ func (p agentPrincipal) check(ctx context.Context, tool string, selectors map[st
 		if out.ReplacementScope == nil || !agentaccess.ReplacementSelectorsAllowed(*out.Binding, *out.ReplacementScope, "raptor", tool, selectors) {
 			return nil, errors.New("Forbidden")
 		}
+	} else if out.Binding.Operation == "repository.change" {
+		if !agentaccess.RepositorySelectorsAllowed(*out.Binding, "raptor", tool, selectors) {
+			return nil, errors.New("Forbidden")
+		}
 	} else if !agentaccess.SelectorsAllowed(*out.Binding, "raptor", tool, selectors) {
 		return nil, errors.New("Forbidden")
 	}

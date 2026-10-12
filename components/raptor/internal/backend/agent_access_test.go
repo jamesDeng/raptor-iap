@@ -125,6 +125,28 @@ func TestOpaqueAttemptScopeAndRevocation(t *testing.T) {
 		t.Fatal("revoked attempt resurrected")
 	}
 }
+
+func TestRepositoryChangeAccessDoesNotRequireReplacementScope(t *testing.T) {
+	s, original, _ := accessFixture(t)
+	in := original.Definition
+	in.Operations = []domain.Operation{{Name: "repository.change", Parameters: map[string]any{"instruction": "Update Terraform config"}}}
+	r, err := s.Requests.Create(context.Background(), domain.User{ID: domain.NewID()}, "repo-change", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(r.Definition)
+	var canonical map[string]any
+	json.Unmarshal(raw, &canonical)
+	raw, _ = json.Marshal(canonical)
+	sum := sha256.Sum256(raw)
+	token := issued(t, s, r, hex.EncodeToString(sum[:]), domain.NewID(), time.Now().UTC().Add(5*time.Minute))
+	if !active(t, introspection(s, token, "raptor", "request_get", map[string]string{"requestId": r.ID})) {
+		t.Fatal("repository context denied")
+	}
+	if active(t, introspection(s, token, "infra", "cloud_identity_get", map[string]string{"envCode": "rdev.ali"})) {
+		t.Fatal("repository change gained Infra access")
+	}
+}
 func TestOpaqueIssuanceFingerprintExpiryAndPrivateCaller(t *testing.T) {
 	s, r, hash := accessFixture(t)
 	for _, tc := range []struct {
@@ -153,7 +175,7 @@ func TestOpaqueRotationExpiryAndRevocationTombstone(t *testing.T) {
 	s, r, hash := accessFixture(t)
 	ctx := context.Background()
 	attempt := domain.NewID()
-	expiry := time.Now().UTC().Truncate(time.Microsecond).Add(5 * time.Minute + 123*time.Nanosecond)
+	expiry := time.Now().UTC().Truncate(time.Microsecond).Add(5*time.Minute + 123*time.Nanosecond)
 	first := issued(t, s, r, hash, attempt, expiry)
 	second := issued(t, s, r, hash, attempt, expiry)
 	if first == second {

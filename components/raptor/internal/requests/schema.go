@@ -80,7 +80,7 @@ func (s *Service) Validate(in domain.RequestInput) error {
 		if op.Name == "db-proxy.replace-nodes" && in.Model != "gpt-5.6-luna" {
 			return domain.ErrInvalid
 		}
-		if (op.Name == "application.question" || op.Name == "db-proxy.replace-nodes") && (len(in.Operations) != 1 || (s.ModelPolicy == nil && in.Model != "gpt-5.6-luna") || (s.ModelPolicy != nil && (in.ProviderID != "codex" || in.Model == ""))) {
+		if (op.Name == "application.question" || op.Name == "repository.change" || op.Name == "db-proxy.replace-nodes") && (len(in.Operations) != 1 || (s.ModelPolicy == nil && in.Model != "gpt-5.6-luna") || (s.ModelPolicy != nil && (in.ProviderID != "codex" || in.Model == ""))) {
 			return domain.ErrInvalid
 		}
 	}

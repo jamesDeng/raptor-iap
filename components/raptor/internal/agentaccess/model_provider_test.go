@@ -21,3 +21,27 @@ func TestQuestionAcceptsBoundCodexModel(t *testing.T) {
 		t.Fatal("unbound Codex Request was accepted")
 	}
 }
+
+func TestRepositoryChangeHasSeparateSupportedBinding(t *testing.T) {
+	def := domain.RequestInput{Type: "agent", Model: "gpt-5.6-luna", Object: domain.ObjectRef{Kind: "application"}, Operations: []domain.Operation{{Name: "repository.change", Parameters: map[string]any{"instruction": "Update config"}}}, Skills: domain.SkillsVersion{CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	if !supported(def) || question(def) {
+		t.Fatal("repository change was not admitted separately from question")
+	}
+	def.Operations[0].Name = "application.question"
+	if !question(def) {
+		t.Fatal("question binding changed")
+	}
+}
+
+func TestRepositoryChangeSelectorsExcludeInfra(t *testing.T) {
+	b := Binding{Operation: "repository.change", RequestID: "request", EnvCode: "rdev.ali", ObjectKind: "application", ObjectCode: "app"}
+	if !RepositorySelectorsAllowed(b, "raptor", "environment_get", map[string]string{"requestId": "request", "envCode": "rdev.ali"}) {
+		t.Fatal("bound environment read denied")
+	}
+	if RepositorySelectorsAllowed(b, "infra", "cloud_identity_get", map[string]string{"envCode": "rdev.ali"}) {
+		t.Fatal("Git operation received Infra API access")
+	}
+	if RepositorySelectorsAllowed(b, "raptor", "environment_get", map[string]string{"requestId": "other", "envCode": "rdev.ali"}) {
+		t.Fatal("foreign request accepted")
+	}
+}

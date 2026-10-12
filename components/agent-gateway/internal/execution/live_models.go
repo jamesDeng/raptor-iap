@@ -124,6 +124,11 @@ func (b AttemptBinding) valid() bool {
 	return b.ExecutionMode == "" && b.RequestID != "" && b.AttemptID != "" && b.Operation == "application.question" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && modelValid
 }
 
+func (b AttemptBinding) repositoryChangeValid() bool {
+	modelValid := (b.ProviderID == "" && b.ConnectionVersion == 0 && b.Model == "gpt-5.6-luna") || (b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))
+	return b.RequestID != "" && b.AttemptID != "" && b.Operation == "repository.change" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && shaPattern.MatchString(b.DefinitionSHA256) && modelValid
+}
+
 // Journal persistence supports both implemented profiles; live admission remains
 // separately gated by ParseLiveQuestion until replacement rollout is qualified.
 func (b AttemptBinding) journalValid() bool {
