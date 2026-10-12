@@ -8,10 +8,13 @@ def safe(path):
  if any(x.is_symlink() for x in (p,*p.parents)):raise ValueError('UnsafePath')
  return p
 
-def auth_valid(data):
+def auth_valid(data,provider=None):
  try:
-  value=json.loads(data);c=value['openai']
-  if not isinstance(value,dict) or c.get('type')!='oauth' or not isinstance(c.get('access'),str) or not c['access'] or not isinstance(c.get('refresh'),str) or not c['refresh'] or type(c.get('expires')) not in (int,float):raise ValueError()
+  value=json.loads(data)
+  if not isinstance(value,dict):raise ValueError()
+  key=provider or ('openai-codex' if 'openai-codex' in value else 'openai')
+  c=value[key]
+  if c.get('type')!='oauth' or not isinstance(c.get('access'),str) or not c['access'] or not isinstance(c.get('refresh'),str) or not c['refresh'] or type(c.get('expires')) not in (int,float):raise ValueError()
  except (ValueError,KeyError,TypeError,AttributeError):raise ValueError('InvalidAuthRecord') from None
 
 def pack_state(root,archive,limit=LIMIT):
@@ -71,7 +74,7 @@ def restore_state(archive,root,expected_sha256,limit=LIMIT):
 def pack_auth(root,archive,limit=LIMIT):
  root=safe(root);archive=safe(archive);source=safe(root/'auth.json')
  if not source.is_file() or source.stat().st_size>limit:raise ValueError('InvalidAuthRecord')
- data=source.read_bytes();auth_valid(data)
+ data=source.read_bytes();auth_valid(data,'openai')
  # Preserve the issued OpenAI OAuth record, never unrelated providers.
  data=json.dumps({'openai':json.loads(data)['openai']}).encode()
  with archive.open('xb') as f:
