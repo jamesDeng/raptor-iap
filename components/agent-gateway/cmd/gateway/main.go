@@ -136,12 +136,23 @@ func main() {
 		adapter := &runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe, Observations: observations}
 		s.ResolveLiveDecision = raptor.ResolveLiveDecision
 		backends := map[string]execution.LiveRuntime{"aliyun": adapter}
+		repositoryChangeEnabled := os.Getenv("GATEWAY_REPOSITORY_CHANGE_ENABLED") == "true"
+		if repositoryChangeEnabled && (config.AX == nil || config.Provider != "ax") {
+			log.Fatal("repository changes require AX as the live runtime")
+		}
 		if config.AX != nil {
 			bridge, err := runtimeadapter.NewAXClient(*config.AX)
 			if err != nil {
 				log.Fatal("AX private transport configuration invalid")
 			}
-			backends["ax"] = &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe, Observations: observations}, Bridge: bridge}
+			axLive := &runtimeadapter.AXLive{NativeLive: runtimeadapter.NativeLive{Config: config, Management: management, Verifier: verifier, Store: s, Owner: owner, Lease: lease, ModelCredentials: modelCredentials, Observe: observe, Observations: observations}, Bridge: bridge}
+			if repositoryChangeEnabled {
+				if os.Getenv("GATEWAY_GITHUB_PAT_USERNAME") == "" || os.Getenv("GATEWAY_GITHUB_PAT_PASSWORD") == "" || os.Getenv("RAPTOR_BACKEND_URL") == "" {
+					log.Fatal("repository credential delivery unavailable")
+				}
+				axLive.PAT = runtimeadapter.PrivatePATClient{BaseURL: os.Getenv("RAPTOR_BACKEND_URL"), Username: os.Getenv("GATEWAY_GITHUB_PAT_USERNAME"), Password: os.Getenv("GATEWAY_GITHUB_PAT_PASSWORD"), AllowClusterHTTP: true}
+			}
+			backends["ax"] = axLive
 		}
 		s.ConversationEnabled = os.Getenv("GATEWAY_CONVERSATION_ENABLED") == "true"
 		s.ConversationRuntime = true
@@ -150,6 +161,9 @@ func main() {
 		if config.QualificationEnabled {
 			scope := config.ReplacementObserver.Scope
 			worker.QualificationScope = &scope
+		}
+		if repositoryChangeEnabled {
+			worker.RepositoryResolver = execution.NewGitHubBranchResolver()
 		}
 		if config.ReplacementEnabled {
 			scope := config.ReplacementObserver.Scope

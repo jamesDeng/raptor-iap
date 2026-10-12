@@ -10,6 +10,7 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	githubservice "github.com/jamesDeng/raptor-iap/components/raptor/internal/github"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/githubcredentials"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/modelproviders"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/skills"
@@ -57,6 +58,15 @@ func New(p *pgxpool.Pool) *Server {
 	s.Approvals = &approvals.Service{Pool: p}
 	s.Approvals.RegisterBrowser(s.Mux, s.Auth)
 	s.GitHub = &githubservice.Service{Pool: p}
+	s.Mux.Handle("GET /api/v1/requests/{id}/pull-request-actions", s.Auth.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, e := s.Requests.Get(r.Context(), r.PathValue("id"))
+		if e != nil {
+			httpx.Result(w, 200, nil, e)
+			return
+		}
+		states, e := s.GitHub.PRActionStates(r.Context(), r.PathValue("id"))
+		httpx.Result(w, 200, states, e)
+	})))
 	s.Skills = &skills.Service{Pool: p}
 	s.Skills.Register(s.Mux, s.Auth)
 	s.Requests.ResolveSkills = s.Skills.Validate

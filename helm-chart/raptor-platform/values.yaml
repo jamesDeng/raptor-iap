@@ -53,6 +53,8 @@ githubPAT:
   roleARN: ''
   providerARN: ''
   authSecretName: ''
+repositoryChange:
+  enabled: false
 progress:
   publicURL: ''
   origins: ''

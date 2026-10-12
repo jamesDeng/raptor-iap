@@ -3,7 +3,6 @@ package execution
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -21,6 +20,11 @@ type RepositorySnapshot struct {
 	BaseBranch      string `json:"baseBranch"`
 	BaseCommit      string `json:"baseCommit"`
 }
+type RepositoryPreparationError struct{ URL string }
+
+func (e RepositoryPreparationError) Error() string               { return "repository unavailable: " + e.URL }
+func (e RepositoryPreparationError) PublicRepositoryURL() string { return e.URL }
+
 type BaseCommitResolver interface {
 	Resolve(context.Context, string, string) (string, error)
 }
@@ -121,7 +125,7 @@ func BuildRepositorySnapshot(ctx context.Context, raw json.RawMessage, code stri
 			var err error
 			commit, err = resolver.Resolve(ctx, r.URL, r.BaseBranch)
 			if err != nil || !commitPattern.MatchString(commit) {
-				return nil, fmt.Errorf("repository unavailable: %s", r.URL)
+				return nil, RepositoryPreparationError{URL: r.URL}
 			}
 			commits[r.URL] = commit
 		}
@@ -198,4 +202,20 @@ func (s *Store) RepositorySnapshot(ctx context.Context, attempt string) ([]Repos
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) BoundRepositorySnapshot(ctx context.Context, request, attempt string) ([]RepositorySnapshot, error) {
+	var raw []byte
+	if err := s.Pool.QueryRow(ctx, `SELECT a.binding FROM gateway.attempts a JOIN gateway.executions x ON x.request_id=a.request_id WHERE a.id=$1 AND a.request_id=$2 AND x.attempt_id=a.id AND a.ended_at IS NULL`, attempt, request).Scan(&raw); err != nil {
+		return nil, ErrInvalid
+	}
+	var binding AttemptBinding
+	if json.Unmarshal(raw, &binding) != nil || !binding.repositoryChangeValid() || binding.RequestID != request || binding.AttemptID != attempt {
+		return nil, ErrInvalid
+	}
+	rows, err := s.RepositorySnapshot(ctx, attempt)
+	if err != nil || len(rows) == 0 {
+		return nil, ErrInvalid
+	}
+	return rows, nil
 }

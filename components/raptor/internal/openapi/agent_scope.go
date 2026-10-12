@@ -119,6 +119,8 @@ func agentHandler(backend, inspector Client, credential string) http.Handler {
 		server := newAgentMCP(principal)
 		if binding.Operation == "db-proxy.replace-nodes" {
 			addReplacementAgentTools(server, principal)
+		} else if binding.Operation == "repository.change" {
+			addRepositoryAgentTools(server, principal)
 		}
 		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}).ServeHTTP(w, r)
 	})

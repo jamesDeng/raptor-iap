@@ -6,6 +6,27 @@ import (
 	"testing"
 )
 
+func TestRepositoryChangeRequiresAXDefaultAndCredentialDelivery(t *testing.T) {
+	a := &AXLive{}
+	r := &Providers{Default: "ax", Backends: map[string]execution.LiveRuntime{"ax": a}}
+	if r.RepositoryChangeReady() {
+		t.Fatal("repository change enabled without PAT")
+	}
+	a.Bridge = &fixtureBridge{}
+	a.PAT = fixturePAT{token: []byte("github_pat_private_fixture")}
+	if r.RepositoryChangeReady() {
+		t.Fatal("missing pinned skill repository admitted")
+	}
+	a.Config.SkillsRepository = "/reviewed/source"
+	if !r.RepositoryChangeReady() {
+		t.Fatal("AX PAT path rejected")
+	}
+	r.Default = "aliyun"
+	if r.RepositoryChangeReady() {
+		t.Fatal("non-AX default admitted repository change")
+	}
+}
+
 func TestProviderRecordIgnoresChangedDefault(t *testing.T) {
 	r := Providers{Default: "ax", Backends: map[string]execution.LiveRuntime{"aliyun": &NativeLive{}, "ax": &NativeLive{}}}
 	p, e := r.provider(execution.RecoveryRecord{Intents: []execution.RuntimeIntentRecord{{Kind: "provider", Name: "aliyun", ResourceID: "aliyun"}}})

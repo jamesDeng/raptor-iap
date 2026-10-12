@@ -52,6 +52,25 @@ func agentToolSelectors(tool string, raw json.RawMessage) (map[string]string, er
 		return nil, err
 	}
 	bad := func() (map[string]string, error) { return nil, errors.New("InvalidInput") }
+	if tool == "pull_request_attach" {
+		if len(fields) != 9 {
+			return bad()
+		}
+		for _, key := range []string{"requestId", "attemptId", "repository", "url", "headSha", "baseCommit", "baseBranch", "workingBranch"} {
+			var value string
+			if json.Unmarshal(fields[key], &value) != nil || value == "" {
+				return bad()
+			}
+		}
+		var number int
+		if json.Unmarshal(fields["number"], &number) != nil || number < 1 {
+			return bad()
+		}
+		var requestID, attemptID string
+		json.Unmarshal(fields["requestId"], &requestID)
+		json.Unmarshal(fields["attemptId"], &attemptID)
+		return map[string]string{"requestId": requestID, "attemptId": attemptID}, nil
+	}
 	if tool == "approval_request" {
 		if len(fields) != 6 {
 			return bad()

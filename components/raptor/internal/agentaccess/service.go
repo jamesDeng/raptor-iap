@@ -382,6 +382,8 @@ func RepositorySelectorsAllowed(b Binding, audience, tool string, selectors map[
 	switch tool {
 	case "request_get", "environment_get", "object_get":
 		return SelectorsAllowed(b, audience, tool, selectors)
+	case "pull_request_attach":
+		return len(selectors) == 2 && selectors["requestId"] == b.RequestID && selectors["attemptId"] == b.AttemptID
 	default:
 		return false
 	}

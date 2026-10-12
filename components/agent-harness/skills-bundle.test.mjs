@@ -8,3 +8,15 @@ test('private verified bundle stages bounded immutable docs outside session stat
  for(const change of ['sha','path','commit','duplicate']){const bad=structuredClone(bundle);if(change==='sha')bad.files[0].sha256='b'.repeat(64);if(change==='path')bad.files[0].path='../auth.json';if(change==='commit')bad.commitSHA='b'.repeat(40);if(change==='duplicate')bad.files.push(bad.files[0]);fs.writeFileSync(file,JSON.stringify(bad));assert.throws(()=>stageSkillsBundle({file,destination:path.join(root,change),binding:b}),/InvalidSkillsRelease/);assert.equal(fs.existsSync(path.join(root,change)),false);}
  }finally{fs.rmSync(root,{recursive:true,force:true})}
 });
+test('repository operation requires its pinned repository-selection skill',()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'repository-skill-bundle-')));
+ try{
+  const data=Buffer.from('---\nname: repository-change\ndescription: choose the configured repository\n---\nPinned skill.');
+  const binding={operation:'repository.change',skillsCommit:'b'.repeat(40)};
+  const bundle={version:1,tag:'skills-v1.0.0',commitSHA:binding.skillsCommit,files:[{path:'repository-change/SKILL.md',sha256:createHash('sha256').update(data).digest('hex'),data:data.toString('base64')}]};
+  const file=path.join(root,'bundle.json');fs.writeFileSync(file,JSON.stringify(bundle),{mode:0o600});
+  const staged=stageSkillsBundle({file,destination:path.join(root,'skills'),binding});
+  assert.equal(fs.readFileSync(path.join(staged.path,'repository-change/SKILL.md'),'utf8'),data.toString());
+  assert.throws(()=>stageSkillsBundle({file,destination:path.join(root,'wrong'),binding:{...binding,operation:'db-proxy.replace-nodes'}}),/InvalidSkillsRelease/);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

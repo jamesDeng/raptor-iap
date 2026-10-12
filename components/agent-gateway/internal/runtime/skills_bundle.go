@@ -35,6 +35,12 @@ func (b *boundedGitBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 func BuildSkillsBundle(ctx context.Context, repository string, version execution.SkillsVersion) ([]byte, error) {
+	return buildSkillsBundle(ctx, repository, version, "pgcat-replacement/SKILL.md")
+}
+func BuildRepositorySkillsBundle(ctx context.Context, repository string, version execution.SkillsVersion) ([]byte, error) {
+	return buildSkillsBundle(ctx, repository, version, "repository-change/SKILL.md")
+}
+func buildSkillsBundle(ctx context.Context, repository string, version execution.SkillsVersion, required string) ([]byte, error) {
 	if repository == "" || !regexp.MustCompile(`^skills-v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(version.Tag) || !regexp.MustCompile(`^[a-f0-9]{40}$`).MatchString(version.CommitSHA) {
 		return nil, ErrConfiguration
 	}
@@ -100,7 +106,7 @@ func BuildSkillsBundle(ctx context.Context, repository string, version execution
 	}
 	found := false
 	for _, file := range bundle.Files {
-		found = found || file.Path == "pgcat-replacement/SKILL.md"
+		found = found || file.Path == required
 	}
 	if !found {
 		return nil, ErrConfiguration

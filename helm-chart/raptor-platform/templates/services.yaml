@@ -19,6 +19,8 @@
 {{- required "githubPAT.providerARN required" .Values.githubPAT.providerARN | quote | trunc 0 -}}
 {{- required "githubPAT.authSecretName required" .Values.githubPAT.authSecretName | quote | trunc 0 -}}
 {{- end -}}
+{{- if and .Values.repositoryChange.enabled (not .Values.githubPAT.enabled) -}}{{ fail "repositoryChange requires githubPAT" }}{{- end -}}
+{{- if and .Values.repositoryChange.enabled (not .Values.gatewayLive.enabled) -}}{{ fail "repositoryChange requires gatewayLive" }}{{- end -}}
 {{- $revision := required "repository.revision must be a reviewed commit" .Values.repository.revision -}}
 {{- if not (regexMatch "^[a-f0-9]{40}$" $revision) }}{{ fail "invalid repository revision" }}{{ end -}}
 {{- range $name, $image := .Values.images -}}
@@ -197,6 +199,7 @@ spec:
             - {name: GATEWAY_SIMULATION, value: 'false'}
             {{ if eq $service.name "agent-gateway" }}
             - {name: GATEWAY_CONVERSATION_ENABLED, value: {{ $.Values.conversation.gatewayEnabled | quote }}}
+            - {name: GATEWAY_REPOSITORY_CHANGE_ENABLED, value: {{ $.Values.repositoryChange.enabled | quote }}}
             - {name: GATEWAY_PROGRESS_PUBLIC_URL, value: {{ $.Values.progress.publicURL | quote }}}
             - {name: GATEWAY_PROGRESS_ORIGINS, value: {{ $.Values.progress.origins | quote }}}
             - name: GATEWAY_RUNTIME_MODE

@@ -106,6 +106,13 @@ func ProgressToolAllowed(operation, tool string) bool {
 	if operation == "application.question" {
 		return liveTools[tool]
 	}
+	if operation == "repository.change" {
+		switch tool {
+		case "read", "write", "edit", "bash", "mcp__raptor__request_get", "mcp__raptor__environment_get", "mcp__raptor__object_get", "mcp__raptor__pull_request_attach":
+			return true
+		}
+		return false
+	}
 	if operation != "db-proxy.replace-nodes" {
 		return false
 	}
@@ -132,7 +139,7 @@ func (b AttemptBinding) repositoryChangeValid() bool {
 // Journal persistence supports both implemented profiles; live admission remains
 // separately gated by ParseLiveQuestion until replacement rollout is qualified.
 func (b AttemptBinding) journalValid() bool {
-	if b.valid() {
+	if b.valid() || b.repositoryChangeValid() {
 		return true
 	}
 	return (b.ExecutionMode == "" || b.ExecutionMode == "qualification" || b.ExecutionMode == "replacement") && b.RequestID != "" && b.AttemptID != "" && b.Operation == "db-proxy.replace-nodes" && b.ObjectKind == "db-proxy" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && journalName.MatchString(b.ClusterID) && shaPattern.MatchString(b.DefinitionSHA256) && commitPattern.MatchString(b.SkillsCommit) && b.Model == "gpt-5.6-luna" && ((b.ProviderID == "" && b.ConnectionVersion == 0) || (b.ProviderID == "codex" && b.ConnectionVersion > 0))
@@ -169,6 +176,12 @@ func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 			return ErrInvalid
 		}
 		return validateReplacementResult(r, b)
+	}
+	if b.Operation == "repository.change" {
+		if r.Replacement != nil || r.Qualification != nil || len(r.Evidence) != 0 || !b.repositoryChangeValid() {
+			return ErrInvalid
+		}
+		return nil
 	}
 	if r.Replacement != nil || r.Qualification != nil {
 		return ErrInvalid
