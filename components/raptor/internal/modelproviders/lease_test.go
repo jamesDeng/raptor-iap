@@ -43,6 +43,9 @@ func TestCredentialLeaseBindsRequestAttemptAndCurrentPolicy(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO raptor.agent_attempt_access(request_id,attempt_id,binding,expires_at) VALUES($1,$2,'{}',now()+interval '20 minutes')`, requestID, binding.AttemptID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE raptor.model_provider_credentials SET expires_at=now()-interval '1 minute' WHERE provider_id='codex'`); err != nil {
+		t.Fatal(err)
+	}
 	lease, err := s.LeaseCredential(ctx, binding)
 	if err != nil || string(lease.Credential) != string(raw) || lease.Generation != 1 {
 		t.Fatalf("lease: %v %v", lease, err)
