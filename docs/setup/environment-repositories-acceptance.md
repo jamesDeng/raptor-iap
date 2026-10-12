@@ -4,6 +4,8 @@
 
 The code path is disabled by default (`repositoryChange.enabled: false`). Keep it disabled until the PAT store Terraform PR posts a sanitized plan comment, its reviewed apply completes, the Gateway and Raptor images containing this change are deployed, a reviewed `skills-v*` tag contains `agent-skills/repository-change/SKILL.md`, and the owner saves a scoped personal PAT through Raptor Admin. Do not put the PAT in Helm values, a Secret manifest, Terraform variables, or source.
 
+The PAT stack uses a separate `raptor-github-pat.ali/terraform.tfstate` object. Its PR plan needs the exact state read permission on the shared GitOps plan role before it can initialize. Prerequisite PR #150 adds temporary, exact-resource access through the already managed Gateway GitOps policy; confirm its main-branch reviewed apply succeeded before retrying the PAT plan. The `TF_RAPTOR_GITHUB_PAT_STACK_INPUTS` GitHub secret contains only the verified rdev OIDC provider ARN and issuer. Remove the temporary supplement after the PAT component has its own GitOps permissions.
+
 Use the existing reviewed apply workflow for Terraform. Do not apply the module manually. Do not enable `repositoryChange` without `githubPAT` and an AX live runtime.
 
 ## Local evidence
