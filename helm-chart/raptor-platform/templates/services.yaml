@@ -78,7 +78,7 @@ spec:
           image: {{ $.Values.images.raptor | quote }}
           command: ["/bin/sh", "-ec"]
           args:
-            - git clone --no-checkout https://github.com/jamesDeng/raptor-iap.git /repo/source; git -C /repo/source checkout --detach "$SOURCE_REVISION"
+            - rm -rf /repo/source; git clone --no-checkout https://github.com/jamesDeng/raptor-iap.git /repo/source; git -C /repo/source checkout --detach "$SOURCE_REVISION"
           env:
             - name: SOURCE_REVISION
               value: {{ $revision | quote }}
@@ -131,7 +131,7 @@ spec:
           image: {{ $.Values.images.gateway | quote }}
           command: ["/bin/sh", "-ec"]
           args:
-            - git clone --no-checkout https://github.com/jamesDeng/raptor-iap.git /repo/source; git -C /repo/source checkout --detach "$SOURCE_REVISION"
+            - rm -rf /repo/source; git clone --no-checkout https://github.com/jamesDeng/raptor-iap.git /repo/source; git -C /repo/source checkout --detach "$SOURCE_REVISION"
           env:
             - {name: SOURCE_REVISION, value: {{ $revision | quote }}}
           securityContext:
