@@ -19,8 +19,12 @@ type SessionCheckpoint struct {
 	Archive          VerifiedCheckpoint `json:"archive"`
 }
 
+func (b AttemptBinding) SessionModelAllowed() bool {
+	return b.Model == "gpt-5.6-luna" || (b.Operation == "application.question" && b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))
+}
+
 func (c SessionCheckpoint) validFor(b AttemptBinding) bool {
-	return c.RequestID == b.RequestID && shaPattern.MatchString(c.DefinitionSHA256) && c.DefinitionSHA256 == b.DefinitionSHA256 && c.SkillsCommit == b.SkillsCommit && commitPattern.MatchString(c.SkillsCommit) && c.Model == b.Model && c.Model == "gpt-5.6-luna" && journalName.MatchString(c.SessionID) && path.Base(c.SessionFile) == c.SessionFile && strings.HasSuffix(c.SessionFile, ".jsonl") && journalName.MatchString(c.SessionFile) && shaPattern.MatchString(c.SessionSHA256) && c.Archive.valid()
+	return c.RequestID == b.RequestID && shaPattern.MatchString(c.DefinitionSHA256) && c.DefinitionSHA256 == b.DefinitionSHA256 && c.SkillsCommit == b.SkillsCommit && commitPattern.MatchString(c.SkillsCommit) && c.Model == b.Model && b.SessionModelAllowed() && journalName.MatchString(c.SessionID) && path.Base(c.SessionFile) == c.SessionFile && strings.HasSuffix(c.SessionFile, ".jsonl") && journalName.MatchString(c.SessionFile) && shaPattern.MatchString(c.SessionSHA256) && c.Archive.valid()
 }
 func (s *Store) SaveOperationSession(ctx context.Context, attempt, owner string, c SessionCheckpoint) error {
 	tx, id, e := s.liveTx(ctx, attempt, owner)
@@ -62,7 +66,7 @@ func (s *Store) OperationSession(ctx context.Context, b AttemptBinding) (*Sessio
 }
 
 func (c SessionCheckpoint) ReferenceFor(b AttemptBinding) (map[string]any, error) {
-	if c.RequestID != b.RequestID || c.DefinitionSHA256 != b.DefinitionSHA256 || !shaPattern.MatchString(c.DefinitionSHA256) || c.SkillsCommit != b.SkillsCommit || !commitPattern.MatchString(c.SkillsCommit) || c.Model != b.Model || c.Model != "gpt-5.6-luna" || !journalName.MatchString(c.SessionID) || path.Base(c.SessionFile) != c.SessionFile || !strings.HasSuffix(c.SessionFile, ".jsonl") || !journalName.MatchString(c.SessionFile) || !shaPattern.MatchString(c.SessionSHA256) {
+	if c.RequestID != b.RequestID || c.DefinitionSHA256 != b.DefinitionSHA256 || !shaPattern.MatchString(c.DefinitionSHA256) || c.SkillsCommit != b.SkillsCommit || !commitPattern.MatchString(c.SkillsCommit) || c.Model != b.Model || !b.SessionModelAllowed() || !journalName.MatchString(c.SessionID) || path.Base(c.SessionFile) != c.SessionFile || !strings.HasSuffix(c.SessionFile, ".jsonl") || !journalName.MatchString(c.SessionFile) || !shaPattern.MatchString(c.SessionSHA256) {
 		return nil, ErrInvalid
 	}
 	return map[string]any{"version": 1, "requestId": c.RequestID, "definitionSha256": c.DefinitionSHA256, "skillsCommit": c.SkillsCommit, "model": c.Model, "sessionId": c.SessionID, "file": c.SessionFile, "sha256": c.SessionSHA256}, nil

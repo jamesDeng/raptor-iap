@@ -86,3 +86,17 @@ func TestOperationCheckpointVerificationBindsRequest(t *testing.T) {
 		t.Fatal("foreign request checkpoint accepted")
 	}
 }
+func TestOperationCheckpointVerificationAcceptsBoundCodexModel(t *testing.T) {
+	sum := sha256.Sum256([]byte("archive"))
+	hash := hex.EncodeToString(sum[:])
+	v := CheckpointVerifier{Objects: fixtureObjects{archive: "archive", checksum: hash, encryption: "AES256", size: 7}, Prefix: "requests"}
+	b := execution.AttemptBinding{RequestID: "request", Operation: "application.question", ProviderID: "codex", ConnectionVersion: 1, DefinitionSHA256: strings.Repeat("a", 64), SkillsCommit: strings.Repeat("b", 40), Model: "gpt-6.1-sol"}
+	c := execution.SessionCheckpoint{RequestID: b.RequestID, DefinitionSHA256: b.DefinitionSHA256, SkillsCommit: b.SkillsCommit, Model: b.Model, SessionID: "session", SessionFile: "session.jsonl", SessionSHA256: strings.Repeat("c", 64), Archive: execution.VerifiedCheckpoint{ArchiveKey: "requests/g.tgz", ChecksumKey: "requests/g.sha256", SHA256: hash, Bytes: 7, PiVersion: "0.99.2"}}
+	if _, e := v.VerifyOperationCheckpoint(context.Background(), c, b); e != nil {
+		t.Fatal("bound Codex model refused", e)
+	}
+	c.Model = "gpt-6-sol"
+	if _, e := v.VerifyOperationCheckpoint(context.Background(), c, b); e == nil {
+		t.Fatal("different model accepted")
+	}
+}

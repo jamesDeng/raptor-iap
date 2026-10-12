@@ -32,3 +32,17 @@ func TestOperationSessionJournalFencesIdentityAndOwner(t *testing.T) {
 		t.Fatal("foreign request persisted")
 	}
 }
+func TestCodexOperationSessionMatchesBoundModel(t *testing.T) {
+	b := AttemptBinding{RequestID: NewID(), Operation: "application.question", ProviderID: "codex", ConnectionVersion: 1, DefinitionSHA256: strings.Repeat("a", 64), SkillsCommit: strings.Repeat("b", 40), Model: "gpt-6.1-sol"}
+	c := SessionCheckpoint{RequestID: b.RequestID, DefinitionSHA256: b.DefinitionSHA256, SkillsCommit: b.SkillsCommit, Model: b.Model, SessionID: NewID(), SessionFile: "session.jsonl", SessionSHA256: strings.Repeat("c", 64), Archive: VerifiedCheckpoint{ArchiveKey: "requests/a.tgz", ChecksumKey: "requests/a.sha256", SHA256: strings.Repeat("d", 64), Bytes: 10, PiVersion: "0.99.2", Encryption: "AES256", VerifiedAt: time.Now()}}
+	if !c.validFor(b) {
+		t.Fatal("bound Codex session refused")
+	}
+	if _, e := c.ReferenceFor(b); e != nil {
+		t.Fatal("bound Codex reference refused", e)
+	}
+	c.Model = "gpt-6-sol"
+	if c.validFor(b) {
+		t.Fatal("different model accepted")
+	}
+}
