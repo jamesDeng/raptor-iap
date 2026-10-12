@@ -346,55 +346,65 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 }
 func (a *AXLive) publish(ctx context.Context, in execution.LiveStart, t *terminalFile) (execution.VerifiedCheckpoint, error) {
 	bad := execution.VerifiedCheckpoint{}
-	if t == nil {
+	fail := func(stage string) (execution.VerifiedCheckpoint, error) {
+		log.Printf("AX checkpoint publication failed stage=%s", stage)
 		return bad, ErrCheckpointVerification
+	}
+	if t == nil {
+		return fail("terminal_missing")
 	}
 	c := t.Checkpoint
 	expected := a.Config.BucketPrefix + "/lifecycle/" + in.Binding.AttemptID
 	if c.ArchiveKey != expected+".tgz" || c.ChecksumKey != expected+".sha256" || c.Bytes < 1 || c.Bytes > 16*1024*1024 || c.PiVersion != "0.99.2" || len(c.SHA256) != 64 {
-		return bad, ErrCheckpointVerification
+		return fail("metadata")
 	}
 	writer, ok := a.Verifier.Objects.(ObjectWriter)
 	if !ok {
-		return bad, ErrCheckpointVerification
+		return fail("writer_unavailable")
 	}
 	if e := a.intent(ctx, in.Binding, "checkpoint", in.Binding.AttemptID); e != nil {
+		log.Printf("AX checkpoint publication failed stage=intent")
 		return bad, e
 	}
 	exports := map[string][]byte{}
 	for key, size := range map[string]int64{c.ArchiveKey: c.Bytes, c.ChecksumKey: 64} {
 		raw, e := a.read(ctx, in, "/tmp/raptor-oss/"+strings.TrimPrefix(key, a.Config.BucketPrefix+"/"), size)
 		if e != nil || int64(len(raw)) != size {
-			return bad, ErrCheckpointVerification
+			return fail("sandbox_read")
 		}
 		exports[key] = raw
 	}
 	hash := sha256.Sum256(exports[c.ArchiveKey])
 	if hex.EncodeToString(hash[:]) != c.SHA256 || string(exports[c.ChecksumKey]) != c.SHA256 {
-		return bad, ErrCheckpointVerification
+		return fail("sandbox_checksum")
 	}
 	for key, size := range map[string]int64{c.ArchiveKey: c.Bytes, c.ChecksumKey: 64} {
 		raw := exports[key]
 		if int64(len(raw)) != size {
-			return bad, ErrCheckpointVerification
+			return fail("export_size")
 		}
 		if e := a.fence(ctx, in.Binding.AttemptID); e != nil {
+			log.Printf("AX checkpoint publication failed stage=fence")
 			return bad, e
 		}
 		if e := writer.Put(ctx, key, raw); e != nil {
+			log.Printf("AX checkpoint publication failed stage=object_write")
 			return bad, e
 		}
 	}
 	verified, e := a.Verifier.VerifyCheckpoint(ctx, execution.VerifiedCheckpoint{ArchiveKey: c.ArchiveKey, ChecksumKey: c.ChecksumKey, SHA256: c.SHA256, Bytes: c.Bytes, PiVersion: c.PiVersion})
 	if e != nil {
+		log.Printf("AX checkpoint publication failed stage=object_verify")
 		return bad, e
 	}
 	if t.SessionReference != nil {
 		cp, e := a.Verifier.VerifyOperationCheckpoint(ctx, t.SessionReference.checkpoint(verified), in.Binding)
 		if e != nil {
+			log.Printf("AX checkpoint publication failed stage=session_verify")
 			return bad, e
 		}
 		if e = a.Store.SaveOperationSession(ctx, in.Binding.AttemptID, a.Owner, cp); e != nil {
+			log.Printf("AX checkpoint publication failed stage=session_store")
 			return bad, e
 		}
 	}
