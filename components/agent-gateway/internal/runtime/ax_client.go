@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -95,6 +96,7 @@ func (c *AXClient) Call(ctx context.Context, in AXRequest) (AXResponse, error) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, e := c.http.Do(req)
 	if e != nil {
+		log.Printf("AX runtime transport failure action=%s", in.Action)
 		return out, ErrRuntimeUnavailable
 	}
 	defer resp.Body.Close()
@@ -108,6 +110,12 @@ func (c *AXClient) Call(ctx context.Context, in AXRequest) (AXResponse, error) {
 		return out, ErrFileNotFound
 	}
 	if resp.StatusCode != 200 || out.Error != "" {
+		reason := "unknown"
+		switch out.Error {
+		case "OutcomeUnconfirmed", "InvalidRuntimeRequest", "OwnershipConflict", "ResourceAbsent":
+			reason = out.Error
+		}
+		log.Printf("AX runtime response action=%s status=%d reason=%s", in.Action, resp.StatusCode, reason)
 		return AXResponse{}, ErrRuntimeUnavailable
 	}
 	return out, nil

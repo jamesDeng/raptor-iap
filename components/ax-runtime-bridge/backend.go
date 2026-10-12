@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"io"
+	"log"
 	"path"
 	"time"
 )
@@ -44,6 +45,7 @@ func (b *SDKBackend) Get(ctx context.Context, n string) (*TaskView, error) {
 		return nil, ErrAbsent
 	}
 	if e != nil {
+		log.Printf("AX backend GetTask failed code=%s", status.Code(e))
 		return nil, ErrUnknown
 	}
 	return view(t)
@@ -51,6 +53,7 @@ func (b *SDKBackend) Get(ctx context.Context, n string) (*TaskView, error) {
 func (b *SDKBackend) Create(ctx context.Context, n, seal string) (*TaskView, error) {
 	t, e := b.AX.CreateTask(ctx, &ax.CreateTaskRequest{Task: &ax.Task{ApiVersion: "ax.dev/v1alpha1", Kind: "Task", Metadata: &ax.ObjectMeta{Name: n, Atespace: b.Atespace}, Spec: &ax.TaskSpec{Image: b.Image, Debug: true, Env: []*ax.EnvVar{{Name: "RAPTOR_BINDING_SHA256", Value: seal}}, Workspaces: []*ax.WorkspaceRef{{Name: "raptor-runtime", Path: "/workspace"}}}}})
 	if e != nil {
+		log.Printf("AX backend CreateTask failed code=%s", status.Code(e))
 		return nil, ErrUnknown
 	}
 	return view(t)
@@ -78,6 +81,7 @@ func (b *SDKBackend) ActorAbsent(ctx context.Context, n string) (bool, error) {
 		return true, nil
 	}
 	if e != nil {
+		log.Printf("AX backend GetActor failed code=%s", status.Code(e))
 		return false, ErrUnknown
 	}
 	return false, nil
