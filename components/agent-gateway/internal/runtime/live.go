@@ -158,7 +158,7 @@ func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (t
 	return out, nil
 }
 func checkTerminalScope(t terminalFile, scope *execution.ReplacementScope) error {
-	if t.Result != nil && t.Result.Replacement != nil && (scope == nil || t.Result.Replacement.Scope != *scope) {
+	if t.Result != nil && ((t.Result.Replacement != nil && (scope == nil || t.Result.Replacement.Scope != *scope)) || (t.Result.Qualification != nil && (scope == nil || t.Result.Qualification.Scope != *scope))) {
 		return ErrRuntimeUnavailable
 	}
 	return nil

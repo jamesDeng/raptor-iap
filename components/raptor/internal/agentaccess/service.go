@@ -31,6 +31,7 @@ type IssueInput struct {
 	ExpiresAt        time.Time `json:"expiresAt"`
 }
 type Binding struct {
+	ExecutionMode     string `json:"executionMode,omitempty"`
 	RequestID         string `json:"requestId"`
 	AttemptID         string `json:"attemptId"`
 	Operation         string `json:"operation"`
@@ -104,7 +105,7 @@ func supported(def domain.RequestInput) bool {
 	if question(def) {
 		return true
 	}
-	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && def.Operations[0].Parameters != nil && len(def.Operations[0].Parameters) == 0 && def.Model == "gpt-5.6-luna" && sha.MatchString(def.Skills.CommitSHA)
+	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && validReplacementParameters(def.Operations[0].Parameters) && ((def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && def.Model == "gpt-5.6-luna")) && sha.MatchString(def.Skills.CommitSHA)
 }
 func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, error) {
 	var out Issued
@@ -148,7 +149,7 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 	if e = tx.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
 		return out, domain.ErrUnavailable
 	}
-	out.Binding = Binding{RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}
+	out.Binding = Binding{ExecutionMode: replacementMode(def), RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}
 	var scopeRaw []byte
 	if !question(def) {
 		if s.ResolveReplacement == nil {
@@ -265,7 +266,7 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 		return out, domain.ErrUnavailable
 	}
 	hash, e := Fingerprint(def)
-	if e != nil || hash != binding.DefinitionSHA256 || !supported(def) || binding.Operation != def.Operations[0].Name || binding.ObjectKind != def.Object.Kind || binding.ObjectCode != def.Object.Code || binding.EnvCode != def.EnvCode || binding.SkillsCommit != def.Skills.CommitSHA || binding.Model != def.Model {
+	if e != nil || hash != binding.DefinitionSHA256 || !supported(def) || binding.ExecutionMode != replacementMode(def) || binding.Operation != def.Operations[0].Name || binding.ObjectKind != def.Object.Kind || binding.ObjectCode != def.Object.Code || binding.EnvCode != def.EnvCode || binding.SkillsCommit != def.Skills.CommitSHA || binding.Model != def.Model || binding.ProviderID != def.ProviderID || binding.ConnectionVersion != def.ConnectionVersion {
 		return out, nil
 	}
 	var cluster string

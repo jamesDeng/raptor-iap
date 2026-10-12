@@ -4,6 +4,14 @@
   "x-object-kind": "db-proxy",
   "type": "object",
   "additionalProperties": false,
-  "properties": {}
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "replacement",
+        "qualification"
+      ],
+      "default": "replacement"
+    }
+  }
 }
-

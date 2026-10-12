@@ -147,6 +147,10 @@ func main() {
 		s.ConversationRuntime = true
 		router := &runtimeadapter.Providers{Default: config.Provider, Backends: backends, Store: s, Owner: owner, Lease: lease}
 		worker := &execution.LiveWorker{Store: s, Owner: owner, Lease: lease, Runtime: router, Access: raptor, Raptor: raptor, Bootstrap: bootstrap}
+		if config.QualificationEnabled {
+			scope := config.ReplacementObserver.Scope
+			worker.QualificationScope = &scope
+		}
 		if config.ReplacementEnabled {
 			scope := config.ReplacementObserver.Scope
 			worker.ReplacementScope = &scope

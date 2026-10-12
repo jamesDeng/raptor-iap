@@ -74,14 +74,15 @@ type LiveRuntime interface {
 	Reconcile(context.Context, RecoveryRecord) (RecoveredRun, error)
 }
 type LiveWorker struct {
-	ReplacementScope *ReplacementScope
-	Store            *Store
-	Owner            string
-	Lease            WorkerLease
-	Runtime          LiveRuntime
-	Access           AgentAccessClient
-	Raptor           RaptorClient
-	Bootstrap        VerifiedCheckpoint
+	QualificationScope *ReplacementScope
+	ReplacementScope   *ReplacementScope
+	Store              *Store
+	Owner              string
+	Lease              WorkerLease
+	Runtime            LiveRuntime
+	Access             AgentAccessClient
+	Raptor             RaptorClient
+	Bootstrap          VerifiedCheckpoint
 }
 
 func (w *LiveWorker) authorized(ctx context.Context) error {
@@ -107,7 +108,7 @@ func (w *LiveWorker) admit(in ExecutionInput, attempt string) (AttemptBinding, s
 	if b.Operation == "application.question" {
 		return ParseLiveQuestion(in, attempt)
 	}
-	if w.ReplacementScope == nil || !w.ReplacementScope.ValidFor(b) {
+	if w.scopeFor(b) == nil || !w.scopeFor(b).ValidFor(b) {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
 	return b, operation.Question, b.DefinitionSHA256, nil
@@ -185,7 +186,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e != nil {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
 	}
-	if b.Operation == "db-proxy.replace-nodes" && (access.Binding != b || access.ReplacementScope == nil || w.ReplacementScope == nil || *access.ReplacementScope != *w.ReplacementScope) {
+	if b.Operation == "db-proxy.replace-nodes" && (access.Binding != b || access.ReplacementScope == nil || w.scopeFor(b) == nil || *access.ReplacementScope != *w.scopeFor(b)) {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
 	}
 	if access.ExpiresAt.Before(time.Now()) || access.ExpiresAt.After(record.Deadline) {
@@ -406,7 +407,7 @@ func (w *LiveWorker) Reconcile(ctx context.Context) error {
 		return w.Store.ReleaseLiveWait(ctx, x.AttemptID, w.Owner, recovered.Cleanup, revokeErr == nil)
 	}
 	status, code := "failed", "Interrupted"
-	if recovered.Result != nil && recovered.Checkpoint.valid() && (record.Binding.Operation != "db-proxy.replace-nodes" || (w.ReplacementScope != nil && w.ReplacementScope.ValidFor(record.Binding) && recovered.Result.Replacement != nil && recovered.Result.Replacement.Scope == *w.ReplacementScope)) {
+	if recovered.Result != nil && recovered.Checkpoint.valid() && (record.Binding.Operation != "db-proxy.replace-nodes" || (w.scopeFor(record.Binding) != nil && w.scopeFor(record.Binding).ValidFor(record.Binding) && resultScope(recovered.Result) != nil && *resultScope(recovered.Result) == *w.scopeFor(record.Binding))) {
 		if e = w.Store.SaveLiveResult(ctx, x.AttemptID, w.Owner, *recovered.Result); e == nil {
 			status, code = "completed", ""
 		}
@@ -435,4 +436,11 @@ func (w *LiveWorker) Reconcile(ctx context.Context) error {
 		return w.Store.QueueContinuation(ctx, id)
 	}
 	return e
+}
+
+func (w *LiveWorker) scopeFor(b AttemptBinding) *ReplacementScope {
+	if b.ExecutionMode == "qualification" {
+		return w.QualificationScope
+	}
+	return w.ReplacementScope
 }

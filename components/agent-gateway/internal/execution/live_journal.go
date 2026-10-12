@@ -274,6 +274,33 @@ func (s *Store) SaveLiveResult(ctx context.Context, attempt, owner string, r Liv
 	if e = ValidateLiveResult(r, b, s.KnownSecrets...); e != nil {
 		return e
 	}
+	if b.ExecutionMode == "qualification" {
+		var rawContext []byte
+		if e = tx.QueryRow(ctx, "SELECT resume_context FROM gateway.executions WHERE request_id=$1", b.RequestID).Scan(&rawContext); e != nil {
+			return e
+		}
+		var c ContinuationContext
+		if json.Unmarshal(rawContext, &c) != nil || c.Decision != "resume" || r.Qualification == nil || c.ApprovalID != r.Qualification.ApprovalID || c.ActionID != r.Qualification.ActionID || c.BindingDigest != r.Qualification.BindingDigest {
+			return ErrInvalid
+		}
+
+		var waitRaw, sessionRaw []byte
+		var phase string
+		if e = tx.QueryRow(ctx, `SELECT w.wait,w.phase FROM gateway.live_waits w JOIN gateway.attempts a ON a.id=w.attempt_id WHERE w.request_id=$1 ORDER BY a.started_at DESC LIMIT 1`, b.RequestID).Scan(&waitRaw, &phase); e != nil {
+			return ErrInvalid
+		}
+		var wait LiveWait
+		if json.Unmarshal(waitRaw, &wait) != nil || !wait.Valid() || wait.Kind != "approval" || phase != "resumed" || wait.ApprovalID != c.ApprovalID || wait.ActionID != c.ActionID || wait.BindingDigest != c.BindingDigest {
+			return ErrInvalid
+		}
+		if e = tx.QueryRow(ctx, "SELECT checkpoint FROM gateway.operation_sessions WHERE request_id=$1", b.RequestID).Scan(&sessionRaw); e != nil {
+			return ErrInvalid
+		}
+		var cp SessionCheckpoint
+		if json.Unmarshal(sessionRaw, &cp) != nil || !cp.validFor(b) {
+			return ErrInvalid
+		}
+	}
 	raw, _ := json.Marshal(r)
 	var previous []byte
 	if e = tx.QueryRow(ctx, "SELECT live_result FROM gateway.attempts WHERE id=$1", attempt).Scan(&previous); e != nil {

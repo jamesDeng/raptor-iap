@@ -35,7 +35,7 @@ func (r ReplacementResolver) Resolve(ctx context.Context, b Binding) (Replacemen
 	if err != nil || len(proxies) != 1 || proxies[0].ResourceID != s.GroupID || proxies[0].TargetDBCode != s.TargetDBCode {
 		return ReplacementScope{}, domain.ErrUnavailable
 	}
-	databases, err := read("db", s.TargetDBCode)
+	databases, err := read("database", s.TargetDBCode)
 	if err != nil || len(databases) != 1 || databases[0].ResourceID == "" {
 		return ReplacementScope{}, domain.ErrUnavailable
 	}
