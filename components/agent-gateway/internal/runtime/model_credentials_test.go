@@ -33,7 +33,7 @@ func TestModelCredentialClientBindsPrivateRouteAndRejectsRedirect(t *testing.T) 
 			t.Error("binding lost")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":{"credential":` + secret + `,"generation":3,"expiresAt":"2033-05-18T03:33:20Z"}}`))
+		w.Write([]byte(`{"data":{"credential":` + secret + `,"generation":3,"expiresAt":"2020-05-18T03:33:20Z"}}`))
 	}))
 	defer server.Close()
 	client := HTTPModelCredentials{BaseURL: server.URL, Username: "service", Password: "password"}

@@ -63,7 +63,9 @@ func (c HTTPModelCredentials) call(ctx context.Context, route string, payload an
 func (c HTTPModelCredentials) Lease(ctx context.Context, b execution.AttemptBinding) (ModelLease, error) {
 	var out ModelLease
 	err := c.call(ctx, "/internal/v1/model-credentials/lease", map[string]any{"requestId": b.RequestID, "attemptId": b.AttemptID, "providerId": b.ProviderID, "modelId": b.Model, "connectionVersion": b.ConnectionVersion}, &out)
-	if err != nil || out.Generation < 1 || len(out.Credential) == 0 || out.ExpiresAt.Before(time.Now().Add(4*time.Minute)) {
+	// Pi refreshes an expired access token using the leased refresh token, then
+	// publishes the rotated credential before the execution checkpoint commits.
+	if err != nil || out.Generation < 1 || len(out.Credential) == 0 || out.ExpiresAt.IsZero() {
 		return ModelLease{}, ErrRuntimeUnavailable
 	}
 	return out, nil

@@ -72,9 +72,9 @@ FOR SHARE OF r,a,c,p,m,k`, b.RequestID, b.ProviderID, b.ModelID, b.ConnectionVer
 	if json.Unmarshal(definition, &selected) != nil || selected.ProviderID != b.ProviderID || selected.Model != string(b.ModelID) || selected.ConnectionVersion != connectionVersion || status == "cancelled" {
 		return CredentialLease{}, ErrLeaseDenied
 	}
-	if expires.Before(time.Now().Add(5 * time.Minute)) {
-		return CredentialLease{}, ErrCredentialUnavailable
-	}
+	// The access token may have expired while the admin connection stayed idle.
+	// The encrypted credential also carries a refresh token; the sandbox Pi
+	// runtime refreshes it and returns the update before committing its result.
 	plain, err := DecryptCredential(encrypted, s.Credentials.Key, b.ProviderID)
 	if err != nil {
 		return CredentialLease{}, ErrCredentialUnavailable
