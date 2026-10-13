@@ -11,7 +11,7 @@ import (
 type qualificationModel struct{ enabled bool }
 
 func (m *qualificationModel) ValidateSelection(_ context.Context, p modelproviders.ProviderID, id modelproviders.ModelID) (int64, error) {
-	if !m.enabled || p != "codex" || id != "gpt-5.6-luna" {
+	if !m.enabled || p != "codex" || id != "gpt-6-luna" {
 		return 0, modelproviders.ErrInvalidModel
 	}
 	return 3, nil
@@ -25,7 +25,7 @@ func TestQualificationPinsEnabledModelAndConnection(t *testing.T) {
 	}
 	p := &qualificationModel{enabled: true}
 	s.ModelPolicy = p
-	in := domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: o.Code}, EnvCode: "adev", Model: "gpt-5.6-luna", ProviderID: "codex", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "qualification"}}}}
+	in := domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: o.Code}, EnvCode: "adev", Model: "gpt-6-luna", ProviderID: "codex", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "qualification"}}}}
 	r, e := s.Create(ctx, u, "qual-model", in)
 	if e != nil || r.Definition.ConnectionVersion != 3 {
 		t.Fatal("model connection not bound", e, r.Definition.ConnectionVersion)

@@ -1,6 +1,10 @@
 package agentaccess
 
-import "testing"
+import (
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"strings"
+	"testing"
+)
 
 func TestQualificationDeniesEveryInfrastructureMutation(t *testing.T) {
 	b := Binding{RequestID: "request", Operation: "db-proxy.replace-nodes", ObjectKind: "db-proxy", ObjectCode: "proxy", EnvCode: "dev", ClusterID: "cluster", ExecutionMode: "qualification"}
@@ -32,5 +36,16 @@ func TestQualificationDeniesEveryInfrastructureMutation(t *testing.T) {
 	a["interface"] = "runtime.qualification-resume"
 	if ReplacementSelectorsAllowed(b, s, "raptor", "approval_request", a) {
 		t.Fatal("normal request accepted qualification approval")
+	}
+}
+
+func TestQualificationSupportsConfiguredCurrentModel(t *testing.T) {
+	d := domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: "p"}, Model: "gpt-6-luna", ProviderID: "codex", ConnectionVersion: 3, Skills: domain.SkillsVersion{CommitSHA: strings.Repeat("a", 40)}, Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "qualification"}}}}
+	if !supported(d) {
+		t.Fatal("configured qualification model rejected")
+	}
+	d.Operations[0].Parameters["mode"] = "replacement"
+	if supported(d) {
+		t.Fatal("replacement model restriction broadened")
 	}
 }

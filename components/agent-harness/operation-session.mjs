@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 const fingerprint=data=>createHash('sha256').update(data).digest('hex');
 const keys=['requestId','definitionSha256','skillsCommit','model'];
 function identity(binding){
- if(!binding||typeof binding.requestId!=='string'||!binding.requestId||!/^[a-f0-9]{64}$/.test(binding.definitionSha256)||!/^[a-f0-9]{40}$/.test(binding.skillsCommit)||binding.model!=='gpt-5.6-luna')throw Error('InvalidSessionReference');
+ if(!binding||typeof binding.requestId!=='string'||!binding.requestId||!/^[a-f0-9]{64}$/.test(binding.definitionSha256)||!/^[a-f0-9]{40}$/.test(binding.skillsCommit)||(binding.model!=='gpt-5.6-luna'&&!(binding.operation==='db-proxy.replace-nodes'&&binding.executionMode==='qualification'&&binding.providerId==='codex'&&Number.isSafeInteger(binding.connectionVersion)&&binding.connectionVersion>0&&typeof binding.model==='string'&&/^[-A-Za-z0-9_.]{1,128}$/.test(binding.model))))throw Error('InvalidSessionReference');
  return Object.fromEntries(keys.map(k=>[k,binding[k]]));
 }
 function safe(file){

@@ -46,3 +46,45 @@ func TestQualificationHasIndependentReadinessAndImmutableBinding(t *testing.T) {
 		t.Fatal("mode tampering accepted")
 	}
 }
+
+func TestQualificationAcceptsConfiguredCurrentModel(t *testing.T) {
+	in := qualificationInput(t)
+	var d map[string]any
+	json.Unmarshal(in.Definition, &d)
+	d["model"] = "gpt-6-luna"
+	d["providerId"] = "codex"
+	d["connectionVersion"] = float64(3)
+	in.Definition, _ = json.Marshal(d)
+	h := sha256.Sum256(in.Definition)
+	in.DefinitionSHA256 = hex.EncodeToString(h[:])
+	b, _, e := ParseLiveOperation(in, "attempt")
+	if e != nil || b.Model != "gpt-6-luna" || !b.journalValid() {
+		t.Fatal("configured qualification model rejected", e)
+	}
+	d["operations"].([]any)[0].(map[string]any)["parameters"] = map[string]any{"mode": "replacement"}
+	in.Definition, _ = json.Marshal(d)
+	h = sha256.Sum256(in.Definition)
+	in.DefinitionSHA256 = hex.EncodeToString(h[:])
+	if _, _, e = ParseLiveOperation(in, "attempt"); e == nil {
+		t.Fatal("replacement model restriction broadened")
+	}
+}
+
+func TestQualificationCheckpointAcceptsSelectedConfiguredModel(t *testing.T) {
+	b, _ := qualificationResultFixture()
+	b.Model = "gpt-6-luna"
+	b.ProviderID = "codex"
+	b.ConnectionVersion = 3
+	cp := SessionCheckpoint{RequestID: b.RequestID, DefinitionSHA256: b.DefinitionSHA256, SkillsCommit: b.SkillsCommit, Model: b.Model, SessionID: "session", SessionFile: "session.jsonl", SessionSHA256: stringRepeat("b", 64), Archive: verifiedCheckpoint()}
+	if !b.SessionModelAllowed() || !cp.validFor(b) {
+		t.Fatal("qualification checkpoint rejects selected model")
+	}
+	cp.Model = "gpt-6.1-sol"
+	if cp.validFor(b) {
+		t.Fatal("changed model checkpoint accepted")
+	}
+	b.ExecutionMode = "replacement"
+	if b.SessionModelAllowed() {
+		t.Fatal("replacement session restriction broadened")
+	}
+}

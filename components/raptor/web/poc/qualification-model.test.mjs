@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {operationModelChoices} from './app.js';
+test('qualification displays configured models while replacement retains its restriction',()=>{const m=[{modelId:'gpt-6-luna',providerId:'codex'},{modelId:'gpt-6.1-sol',providerId:'codex'}];assert.deepEqual(operationModelChoices('db-proxy.replace-nodes','qualification',m),m);assert.deepEqual(operationModelChoices('db-proxy.replace-nodes','replacement',m),[]);assert.deepEqual(operationModelChoices('application.question','',m),m)});

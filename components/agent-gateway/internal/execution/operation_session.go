@@ -20,7 +20,7 @@ type SessionCheckpoint struct {
 }
 
 func (b AttemptBinding) SessionModelAllowed() bool {
-	return b.Model == "gpt-5.6-luna" || (b.Operation == "application.question" && b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))
+	return b.Model == "gpt-5.6-luna" || ((b.Operation == "application.question" || (b.Operation == "db-proxy.replace-nodes" && b.ExecutionMode == "qualification")) && b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))
 }
 
 func (c SessionCheckpoint) validFor(b AttemptBinding) bool {
