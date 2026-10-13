@@ -2,7 +2,7 @@
 
 ## Deployment gate
 
-The code path is disabled by default (`repositoryChange.enabled: false`). Keep it disabled until the PAT store Terraform PR posts a sanitized plan comment, its reviewed apply completes, the Gateway and Raptor images containing this change are deployed, a reviewed `skills-v*` tag contains `agent-skills/repository-change/SKILL.md`, and the owner saves a scoped personal PAT through Raptor Admin. Do not put the PAT in Helm values, a Secret manifest, Terraform variables, or source.
+The repository-change code path is disabled by default (`repositoryChange.enabled: false`). Keep it disabled until the PAT store Terraform PR posts a sanitized plan comment, its reviewed apply completes, the Gateway and Raptor images containing this change are deployed, a reviewed `skills-v*` tag contains `agent-skills/repository-change/SKILL.md`, and the owner saves a scoped personal PAT through Raptor Admin. Do not put the PAT in Helm values, a Secret manifest, Terraform variables, or source. The separate `githubPAT.enabled` flag may be enabled first to let the owner save the PAT through Admin. Create the `raptor-github-pat-auth` Secret in `raptor-system` with independent random `GATEWAY_GITHUB_PAT_USERNAME` and `GATEWAY_GITHUB_PAT_PASSWORD` values before that rollout; it authenticates only the private Gateway-to-Raptor PAT fetch and does not contain the GitHub PAT.
 
 The PAT stack uses a separate `raptor-github-pat.ali/terraform.tfstate` object. Its PR plan needs the exact state read permission on the shared GitOps plan role before it can initialize. Prerequisite PR #150 adds temporary, exact-resource access through the already managed Gateway GitOps policy; confirm its main-branch reviewed apply succeeded before retrying the PAT plan. The `TF_RAPTOR_GITHUB_PAT_STACK_INPUTS` GitHub secret contains only the verified rdev OIDC provider ARN and issuer. Remove the temporary supplement after the PAT component has its own GitOps permissions.
 
@@ -31,4 +31,4 @@ The feature branch's local checks cover Raptor and Gateway Go suites against a d
 
 - No live data migration audit or deployed Admin TLS/authorization check has been performed for this branch.
 - No PAT has been submitted, no sandbox attempt or PR has been created, and no GitHub Actions state has been observed in rdev for this branch.
-- No Terraform plan comment or reviewed apply has run for this branch.
+- PAT storage PR #148 posted a sanitized plan comment and merged. Reviewed apply run `38365203254` succeeded after the earlier partial apply failed on `oss:ListBuckets`; private bucket metadata was read back with ACL `private` and AES-256 server-side encryption. Gateway permission PR #163 and its reviewed apply run `38364136881` also succeeded. The feature flags and live PAT acceptance are still separate rollout steps.
