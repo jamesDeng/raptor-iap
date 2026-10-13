@@ -64,7 +64,10 @@ type Response struct {
 	Absent    bool   `json:"absent"`
 	Error     string `json:"error,omitempty"`
 }
-type TaskView struct{ Name, Seal, Image, Phase, Workspace string }
+type TaskView struct {
+	Name, Seal, Image, Phase, Workspace string
+	Ready                               bool
+}
 type Backend interface {
 	Get(context.Context, string) (*TaskView, error)
 	Create(context.Context, string, string) (*TaskView, error)
@@ -321,6 +324,24 @@ func (s *Service) Ensure(ctx context.Context, r Request) (Response, error) {
 	_, e := s.Backend.Resume(ctx, r.name())
 	if e != nil {
 		return out, ErrUnknown
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		task, err := s.Backend.Get(readyCtx, r.name())
+		if err != nil || task == nil || !r.ownsTask(task, v.Image) {
+			return out, ErrUnknown
+		}
+		if task.Ready {
+			break
+		}
+		select {
+		case <-readyCtx.Done():
+			return out, ErrUnknown
+		case <-ticker.C:
+		}
 	}
 	return out, nil
 }

@@ -45,7 +45,13 @@ func view(t *ax.Task) (*TaskView, error) {
 	if len(t.Spec.Workspaces) == 1 && t.Spec.Workspaces[0] != nil {
 		workspace = t.Spec.Workspaces[0].Name
 	}
-	return &TaskView{Name: t.Metadata.Name, Seal: seal, Image: t.Spec.Image, Phase: t.GetStatus().GetPhase(), Workspace: workspace}, nil
+	ready := false
+	for _, condition := range t.GetStatus().GetConditions() {
+		if condition.GetType() == "Ready" && condition.GetStatus() == "True" {
+			ready = true
+		}
+	}
+	return &TaskView{Name: t.Metadata.Name, Seal: seal, Image: t.Spec.Image, Phase: t.GetStatus().GetPhase(), Workspace: workspace, Ready: ready}, nil
 }
 func (b *SDKBackend) Get(ctx context.Context, n string) (*TaskView, error) {
 	t, e := b.AX.GetTask(ctx, &ax.GetTaskRequest{Atespace: b.Atespace, Name: n})
