@@ -54,6 +54,7 @@ resource "alicloud_ram_policy" "gitops" {
     { Effect = "Allow", Action = ["ram:CreateRole", "ram:UpdateRole"], Resource = local.owned_role_arns },
     { Effect = "Allow", Action = ["ram:CreatePolicy", "ram:CreatePolicyVersion", "ram:DeletePolicyVersion"], Resource = local.owned_policy_arns },
     { Effect = "Allow", Action = ["ram:AttachPolicyToRole"], Resource = concat(local.owned_role_arns, local.shared_role_arns, local.owned_policy_arns) },
+    { Effect = "Allow", Action = ["oss:ListBuckets"], Resource = ["acs:oss:*:*:*"] },
     { Effect = "Allow", Action = ["oss:PutBucket", "oss:PutBucketAcl", "oss:PutBucketEncryption"], Resource = [local.pat_bucket_arn] },
     { Effect = "Allow", Action = ["ram:CreateRole", "ram:UpdateRole"], Resource = [local.pat_role_arn] },
     { Effect = "Allow", Action = ["ram:CreatePolicy", "ram:CreatePolicyVersion", "ram:DeletePolicyVersion"], Resource = [local.pat_policy_arn] },

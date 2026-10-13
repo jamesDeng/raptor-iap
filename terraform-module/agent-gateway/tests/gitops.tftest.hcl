@@ -45,3 +45,14 @@ run "pat_apply_bootstrap_has_exact_bucket_and_iam" {
     error_message = "PAT apply bootstrap must name only the dedicated bucket, role, and policy."
   }
 }
+run "pat_bucket_creation_can_read_service_bucket_list" {
+  command = plan
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.gitops["apply"].policy_document).Statement : s if s.Action == ["oss:ListBuckets"] && s.Resource == ["acs:oss:*:*:*"]]) == 1
+    error_message = "PAT apply needs only the service-level OSS bucket-list read used by bucket creation."
+  }
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : s if contains(s.Action, "oss:ListBuckets")]) == 0
+    error_message = "The plan role must not gain service-level bucket listing."
+  }
+}
