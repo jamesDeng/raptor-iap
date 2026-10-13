@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	ax "github.com/google/ax/pkg/apis/v1alpha1"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,45 @@ type fakeBackend struct {
 	visibleOnError         bool
 	runError               error
 }
+type delayedReadyBackend struct {
+	fakeBackend
+	readyPolls int
+}
+
+func (f *delayedReadyBackend) Get(ctx context.Context, name string) (*TaskView, error) {
+	task, err := f.fakeBackend.Get(ctx, name)
+	if err == nil && task.Phase == "Running" {
+		f.readyPolls++
+		task.Ready = f.readyPolls >= 3
+	}
+	return task, err
+}
+
+func TestEnsureWaitsForAXTaskReady(t *testing.T) {
+	f := &delayedReadyBackend{}
+	s := service(t, &f.fakeBackend)
+	s.Backend = f
+	if _, err := s.Ensure(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if f.readyPolls < 3 || !f.task.Ready {
+		t.Fatalf("returned before AX task became ready: polls=%d", f.readyPolls)
+	}
+}
+
+func TestTaskViewUsesAXReadyCondition(t *testing.T) {
+	task := &ax.Task{Metadata: &ax.ObjectMeta{Name: "task"}, Spec: &ax.TaskSpec{Image: "image"}, Status: &ax.TaskStatus{Phase: "Running", Conditions: []*ax.Condition{{Type: "Ready", Status: "False"}}}}
+	first, err := view(task)
+	if err != nil || first.Ready {
+		t.Fatalf("unready task accepted: %+v %v", first, err)
+	}
+	task.Status.Conditions[0].Status = "True"
+	second, err := view(task)
+	if err != nil || !second.Ready {
+		t.Fatalf("ready task rejected: %+v %v", second, err)
+	}
+}
+
 type fakeRepositoryBackend struct {
 	fakeBackend
 	repositoryCreates int
@@ -60,10 +100,14 @@ func TestRepositoryChangeAcceptsSelectedEnvironmentWithoutBroadeningQuestion(t *
 	r := repositoryRequest()
 	r.Binding.EnvCode = "prod.ali"
 	r.Repositories[0].EnvironmentCode = "prod.ali"
-	if err := r.validate(true); err != nil { t.Fatal("selected environment rejected",err) }
+	if err := r.validate(true); err != nil {
+		t.Fatal("selected environment rejected", err)
+	}
 	r.Binding.Operation = "application.question"
 	r.Repositories = nil
-	if err := r.validate(true); err == nil { t.Fatal("question admitted outside existing environment") }
+	if err := r.validate(true); err == nil {
+		t.Fatal("question admitted outside existing environment")
+	}
 }
 func TestRepositoryTaskWrongWorkspaceCannotBeAdopted(t *testing.T) {
 	f := &fakeRepositoryBackend{}
@@ -134,6 +178,7 @@ func (f *fakeBackend) Create(_ context.Context, n, seal string) (*TaskView, erro
 }
 func (f *fakeBackend) Resume(context.Context, string) (*TaskView, error) {
 	f.task.Phase = "Running"
+	f.task.Ready = true
 	return f.task, nil
 }
 func (f *fakeBackend) Delete(context.Context, string) error              { f.deletes++; f.task = nil; return nil }
