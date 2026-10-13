@@ -44,6 +44,12 @@ conversation:
 modelProviders:
   enabled: true
   credentialKeySecretName: raptor-model-credential-key
+githubPAT:
+  enabled: true
+  bucket: raptor-rdev-github-pat-1360282071200743
+  roleARN: acs:ram::1360282071200743:role/raptor-rdev-github-pat-backend
+  providerARN: acs:ram::1360282071200743:oidc-provider/ack-rrsa-c92787e953503492ea141a744c81498f1
+  authSecretName: raptor-github-pat-auth
 progress:
   publicURL: wss://raptor.rdev.raptor-iap.top/v1/progress
   origins: https://raptor.rdev.raptor-iap.top
