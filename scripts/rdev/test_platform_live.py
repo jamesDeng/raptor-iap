@@ -4,7 +4,7 @@ class LiveManifest(unittest.TestCase):
  def render(self,live,restart=None,ax=False,observer=False,replacement=False,scope=None):
   args=[os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml')]
   if restart is not None:args+=['--set','directRestart.enabled='+str(restart).lower()]
-  if not live:args+=['--set','gatewayLive.enabled=false']
+  if not live:args+=['--set','gatewayLive.enabled=false','--set','repositoryChange.enabled=false']
   if live:args+=['--set','gatewayLive.enabled=true','--set','gatewayLive.credentialMode=static-sts','--set','gatewayLive.configSecretName=gateway-live-config','--set','gatewayLive.controllerSecretName=gateway-live-controller','--set','gatewayLive.serviceURL=https://api.rdev.raptor-iap.top','--set','agentAccess.secretName=raptor-agent-access']
   if replacement:args += ['--set','replacement.scopeConfigMapName=pgcat-replacement-scope']
   else:args += ['--set','replacement.scopeConfigMapName=','--set-json','replacement.scope={}']
