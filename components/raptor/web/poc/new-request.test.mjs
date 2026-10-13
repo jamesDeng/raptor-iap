@@ -15,6 +15,9 @@ test('request operation choices are restricted to the selected resource kind',()
  assert.deepEqual(app.operationChoices(schemas,'database'),['database.create']);
  assert.deepEqual(app.operationChoices(schemas,'other'),[]);
 });
+test('repository change requests require a model selection',()=>{
+ assert.equal(app.liveModelOperation('repository.change'),true);
+});
 
 import {readFileSync} from 'node:fs';
 const source=readFileSync(new URL('./app.js',import.meta.url),'utf8');

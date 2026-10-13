@@ -3,6 +3,7 @@ const {updateWorklog,resetWorklog}=typeof document==='undefined'?{updateWorklog:
 export function operationModelChoices(operation,mode,choices) {
  return operation==='db-proxy.replace-nodes'&&mode!=='qualification'?choices.filter(m=>m.modelId==='gpt-5.6-luna'):choices;
 }
+export function liveModelOperation(name){return ['application.question','repository.change','db-proxy.replace-nodes'].includes(name);}
 export function validateParameters(schema, values) {
   const errors=[];
   for (const name of schema.required ?? []) if (!(name in values) || values[name]==='') errors.push(`${name} is required`);
@@ -85,7 +86,6 @@ async function start(){
  function skillOptions(select){select.replaceChildren();for(const v of releases){const option=node('option',v.tag);option.value=v.tag;select.append(option);}}
  function pickedSkills(select){return releases.find(v=>v.tag===select.value)??{tag:'',commitSha:''};}
  function fillEnvironments(){const select=$('environment');select.replaceChildren();for(const [name,values]of groupEnvironments(envs)){const group=node('optgroup');group.label=name;for(const env of values){const option=node('option',`${env.code} · ${env.stage}`);option.value=env.code;group.append(option);}select.append(group);}}
- const liveModelOperation=name=>['application.question','db-proxy.replace-nodes'].includes(name);
  let enabledModels=null;
  async function refreshModels(){const response=await fetch('/api/v1/model-providers',{credentials:'same-origin'});if(response.status===404){enabledModels=null;renderModelChoices();return}const wire=await response.json();if(!response.ok)throw Error(wire.error?.code??'Unavailable');enabledModels=wire.data.models??[];renderModelChoices();}
  function renderModelChoices(){const selector=$('request-model');selector.replaceChildren();const legacy=enabledModels===null;const choices=legacy?[{providerId:'',modelId:'gpt-5.6-luna',displayName:'gpt-5.6-luna'}]:enabledModels;const models=operationModelChoices($('operation').value,$('operation-fields').querySelector('[name=mode]')?.value,choices);for(const model of models){const option=node('option',model.displayName);option.value=model.modelId;option.dataset.providerId=model.providerId;selector.append(option)}$('model-help').textContent=!models.length?'No models are enabled. Ask an administrator to configure a provider.':'';if(liveModelOperation($('operation').value))$('create-agent-request').disabled=!models.length;}
