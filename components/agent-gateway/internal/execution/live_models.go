@@ -142,7 +142,7 @@ func (b AttemptBinding) journalValid() bool {
 	if b.valid() || b.repositoryChangeValid() {
 		return true
 	}
-	return (b.ExecutionMode == "" || b.ExecutionMode == "qualification" || b.ExecutionMode == "replacement") && b.RequestID != "" && b.AttemptID != "" && b.Operation == "db-proxy.replace-nodes" && b.ObjectKind == "db-proxy" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && journalName.MatchString(b.ClusterID) && shaPattern.MatchString(b.DefinitionSHA256) && commitPattern.MatchString(b.SkillsCommit) && b.Model == "gpt-5.6-luna" && ((b.ProviderID == "" && b.ConnectionVersion == 0) || (b.ProviderID == "codex" && b.ConnectionVersion > 0))
+	return (b.ExecutionMode == "" || b.ExecutionMode == "qualification" || b.ExecutionMode == "replacement") && b.RequestID != "" && b.AttemptID != "" && b.Operation == "db-proxy.replace-nodes" && b.ObjectKind == "db-proxy" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && journalName.MatchString(b.ClusterID) && shaPattern.MatchString(b.DefinitionSHA256) && commitPattern.MatchString(b.SkillsCommit) && (b.Model == "gpt-5.6-luna" || (b.ExecutionMode == "qualification" && b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))) && ((b.ProviderID == "" && b.ConnectionVersion == 0) || (b.ProviderID == "codex" && b.ConnectionVersion > 0))
 }
 func validJournalKind(k string) bool {
 	return k == "provider" || k == "probe_cleanup" || k == "prepare" || k == "restore" || (strings.HasPrefix(k, "reconcile_key:") && journalName.MatchString(k)) || k == "key" || k == "sandbox" || k == "command" || k == "access" || k == "checkpoint" || k == "terminate" || k == "revoke_key" || k == "revoke_access"

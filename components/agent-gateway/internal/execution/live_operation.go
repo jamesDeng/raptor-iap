@@ -66,7 +66,7 @@ func ParseLiveOperation(in ExecutionInput, attempt string) (AttemptBinding, Live
 	}
 	b := AttemptBinding{RequestID: in.RequestID, AttemptID: attempt, Operation: d.Operations[0].Name, ObjectKind: d.Object.Kind, ObjectCode: d.Object.Code, EnvCode: d.EnvCode, SkillsCommit: d.Skills.CommitSHA, Model: d.Model, ProviderID: d.ProviderID, ConnectionVersion: d.ConnectionVersion, DefinitionSHA256: hash, ClusterID: env.Config.ClusterID}
 	// Do not broaden the existing question-only live worker's admission here.
-	if b.RequestID == "" || b.AttemptID == "" || !journalName.MatchString(b.ObjectCode) || !journalName.MatchString(b.EnvCode) || !commitPattern.MatchString(b.SkillsCommit) || (b.Operation == "db-proxy.replace-nodes" && b.Model != "gpt-5.6-luna") {
+	if b.RequestID == "" || b.AttemptID == "" || !journalName.MatchString(b.ObjectCode) || !journalName.MatchString(b.EnvCode) || !commitPattern.MatchString(b.SkillsCommit) {
 		return AttemptBinding{}, LiveOperationInput{}, ErrInvalid
 	}
 	op := LiveOperationInput{Definition: append(json.RawMessage(nil), raw...), Parameters: d.Operations[0].Parameters, Environment: append(json.RawMessage(nil), in.Environment...)}

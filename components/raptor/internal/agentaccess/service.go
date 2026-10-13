@@ -109,7 +109,7 @@ func supported(def domain.RequestInput) bool {
 	if question(def) || repositoryChange(def) {
 		return true
 	}
-	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && validReplacementParameters(def.Operations[0].Parameters) && ((def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && def.Model == "gpt-5.6-luna")) && sha.MatchString(def.Skills.CommitSHA)
+	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && validReplacementParameters(def.Operations[0].Parameters) && ((def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && (def.Model == "gpt-5.6-luna" || (replacementMode(def) == "qualification" && def.Model != "")))) && sha.MatchString(def.Skills.CommitSHA)
 }
 func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, error) {
 	var out Issued
