@@ -43,6 +43,30 @@ func cloudPages(config func(string) *openapi.Config) func(context.Context, domai
 						tags[tea.StringValue(t.TagKey)] = tea.StringValue(t.TagValue)
 					}
 				}
+				// Tag-filtered ESS responses can contain only the matching tags.
+				// Read the discovered group by exact ID to obtain its association.
+				if tags["target-db-code"] == "" {
+					id := tea.StringValue(g.ScalingGroupId)
+					if id == "" {
+						return page{}, errors.New("invalid provider record")
+					}
+					detail, err := c.DescribeScalingGroupsWithContext(ctx, &ess.DescribeScalingGroupsRequest{RegionId: tea.String(env.Region), ScalingGroupIds: []*string{tea.String(id)}, PageNumber: tea.Int32(1), PageSize: tea.Int32(1)}, &dara.RuntimeOptions{Autoretry: tea.Bool(false)})
+					if err != nil {
+						return page{}, err
+					}
+					if detail == nil || detail.Body == nil || detail.Body.TotalCount == nil || *detail.Body.TotalCount != 1 || len(detail.Body.ScalingGroups) != 1 || detail.Body.ScalingGroups[0] == nil || tea.StringValue(detail.Body.ScalingGroups[0].ScalingGroupId) != id {
+						return page{}, errors.New("incomplete group metadata")
+					}
+					tags = map[string]string{}
+					for _, tag := range detail.Body.ScalingGroups[0].Tags {
+						if tag != nil {
+							tags[tea.StringValue(tag.TagKey)] = tea.StringValue(tag.TagValue)
+						}
+					}
+					if tags["env"] != env.Code || tags["db-proxy-code"] != code {
+						return page{}, domain.ErrScope
+					}
+				}
 				pg.Records = append(pg.Records, record{ID: tea.StringValue(g.ScalingGroupId), Name: tea.StringValue(g.ScalingGroupName), State: tea.StringValue(g.LifecycleState), Tags: tags})
 			}
 			return pg, nil
