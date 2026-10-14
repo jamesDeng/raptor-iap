@@ -8,9 +8,7 @@ class Contracts(unittest.TestCase):
   dep=next(x for x in v['items'] if x['kind']=='Deployment' and x['metadata']['name']=='raptor-ax-bridge')
   env={x['name']:x['value'] for x in dep['spec']['template']['spec']['containers'][0]['env']}
   hosts=json.loads(env['RUNTIME_EGRESS_HOSTS'])
-  self.assertIn('github.com',hosts)
-  self.assertIn('api.github.com',hosts)
-  self.assertTrue(all('*' not in host for host in hosts))
+  self.assertEqual(hosts,['auth.openai.com','chatgpt.com','api.openai.com','api.rdev.raptor-iap.top','infra-api.raptor-iap.top','github.com','api.github.com'])
  def test_dynamic_private_ip(self):
   m=load('render_deployment');v=m.render('10.70.1.181','localhost:5001/bridge@sha256:'+'a'*64,'localhost:5001/pi@sha256:'+'b'*64)
   dep=next(x for x in v['items'] if x['kind']=='Deployment');self.assertEqual(dep['spec']['template']['spec']['containers'][0]['ports'][0]['hostIP'],'10.70.1.181')
