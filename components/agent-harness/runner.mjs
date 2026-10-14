@@ -4,6 +4,7 @@ import {loadPiRuntime,refreshCredentials,runReadProbe} from './pi-adapter.mjs';i
 import {runAppQuestion} from './app-question.mjs';
 import {operationCapabilities} from './operation-profile.mjs';
 import {runLiveJob} from './live-runner.mjs';
+import {GIT_TOOLS} from './live-repository.mjs';
 import {ProgressWriter,writeTerminal} from './progress.mjs';
 import {validateApplicationRequest} from './application-context.mjs';
 export async function runJob(job,dependencies={}){
@@ -24,9 +25,16 @@ export async function runJob(job,dependencies={}){
  return result;
 }
 export function terminalExitCode(result){return result.passed===true||(!result.error&&!result.checkpointError&&['approval','resource'].includes(result.paused?.kind)&&typeof result.checkpoint?.archive_key==='string'&&result.checkpoint.archive_key)?0:1;}
+export function progressToolsForJob(job){
+ const binding=job.request.binding;
+ return Object.entries(operationCapabilities(binding,job.replacement_scope)).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name))
+  .concat(job.observation_config_path&&binding.operation==='db-proxy.replace-nodes'?OBSERVATION_TOOLS:[])
+  .concat(binding.operation==='db-proxy.replace-nodes'?['resource_wait']:[])
+  .concat(binding.operation==='repository.change'?GIT_TOOLS:[]);
+}
 async function main(){
  const input=process.argv[2],output=process.argv[3];let result,timer;const controller=new AbortController();
- try{const job=JSON.parse(fs.readFileSync(input,'utf8'));const writer=job.phase==='live-inference'?new ProgressWriter(output.replace(/-result\.json$/,'-progress.jsonl'),Object.entries(operationCapabilities(job.request.binding,job.replacement_scope)).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name)).concat(job.observation_config_path&&job.request.binding.operation==='db-proxy.replace-nodes'?OBSERVATION_TOOLS:[]).concat(job.request.binding.operation==='db-proxy.replace-nodes'?['resource_wait']:[])):null;if(writer){const cancel=output.replace(/-result\.json$/,'-cancel');const check=()=>{if(fs.existsSync(cancel))controller.abort();};check();timer=setInterval(check,200);}result=await runJob(job,writer?{onProgress:event=>writer.append(event),signal:controller.signal}:{});}catch{result={passed:false,error:'InvalidJob'};}
+ try{const job=JSON.parse(fs.readFileSync(input,'utf8'));const writer=job.phase==='live-inference'?new ProgressWriter(output.replace(/-result\.json$/,'-progress.jsonl'),progressToolsForJob(job)):null;if(writer){const cancel=output.replace(/-result\.json$/,'-cancel');const check=()=>{if(fs.existsSync(cancel))controller.abort();};check();timer=setInterval(check,200);}result=await runJob(job,writer?{onProgress:event=>writer.append(event),signal:controller.signal}:{});}catch{result={passed:false,error:'InvalidJob'};}
  clearInterval(timer);writeTerminal(output,result);process.exitCode=terminalExitCode(result);
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)await main();
