@@ -1,5 +1,5 @@
 import {QualificationTrace} from './qualification-trace.mjs';
-import {observationExtension,OBSERVATION_TOOLS} from './observation-extension.mjs';
+import {observationExtension,observationArgsCategory,OBSERVATION_TOOLS} from './observation-extension.mjs';
 import fs from 'node:fs';
 import {qualifyReplacementConvergence} from './replacement-completion.mjs';
 import {ReplacementTrace} from './replacement-trace.mjs';
@@ -38,8 +38,8 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   session.agent.finishTurn=async(turn,signal)=>{const decision=await finishTurn?.(turn,signal);if(pause.endRound()){clearTimeout(timer);return {action:'end'};}return decision;};
   session.subscribe(event=>{
    if(event.type==='turn_start'&&session.getActiveToolNames().sort().join(',')!==[...tools].sort().join(',')){error||='UnexpectedToolCatalog';void session.abort();}
-   if(event.type==='tool_execution_start'){toolDiagnostics.delete(event.toolName);progress({kind:'tool_start',tool:event.toolName,outcome:'started'});}
-   if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(event.isError){const diagnostic=toolFailureDiagnostic(event.toolName,profile,toolDiagnostics.get(event.toolName),event.result);if(diagnostic)progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});error||='ToolFailed';void session.abort();}}
+   if(event.type==='tool_execution_start'){toolDiagnostics.delete(event.toolName);progress({kind:'tool_start',tool:event.toolName,outcome:'started'});const category=observationArgsCategory(event.toolName,event.args);if(category)progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' '+category});}
+   if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(event.isError){const diagnostic=toolFailureDiagnostic(event.toolName,profile,toolDiagnostics.get(event.toolName),event.result);if(diagnostic)progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});if(OBSERVATION_TOOLS.includes(event.toolName))progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' tool-end-failed'});error||='ToolFailed';void session.abort();}}
    if(event.type==='message_end'&&event.message.role==='assistant'){const message=event.message,u=message.usage;if(message.model!==b.model||message.provider!==model.provider||['error','aborted'].includes(message.stopReason)||!u||![u.input,u.output,u.totalTokens].every(n=>Number.isSafeInteger(n)&&n>=0)){error||='ModelFailed';void session.abort();}else usage.push({input:u.input,output:u.output,totalTokens:u.totalTokens});const summary=publicProgressFromMessage(message);if(summary)progress({kind:'progress',outcome:'running',summary});}
   });
   signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
