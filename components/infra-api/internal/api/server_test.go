@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"raptor-iap/infra-api/internal/domain"
@@ -60,9 +61,27 @@ func TestScopeAndIdentity(t *testing.T) {
 		if w.Code != x.want {
 			t.Fatalf("%d %s", w.Code, w.Body.String())
 		}
-		if strings.Contains(w.Body.String(), "123") || strings.Contains(w.Body.String(), "secret") {
-			t.Fatal("secret projection")
-		}
+		assertNoSecretProjection(t, w.Body.Bytes())
+	}
+}
+func TestNoSecretProjectionIgnoresObservationTime(t *testing.T) {
+	assertNoSecretProjection(t, []byte(`{"data":{"envCode":"dev","observedAt":"2026-10-14T06:10:58.123Z"}}`))
+}
+func assertNoSecretProjection(t *testing.T, body []byte) {
+	t.Helper()
+	var response map[string]any
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatal(err)
+	}
+	if data, ok := response["data"].(map[string]any); ok {
+		delete(data, "observedAt")
+	}
+	projection, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(projection), "123") || strings.Contains(string(projection), "secret") {
+		t.Fatal("secret projection")
 	}
 }
 func TestDiscoveryErrors(t *testing.T) {
