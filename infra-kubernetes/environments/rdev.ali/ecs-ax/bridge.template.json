@@ -70,7 +70,7 @@
                   },
                   {
                     "name": "RUNTIME_EGRESS_HOSTS",
-                    "value": "[\"auth.openai.com\", \"chatgpt.com\", \"api.openai.com\", \"api.rdev.raptor-iap.top\", \"infra-api.raptor-iap.top\"]"
+                    "value": "[\"auth.openai.com\", \"chatgpt.com\", \"api.openai.com\", \"api.rdev.raptor-iap.top\", \"infra-api.raptor-iap.top\", \"github.com\", \"api.github.com\"]"
                   }
                 ],
                 "ports": [
