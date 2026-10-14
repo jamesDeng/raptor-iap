@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateRepositoryJob} from './live-repository.mjs';
+import {validateRepositoryJob,terminalRepositoryToolFailure} from './live-repository.mjs';
 import {operationCapabilities,checkOperationSelectors} from './operation-profile.mjs';
 
 const binding={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',operation:'repository.change',objectKind:'application',envCode:'rdev.ali',skillsCommit:'a'.repeat(40)};
@@ -21,4 +21,10 @@ test('repository tool profile permits only request-bound attachment and catalog 
  assert.doesNotThrow(()=>checkOperationSelectors('raptor','pull_request_attach',args,binding));
  assert.throws(()=>checkOperationSelectors('raptor','pull_request_attach',{...args,attemptId:'other'},binding),/ScopeMismatch/);
  assert.throws(()=>checkOperationSelectors('infra','deployment_restart',{},binding),/ScopeMismatch/);
+});
+
+test('a failed shell check can be corrected, while request tool failures stop the attempt',()=>{
+ assert.equal(terminalRepositoryToolFailure('bash'),false);
+ assert.equal(terminalRepositoryToolFailure('mcp__raptor__pull_request_attach'),true);
+ assert.equal(terminalRepositoryToolFailure('write'),true);
 });
