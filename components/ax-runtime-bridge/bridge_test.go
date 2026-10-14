@@ -140,18 +140,34 @@ func TestRepositoryWorkspaceSpecClonesEachURLOnce(t *testing.T) {
 	r.Repositories = append(r.Repositories, Repository{EnvironmentCode: "rdev.ali", Purpose: "kubernetes", URL: r.Repositories[0].URL, Directory: "kubernetes", BaseBranch: "main", BaseCommit: r.Repositories[0].BaseCommit})
 	r.Repositories = append(r.Repositories, Repository{EnvironmentCode: "rdev.ali", Purpose: "kubernetes", URL: "https://github.com/example/apps.git", Directory: ".", BaseBranch: "release", BaseCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})
 	w, err := repositoryWorkspace(r)
-	if err != nil || w.Metadata.Name != "raptor-repositories-"+r.Binding.AttemptID || len(w.Spec.Git) != 2 || len(w.Spec.Files) != 1 {
+	if err != nil || w.Metadata.Name != "raptor-repositories-"+r.Binding.AttemptID || len(w.Spec.Git) != 0 || len(w.Spec.Files) != 1 {
 		t.Fatalf("workspace: %+v %v", w, err)
-	}
-	if w.Spec.Git[0].Repo != r.Repositories[0].URL || w.Spec.Git[0].Dir == w.Spec.Git[1].Dir {
-		t.Fatal("clones not unique")
 	}
 	var metadata []map[string]any
 	if json.Unmarshal([]byte(w.Spec.Files[0].Content), &metadata) != nil || len(metadata) != 3 || metadata[1]["path"] != "/workspace/repositories/repo-0/kubernetes" {
 		t.Fatalf("workspace path metadata: %+v", metadata)
 	}
 }
+func TestRepositoryWorkspaceAllowsMultipleRowsPerPurpose(t *testing.T) {
+	r := repositoryRequest()
+	for i, url := range []string{"https://github.com/example/apps.git", "https://github.com/example/third.git"} {
+		r.Repositories = append(r.Repositories, Repository{EnvironmentCode: "rdev.ali", Purpose: "kubernetes", URL: url, Directory: ".", BaseBranch: "main", BaseCommit: strings.Repeat(string(rune('b'+i)), 40)})
+	}
+	if w, err := repositoryWorkspace(r); err != nil || len(w.Spec.Git) != 0 {
+		t.Fatalf("three unique public repositories rejected: %v", err)
+	}
+}
 func TestRepositoryInferenceUsesPrivateGitConfigPaths(t *testing.T) {
+	if got := processTimeout("prepare", "raptor-repositories-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb"); got != 5*time.Minute {
+		t.Fatalf("repository prepare timeout = %v", got)
+	}
+	if got := processTimeout("prepare", "raptor-runtime"); got != 2*time.Minute {
+		t.Fatalf("question prepare timeout = %v", got)
+	}
+	prepare, err := commandForPhase("prepare", "raptor-repositories-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb")
+	if err != nil || !strings.Contains(strings.Join(prepare, " "), "checkout-repositories.mjs") {
+		t.Fatalf("repository checkout must happen after the AX guest is ready: %v %v", prepare, err)
+	}
 	cmd, err := commandForPhase("inference", "raptor-repositories-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb")
 	if err != nil || len(cmd) < 5 || cmd[0] != "env" || !strings.Contains(strings.Join(cmd, " "), "GIT_CONFIG_GLOBAL=/tmp/raptor-private/gitconfig") || !strings.Contains(strings.Join(cmd, " "), "GH_CONFIG_DIR=/tmp/raptor-private/gh") {
 		t.Fatalf("repository command: %v %v", cmd, err)
