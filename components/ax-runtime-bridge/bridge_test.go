@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	ax "github.com/google/ax/pkg/apis/v1alpha1"
+	"google.golang.org/grpc"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +56,52 @@ func TestTaskViewUsesAXReadyCondition(t *testing.T) {
 	second, err := view(task)
 	if err != nil || !second.Ready {
 		t.Fatalf("ready task rejected: %+v %v", second, err)
+	}
+}
+
+func TestGuestWorkspaceReadyUsesTargetedRouterProbe(t *testing.T) {
+	status := http.StatusServiceUnavailable
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/readyz?check=workspace" || r.Header.Get("ate-target-actor") != "raptor-runtime/raptor-attempt" || r.Host != "raptor-attempt.raptor-runtime.actors.resources.substrate.ate.dev" {
+			t.Errorf("unexpected readiness probe: %s %s %s", r.URL.RequestURI(), r.Header.Get("ate-target-actor"), r.Host)
+		}
+		w.WriteHeader(status)
+	}))
+	defer server.Close()
+	backend := &SDKBackend{Router: strings.TrimPrefix(server.URL, "http://"), Atespace: "raptor-runtime"}
+	if backend.guestWorkspaceReady(context.Background(), "raptor-attempt") {
+		t.Fatal("unready guest accepted")
+	}
+	status = http.StatusOK
+	if !backend.guestWorkspaceReady(context.Background(), "raptor-attempt") {
+		t.Fatal("ready guest rejected")
+	}
+}
+
+type staleReadyAXClient struct {
+	ax.AXClient
+	task *ax.Task
+}
+
+func (f staleReadyAXClient) GetTask(context.Context, *ax.GetTaskRequest, ...grpc.CallOption) (*ax.Task, error) {
+	return f.task, nil
+}
+
+func TestSDKBackendGetAcceptsGuestWorkspaceReadyWhenAXConditionIsStale(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/readyz?check=workspace" || r.Header.Get("ate-target-actor") != "raptor-runtime/raptor-attempt" || r.Host != "raptor-attempt.raptor-runtime.actors.resources.substrate.ate.dev" {
+			t.Error("unexpected guest probe")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	backend := &SDKBackend{
+		AX:     staleReadyAXClient{task: &ax.Task{Metadata: &ax.ObjectMeta{Name: "raptor-attempt"}, Spec: &ax.TaskSpec{Image: "image"}, Status: &ax.TaskStatus{Phase: "Running", Conditions: []*ax.Condition{{Type: "Ready", Status: "False"}}}}},
+		Router: strings.TrimPrefix(server.URL, "http://"), Atespace: "raptor-runtime",
+	}
+	task, err := backend.Get(context.Background(), "raptor-attempt")
+	if err != nil || !task.Ready {
+		t.Fatalf("guest workspace readiness ignored: %+v %v", task, err)
 	}
 }
 

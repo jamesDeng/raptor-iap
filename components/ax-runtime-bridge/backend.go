@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"io"
 	"log"
+	"net/http"
 	"path"
 	"strings"
 	"time"
@@ -62,7 +63,31 @@ func (b *SDKBackend) Get(ctx context.Context, n string) (*TaskView, error) {
 		log.Printf("AX backend GetTask failed code=%s", status.Code(e))
 		return nil, ErrUnknown
 	}
-	return view(t)
+	v, err := view(t)
+	if err != nil {
+		return nil, err
+	}
+	// AX can report Running before its resumed guest completes workspace setup.
+	// Its Ready condition may stay stale, so ask the guest's workspace probe.
+	if !v.Ready && v.Phase == "Running" && b.guestWorkspaceReady(ctx, n) {
+		v.Ready = true
+	}
+	return v, nil
+}
+func (b *SDKBackend) guestWorkspaceReady(ctx context.Context, n string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+b.Router+"/readyz?check=workspace", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("ate-target-actor", b.Atespace+"/"+n)
+	req.Host = n + "." + b.Atespace + ".actors.resources.substrate.ate.dev"
+	client := &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 func (b *SDKBackend) Create(ctx context.Context, n, seal string) (*TaskView, error) {
 	t, e := b.AX.CreateTask(ctx, &ax.CreateTaskRequest{Task: &ax.Task{ApiVersion: "ax.dev/v1alpha1", Kind: "Task", Metadata: &ax.ObjectMeta{Name: n, Atespace: b.Atespace}, Spec: &ax.TaskSpec{Image: b.Image, Debug: true, Env: []*ax.EnvVar{{Name: "RAPTOR_BINDING_SHA256", Value: seal}}, Workspaces: []*ax.WorkspaceRef{{Name: "raptor-runtime", Path: "/workspace"}}}}})
