@@ -15,3 +15,13 @@ test('remote errors and oversized output are sanitized',async()=>{
  for(const response of [new Response('secret failure',{status:503}),new Response('a'.repeat(262145)),new Response(JSON.stringify({data:{token:'a'.repeat(64)}}))]){
  const tools=createObservationTools({binding,config:config(),replacementScope:scope,fetch:async()=>response});await assert.rejects(tools.deploymentRead({}),e=>e.message==='InvalidObservation');}
 });
+test('remote observation calls are serialized for the single-flight Gateway proxy',async()=>{
+ let active=0,peak=0;const seen=[];
+ const tools=createObservationTools({binding,config:config(),replacementScope:scope,fetch:async(_url,options)=>{
+  active++;peak=Math.max(peak,active);const tool=JSON.parse(options.body).tool;seen.push(tool);
+  await new Promise(resolve=>setTimeout(resolve,5));active--;
+  return active>0?new Response('busy',{status:429}):new Response(JSON.stringify({data:{tool}}));
+ }});
+ const result=await Promise.all([tools.cloudRead({kind:'fleet'}),tools.deploymentRead({}),tools.metricsRead({kind:'connections'})]);
+ assert.equal(peak,1);assert.deepEqual(seen,['cloud_read','deployment_read','metrics_read']);assert.deepEqual(result.map(x=>x.tool),seen);
+});
