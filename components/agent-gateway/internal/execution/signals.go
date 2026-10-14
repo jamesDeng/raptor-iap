@@ -16,19 +16,30 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 		return ErrUnavailable
 	}
 	defer tx.Rollback(ctx)
+	var slot *string
+	var unresolved bool
+	if v.Kind == "continue" {
+		// Keep the same lock order as claim/finalize before changing a terminal
+		// qualification execution back to queued.
+		if e = tx.QueryRow(ctx, "SELECT request_id::text,unresolved FROM gateway.runtime_slot WHERE id=1 FOR UPDATE").Scan(&slot, &unresolved); e != nil {
+			return ErrUnavailable
+		}
+	}
 	var mode, status string
 	if e := tx.QueryRow(ctx, "SELECT runtime_mode,status FROM gateway.executions WHERE request_id=$1 FOR UPDATE", v.RequestID).Scan(&mode, &status); e != nil {
 		return ErrInvalid
 	}
+	var binding AttemptBinding
+	var attemptState string
+	var attemptEnded bool
 	if mode == "live" && v.Kind != "cancel" {
 		if v.Kind != "approval" && v.Kind != "continue" && v.Kind != "block" {
 			return ErrInvalid
 		}
 		var raw []byte
-		if e = tx.QueryRow(ctx, "SELECT binding FROM gateway.attempts WHERE id=(SELECT attempt_id FROM gateway.executions WHERE request_id=$1)", v.RequestID).Scan(&raw); e != nil {
+		if e = tx.QueryRow(ctx, "SELECT binding,state,ended_at IS NOT NULL FROM gateway.attempts WHERE id=(SELECT attempt_id FROM gateway.executions WHERE request_id=$1)", v.RequestID).Scan(&raw, &attemptState, &attemptEnded); e != nil {
 			return ErrInvalid
 		}
-		var binding AttemptBinding
 		if json.Unmarshal(raw, &binding) != nil || !binding.journalValid() || binding.Operation != "db-proxy.replace-nodes" || binding.RequestID != v.RequestID {
 			return ErrInvalid
 		}
@@ -73,6 +84,42 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 		bb, _ := json.Marshal(b)
 		if id != v.RequestID || kind != v.Kind || !bytes.Equal(aa, bb) {
 			return ErrInvalid
+		}
+	}
+	if mode == "live" && v.Kind == "continue" && binding.ExecutionMode == "qualification" {
+		var hint struct {
+			AttemptID  string `json:"attemptId"`
+			ApprovalID string `json:"approvalId"`
+		}
+		if json.Unmarshal(v.Payload, &hint) != nil {
+			return ErrInvalid
+		}
+		// An approval wakeup belongs to ResumeLive. A plain Continue can retry
+		// only the exact cleaned-up failed attempt named by Raptor.
+		if hint.ApprovalID == "" && (hint.AttemptID != "" || status == "failed") {
+			var attempt string
+			var cleanup []byte
+			var recovery bool
+			if e = tx.QueryRow(ctx, "SELECT attempt_id::text,cleanup_status,recovery_needed FROM gateway.executions WHERE request_id=$1", v.RequestID).Scan(&attempt, &cleanup, &recovery); e != nil {
+				return ErrUnavailable
+			}
+			var confirmed struct {
+				SandboxAbsent bool `json:"sandboxAbsent"`
+				KeyAbsent     bool `json:"keyAbsent"`
+				AccessRevoked bool `json:"accessRevoked"`
+			}
+			clean := json.Unmarshal(cleanup, &confirmed) == nil && confirmed.SandboxAbsent && confirmed.KeyAbsent && confirmed.AccessRevoked
+			slotSafe := slot == nil && !unresolved || slot != nil && *slot != v.RequestID
+			if status == "failed" && attemptState == "failed" && attemptEnded && hint.AttemptID == attempt && hint.AttemptID != "" && clean && !recovery && slotSafe {
+				if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now() WHERE request_id=$1", v.RequestID); e != nil {
+					return ErrUnavailable
+				}
+			}
+			// Consume prior plain clicks and duplicates, including signals that
+			// arrived before this release. They must never retry a later attempt.
+			if _, e = tx.Exec(ctx, "UPDATE gateway.signals SET consumed=true WHERE request_id=$1 AND kind='continue' AND NOT consumed AND payload->>'approvalId' IS NULL", v.RequestID); e != nil {
+				return ErrUnavailable
+			}
 		}
 	}
 	if lateCancel {
