@@ -24,7 +24,8 @@ export class QualificationTrace {
   this.observation('cloud.'+kind,data);
  }
  sql(data){if(data?.connected!==true||!this.baseline?.includes(data.instanceId))throw invalid();this.probes.set(data.instanceId,new Date().toISOString());}
- complete(){const c=this.continuation;if(c?.decision!=='resume'||!c.approvalId||!c.actionId||!/^[a-f0-9]{64}$/.test(c.bindingDigest??'')||!this.baseline||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(n=>!fresh(this.checks.get(n)))||this.probes.size!==2||[...this.probes.values()].some(t=>!fresh(t)))throw Error('MissingEvidence');
+ requireApprovalReady(){if(!this.baseline||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(n=>!fresh(this.checks.get(n)))||this.probes.size!==2||[...this.probes.values()].some(t=>!fresh(t)))throw Error('MissingEvidence');}
+ complete(){const c=this.continuation;this.requireApprovalReady();if(c?.decision!=='resume'||!c.approvalId||!c.actionId||!/^[a-f0-9]{64}$/.test(c.bindingDigest??''))throw Error('MissingEvidence');
   return {version:1,passed:true,readOnly:true,trafficAcceptance:'not_assessed',scope:this.scope,checks:[...QUALIFICATION_CHECKS],instanceIds:this.baseline,connectedNodeIds:[...this.probes.keys()].sort(),approvalId:c.approvalId,actionId:c.actionId,bindingDigest:c.bindingDigest,observedAt:new Date().toISOString()};
  }
 }
