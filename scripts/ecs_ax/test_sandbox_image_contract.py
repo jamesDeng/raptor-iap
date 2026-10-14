@@ -10,6 +10,9 @@ class SandboxImageContract(unittest.TestCase):
   for required in ['pins.json','materialize_sources.py','substrate-v1-compat.patch','ax-task-runner','CGO_ENABLED=0','agent-harness']:
    self.assertIn(required,text)
   check=(ROOT/'scripts/ecs_ax/check-sandbox-image.sh').read_text()
-  for required in ['aliyun version','kubectl version --client','psql --version','node --test','ax-task-runner']:
+  for required in ['aliyun version','kubectl version --client','psql --version','gh --version','node --test','ax-task-runner']:
    self.assertIn(required,check)
+  dockerfile=(ROOT/'components/ax-sandbox/Dockerfile.pi').read_text()
+  self.assertIn('apt-get install -y --no-install-recommends',dockerfile)
+  self.assertIn(' gh ',dockerfile)
 if __name__=='__main__':unittest.main()

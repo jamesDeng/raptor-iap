@@ -8,6 +8,7 @@ docker run --rm --volume "$root/scripts/contracts:/scripts/contracts:ro" --entry
  aliyun version
  kubectl version --client
  psql --version
+ gh --version
  cd /opt/raptor-harness
  node --test *.test.mjs
 '
