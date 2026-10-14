@@ -60,7 +60,39 @@ export function catalogObjects(objects,kind){return objects.filter(object=>objec
 export function requestTabState(value,selected){
  const approvals=!!value.approvals?.length;
  const result=!!value.execution?.result?.answer||!!value.targets?.length;
- return {selected:selected==='approvals'&&!approvals?'overview':selected|| (result?'result':'overview'),approvals};
+ const pullRequests=value.request?.definition?.operations?.some(op=>op.name==='repository.change')??false;
+ return {selected:(selected==='approvals'&&!approvals)||(selected==='pull-requests'&&!pullRequests)?'overview':selected|| (result?'result':'overview'),approvals};
+}
+export function createPullRequestController({read,onChange}){
+ let generation=0;
+ return {
+  clear(){generation++;},
+  async load(id){
+   const current=++generation;
+   onChange(id,{status:'loading',items:[]});
+   try{const items=await read(id);if(current===generation)onChange(id,{status:'ready',items:Array.isArray(items)?items:[]});}
+   catch{if(current===generation)onChange(id,{status:'error',items:[]});}
+  }
+ };
+}
+export function renderPullRequests(host,view){
+ host.replaceChildren();
+ if(view.status==='loading'){host.append(node('p','Checking attached pull requests…'));return;}
+ if(view.status==='error'){host.append(node('p','Could not load pull requests. Try Refresh status.'));return;}
+ if(view.status!=='ready')return;
+ if(!view.items.length){host.append(node('p','No pull requests attached to this request.'));return;}
+ const labels={success:'Passed',pending:'Running',failure:'Failed',unavailable:'Unavailable'};
+ for(const pr of view.items){
+  if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(pr.repository)||!Number.isSafeInteger(pr.number)||pr.number<1)continue;
+  const card=node('section'),link=node('a',`${pr.repository} #${pr.number}`);
+  card.className='pull-request-card';link.href=`https://github.com/${pr.repository}/pull/${pr.number}`;link.target='_blank';link.rel='noopener noreferrer';
+  const status=node('p',`Actions: ${labels[pr.state]??'Unavailable'}`);status.className='pull-request-status';status.dataset.state=pr.state;
+  card.append(link,status);
+  if(pr.headSha)card.append(node('small',`Head ${pr.headSha.slice(0,7)}`));
+  if(pr.checkedAt&&Number.isFinite(Date.parse(pr.checkedAt)))card.append(node('small',`Checked ${new Date(pr.checkedAt).toLocaleString()}`));
+  host.append(card);
+ }
+ if(!host.children.length)host.append(node('p','Attached pull request details are unavailable.'));
 }
 export function operationChoices(schemas,kind){return Object.keys(schemas).filter(name=>schemas[name]['x-object-kind']===kind);}
 export function pageRoute(hash){
@@ -80,6 +112,7 @@ export function updateNavigation(panel,tab,kind='application'){
 }
 async function start(){
  const $=id=>document.getElementById(id);let objects=[],envs=[],releases=[],schemas={},selectedObject=null,requestId=null,currentTab='overview',catalogKind='application',requestTab=null,requestView=null,basket=[],viewEpoch=0,requestEpoch=0,pendingSubmission=null,requestResource=null,requestOrigin=null,requestTargets=[],activeRoute='';
+ const pullRequests=createPullRequestController({read:id=>api(`/requests/${encodeURIComponent(id)}/pull-request-actions`),onChange:(id,view)=>{if(id===requestId)renderPullRequests($('pull-request-list'),view);}});
  const conversationSend=async(id,input)=>{if(id!==requestId||!csrf)throw Error('ConversationClosed');const receipt=await api(`/requests/${encodeURIComponent(id)}/messages`,{method:'POST',body:input});if(id===requestId){void progress.renew(id);void refreshRequest(id).catch(showError)}return receipt};
  const progress=createDirectProgressController({read:(id,cursor)=>api(`/requests/${encodeURIComponent(id)}/events?after=${cursor}`),ticket:id=>api(`/requests/${encodeURIComponent(id)}/progress-ticket`,{method:'POST',body:{}}),onChange:state=>{updateWorklog($('t3-worklog'),{unavailable:state.unavailable});renderProgress(state.events);const connection=progressConnectionStatus(state);$('progress-connection').dataset.state=connection.status;if($('progress-connection-label').textContent!==connection.label)$('progress-connection-label').textContent=connection.label;if($('progress-availability').textContent!==connection.detail)$('progress-availability').textContent=connection.detail;if(state.execution&&requestView){requestView={...requestView,execution:state.execution,executionAvailable:true};renderExecutionResult(requestView);updateWorklog($('t3-worklog'),{conversation:{...requestView.conversation,onSend:conversationSend}});$('request-state').textContent=`${state.execution.status} · ${state.execution.runtimeMode??'unverified'} execution`;renderRequestTabs();}if(state.mode==='complete')refreshRequest(state.requestId).catch(showError);else if(state.mode==='polling')refreshRequest(state.requestId).catch(showError);}});
  function panel(name){setPageContext(document,name,catalogKind,currentTab);resetWorklog($('t3-worklog'),name==='login-panel');setSessionView(document,name!=='login-panel');updateNavigation(name,currentTab,catalogKind);for(const id of ['catalog-panel','object-detail','requests-panel','request-panel','new-request-panel','login-panel'])$(id).hidden=id!==name;}
@@ -150,7 +183,7 @@ async function start(){
   pending.promise=(async()=>{const result=await api('/requests',{method:'POST',body,headers:{'Idempotency-Key':pending.key}});pendingSubmission=null;if(navigation===viewEpoch)await loadRequest(result.id);})();
   try{return await pending.promise;}finally{pending.promise=null;}
  }
- async function loadRequest(id,replace=false){viewEpoch++;setRoute({request:id},replace);requestTab=null;requestView=null;const version=++requestEpoch;progress.close();requestId=id;panel('request-panel');await refreshRequest(id);if(version!==requestEpoch || requestId!==id)return;await progress.select(id);}
+ async function loadRequest(id,replace=false){viewEpoch++;setRoute({request:id},replace);requestTab=null;requestView=null;pullRequests.clear();renderPullRequests($('pull-request-list'),{status:'idle',items:[]});const version=++requestEpoch;progress.close();requestId=id;panel('request-panel');await refreshRequest(id);if(version!==requestEpoch || requestId!==id)return;await progress.select(id);}
  async function refreshRequest(id){if(!id)return;const token=id;const value=await api(`/requests/${encodeURIComponent(id)}`);if(token!==requestId)return;const request=value.request??value;$('request-heading').textContent=`Request ${request.id}`;$('request-definition').textContent=JSON.stringify(request.definition,null,2);renderRequestInformation(request);$('request-state').textContent=value.executionAvailable===false?`${request.status} (last saved); Execution sync unavailable`:`${request.status} · ${value.execution?.runtimeMode??'unverified'} execution`;renderExecutionResult(value);updateWorklog($('t3-worklog'),{conversation:{...value.conversation,onSend:conversationSend}});renderTargetResults(value.targets??[]);$('approvals').replaceChildren();for(const approval of value.approvals??[]){const box=node('section');box.append(node('h3',`Approval ${approval.state}`),node('pre',JSON.stringify(approval.binding,null,2)));if(approval.state==='pending'){box.append(button('Approve',()=>decision(id,approval.approvalId,{decision:'approve'})));for(const next of ['block','cancel','continue'])box.append(button(`Deny and ${next}`,()=>decision(id,approval.approvalId,{decision:'deny',next,guidance:$('instructions').value})));}$('approvals').append(box);}requestView=value;renderRequestTabs();if(value.execution?.recoveryNeeded)$('request-state').append(node('p','Recovery required: previous runtime ownership is unresolved. No automatic replay.'));if(value.execution?.appliedSkills)$('request-state').append(node('p',`Applied skills: ${value.execution.appliedSkills.tag??'not started'}`));}
  function renderRequestInformation(request){
   const d=request.definition??{},targets=d.targets??[],codes=[...new Set(targets.map(t=>t.appCode))],environments=[...new Set(targets.map(t=>t.envCode))];
@@ -167,7 +200,7 @@ async function start(){
  }
  function renderRequestTabs(){
   const state=requestTabState(requestView??{},requestTab),activeTab=state.selected;
-  for(const control of document.querySelectorAll('[data-request-tab]')){control.hidden=control.dataset.requestTab==='approvals'&&!state.approvals;if(control.dataset.requestTab===activeTab)control.setAttribute('aria-current','page');else control.removeAttribute('aria-current');}
+  for(const control of document.querySelectorAll('[data-request-tab]')){control.hidden=(control.dataset.requestTab==='approvals'&&!state.approvals)||(control.dataset.requestTab==='pull-requests'&&!requestView?.request?.definition?.operations?.some(op=>op.name==='repository.change'));if(control.dataset.requestTab===activeTab)control.setAttribute('aria-current','page');else control.removeAttribute('aria-current');}
   for(const view of document.querySelectorAll('[data-request-view]'))view.hidden=view.dataset.requestView!==activeTab;
   $('result-empty').hidden=!!requestView?.execution?.result?.answer||!!requestView?.targets?.length;
  }
@@ -175,7 +208,10 @@ async function start(){
  async function requestList(replace=false){progress.close();requestId=null;requestEpoch++;viewEpoch++;setRoute({catalog:'requests'},replace);panel('requests-panel');const list=await api('/requests');$('request-list').replaceChildren();for(const r of list)$('request-list').append(button(`${r.id} · ${r.definition.type} · ${r.status}`,()=>loadRequest(r.id)));}
  $('login').addEventListener('submit',async e=>{e.preventDefault();try{const data=await api('/login',{method:'POST',body:Object.fromEntries(new FormData(e.target))});csrf=data.csrf;$('message').textContent='';e.target.reset?.();$('identity').textContent=data.user.username;await refreshCatalog();await restoreRoute();}catch(err){showError(err);}});
  $('logout').onclick=async()=>{viewEpoch++;try{await api('/logout',{method:'POST'});progress.close();csrf='';panel('login-panel');}catch(e){showError(e);}};
- $('catalog-nav').onclick=()=>openCatalog('application');$('database-nav').onclick=()=>openCatalog('database');$('proxy-nav').onclick=()=>openCatalog('db-proxy');$('back-to-list').onclick=()=>openCatalog();$('back-to-requests').onclick=()=>requestList().catch(showError);for(const control of document.querySelectorAll('[data-request-tab]'))control.onclick=()=>{requestTab=control.dataset.requestTab;renderRequestTabs();};$('requests-nav').onclick=()=>requestList().catch(showError);$('environment').onchange=()=>{if(!$('new-request-panel').hidden){$('new-request-environment').value=$('environment').value;setRoute({'new-request':requestResource.id,env:$('environment').value,mode:$('new-agent-request').hidden?'restart':'agent'});}else if(!$('object-detail').hidden){setRoute({object:selectedObject.id,tab:currentTab,env:$('environment').value});showDetail().catch(showError);}};
+ $('catalog-nav').onclick=()=>openCatalog('application');$('database-nav').onclick=()=>openCatalog('database');$('proxy-nav').onclick=()=>openCatalog('db-proxy');$('back-to-list').onclick=()=>openCatalog();$('back-to-requests').onclick=()=>requestList().catch(showError);
+ for(const control of document.querySelectorAll('[data-request-tab]'))control.onclick=()=>{requestTab=control.dataset.requestTab;renderRequestTabs();if(requestTab==='pull-requests'&&requestId)void pullRequests.load(requestId);};
+ $('refresh-pull-requests').onclick=()=>{if(requestId)void pullRequests.load(requestId);};
+ $('requests-nav').onclick=()=>requestList().catch(showError);$('environment').onchange=()=>{if(!$('new-request-panel').hidden){$('new-request-environment').value=$('environment').value;setRoute({'new-request':requestResource.id,env:$('environment').value,mode:$('new-agent-request').hidden?'restart':'agent'});}else if(!$('object-detail').hidden){setRoute({object:selectedObject.id,tab:currentTab,env:$('environment').value});showDetail().catch(showError);}};
  for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>{currentTab=b.dataset.tab;setRoute({object:selectedObject.id,tab:currentTab,env:$('environment').value});updateNavigation('object-detail',currentTab,catalogKind);showDetail().catch(showError);};$('operation-fields').onchange=()=>renderModelChoices();$('operation').onchange=()=>{renderOperationForm(schemas[$('operation').value]);$('model-field').hidden=!liveModelOperation($('operation').value);renderModelChoices();};
  $('new-request').onclick=()=>openNewRequest(selectedObject);
  $('cancel-new-request').onclick=()=>{if(!requestOrigin)return;const origin=requestOrigin;$('environment').value=origin.environment;openObject(origin.object,origin.tab).catch(showError);};

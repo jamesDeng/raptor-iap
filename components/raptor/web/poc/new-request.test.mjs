@@ -51,7 +51,7 @@ test('opening another request invalidates the pending creation redirect',async()
  const submitBody=source.match(/async function submit\(body\)\{([\s\S]*?)\n async function loadRequest/)[1];
  const loadBody=source.match(/async function loadRequest\(id,replace=false\)\{([\s\S]*?)\n async function refreshRequest/)[1];
  let resolve;
- const controller=new Function('api','crypto','setRoute','panel','refreshRequest','progress',`let pendingSubmission=null,viewEpoch=0,requestEpoch=0,requestId=null,requestTab=null,requestView=null;async function submit(body){${submitBody}async function loadRequest(id,replace=false){${loadBody}return {submit,loadRequest,selected:()=>requestId};`)(()=>new Promise(r=>resolve=r),crypto,()=>{},()=>{},async()=>{}, {close(){},async select(){}});
+ const controller=new Function('api','crypto','setRoute','panel','refreshRequest','progress','pullRequests','renderPullRequests','$',`let pendingSubmission=null,viewEpoch=0,requestEpoch=0,requestId=null,requestTab=null,requestView=null;async function submit(body){${submitBody}async function loadRequest(id,replace=false){${loadBody}return {submit,loadRequest,selected:()=>requestId};`)(()=>new Promise(r=>resolve=r),crypto,()=>{},()=>{},async()=>{}, {close(){},async select(){}},{clear(){}},()=>{},()=>({}));
  const pending=controller.submit({type:'agent'});await controller.loadRequest('other-request');resolve({id:'created-request'});await pending;assert.equal(controller.selected(),'other-request');
 });
 test('logging out invalidates the pending creation redirect',async()=>{

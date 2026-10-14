@@ -15,7 +15,7 @@ test('page navigation ignores a request load that finishes after a newer selecti
  let resolveOld,selectedProgress;
  const progress={close(){selectedProgress=null},async select(id){selectedProgress=id}};
  const refresh=id=>id==='old'?new Promise(resolve=>resolveOld=resolve):Promise.resolve();
- const load=new Function('location','panel','refreshRequest','progress','setRoute',`let requestId=null,requestEpoch=0,viewEpoch=0; return async function loadRequest(id,replace=false){${source}`)({},()=>{},refresh,progress,()=>{});
+ const load=new Function('location','panel','refreshRequest','progress','setRoute','pullRequests','renderPullRequests','$',`let requestId=null,requestEpoch=0,viewEpoch=0; return async function loadRequest(id,replace=false){${source}`)({},()=>{},refresh,progress,()=>{},{clear(){}},()=>{},()=>({}));
  const old=load('old');await load('new');resolveOld();await old;assert.equal(selectedProgress,'new');
 });
 test('same pending browser submission retains identity after lost acknowledgement',async()=>{
