@@ -165,7 +165,16 @@ h2{font-size:22px}
 .table-scroll td{vertical-align:top;overflow-wrap:anywhere;max-width:220px}
 .table-scroll caption{text-align:left;font-size:12px;color:var(--muted);padding:8px 0}
 .table-scroll pre{min-width:160px;max-width:260px}
-#request-result,#request-overview,#request-progress,#request-approvals{min-width:0}
+#request-result,#request-overview,#request-pull-requests,#request-progress,#request-approvals{min-width:0}
+#request-pull-requests>.section-heading h3{margin:0}
+#pull-request-list{display:grid;gap:12px;margin-top:18px}
+.pull-request-card{margin:0;padding:18px;border-left:3px solid var(--accent)}
+.pull-request-card a{font-weight:700;color:var(--accent);overflow-wrap:anywhere}
+.pull-request-card p{margin:8px 0}
+.pull-request-card small{display:block;color:var(--muted);overflow-wrap:anywhere}
+.pull-request-status[data-state="success"]{color:#267046}
+.pull-request-status[data-state="failure"]{color:#b42338}
+.pull-request-status[data-state="pending"]{color:#8a5b00}
 @media(max-width:1050px){.overview-layout{grid-template-columns:1fr}.metadata-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:720px){
  nav{align-items:flex-start;flex-wrap:wrap;gap:12px}
