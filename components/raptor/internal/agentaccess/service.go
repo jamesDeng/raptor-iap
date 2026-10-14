@@ -379,6 +379,9 @@ func RepositorySelectorsAllowed(b Binding, audience, tool string, selectors map[
 	if b.Operation != "repository.change" || audience != "raptor" {
 		return false
 	}
+	if tool == "" {
+		return len(selectors) == 0
+	}
 	switch tool {
 	case "request_get", "environment_get", "object_get":
 		return SelectorsAllowed(b, audience, tool, selectors)

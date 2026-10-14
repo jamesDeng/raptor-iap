@@ -35,6 +35,12 @@ func TestRepositoryChangeHasSeparateSupportedBinding(t *testing.T) {
 
 func TestRepositoryChangeSelectorsExcludeInfra(t *testing.T) {
 	b := Binding{Operation: "repository.change", RequestID: "request", EnvCode: "rdev.ali", ObjectKind: "application", ObjectCode: "app"}
+	if !RepositorySelectorsAllowed(b, "raptor", "", nil) {
+		t.Fatal("repository MCP handshake denied")
+	}
+	if RepositorySelectorsAllowed(b, "infra", "", nil) || RepositorySelectorsAllowed(b, "raptor", "", map[string]string{"requestId": "request"}) {
+		t.Fatal("repository handshake escaped its empty Raptor scope")
+	}
 	if !RepositorySelectorsAllowed(b, "raptor", "environment_get", map[string]string{"requestId": "request", "envCode": "rdev.ali"}) {
 		t.Fatal("bound environment read denied")
 	}
