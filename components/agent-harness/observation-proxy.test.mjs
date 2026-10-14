@@ -15,6 +15,17 @@ test('remote errors and oversized output are sanitized',async()=>{
  for(const response of [new Response('secret failure',{status:503}),new Response('a'.repeat(262145)),new Response(JSON.stringify({data:{token:'a'.repeat(64)}}))]){
  const tools=createObservationTools({binding,config:config(),replacementScope:scope,fetch:async()=>response});await assert.rejects(tools.deploymentRead({}),e=>e.message==='InvalidObservation');}
 });
+test('remote observation failure reports only a bounded tool and category',async()=>{
+ const secret='fixture-private-response';const diagnostics=[];
+ const unavailable=createObservationTools({binding,config:config(),replacementScope:scope,onDiagnostic:x=>diagnostics.push(x),fetch:async()=>new Response(secret,{status:503})});
+ await assert.rejects(unavailable.cloudRead({kind:'fleet'}),/InvalidObservation/);
+ const invalid=createObservationTools({binding,config:config(),replacementScope:scope,onDiagnostic:x=>diagnostics.push(x),fetch:async()=>new Response(secret)});
+ await assert.rejects(invalid.deploymentRead({}),/InvalidObservation/);
+ const local=createObservationTools({binding,config:config(),replacementScope:scope,onDiagnostic:x=>diagnostics.push(x),fetch:async()=>{throw Error('should not fetch')}});
+ await assert.rejects(local.cloudRead({kind:'write'}),/InvalidObservation/);
+ assert.deepEqual(diagnostics,[{tool:'cloud_read',category:'http-503'},{tool:'deployment_read',category:'invalid-response'},{tool:'cloud_read',category:'local-input'}]);
+ assert.equal(JSON.stringify(diagnostics).includes(secret),false);
+});
 test('remote observation calls are serialized for the single-flight Gateway proxy',async()=>{
  let active=0,peak=0;const seen=[];
  const tools=createObservationTools({binding,config:config(),replacementScope:scope,fetch:async(_url,options)=>{
