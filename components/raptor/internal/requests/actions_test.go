@@ -87,3 +87,44 @@ func TestQualificationContinueBindsTerminalAttempt(t *testing.T) {
 		t.Fatal("retry not bound to failed attempt", e, string(raw))
 	}
 }
+
+func TestQualificationContinueKeepsRequestQueuedWhileOldAttemptIsVisible(t *testing.T) {
+	s, _, u := setup(t)
+	ctx := context.Background()
+	o, e := s.Catalog.CreateObject(ctx, catalog.CreateObjectInput{Kind: "db-proxy", Name: "Retry projection proxy"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	s.ModelPolicy = &qualificationModel{enabled: true}
+	in := domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: o.Code}, EnvCode: "adev", Model: "gpt-6-luna", ProviderID: "codex", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "qualification"}}}}
+	r, e := s.Create(ctx, u, "qualification-projection-retry", in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	old := map[string]any{"requestId": r.ID, "attemptId": domain.NewID(), "status": "failed", "updatedAt": "2026-10-14T11:00:00Z"}
+	if _, _, _, e = s.syncExecution(ctx, r, old); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.Action(ctx, r.ID, "continue", "retry qualification"); e != nil {
+		t.Fatal(e)
+	}
+	reopened, e := s.Get(ctx, r.ID)
+	if e != nil || reopened.Status != "queued" {
+		t.Fatalf("qualification retry was not queued: %s %v", reopened.Status, e)
+	}
+	if _, _, _, e = s.syncExecution(ctx, reopened, old); e != nil {
+		t.Fatal(e)
+	}
+	got, e := s.Get(ctx, r.ID)
+	if e != nil || got.Status != "queued" {
+		t.Fatalf("old terminal view closed queued qualification before access issuance: %s %v", got.Status, e)
+	}
+	next := map[string]any{"requestId": r.ID, "attemptId": domain.NewID(), "status": "running", "updatedAt": "2026-10-14T11:01:00Z"}
+	if _, _, _, e = s.syncExecution(ctx, reopened, next); e != nil {
+		t.Fatal(e)
+	}
+	got, e = s.Get(ctx, r.ID)
+	if e != nil || got.Status != "running" {
+		t.Fatalf("new qualification attempt was not projected: %s %v", got.Status, e)
+	}
+}
