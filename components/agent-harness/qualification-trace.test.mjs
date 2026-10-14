@@ -6,6 +6,15 @@ function reads(t){let now=new Date().toISOString();for(const [s,tools] of Object
 test('qualification requires all fresh reads and a persisted unchanged baseline plus verified continuation',()=>{const m=manager();const first=new QualificationTrace(m,b,scope);reads(first);assert.throws(()=>first.complete(),/MissingEvidence/);const resumed=new QualificationTrace(m,b,scope,resume);assert.throws(()=>resumed.complete(),/MissingEvidence/);reads(resumed);const out=resumed.complete();assert.equal(out.passed,true);assert.equal(out.readOnly,true);assert.equal(out.checks.length,13);assert.equal(out.approvalId,'approval');const wrong=new QualificationTrace(m,b,scope,resume);assert.throws(()=>wrong.cloud('fleet',{observedAt:new Date().toISOString(),groupId:'g',instances:['other','i2'].map(instanceId=>({instanceId,protectedFromScaleIn:true,healthStatus:'Healthy',lifecycleState:'Protected'}))}),/InvalidEvidence/)});
 test('stale observation and denial cannot qualify',()=>{const m=manager();const first=new QualificationTrace(m,b,scope);reads(first);const t=new QualificationTrace(m,b,scope,{...resume,decision:'continue'});assert.throws(()=>t.observation('deployment.status',{observedAt:'2000-01-01T00:00:00Z'}),/InvalidEvidence/);reads(t);assert.throws(()=>t.complete(),/MissingEvidence/)});
 test('resumed qualification cannot invent a baseline after approval',()=>{assert.throws(()=>new QualificationTrace(manager(),b,scope,resume),/InvalidEvidence/)});
+test('qualification approval requires the complete first read segment',()=>{
+ const m=manager(),t=new QualificationTrace(m,b,scope);
+ assert.throws(()=>t.requireApprovalReady(),/MissingEvidence/);
+ reads(t);
+ assert.equal(m.rows.filter(row=>row.customType==='raptor-qualification-baseline-v1').length,1);
+ assert.doesNotThrow(()=>t.requireApprovalReady());
+ t.checks.delete('metrics.pgcatClients');
+ assert.throws(()=>t.requireApprovalReady(),/MissingEvidence/);
+});
 test('qualification rejects foreign or incomplete client rollout observations',()=>{
  const t=new QualificationTrace(manager(),b,scope),now=new Date().toISOString();
  const ready={...scope.application,objectCode:scope.application.appCode,generation:2,observedGeneration:2,replicas:2,updatedReplicas:2,readyReplicas:2,availableReplicas:2,observedAt:now};
