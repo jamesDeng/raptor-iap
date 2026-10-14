@@ -98,7 +98,8 @@ func repositoryWorkspace(r Request) (*ax.Workspace, error) {
 		if !ok {
 			clonePath = fmt.Sprintf("repositories/repo-%d", len(paths))
 			paths[repo.URL] = clonePath
-			ws.Spec.Git = append(ws.Spec.Git, &ax.GitRepo{Name: fmt.Sprintf("repo-%d", len(paths)-1), Repo: repo.URL, Branch: repo.BaseBranch, Dir: clonePath})
+			// AX starts workspace Git setup before it activates actor egress.
+			// The bridge checks out public repositories in the prepare phase instead.
 		}
 		selected := clonePath
 		if repo.Directory != "." {
@@ -217,12 +218,18 @@ func (b *SDKBackend) Run(ctx context.Context, n, phase string) (string, error) {
 		return "", e
 	}
 	defer c.Close()
-	timeout := 2 * time.Minute
+	timeout := processTimeout(phase, task.Workspace)
 	v, e := p.StartProcess(ctx, &env.StartProcessRequest{Command: command, Cwd: "/workspace", Timeout: durationpb.New(timeout)})
 	if e != nil {
 		return "", ErrUnknown
 	}
 	return v.GetProcessId(), nil
+}
+func processTimeout(phase, workspace string) time.Duration {
+	if phase == "prepare" && strings.HasPrefix(workspace, "raptor-repositories-") {
+		return 5 * time.Minute // Up to 32 public fetches in eight bounded workers.
+	}
+	return 2 * time.Minute
 }
 func commandForPhase(phase, workspace string) ([]string, error) {
 	repository := strings.HasPrefix(workspace, "raptor-repositories-")
@@ -230,7 +237,7 @@ func commandForPhase(phase, workspace string) ([]string, error) {
 	case "prepare":
 		command := "set -eu; umask 077; test ! -e /workspace/raptor-state; mkdir -p /tmp/raptor-private /tmp/raptor-oss; chmod 700 /tmp/raptor-private; test -f /opt/raptor-harness/runner.mjs"
 		if repository {
-			command += "; node /opt/raptor-harness/verify-repositories.mjs /workspace/.raptor-repositories.json /tmp/raptor-private/repository-error.json"
+			command += "; node /opt/raptor-harness/checkout-repositories.mjs /workspace/.raptor-repositories.json /tmp/raptor-private/repository-error.json; node /opt/raptor-harness/verify-repositories.mjs /workspace/.raptor-repositories.json /tmp/raptor-private/repository-error.json"
 		}
 		return []string{"sh", "-c", command}, nil
 	case "restore":
