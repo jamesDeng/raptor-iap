@@ -3,6 +3,14 @@ ROOT=pathlib.Path(__file__).resolve().parents[2]
 def load(name):
  s=importlib.util.spec_from_file_location(name,ROOT/'scripts/ecs_ax'/f'{name}.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
 class Contracts(unittest.TestCase):
+ def test_repository_change_egress_hosts(self):
+  v=load('render_deployment').render('10.70.1.180','localhost:5001/bridge@sha256:'+'a'*64,'localhost:5001/pi@sha256:'+'b'*64)
+  dep=next(x for x in v['items'] if x['kind']=='Deployment' and x['metadata']['name']=='raptor-ax-bridge')
+  env={x['name']:x['value'] for x in dep['spec']['template']['spec']['containers'][0]['env']}
+  hosts=json.loads(env['RUNTIME_EGRESS_HOSTS'])
+  self.assertIn('github.com',hosts)
+  self.assertIn('api.github.com',hosts)
+  self.assertTrue(all('*' not in host for host in hosts))
  def test_dynamic_private_ip(self):
   m=load('render_deployment');v=m.render('10.70.1.181','localhost:5001/bridge@sha256:'+'a'*64,'localhost:5001/pi@sha256:'+'b'*64)
   dep=next(x for x in v['items'] if x['kind']=='Deployment');self.assertEqual(dep['spec']['template']['spec']['containers'][0]['ports'][0]['hostIP'],'10.70.1.181')
