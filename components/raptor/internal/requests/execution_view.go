@@ -180,15 +180,15 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 			return nil, nil, false, domain.ErrUnavailable
 		}
 		stale := false
-		// A poll may race message dispatch and return the previous terminal
-		// attempt. Keep the Request open until Gateway exposes the new attempt
-		// or rejects all pending input; never reactivate an old terminal view.
+		// A poll may race continuation dispatch and return the previous terminal
+		// attempt. Keep a queued qualification open until Gateway exposes its
+		// new attempt; a conversation stays open while pending input remains.
 		if status == "queued" && old["attemptId"] == candidate["attemptId"] && (candidate["status"] == "completed" || candidate["status"] == "failed" || candidate["status"] == "cancelled") {
 			var pending bool
 			if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.request_messages WHERE request_id=$1 AND status<>'rejected' AND continuation_attempt_id::text=$2)", r.ID, candidate["attemptId"]).Scan(&pending); e != nil {
 				return nil, nil, false, domain.ErrUnavailable
 			}
-			stale = pending
+			stale = pending || isQualification(r.Definition)
 		}
 		if status == "completed" || status == "cancelled" {
 			stale = !reflect.DeepEqual(candidate, old)
