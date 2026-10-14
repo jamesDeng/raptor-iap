@@ -38,6 +38,8 @@ export async function checkoutRepositories(rows,{git=runGit,workspace='/workspac
     await git(root,['fetch','--depth=1','origin','refs/heads/'+branch]);
     if((await git(root,['rev-parse','FETCH_HEAD'])).trim()!==sha)throw Error('RepositoryMoved');
     await git(root,['checkout','--detach','FETCH_HEAD']);
+    await git(root,['config','--local','user.name','Raptor Sandbox Agent']);
+    await git(root,['config','--local','user.email','raptor-sandbox@localhost']);
    }catch(error){failure??={error,url};}
   }
  }));

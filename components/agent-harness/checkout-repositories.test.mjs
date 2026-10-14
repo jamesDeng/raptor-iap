@@ -16,8 +16,10 @@ test('checkout happens once per repository after the workspace exists and verifi
    calls.push(args);
    return args[0]==='rev-parse'?'a'.repeat(40)+'\n':'';
   }});
-  assert.deepEqual(calls.map(args=>args[0]),['init','remote','fetch','rev-parse','checkout']);
+  assert.deepEqual(calls.map(args=>args[0]),['init','remote','fetch','rev-parse','checkout','config','config']);
   assert.deepEqual(calls[2],['fetch','--depth=1','origin','refs/heads/main']);
+  assert.deepEqual(calls[5],['config','--local','user.name','Raptor Sandbox Agent']);
+  assert.deepEqual(calls[6],['config','--local','user.email','raptor-sandbox@localhost']);
  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
