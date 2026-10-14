@@ -79,7 +79,25 @@ func (s *Service) Action(ctx context.Context, id, action, instructions string) e
 		}
 		return tx.Commit(ctx)
 	}
-	if e = QueueSignal(ctx, tx, id, action, map[string]string{"instructions": instructions}); e != nil {
+	payload := map[string]string{"instructions": instructions}
+	if action == "continue" && isQualification(input) {
+		if status != "failed" {
+			return domain.ErrConflict
+		}
+		var body []byte
+		if e = tx.QueryRow(ctx, "SELECT public_view FROM raptor.execution_views WHERE request_id=$1", id).Scan(&body); e != nil {
+			return domain.ErrConflict
+		}
+		var terminal struct {
+			AttemptID string `json:"attemptId"`
+			Status    string `json:"status"`
+		}
+		if json.Unmarshal(body, &terminal) != nil || terminal.Status != "failed" || terminal.AttemptID == "" {
+			return domain.ErrConflict
+		}
+		payload["attemptId"] = terminal.AttemptID
+	}
+	if e = QueueSignal(ctx, tx, id, action, payload); e != nil {
 		return domain.ErrUnavailable
 	}
 	if action == "cancel" || action == "block" {
