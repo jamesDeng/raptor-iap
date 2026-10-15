@@ -42,3 +42,20 @@ test('catalog filters unrelated tools while retaining only question capabilities
  const response=await guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});
  assert.deepEqual((await response.json()).result.tools.map(t=>t.name),names.slice(0,3));
 });
+
+test('qualification tool catalog exposes exact trusted read selectors to the model',async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');
+ const {operationCapabilities,operationToolSchema}=await import('./operation-profile.mjs');
+ const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'qualification'};
+ const scope={envCode:'rdev.ali',proxyCode:'DP00001',groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'DB00001',application:{envCode:'rdev.ali',appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
+ const tools=operationCapabilities(b,scope).infra.map(name=>({name,inputSchema:operationToolSchema('infra',name)}));
+ const guarded=createGuardedFetch({server:'infra',url:'https://infra.example/mcp',binding:b,replacementScope:scope,fetch:async()=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools}}),{headers:{'Content-Type':'application/json'}})});
+ const response=await guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});
+ const visible=Object.fromEntries((await response.json()).result.tools.map(t=>[t.name,t.inputSchema.properties]));
+ assert.deepEqual(visible.cloud_identity_get.envCode.enum,['rdev.ali']);
+ assert.deepEqual(visible.deployments_list.kind.enum,['db-proxy']);
+ assert.deepEqual(visible.deployments_list.code.enum,['DP00001']);
+ assert.deepEqual(visible.deployment_status_get.appCode.enum,['APP00001']);
+ assert.deepEqual(visible.deployment_status_get.uid.enum,['uid-bound']);
+ assert.equal(tools[1].inputSchema.properties.code.enum,undefined);
+});
