@@ -21,3 +21,12 @@ test('qualification first reads use trusted proxy and application selectors in d
   assert.doesNotThrow(()=>checkOperationSelectors(server,tool,call.arguments,binding,scope));
  }
 });
+
+test('resumed qualification checks the verified approval before collecting new reads',()=>{
+ const binding={requestId:'request-bound',envCode:'rdev.ali',objectKind:'db-proxy',objectCode:'DP00001',operation:'db-proxy.replace-nodes',executionMode:'qualification'};
+ const scope={envCode:'rdev.ali',proxyCode:'DP00001',groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'DB00001',application:{envCode:'rdev.ali',appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
+ const batches=qualificationReadBatches(binding,scope,{decision:'resume',approvalId:'approval-bound'});
+ assert.deepEqual(batches[0],[{tool:'mcp__raptor__approval_get',arguments:{requestId:'request-bound',approvalId:'approval-bound'}}]);
+ assert.equal(batches[1][0].tool,'mcp__raptor__request_get');
+ assert.doesNotThrow(()=>checkOperationSelectors('raptor','approval_get',batches[0][0].arguments,binding,scope));
+});
