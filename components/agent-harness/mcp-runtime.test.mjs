@@ -59,3 +59,21 @@ test('qualification tool catalog exposes exact trusted read selectors to the mod
  assert.deepEqual(visible.deployment_status_get.uid.enum,['uid-bound']);
  assert.equal(tools[1].inputSchema.properties.code.enum,undefined);
 });
+
+test('qualification approval catalog exposes the exact harmless request-bound action',async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');
+ const {operationCapabilities,operationToolSchema}=await import('./operation-profile.mjs');
+ const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'qualification'};
+ const scope={envCode:'rdev.ali',proxyCode:'DP00001',groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'DB00001',application:{envCode:'rdev.ali',appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
+ const tools=operationCapabilities(b,scope).raptor.map(name=>({name,inputSchema:operationToolSchema('raptor',name)}));
+ const guarded=createGuardedFetch({server:'raptor',url:'https://raptor.example/mcp',binding:b,replacementScope:scope,fetch:async()=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools}}),{headers:{'Content-Type':'application/json'}})});
+ const response=await guarded('https://raptor.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});
+ const visible=(await response.json()).result.tools.find(t=>t.name==='approval_request').inputSchema;
+ assert.deepEqual(visible.properties.requestId.enum,[b.requestId]);
+ assert.deepEqual(visible.properties.envCode.enum,['rdev.ali']);
+ assert.deepEqual(visible.properties.interface.enum,['runtime.qualification-resume']);
+ assert.deepEqual(visible.properties.target,{type:'object',properties:{proxyCode:{type:'string',enum:['DP00001']},groupId:{type:'string',enum:['asg-bound']}},required:['proxyCode','groupId'],additionalProperties:false});
+ assert.deepEqual(visible.properties.parameters,{type:'object',properties:{phase:{type:'string',enum:['resume']}},required:['phase'],additionalProperties:false});
+ assert.deepEqual(visible.properties.actionId,{type:'string'});
+ assert.equal(tools.find(t=>t.name==='approval_request').inputSchema.properties.interface.enum,undefined);
+});
