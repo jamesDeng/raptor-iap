@@ -2,9 +2,29 @@ package execution
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"log"
 	"time"
 )
+
+func logLiveSetupError(stage string, err error) {
+	if err == nil {
+		return
+	}
+	class := fmt.Sprintf("%T", err)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		class = "sqlstate_" + pgErr.Code
+	} else if errors.Is(err, ErrInvalid) {
+		class = "invalid"
+	} else if errors.Is(err, ErrUnavailable) {
+		class = "unavailable"
+	}
+	log.Printf("live setup failed stage=%s class=%s", stage, class)
+}
 
 type WorkerLease interface{ Valid(context.Context) bool }
 type AgentAccess struct {
@@ -145,6 +165,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 		return e
 	}
 	if e = w.Store.SaveLiveInput(ctx, x.AttemptID, w.Owner, in); e != nil {
+		logLiveSetupError("save_input", e)
 		return e
 	}
 	var repositories []RepositorySnapshot
@@ -168,6 +189,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	}
 	record, e := w.Store.RecoveryRecord(ctx, x.AttemptID)
 	if e != nil {
+		logLiveSetupError("recovery_record", e)
 		return e
 	}
 	checkpoint, e := w.Store.SelectedCheckpoint(ctx, w.Bootstrap)
@@ -183,9 +205,11 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 			conversation = &session
 			checkpoint = session.Checkpoint
 		} else if err != pgx.ErrNoRows {
+			logLiveSetupError("conversation_lookup", err)
 			return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "CheckpointFailed")
 		}
 		if e = w.Store.BeginConversationAttempt(ctx, b.AttemptID, w.Owner); e != nil {
+			logLiveSetupError("conversation_begin", e)
 			return e
 		}
 		if conversation != nil {
@@ -210,6 +234,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 		return e
 	}
 	if e = w.Store.RecordIntent(ctx, b.AttemptID, w.Owner, RuntimeIntent{Kind: "access", Name: b.AttemptID}); e != nil {
+		logLiveSetupError("access_intent", e)
 		return e
 	}
 	access, e := w.Access.Issue(ctx, b, hash, record.Deadline)

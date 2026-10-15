@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -62,10 +63,12 @@ func (c HTTPRaptor) accessCall(ctx context.Context, method, route string, body [
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, e := client.Do(r)
 	if e != nil {
+		log.Printf("raptor access transport failed method=%s class=%T", method, e)
 		return nil, ErrUnavailable
 	}
 	defer resp.Body.Close()
 	if (method == "POST" && resp.StatusCode != 201) || (method == "DELETE" && resp.StatusCode != 200 && resp.StatusCode != 204) {
+		log.Printf("raptor access response rejected method=%s status=%d", method, resp.StatusCode)
 		return nil, ErrUnavailable
 	}
 	raw, e := io.ReadAll(io.LimitReader(resp.Body, 65537))
