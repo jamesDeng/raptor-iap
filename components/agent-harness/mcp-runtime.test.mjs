@@ -77,3 +77,36 @@ test('qualification approval catalog exposes the exact harmless request-bound ac
  assert.deepEqual(visible.properties.actionId,{type:'string'});
  assert.equal(tools.find(t=>t.name==='approval_request').inputSchema.properties.interface.enum,undefined);
 });
+
+test('qualification pause catalog admits only the exact human-approval wait through Pi validation',async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');
+ const {operationCapabilities,operationToolSchema}=await import('./operation-profile.mjs');
+ const entry=new URL(import.meta.resolve('@earendil-works/pi-coding-agent'));
+ const {validateToolArguments}=await import(new URL('../node_modules/@earendil-works/pi-ai/dist/utils/validation.js',entry));
+ const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'qualification'};
+ const scope={envCode:'rdev.ali',proxyCode:'DP00001',groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'DB00001',application:{envCode:'rdev.ali',appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
+ const tools=operationCapabilities(b,scope).raptor.map(name=>({name,inputSchema:operationToolSchema('raptor',name)}));
+ const guarded=createGuardedFetch({server:'raptor',url:'https://raptor.example/mcp',binding:b,replacementScope:scope,fetch:async()=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools}}),{headers:{'Content-Type':'application/json'}})});
+ const response=await guarded('https://raptor.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});
+ const visible=(await response.json()).result.tools.find(t=>t.name==='request_pause').inputSchema;
+ assert.deepEqual(visible.properties.requestId.enum,[b.requestId]);
+ assert.deepEqual(visible.properties.reason.enum,['waiting_approval']);
+ assert.equal(visible.additionalProperties,false);
+ const tool={name:'mcp__raptor__request_pause',parameters:visible};
+ const call=args=>validateToolArguments(tool,{name:tool.name,arguments:args});
+ assert.deepEqual(call({requestId:b.requestId,reason:'waiting_approval'}),{requestId:b.requestId,reason:'waiting_approval'});
+ for(const args of [{requestId:b.requestId,reason:'waiting_review'},{requestId:'foreign',reason:'waiting_approval'},{requestId:b.requestId,reason:'waiting_approval',approvalId:'foreign'}])assert.throws(()=>call(args),/Validation failed/);
+ assert.equal(tools.find(t=>t.name==='request_pause').inputSchema.properties.reason.enum,undefined);
+});
+
+test('qualification pause selector rejects a foreign or malformed wait before reaching Raptor',async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');
+ const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'qualification'};
+ const scope={envCode:'rdev.ali',proxyCode:'DP00001',groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'DB00001',application:{envCode:'rdev.ali',appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
+ let remoteCalls=0;
+ const diagnostics=[];
+ const guarded=createGuardedFetch({server:'raptor',url:'https://raptor.example/mcp',binding:b,replacementScope:scope,onDiagnostic:d=>diagnostics.push(d),fetch:async()=>{remoteCalls++;throw Error('unexpected remote call');}});
+ for(const args of [{requestId:b.requestId,reason:'waiting_review'},{requestId:'foreign',reason:'waiting_approval'},{requestId:b.requestId,reason:'waiting_approval',approvalId:'foreign'}])await assert.rejects(()=>guarded('https://raptor.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'request_pause',arguments:args}})}),/ScopeMismatch/);
+ assert.equal(remoteCalls,0);
+ assert.deepEqual(diagnostics.map(d=>d.category),['local-selector','local-selector','local-selector']);
+});

@@ -47,7 +47,7 @@ export function checkOperationSelectors(server,tool,args,b,scope){
    exact(args,{requestId:b.requestId,attemptId:b.attemptId},['repository','number','url','headSha','baseCommit','baseBranch','workingBranch']);
    if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repository)||!Number.isSafeInteger(args.number)||args.number<1||!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(args.url)||!['headSha','baseCommit'].every(k=>/^[a-f0-9]{40}$/.test(args[k]))||!text(args.baseBranch)||!text(args.workingBranch))throw Error('ScopeMismatch');break;
   case 'approval_get':exact(args,{requestId:b.requestId},['approvalId']);if(!text(args.approvalId))throw Error('ScopeMismatch');break;
-  case 'request_pause':exact(args,{requestId:b.requestId},['reason']);if(!['waiting_approval','waiting_review'].includes(args.reason))throw Error('ScopeMismatch');break;
+  case 'request_pause':exact(args,{requestId:b.requestId},['reason']);if(b.executionMode==='qualification'?args.reason!=='waiting_approval':!['waiting_approval','waiting_review'].includes(args.reason))throw Error('ScopeMismatch');break;
   case 'approval_request':
    exact(args,{requestId:b.requestId,envCode:b.envCode,interface:b.executionMode==='qualification'?'runtime.qualification-resume':'ess.scale-in'},['actionId','target','parameters']);
    exact(args.target,{proxyCode:scope.proxyCode,groupId:scope.groupId});
