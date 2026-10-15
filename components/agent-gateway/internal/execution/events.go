@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-var sensitiveText = regexp.MustCompile(`(?i)(authorization|bearer\s|sk-[a-z0-9]|access.?key|password|refresh.?token|access.?token|id.?token|api.?key|client.?secret|private.?key|credential|[?&]code=|://[^\s/]+:[^\s/]+@)`)
+// Match values and assignments, not ordinary discussion of credentials.
+var sensitiveText = regexp.MustCompile(`(?i)(bearer\s+[^\s"']+|sk-[a-z0-9]{12,}|(?:authorization|access.?key|password|refresh.?token|access.?token|id.?token|api.?key|client.?secret|private.?key|credential)\s*["']?\s*[:=]\s*["']?[^\s"',}{]{3,}|[?&]code=[^&\s"']+|://[^\s/]+:[^\s/]+@)`)
 
 func sanitizeEvent(v ProgressEvent, known ...string) (ProgressEvent, error) {
 	switch v.Kind {
