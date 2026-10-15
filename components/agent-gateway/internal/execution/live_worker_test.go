@@ -2,10 +2,34 @@ package execution
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 	"time"
 )
+
+func TestLiveQuestionMentioningCredentialsReachesRuntime(t *testing.T) {
+	w, x, runtime, _ := workerFixture(t)
+	in := w.Raptor.(questionRaptor).input
+	var definition map[string]any
+	if err := json.Unmarshal(in.Definition, &definition); err != nil {
+		t.Fatal(err)
+	}
+	operation := definition["operations"].([]any)[0].(map[string]any)
+	operation["parameters"].(map[string]any)["question"] = "Inspect deployment readiness. Do not expose credentials."
+	in.Definition, _ = json.Marshal(definition)
+	sum := sha256.Sum256(in.Definition)
+	in.DefinitionSHA256 = hex.EncodeToString(sum[:])
+	w.Raptor = questionRaptor{in}
+	if err := w.RunNext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Store.Get(context.Background(), x.RequestID)
+	if err != nil || got.Status != "running" || runtime.startCount != 1 {
+		t.Fatalf("live question did not reach runtime: status=%s starts=%d err=%v", got.Status, runtime.startCount, err)
+	}
+}
 
 type fixtureLease struct{ valid bool }
 
