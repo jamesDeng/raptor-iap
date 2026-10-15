@@ -11,11 +11,20 @@ test('qualification first reads use trusted proxy and application selectors in d
   ['mcp__raptor__request_get','mcp__raptor__environment_get','mcp__raptor__object_get'],
   ['mcp__infra__cloud_identity_get','mcp__infra__deployments_list'],
   ['mcp__infra__deployment_status_get'],
-  ['cloud_read']
+  ['cloud_read'],
+  ['cloud_read'],
+  ['cloud_read'],
+  ['deployment_read'],
+  ['metrics_read'],
+  ['metrics_read'],
+  ['metrics_read']
  ]);
  assert.deepEqual(batches[1][1].arguments,{envCode:'rdev.ali',kind:'db-proxy',code:'DP00001'});
  assert.deepEqual(batches[2][0].arguments,{envCode:'rdev.ali',appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'});
  assert.deepEqual(batches[3][0].arguments,{kind:'fleet'});
+ assert.deepEqual(batches.slice(4).map(batch=>batch[0].arguments),[
+  {kind:'backend'},{kind:'capacity'},{},{kind:'trafficFailures'},{kind:'connections'},{kind:'pgcatClients'}
+ ]);
  for(const call of batches.flat())if(call.tool.startsWith('mcp__')){
   const [,server,tool]=call.tool.split('__');
   assert.doesNotThrow(()=>checkOperationSelectors(server,tool,call.arguments,binding,scope));
@@ -28,5 +37,6 @@ test('resumed qualification checks the verified approval before collecting new r
  const batches=qualificationReadBatches(binding,scope,{decision:'resume',approvalId:'approval-bound'});
  assert.deepEqual(batches[0],[{tool:'mcp__raptor__approval_get',arguments:{requestId:'request-bound',approvalId:'approval-bound'}}]);
  assert.equal(batches[1][0].tool,'mcp__raptor__request_get');
+ assert.equal(batches.at(-1)[0].tool,'metrics_read');
  assert.doesNotThrow(()=>checkOperationSelectors('raptor','approval_get',batches[0][0].arguments,binding,scope));
 });
