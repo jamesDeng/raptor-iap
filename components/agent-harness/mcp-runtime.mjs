@@ -1,6 +1,7 @@
 import {operationCapabilities,checkOperationSelectors,validateOperationToolSchema} from './operation-profile.mjs';import {replacementEvidence} from './replacement-evidence.mjs';import path from 'node:path';import {TOOL_NAMES} from './progress.mjs';
 const catalogs={raptor:['request_get','environment_get','object_get'],infra:['cloud_identity_get','deployments_list','deployment_status_get']};
 function qualificationToolSchema(server,tool,schema,b,scope){
+ if(server==='raptor'&&tool==='request_pause')return {...schema,properties:{requestId:{...schema.properties.requestId,enum:[b.requestId]},reason:{...schema.properties.reason,enum:['waiting_approval']}},required:['requestId','reason'],additionalProperties:false};
  if(server==='raptor'&&tool==='approval_request')return {...schema,properties:{...schema.properties,
   requestId:{...schema.properties.requestId,enum:[b.requestId]},
   interface:{...schema.properties.interface,enum:['runtime.qualification-resume']},
