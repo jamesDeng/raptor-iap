@@ -75,6 +75,7 @@ func run() error {
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.ListenAndServe(); cancel() }()
 	runner := traffic.Runner{Config: traffic.Config{Sessions: 4, Idle: 1, Timeout: 5 * time.Second, Interval: time.Second, ProcessID: hex.EncodeToString(id)}, Dial: func(c context.Context) (traffic.Session, error) { return traffic.ConnectPostgres(c, dsn) }, Emit: store.Record}
+	runner.Admit = controller.Admit
 	runner.Ticks = controlledTicks(ctx, controller.Done(), time.Second)
 	e = runner.Run(ctx)
 	if final, err := store.Finalize(); err == nil {

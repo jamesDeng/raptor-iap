@@ -160,3 +160,31 @@ func TestMalformedRequestDoesNotFinish(t *testing.T) {
 		t.Fatal("absent socket accepted")
 	}
 }
+
+func TestFinishSynchronizesWithSchedulerAdmission(t *testing.T) {
+	c, _ := New("u", "p")
+	admitted := make(chan struct{})
+	release := make(chan struct{})
+	scheduled := make(chan struct{})
+	go func() { c.Admit(func() { close(admitted); <-release; close(scheduled) }) }()
+	<-admitted
+	ack := make(chan Status, 1)
+	go func() { s, _ := c.finish("u", "p"); ack <- s }()
+	select {
+	case <-c.Done():
+		t.Fatal("finish accepted inside admitted scheduling batch")
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(release)
+	if s := <-ack; s != Accepted {
+		t.Fatal(s)
+	}
+	select {
+	case <-scheduled:
+	default:
+		t.Fatal("acceptance preceded scheduling completion")
+	}
+	if c.Admit(func() { t.Error("scheduled after finish acceptance") }) {
+		t.Fatal("post-finish admission accepted")
+	}
+}

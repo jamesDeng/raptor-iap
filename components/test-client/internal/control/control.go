@@ -42,3 +42,17 @@ func (c *Controller) finish(uid, pid string) (Status, error) {
 	}
 	return c.state, nil
 }
+
+// Admit serializes one scheduling batch with finish acceptance. The callback
+// must only enqueue already prepared work, never dial or wait for SQL execution.
+// A batch admitted before finish completes before Done closes; later batches
+// are refused while already queued operations retain their live context.
+func (c *Controller) Admit(schedule func()) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != "" {
+		return false
+	}
+	schedule()
+	return true
+}
