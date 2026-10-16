@@ -45,6 +45,9 @@ export function projectTranscript(snapshot={}, events=[], localMessages=[]) {
    const part=pending.get(name)[0],status=event.details?.status??'unknown';
    part.result={status};part.isError=['failed','cancelled'].includes(status);
    records[part.toolCallId].events.push(event);records[part.toolCallId].status=status;pending.delete(name);
+  }else if(event.kind==='progress'&&[...pending.values()].reduce((sum,parts)=>sum+parts.length,0)===1){
+   const part=[...pending.values()].flat()[0];
+   records[part.toolCallId].events.push(event);
   }else{segment.content.push(...narration(event));}
  }
  for(const v of conversation)add(v);

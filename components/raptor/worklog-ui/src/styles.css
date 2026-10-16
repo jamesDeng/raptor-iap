@@ -8,15 +8,17 @@
 .assistant-progress .progress-event-record{margin:0 0 24px}
 .assistant-progress .progress-record-details{margin:8px 0;font-size:12px}
 .assistant-progress .progress-narration p,.assistant-progress .progress-result p{white-space:pre-wrap;margin:0 0 6px;line-height:1.8}
-.assistant-progress .progress-activity{margin:0 0 24px;color:var(--progress-muted)}
+.assistant-progress .progress-activity{margin:8px 0 18px;color:var(--progress-muted)}
+.assistant-progress .progress-activity>summary{min-height:28px;max-width:100%;gap:10px}
+.assistant-progress .progress-activity>summary .progress-running{font-size:11px;color:var(--progress-muted)}
 .assistant-progress summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:9px;color:var(--progress-muted);font-size:13px;font-weight:400;line-height:1.75}
 .assistant-progress summary::-webkit-details-marker{display:none}
 .assistant-progress summary:after{content:'⌄';font-size:12px}
 .assistant-progress details[open]>summary{margin-bottom:0}
 .assistant-progress details[open]>summary:after{content:'⌃'}
 .assistant-progress summary:focus-visible{outline:2px solid var(--accent,#3159d9);outline-offset:4px}
-.assistant-progress .progress-activity-content{margin-top:12px;padding-left:14px;border-left:1px solid var(--progress-border)}
-.assistant-progress .progress-tool{margin:10px 0}
+.assistant-progress .progress-activity-content{margin:4px 0 0 19px;padding-left:12px;border-left:1px solid var(--progress-border)}
+.assistant-progress .progress-tool{margin:3px 0}
 .assistant-progress .progress-tool summary{font-size:13px}
 .assistant-progress .progress-tag{font-size:11px;margin-left:auto;color:var(--progress-muted);white-space:nowrap}
 .assistant-progress .progress-tool-detail{background:#f7f9fc;border:1px solid var(--progress-border);border-radius:7px;padding:12px 16px;margin:10px 0;color:#445570}
