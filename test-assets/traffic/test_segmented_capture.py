@@ -60,6 +60,24 @@ class SegmentedTests(unittest.TestCase):
                     first.write_text(saved);m=json.loads((p/'completion.json').read_text());m['segments'][0]['firstAt']='invalid';(p/'completion.json').write_text(json.dumps(m))
                 with self.subTest(kind=kind):self.assertEqual(assess_manifest(p)['status'],'FAIL')
 
+    def test_semantically_malformed_early_frame_cannot_hide_later_failure(self):
+        from segmented_capture import digest
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'capture';w=SegmentedCapture(p,max_segment_seconds=2)
+            for t in range(4):
+                f=frame(t,t,t==3)
+                if t==3:
+                    f['phase']='settling';snap=f['pods'][0]['snapshot'];snap['sample']['Success']-=1;snap['sample']['Failure']=1;snap['events'][-1]['outcome']='failure'
+                w.append(f)
+            w.finish(completed=True,cancelled=False,errors=[])
+            first=p/'segment-0001.jsonl';rows=[json.loads(line) for line in first.read_text().splitlines()]
+            rows[0]['pods'][0]['snapshot']['sample']['Success']='invalid'
+            first.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            m=json.loads((p/'completion.json').read_text());m['segments'][0]['sha256']=digest(first);(p/'completion.json').write_text(json.dumps(m))
+            result=assess_manifest(p)
+            self.assertEqual(result['status'],'FAIL')
+            self.assertIn('malformed retained evidence',result['reasons'])
+
     def test_large_capture_streams_without_whole_file_reads(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'capture';w=SegmentedCapture(p)

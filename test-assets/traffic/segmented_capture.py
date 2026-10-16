@@ -51,7 +51,7 @@ class SegmentedCapture:
 
 
 def assess_manifest(directory: Path):
-    directory=Path(directory);issues=[];finals={}
+    directory=Path(directory);issues=[];finals={};failure_counters={};observed_failure=False
     invalid=(OSError,ValueError,KeyError,TypeError,IndexError,OverflowError)
     def issue(reason):
         if reason not in issues:issues.append(reason)
@@ -67,6 +67,7 @@ def assess_manifest(directory: Path):
         return {'status':'INCONCLUSIVE','success':0,'reasons':['missing or invalid completion/segment evidence']}
 
     def frames():
+        nonlocal observed_failure
         previous=None;window_first=None;seen=set()
         for i,s in enumerate(segments,1):
             name='segment-%04d.jsonl'%i
@@ -96,7 +97,15 @@ def assess_manifest(directory: Path):
                         limit=m['maxTotalSeconds']+(5 if f['phase']=='settling' else 0)
                         if now-window_first>limit:issue('total capture bound exceeded')
                         for pod in f['pods']:
-                            snap=pod['snapshot'];finals[(pod['uid'],snap['sample']['processId'])]=snap.get('final',False)
+                            snap=pod['snapshot'];sample=snap['sample'];key=(pod['uid'],sample['processId'])
+                            finals[key]=snap.get('final',False)
+                            # Independent numeric deltas remain observable even if
+                            # the full assessor stops at malformed earlier evidence.
+                            counts=tuple(sample[k] for k in ('Failure','Timeout','Ambiguous'))
+                            if all(type(v) is int and v>=0 for v in counts):
+                                old=failure_counters.get(key)
+                                if old is not None and any(v>before for v,before in zip(counts,old)):observed_failure=True
+                                failure_counters[key]=counts
                         yield f
                 if not count or count!=s['frames'] or actual_first!=s['firstAt'] or actual_last!=s['lastAt']:issue('segment boundaries mismatch')
             except invalid:
@@ -104,7 +113,12 @@ def assess_manifest(directory: Path):
                 continue
         if set(p.name for p in directory.glob('segment-*.jsonl'))!=seen:issue('unlisted segment')
 
-    result=assess(frames(),completed=completed,cancelled=cancelled)
+    stream=frames()
+    result=assess(stream,completed=completed,cancelled=cancelled)
+    # assess deliberately aborts on semantic corruption. Finish the same bounded
+    # iterator so later authenticated observations can still establish FAIL.
+    for _ in stream:pass
+    if observed_failure:result['status']='FAIL'
     expected=[{'uid':k[0],'processId':k[1],'final':v} for k,v in sorted(finals.items())]
     if not finals or not all(finals.values()) or m.get('clientFinalMarkers')!=expected:issue('missing client final marker')
     for reason in issues:
