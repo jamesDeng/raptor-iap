@@ -1,4 +1,5 @@
-import copy, json, tempfile, unittest
+import copy, json, tempfile, unittest, tracemalloc
+from unittest.mock import patch
 from pathlib import Path
 from test_capture_window import frame
 from segmented_capture import SegmentedCapture, assess_manifest
@@ -41,6 +42,41 @@ class SegmentedTests(unittest.TestCase):
                     w.append(f)
                 r=w.finish(completed=True,cancelled=kind=='cancel',errors=[{'at':1}] if kind=='error' else [])
                 self.assertEqual(r['status'],'FAIL' if kind=='failure' else 'INCONCLUSIVE')
+    def test_later_sql_failure_survives_missing_first_segment(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'capture';w=SegmentedCapture(p,max_segment_seconds=2)
+            for t in range(4):
+                f=frame(t,t,t==3)
+                if t==3:
+                    f['phase']='settling';snap=f['pods'][0]['snapshot'];snap['sample']['Success']-=1;snap['sample']['Failure']=1
+                    snap['events'][-1]['outcome']='failure'
+                w.append(f)
+            w.finish(completed=True,cancelled=False,errors=[])
+            first=p/'segment-0001.jsonl';saved=first.read_text()
+            for kind in ('missing','tampered','invalid'):
+                if first.exists():first.unlink()
+                if kind=='tampered':first.write_text('{}\n')
+                if kind=='invalid':
+                    first.write_text(saved);m=json.loads((p/'completion.json').read_text());m['segments'][0]['firstAt']='invalid';(p/'completion.json').write_text(json.dumps(m))
+                with self.subTest(kind=kind):self.assertEqual(assess_manifest(p)['status'],'FAIL')
+
+    def test_large_capture_streams_without_whole_file_reads(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'capture';w=SegmentedCapture(p)
+            for t in range(300):
+                f=frame(t,t,t==299);f['pods'][0]['uid']='p'*100000
+                f['pods'][0]['snapshot']['events']=f['pods'][0]['snapshot']['events'][-2:]
+                if t==299:f['phase']='settling'
+                w.append(f)
+            with patch.object(Path,'read_bytes',side_effect=AssertionError('whole-file read')):
+                tracemalloc.start()
+                try:
+                    result=w.finish(completed=True,cancelled=False,errors=[])
+                    peak=tracemalloc.get_traced_memory()[1]
+                finally:tracemalloc.stop()
+            self.assertEqual(result['status'],'PASS')
+            self.assertLess(peak,8*1024*1024)
+
     def test_restart_on_boundary(self):
         with tempfile.TemporaryDirectory() as d:
             w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=2)

@@ -3,11 +3,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from capture_window import CaptureWindow, assess, seconds
+from capture_window import CaptureWindow, assess, seconds, clean
 
 
 def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    hasher=hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda:stream.read(128*1024),b''):hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def private_json(path, value):
@@ -48,34 +51,63 @@ class SegmentedCapture:
 
 
 def assess_manifest(directory: Path):
-    directory=Path(directory);issues=[];frames=[]
+    directory=Path(directory);issues=[];finals={}
+    invalid=(OSError,ValueError,KeyError,TypeError,IndexError,OverflowError)
+    def issue(reason):
+        if reason not in issues:issues.append(reason)
     try:
-        m=json.loads((directory/'completion.json').read_text());segments=m['segments'];previous=None;seen=set()
-        if m['version']!=1 or m['pollSeconds']!=1 or not 1<=m['maxSegmentSeconds']<=1800 or not 1<=m['maxTotalSeconds']<=5400 or not segments:raise ValueError('invalid manifest bounds')
+        with (directory/'completion.json').open() as stream:
+            raw=stream.read(2*1024*1024+1)
+        if len(raw)>2*1024*1024:raise ValueError('manifest bound exceeded')
+        m=json.loads(raw);segments=m['segments']
+        if m['version']!=1 or m['pollSeconds']!=1 or not 1<=m['maxSegmentSeconds']<=1800 or not 1<=m['maxTotalSeconds']<=5400 or not isinstance(segments,list) or not 1<=len(segments)<=5406:raise ValueError('invalid manifest bounds')
+        completed=m['completed'] is True;cancelled=m['cancelled'] is not False
+        if type(m['missingPollCount']) is not int or m['missingPollCount']!=len(m['errors']) or m['missingPollCount']:issue('unavailable capture poll')
+    except invalid:
+        return {'status':'INCONCLUSIVE','success':0,'reasons':['missing or invalid completion/segment evidence']}
+
+    def frames():
+        previous=None;window_first=None;seen=set()
         for i,s in enumerate(segments,1):
             name='segment-%04d.jsonl'%i
-            if s['basename']!=name or s['path']!=name or name in seen:raise ValueError('missing or unordered segment')
-            seen.add(name);p=directory/name
-            if p.is_symlink() or digest(p)!=s['sha256']:raise ValueError('segment hash mismatch')
-            rows=list(CaptureWindow(p).read())
-            if not rows or len(rows)!=s['frames'] or rows[0]['at']!=s['firstAt'] or rows[-1]['at']!=s['lastAt']:raise ValueError('segment boundaries mismatch')
-            first,last=seconds(s['firstAt']),seconds(s['lastAt'])
-            if last<first or last-first>=m['maxSegmentSeconds'] or (previous is not None and first<=previous):raise ValueError('segment overlap or bound exceeded')
-            previous=last;frames.extend(rows)
-        if set(p.name for p in directory.glob('segment-*.jsonl'))!=seen:raise ValueError('unlisted segment')
-        if seconds(frames[-1]['at'])-seconds(frames[0]['at'])>m['maxTotalSeconds']+5:raise ValueError('total bound exceeded')
-        finals={}
-        for f in frames:
-            if f.get('phase','measurement')=='measurement' and seconds(f['at'])-seconds(frames[0]['at'])>m['maxTotalSeconds']:raise ValueError('measurement bound exceeded')
-            for p in f['pods']:finals[(p['uid'],p['snapshot']['sample']['processId'])]=p['snapshot'].get('final',False)
-        expected=[{'uid':k[0],'processId':k[1],'final':v} for k,v in sorted(finals.items())]
-        if not finals or not all(finals.values()) or m['clientFinalMarkers']!=expected:issues.append('missing client final marker')
-        if type(m['missingPollCount']) is not int or m['missingPollCount']!=len(m['errors']) or m['missingPollCount']:issues.append('unavailable capture poll')
-        completed=m['completed'] is True;cancelled=m['cancelled'] is not False
-    except (OSError,ValueError,KeyError,TypeError,IndexError):
-        issues.append('missing or invalid completion/segment evidence');completed=False;cancelled=False
-    result=assess(frames,completed=completed,cancelled=cancelled)
-    for issue in issues:
-        if issue not in result['reasons']:result['reasons'].append(issue)
+            # Validate each segment independently: a missing interval must not
+            # hide an observed SQL failure in a later authenticated segment.
+            try:
+                if s['basename']!=name or s['path']!=name:raise ValueError('unordered segment')
+                seen.add(name);p=directory/name
+                if p.is_symlink() or digest(p)!=s['sha256']:raise ValueError('segment hash mismatch')
+                first,last=seconds(s['firstAt']),seconds(s['lastAt'])
+                if last<first or last-first>=m['maxSegmentSeconds'] or (previous is not None and first<=previous):issue('segment overlap or bound exceeded')
+                previous=last
+                count=0;actual_first=None;actual_last=None
+                with p.open() as stream:
+                    while True:
+                        line=stream.readline(2*1024*1024+1)
+                        if not line:break
+                        if len(line)>2*1024*1024:raise ValueError('frame bound exceeded')
+                        try:
+                            f=clean(json.loads(line));now=seconds(f['at'])
+                        except invalid:
+                            issue('malformed retained evidence');continue
+                        count+=1
+                        if actual_first is None:actual_first=f['at']
+                        actual_last=f['at']
+                        if window_first is None:window_first=now
+                        limit=m['maxTotalSeconds']+(5 if f['phase']=='settling' else 0)
+                        if now-window_first>limit:issue('total capture bound exceeded')
+                        for pod in f['pods']:
+                            snap=pod['snapshot'];finals[(pod['uid'],snap['sample']['processId'])]=snap.get('final',False)
+                        yield f
+                if not count or count!=s['frames'] or actual_first!=s['firstAt'] or actual_last!=s['lastAt']:issue('segment boundaries mismatch')
+            except invalid:
+                issue('missing or invalid completion/segment evidence')
+                continue
+        if set(p.name for p in directory.glob('segment-*.jsonl'))!=seen:issue('unlisted segment')
+
+    result=assess(frames(),completed=completed,cancelled=cancelled)
+    expected=[{'uid':k[0],'processId':k[1],'final':v} for k,v in sorted(finals.items())]
+    if not finals or not all(finals.values()) or m.get('clientFinalMarkers')!=expected:issue('missing client final marker')
+    for reason in issues:
+        if reason not in result['reasons']:result['reasons'].append(reason)
     if issues and result['status']!='FAIL':result['status']='INCONCLUSIVE'
     return result
