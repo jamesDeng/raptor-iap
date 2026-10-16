@@ -33,7 +33,7 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 	var attemptState string
 	var attemptEnded bool
 	if mode == "live" && v.Kind != "cancel" {
-		if v.Kind != "approval" && v.Kind != "continue" && v.Kind != "block" {
+		if v.Kind != "approval" && v.Kind != "continue" && v.Kind != "block" && v.Kind != "pause" {
 			return ErrInvalid
 		}
 		var raw []byte
@@ -42,6 +42,24 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 		}
 		if json.Unmarshal(raw, &binding) != nil || !binding.journalValid() || binding.Operation != "db-proxy.replace-nodes" || binding.RequestID != v.RequestID {
 			return ErrInvalid
+		}
+		if v.Kind == "pause" {
+			var body struct {
+				Reason string `json:"reason"`
+			}
+			if json.Unmarshal(v.Payload, &body) != nil || body.Reason != "waiting_approval" {
+				return ErrInvalid
+			}
+			if status != body.Reason {
+				return ErrUnavailable
+			}
+			var phase string
+			if e = tx.QueryRow(ctx, "SELECT phase FROM gateway.live_waits WHERE request_id=$1 AND attempt_id=(SELECT attempt_id FROM gateway.executions WHERE request_id=$1)", v.RequestID).Scan(&phase); e != nil || phase != "released" {
+				return ErrUnavailable
+			}
+			// ReleaseLiveWait atomically persists the checkpoint and cleanup
+			// before setting this phase. Raptor's pause is now an acknowledgement.
+			return tx.Commit(ctx)
 		}
 	}
 	switch v.Kind {
