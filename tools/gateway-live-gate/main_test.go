@@ -12,7 +12,7 @@ import (
 )
 
 func fixture() map[string]any {
-	return map[string]any{"apiVersion": "v1", "kind": "Secret", "type": "Opaque", "metadata": map[string]any{"namespace": namespace, "name": secretName, "resourceVersion": "10", "uid": "secret-uid"}, "data": map[string]any{"config.json": encode(map[string]any{"accountId": account, "region": region, "replacementEnabled": false, "replacementObserver": map[string]any{"scope": scopeFixture()}})}}
+	return map[string]any{"apiVersion": "v1", "kind": "Secret", "type": "Opaque", "metadata": map[string]any{"namespace": namespace, "name": secretName, "resourceVersion": "10", "uid": "secret-uid"}, "data": map[string]any{"config.json": encode(map[string]any{"accountId": account, "region": region, "replacementEnabled": false, "replacementObserver": map[string]any{"scope": scopeFixture(), "clusterServer": "https://cluster.fixture", "dbInstanceId": "db-fixture", "loadBalancerId": "nlb-fixture", "listenerId": "listener-fixture", "prometheusUrl": "http://metrics.fixture", "clientTargets": []any{"http://client.fixture"}, "sqlBucket": "fixture-bucket", "sqlKey": "fixture/sql"}})}}
 }
 func scopeFixture() map[string]any {
 	return map[string]any{"envCode": "rdev.ali", "proxyCode": "DP00001", "targetDbCode": "D00002", "groupId": group, "serverGroupId": serverGroup, "application": map[string]any{"envCode": "rdev.ali", "appCode": "A00003", "clusterId": cluster, "namespace": "raptor-test", "name": "rdev-test-client-client", "uid": applicationUID}}
@@ -199,7 +199,9 @@ func (f *rolloutRunner) Run(ctx context.Context, args []string, in []byte) ([]by
 func rolloutFixture() *rolloutRunner {
 	s := fixture()
 	c := config(s)
-	return &rolloutRunner{fakeRunner: fakeRunner{secret: raw(s)}, effective: raw(c), deployment: map[string]any{"metadata": map[string]any{"name": deployment, "namespace": namespace, "uid": "deployment-uid", "resourceVersion": "20", "generation": 2}, "spec": map[string]any{"replicas": 1, "selector": map[string]any{"matchLabels": map[string]any{"app": "agent-gateway"}}}, "status": map[string]any{"observedGeneration": 2, "replicas": 1, "updatedReplicas": 1, "readyReplicas": 1, "availableReplicas": 1}}, rs: map[string]any{"metadata": map[string]any{"name": "gateway-rs", "uid": "rs-uid", "namespace": namespace, "ownerReferences": []any{map[string]any{"kind": "Deployment", "uid": "deployment-uid", "controller": true}}}}, pods: map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": "gateway-pod", "namespace": namespace, "uid": "new-pod-uid", "ownerReferences": []any{map[string]any{"kind": "ReplicaSet", "name": "gateway-rs", "uid": "rs-uid", "controller": true}}}, "status": map[string]any{"phase": "Running", "startTime": "2026-10-16T01:01:00Z", "conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}}}}}
+	f := &rolloutRunner{fakeRunner: fakeRunner{secret: raw(s)}, effective: raw(c), deployment: map[string]any{"metadata": map[string]any{"name": deployment, "namespace": namespace, "uid": "deployment-uid", "resourceVersion": "20", "generation": 2}, "spec": map[string]any{"replicas": 1, "selector": map[string]any{"matchLabels": map[string]any{"app": "agent-gateway"}}}, "status": map[string]any{"observedGeneration": 2, "replicas": 1, "updatedReplicas": 1, "readyReplicas": 1, "availableReplicas": 1}}, rs: map[string]any{"metadata": map[string]any{"name": "gateway-rs", "uid": "rs-uid", "namespace": namespace, "ownerReferences": []any{map[string]any{"kind": "Deployment", "uid": "deployment-uid", "controller": true}}}}, pods: map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": "gateway-pod", "namespace": namespace, "uid": "new-pod-uid", "ownerReferences": []any{map[string]any{"kind": "ReplicaSet", "name": "gateway-rs", "uid": "rs-uid", "controller": true}}}, "status": map[string]any{"phase": "Running", "startTime": "2026-10-16T01:01:00Z", "conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}}}}}
+	attachRuntime(f)
+	return f
 }
 func TestVerifyAndRollout(t *testing.T) {
 	for _, name := range []string{"ready", "old-pod", "unready", "stale-secret", "old-generation", "foreign-owner", "wrong-effective", "pod-replaced", "rollout", "rollout-busy", "rollout-stale", "rollout-concurrent-secret"} {
@@ -266,5 +268,72 @@ func TestUnknownCompositeField(t *testing.T) {
 	f := &fakeRunner{secret: raw(s)}
 	if _, e := setFlag(context.Background(), f, false, true); e == nil || f.input != nil {
 		t.Fatal("unknown composite key accepted")
+	}
+}
+
+func livePodSpec() map[string]any {
+	image := "ghcr.io/jamesdeng/raptor-iap-gateway@sha256:" + strings.Repeat("a", 64)
+	return map[string]any{"containers": []any{map[string]any{"name": deployment, "image": image, "command": []any{"/usr/local/bin/gateway"}, "env": []any{map[string]any{"name": "GATEWAY_RUNTIME_MODE", "value": "live"}, map[string]any{"name": "GATEWAY_LIVE_CONFIG_FILE", "value": "/run/raptor/live/config.json"}}, "volumeMounts": []any{map[string]any{"name": "live-private", "mountPath": "/run/raptor/live", "readOnly": true}}}}, "initContainers": []any{map[string]any{"name": "live-private-files", "image": image, "command": []any{"/bin/sh", "-ec"}, "args": []any{"umask 077; install -m 0600 /live-config-source/config.json /live-private/config.json"}, "volumeMounts": []any{map[string]any{"name": "live-config-source", "mountPath": "/live-config-source", "readOnly": true}, map[string]any{"name": "live-private", "mountPath": "/live-private"}}}}, "volumes": []any{map[string]any{"name": "live-private", "emptyDir": map[string]any{"medium": "Memory", "sizeLimit": "1Mi"}}, map[string]any{"name": "live-config-source", "secret": map[string]any{"secretName": secretName}}}}
+}
+func attachRuntime(f *rolloutRunner) {
+	spec := livePodSpec()
+	obj(f.deployment["spec"])["template"] = map[string]any{"spec": spec}
+	pod := obj(f.pods["items"].([]any)[0])
+	pod["spec"] = livePodSpec()
+	status := obj(pod["status"])
+	image := obj(spec["containers"].([]any)[0])["image"]
+	status["containerStatuses"] = []any{map[string]any{"name": deployment, "imageID": "docker-pullable://" + image.(string), "ready": true, "state": map[string]any{"running": map[string]any{"startedAt": "2026-10-16T01:01:00Z"}}}}
+	status["initContainerStatuses"] = []any{map[string]any{"name": "live-private-files", "imageID": "docker-pullable://" + image.(string), "state": map[string]any{"terminated": map[string]any{"exitCode": 0}}}}
+}
+func TestVerifyLoadedConfigBinding(t *testing.T) {
+	for _, name := range []string{"alternate-path", "nonlive", "wrong-source", "writable", "wrong-copy", "wrong-init-image", "wrong-image", "wrong-command", "shadow-mount", "extra-writer", "disk-volume", "wrong-runtime-image", "unfinished-init", "deployment-path", "init-env", "init-source-mount"} {
+		t.Run(name, func(t *testing.T) {
+			f := rolloutFixture()
+			pod := obj(f.pods["items"].([]any)[0])
+			spec := obj(pod["spec"])
+			container := obj(spec["containers"].([]any)[0])
+			init := obj(spec["initContainers"].([]any)[0])
+			switch name {
+			case "init-env":
+				init["env"] = []any{map[string]any{"name": "PATH", "value": "/other"}}
+			case "init-source-mount":
+				obj(init["volumeMounts"].([]any)[0])["mountPath"] = "/elsewhere"
+			case "alternate-path":
+				obj(container["env"].([]any)[1])["value"] = "/other/config.json"
+			case "nonlive":
+				obj(container["env"].([]any)[0])["value"] = "simulated"
+			case "wrong-source":
+				obj(obj(spec["volumes"].([]any)[1])["secret"])["secretName"] = "other"
+			case "writable":
+				obj(container["volumeMounts"].([]any)[0])["readOnly"] = false
+			case "wrong-copy":
+				init["args"] = []any{"cp /other /live-private/config.json"}
+			case "wrong-init-image":
+				init["image"] = "other"
+			case "wrong-image":
+				container["image"] = "other"
+			case "wrong-command":
+				container["command"] = []any{"/other"}
+			case "shadow-mount":
+				container["volumeMounts"] = append(container["volumeMounts"].([]any), map[string]any{"name": "other", "mountPath": "/run/raptor/live/config.json"})
+			case "extra-writer":
+				spec["containers"] = append(spec["containers"].([]any), map[string]any{"name": "writer", "volumeMounts": []any{map[string]any{"name": "live-private", "mountPath": "/write"}}})
+			case "disk-volume":
+				obj(obj(spec["volumes"].([]any)[0])["emptyDir"])["medium"] = ""
+			case "wrong-runtime-image":
+				obj(obj(pod["status"])["containerStatuses"].([]any)[0])["imageID"] = "wrong"
+			case "unfinished-init":
+				obj(obj(pod["status"])["initContainerStatuses"].([]any)[0])["state"] = map[string]any{}
+			case "deployment-path":
+				obj(obj(obj(obj(f.deployment["spec"])["template"])["spec"])["containers"].([]any)[0])["command"] = []any{"/other"}
+			}
+			var out bytes.Buffer
+			if run(context.Background(), []string{"verify", "--expected", "false", "--resource-version", "10", "--changed-after", "2026-10-16T01:00:00Z"}, f, &out) == nil {
+				t.Fatal("unbound loaded config accepted")
+			}
+			if out.Len() != 0 {
+				t.Fatal("rejected proof emitted output")
+			}
+		})
 	}
 }

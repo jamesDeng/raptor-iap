@@ -532,7 +532,7 @@ func verify(ctx context.Context, r runner, want bool, rv string, since time.Time
 		}
 		matched = p
 	}
-	if matched == nil {
+	if matched == nil || !loadedConfigBinding(d, matched) {
 		return verification{}, rejected
 	}
 	pm := obj(matched["metadata"])
@@ -558,7 +558,7 @@ func verify(ctx context.Context, r runner, want bool, rv string, since time.Time
 		p := obj(v)
 		meta := obj(p["metadata"])
 		if meta["name"] == pm["name"] {
-			if meta["uid"] != pm["uid"] || !readyPod(p, since) {
+			if meta["uid"] != pm["uid"] || !readyPod(p, since) || !loadedConfigBinding(d, p) {
 				return verification{}, rejected
 			}
 			found = true
