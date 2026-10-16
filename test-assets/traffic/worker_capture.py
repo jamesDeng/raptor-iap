@@ -1,7 +1,7 @@
 """Run on the verified ACK worker. Read-only; no cloud credentials or mutations."""
 import argparse, concurrent.futures, datetime, json, math, os, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
-from capture_window import CaptureWindow, retain
+from segmented_capture import SegmentedCapture
 
 def utc():return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def get(url):
@@ -66,10 +66,10 @@ def capture_frame(inventory_path,final_snapshots=None):
     return {'at':stamp,'expectedReplicas':expected,'pods':rows,'inventory':inventory,'metrics':metrics}
 def main():
     a=argparse.ArgumentParser();a.add_argument('--output',required=True);a.add_argument('--inventory',required=True);a.add_argument('--seconds',type=int,default=60);v=a.parse_args()
-    if not 5<=v.seconds<=1800:raise SystemExit('bounded capture duration required')
+    if not 5<=v.seconds<=5400:raise SystemExit('bounded capture duration required')
     os.umask(0o077)
     if Path(v.output).exists():raise SystemExit('capture output already exists')
-    w=CaptureWindow(v.output);Path(v.output).touch(mode=0o600);start=time.monotonic();end=start+v.seconds;cancelled=False;errors=[];final_snapshots={}
+    w=SegmentedCapture(Path(v.output),max_total_seconds=v.seconds);start=time.monotonic();end=start+v.seconds;cancelled=False;errors=[];final_snapshots={}
     try:
         tick=start
         while time.monotonic()<end:
@@ -83,13 +83,8 @@ def main():
                 frame=capture_frame(v.inventory,final_snapshots);frame['phase']='settling';w.append(frame)
                 if frame['pods'] and all(p['snapshot']['sample']['Scheduled']==p['snapshot']['sample']['Attempts']+p['snapshot']['sample']['Skipped'] for p in frame['pods']):break
             except Exception:errors.append({'at':utc(),'reason':'settling snapshot unavailable'})
-            time.sleep(0.2)
+            tick+=1;time.sleep(max(0,tick-time.monotonic()))
     except KeyboardInterrupt:cancelled=True
-    # Any unavailable poll is retained separately and prevents acceptance.
-    result=retain(v.output,completed=not cancelled,cancelled=cancelled)
-    if errors:
-        result['status']='FAIL' if result['status']=='FAIL' else 'INCONCLUSIVE';result['reasons'].append('unavailable capture poll')
-    Path(v.output+'.summary.json').write_text(json.dumps(result,indent=2)+'\n')
-    Path(v.output+'.completion.json').write_text(json.dumps({'completed':not cancelled,'errors':errors,'end':utc(),'pollSeconds':1})+'\n')
+    result=w.finish(completed=not cancelled,cancelled=cancelled,errors=errors)
     print(json.dumps(result))
 if __name__=='__main__':main()

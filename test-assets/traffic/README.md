@@ -110,3 +110,23 @@ before restarting. Remove run files during the authorized run cleanup.
 
 Offline fixtures:
 `python3 -m unittest discover -s test-assets/traffic -p 'test_provider_feed.py' -v`.
+
+### Continuous segmented worker capture
+
+`worker_capture.py --output /private/fresh-capture-directory --inventory inventory.json --seconds 5400`
+creates a new mode 0700 directory. Duration is 5–5400 seconds; one collector
+and one one-second poll clock continue through approval waits, Pod restarts,
+and rotations. `query_metrics` and `capture_frame` keep their existing interfaces.
+Segments rotate at 1800 seconds, retain the same `CaptureWindow` event sequence
+state, and are never reopened after rotation. The sole end settling phase is
+bounded to five seconds. Segment JSONL, `completion.json`, and `summary.json`
+are mode 0600. Unavailable polls remain in the completion manifest.
+
+Reassess retained evidence with `segmented_capture.assess_manifest(Path(directory))`.
+The manifest binds ordered relative filenames, SHA-256 hashes, timestamps,
+frame counts, unavailable poll count, and each observed process's final marker.
+All segments form one assessment stream. Missing, altered, overlapping, reordered,
+or unlisted segments and missing client final markers prevent PASS; a failed SQL
+operation retains FAIL precedence. A later clean segment cannot repair an earlier
+coverage loss. Running clients must provide explicit settled final snapshots for
+completion; a finite collector timeout alone does not establish client finality.
