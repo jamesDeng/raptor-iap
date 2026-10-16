@@ -374,3 +374,26 @@ Required before live execution: verify Task 4 disabled-mode finalization path; r
 Go/provider and actual pinned image acceptance in a suitable environment; review/deploy
 through existing workflow; verify live hashes, fresh preflight and disabled path proof;
 then obtain each action-time authorization. No live action was performed by Task 5.
+
+
+## Source-bound client release preparation receipt (2026-10-16)
+
+PR [#230](https://github.com/jamesDeng/raptor-iap/pull/230) merged. GitHub Actions
+[run 38880780178](https://github.com/jamesDeng/raptor-iap/actions/runs/38880780178)
+succeeded for check and publish at source commit
+`820fe26eefe1dcf417c60f5d78adcc19cf1456f9`. The downloaded immutable publication
+receipt binds that source to
+`ghcr.io/jamesdeng/raptor-iap-test-client@sha256:c4ead1a23ced74893b10a3cab753c3828cab88512dea176ba4e5ae83cbdb178a`.
+This release preparation pins the rdev test client values to that digest for GitOps
+review. The pin does not establish deployment or image acceptance.
+
+The selected skill release is `skills-v0.4.0`, commit
+`5a5bb17684956b3050aa1a578e8a51204e06f6c9`, with skill SHA-256
+`ad75dc5083db9226bfe5adc2106053f4f8dd23162c6398220cf41a852cf70608`.
+The worker was reachable and reported x86_64, Python and kubectl availability;
+default kubectl has no context. These are preparation observations supplied to
+this receipt, not a fresh cluster preflight or proof of the live runtime.
+
+Live image identity, runtime flag state, disabled-mode finish behavior and retained
+traffic acceptance have not been proven. No live execution or traffic acceptance
+is claimed by this release preparation; full-run assessment remains NOT_RUN.
