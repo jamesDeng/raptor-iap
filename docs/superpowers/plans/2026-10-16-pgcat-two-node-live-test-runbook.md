@@ -179,6 +179,26 @@ the guarded rollout below. Full execution remains blocked until Task 4 verifies
 the disabled path and all later provider/cost/time/credential and action-time
 gates are satisfied. Approval of this runbook authorizes no runtime operation.
 
+## Reviewed recovery for a stale finish socket
+
+A SIGKILL or OOM can leave `finish.sock` in the Pod's memory-backed `emptyDir`.
+That volume survives a container restart in the same Pod, so the new process
+fails closed when binding the existing socket and may enter CrashLoopBackOff.
+Do not unlink an unknown socket or retry finish against a changed process.
+
+If this occurs, preserve the exact Pod UID/container/process history and available
+final evidence, mark any window missing durable finals INCONCLUSIVE (retain SQL
+FAIL precedence), and stop new replacement mutations. Review Pod termination
+reason, restart count and current fleet before recovery. After separate approval
+of the exact affected Pod replacement, let its owning Deployment recreate that
+Pod with a fresh memory volume; keep desired replicas at two and Argo self-heal.
+Do not delete a Pod before its final evidence is durable unless explicitly approved
+as fault recovery with the resulting evidence loss recorded. Verify two Ready
+new processes, the reviewed image IDs and healthy SQL/metrics afterward. This
+recovery invalidates the interrupted proof; start a new authorized capture.
+Automatic restoration after a normal controlled exit and stale-socket recovery
+remain live qualification gates; offline tests do not establish either outcome.
+
 ## Conditional replacement sequence after disabled proof and action-time gates
 
 1. Recheck every gate and obtain exact action-time authorization. Start a **new**
