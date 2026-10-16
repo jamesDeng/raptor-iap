@@ -255,3 +255,35 @@ func TestIdleInitialDialFailureRecovers(t *testing.T) {
 		t.Fatal("idle connection must stay idle and close")
 	}
 }
+
+func TestClosedTicksDrainScheduledQueueWithoutSkipped(t *testing.T) {
+	ticks := make(chan time.Time)
+	s := &session{outcome: Success, gate: make(chan struct{}), started: make(chan struct{})}
+	var events []Event
+	scheduled := make(chan struct{}, 2)
+	done := make(chan error, 1)
+	r := Runner{Config: Config{Sessions: 1, Timeout: time.Second, ProcessID: "p"}, Ticks: ticks, Dial: func(context.Context) (Session, error) { return s, nil }, Emit: func(e Event) {
+		events = append(events, e)
+		if e.Kind == "scheduled" {
+			scheduled <- struct{}{}
+		}
+	}}
+	go func() { done <- r.Run(context.Background()) }()
+	ticks <- time.Now()
+	<-s.started
+	ticks <- time.Now()
+	<-scheduled
+	<-scheduled
+	close(ticks)
+	close(s.gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, e := range events {
+		counts[e.Kind]++
+	}
+	if counts["scheduled"] != 2 || counts["operation"] != 2 || counts["skipped"] != 0 || counts["connected"]-counts["disconnected"] != 0 || !s.closed {
+		t.Fatal(counts)
+	}
+}

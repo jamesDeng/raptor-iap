@@ -15,3 +15,26 @@ Run `go test -race ./...` and `go vet ./...`. To include the SQL integration tes
 `cmd/collect` now records bounded snapshots/events from an operator-supplied fixed JSON roster (`[{"podUid":"...","url":"..."}]`) using `-targets-file`, `-duration` (default five minutes, maximum thirty), and `-interval` (default five seconds). It follows no redirects and accepts no embedded URL credentials/query. Feed its JSON output to `cmd/evidence` for a local summary. HTTP errors, stale snapshots, duplicate/restarted process identities, event gaps or exceeded bounds make the capture inconclusive. It does not implement Kubernetes pod discovery or prove that a fixed roster remained authoritative during rolling pod replacement; central integration must supply lifecycle-aware inventory and preserve evidence across Pod changes. Endpoints are individual replicas, not a load-balanced Service. This closes the local capture gap while retaining the live full-window acceptance dependency.
 
 Evidence reconciliation requires nonempty operation IDs and one covered schedule for each terminal outcome; crossing-boundary or unresolved operations make the selected interval inconclusive rather than canceling out through counter totals. Every expected process must attempt work. The collector's `MaxGap` also bounds scheduling progress gaps (including the first/last boundary); the CLI uses fifteen seconds. This is a bounded local progress check, not proof of one-second cadence. Missing idle connections are retried at most once per scheduling tick with the configured dial deadline and an event for every failure; SQL operations are never retried.
+
+### Controlled final evidence
+
+Service mode requires `TEST_POD_UID` from the downward API and a private writable
+memory volume at `/run/traffic-control`. It creates `finish.sock` with mode 0600.
+The distroless binary supports:
+
+```
+/client finish --expected-pod-uid UID --expected-process-id PROCESS_ID
+```
+
+Use the exact Pod UID and evidence process ID. Matching commands return only
+`accepted`, `finishing`, or `final`; duplicates do not restart draining. Missing
+sockets, unsafe permissions and malformed/unknown acknowledgements fail closed.
+An uncertain acknowledgement requires exact Pod identity and evidence
+reconciliation before further action. There is no network finish endpoint.
+
+Finish stops scheduling without cancelling queued operations. After finite
+operations and session closure, settled counters are finalized and logged.
+HTTP evidence stays available for two minutes with readiness false and health
+true. SIGTERM preserves bounded cancellation and ten-second final retention;
+it interrupts an existing controlled hold. Capture finals before exit and
+verify replacement processes afterward. Retention does not extend collector limits.
