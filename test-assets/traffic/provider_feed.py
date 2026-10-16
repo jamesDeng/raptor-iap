@@ -21,6 +21,14 @@ VPC_ID = 'vpc-t4n4fi6r1a7bi6n93ftq3'
 WORKER_ID = 'i-t4nj1bitmcz7cuoch82h'
 LISTENER_ID = 'lsn-7kuvcqkaz5o3z2w376@6432'
 FIELDS = ('observedAt', 'desired', 'members', 'healthyRegistered')
+RETRYABLE_READS = frozenset({
+    ('ess', 'DescribeScalingGroups'),
+    ('ess', 'DescribeScalingInstances'),
+    ('ecs', 'DescribeInstances'),
+    ('nlb', 'ListServerGroupServers'),
+    ('nlb', 'GetListenerAttribute'),
+    ('nlb', 'GetListenerHealthStatus'),
+})
 
 _spec = importlib.util.spec_from_file_location('provider_inventory', Path(__file__).parents[1] / 'metrics/provider_inventory.py')
 _inventory = importlib.util.module_from_spec(_spec)
@@ -202,6 +210,8 @@ class Operator:
 
     def aliyun(self, service, operation, **kwargs):
         argv = ['aliyun', service, operation, '--profile', PROFILE, '--region', REGION]
+        if (service, operation) in RETRYABLE_READS:
+            argv += ['--retry-count', '2']
         for key, value in kwargs.items():
             argv += ['--'+key, str(value)]
         try:

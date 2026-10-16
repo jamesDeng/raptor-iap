@@ -126,7 +126,7 @@ class WorkerPython36Tests(unittest.TestCase):
 
         operator.command = command
         self.assertEqual(operator.fetch_group(), group)
-        self.assertEqual(calls, [['aliyun', 'ess', 'DescribeScalingGroups', '--profile', 'infra-ops-poc', '--region', 'ap-southeast-1', '--ScalingGroupId.1', 'asg-t4necb4dfmu6o3z2rn0g', '--PageNumber', '1', '--PageSize', '1']])
+        self.assertEqual(calls, [['aliyun', 'ess', 'DescribeScalingGroups', '--profile', 'infra-ops-poc', '--region', 'ap-southeast-1', '--retry-count', '2', '--ScalingGroupId.1', 'asg-t4necb4dfmu6o3z2rn0g', '--PageNumber', '1', '--PageSize', '1']])
         for invalid in (dict(body, TotalCount=2), dict(body, PageNumber=2), dict(body, ScalingGroups={'ScalingGroup': [group, group]})):
             operator.command = lambda argv: json.dumps(invalid)
             with self.assertRaises(ValueError):
