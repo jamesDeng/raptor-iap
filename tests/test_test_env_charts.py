@@ -15,6 +15,19 @@ class Charts(unittest.TestCase):
  def metrics(self):return {'image':f'example.invalid/prometheus@sha256:{DIGEST}','environment':'fixture.env','proxyCode':'proxy-fixture','targetDbCode':'db-fixture','inventoryConfigMapName':'reviewed-ess-inventory','inventoryRevision':'b'*40}
  def test_client_rolling_restart_and_private_secret(self):
   docs=self.render('infra-test-client',self.client());d=next(x for x in docs if x['kind']=='Deployment');spec=d['spec'];pod=spec['template']['spec'];self.assertEqual(spec['replicas'],2);self.assertEqual(spec['strategy']['rollingUpdate'],{'maxUnavailable':0,'maxSurge':1});self.assertEqual(d['metadata']['labels']['raptor.appcode'],'app-fixture');self.assertEqual(spec['template']['metadata']['labels']['raptor.env'],'fixture.env');self.assertFalse(pod['automountServiceAccountToken']);self.assertGreaterEqual(pod['terminationGracePeriodSeconds'],10);self.assertEqual(pod['volumes'][0]['secret']['secretName'],'fixture-secret');self.assertIn('readinessProbe',pod['containers'][0]);self.assertTrue(all(x['spec']['type']=='ClusterIP' for x in docs if x['kind']=='Service'));self.assertFalse(any(x['kind']=='Secret' for x in docs))
+ def test_client_private_finish_socket_and_identity(self):
+  docs=self.render('infra-test-client',self.client())
+  self.assertEqual(sorted(x['kind'] for x in docs),['Deployment','Service'])
+  pod=next(x for x in docs if x['kind']=='Deployment')['spec']['template']['spec'];client=pod['containers'][0]
+  self.assertEqual(client['image'],self.client()['image'])
+  self.assertEqual(pod['securityContext'],{'runAsNonRoot':True,'runAsUser':65532,'runAsGroup':65532,'fsGroup':65532})
+  self.assertFalse(pod['automountServiceAccountToken'])
+  self.assertEqual(client['ports'],[{'name':'metrics','containerPort':9090}])
+  self.assertEqual(client['readinessProbe'],{'httpGet':{'path':'/ready','port':'metrics'},'periodSeconds':2})
+  self.assertEqual(client['livenessProbe'],{'httpGet':{'path':'/health','port':'metrics'},'periodSeconds':10})
+  self.assertEqual(next((v for v in client['env'] if v['name']=='TEST_POD_UID'),None),{'name':'TEST_POD_UID','valueFrom':{'fieldRef':{'fieldPath':'metadata.uid'}}})
+  self.assertEqual(next((v for v in pod['volumes'] if v['name']=='traffic-control'),None),{'name':'traffic-control','emptyDir':{'medium':'Memory'}})
+  self.assertEqual(next((v for v in client['volumeMounts'] if v['name']=='traffic-control'),None),{'name':'traffic-control','mountPath':'/run/traffic-control','readOnly':False})
  def test_missing_inputs_and_mutable_images_refused(self):
   for key in self.client():
    vals=self.client();vals[key]='';self.render('infra-test-client',vals,False)

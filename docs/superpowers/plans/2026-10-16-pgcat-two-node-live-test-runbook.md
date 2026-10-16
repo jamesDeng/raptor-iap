@@ -1,6 +1,7 @@
 # PgCat two-node live-test operator runbook
 
-Status: offline preparation only; **full execution BLOCKED** by client finalization below.
+Status: offline preparation only; **full execution BLOCKED** pending Task 4
+verified disabled-mode finish/restoration proof and later action-time gates.
 This document authorizes no credential transfer, Secret change, rollout or replacement.
 Use the approved [design](../specs/2026-10-16-pgcat-two-node-live-test-design.md),
 existing `agent-skills/pgcat-replacement/SKILL.md` two-node strategy, and
@@ -68,7 +69,7 @@ remote removal of that exact planned path and verify absence. No credentials in
 arguments, transcripts, Git, evidence or receipts; `KUBECONFIG` contains a path only.
 
 Transfer only reviewed collector modules (`worker_capture.py`, `capture_window.py`,
-`segmented_capture.py`) and the hashed guard binary matching worker architecture.
+`segmented_capture.py`, `finish_clients.py`) and the hashed guard binary matching worker architecture.
 Record worker SHA-256 readback. Use fresh private output paths; never reuse a capture directory.
 Start the provider feed on the Mac from this repository (placeholders must be
 resolved and authorized, not pasted literally):
@@ -92,54 +93,96 @@ With replacement flag still false, run on the authorized worker with private
 
 ```sh
 python3 worker_capture.py --output /root/PRIVATE_RUN/disabled-60s \
-  --inventory /root/PRIVATE_RUN/provider-inventory.json --seconds 60
+  --inventory /root/PRIVATE_RUN/provider-inventory.json --seconds 60 \
+  --boundary-dir /root/PRIVATE_RUN/disabled-boundary
 ```
 
-Verify direct Ready client Pod UID/process evidence access and private Prometheus
-access, one-second continuity, exact provider roster, `up=1` and complete pool/user
-active/idle/waiting triplets with DP00001/D00002/rdev.ali labels and raw timestamps
-under 45 seconds. Preserve all segment files, `completion.json`, `summary.json` and
-SHA-256 hashes. A structurally complete manifest and explicit collector completion
-prove the path. **Continuously running clients without final markers yield traffic
-INCONCLUSIVE even in this successful 60-second path check. Never label it traffic PASS.**
-Missing polls, source or lifecycle evidence must remain visible. Keep the flag false.
+Verify direct client Pod UID/container/process evidence access and private
+Prometheus access, one-second continuity, exact provider roster, `up=1` and
+complete pool/user active/idle/waiting triplets with DP00001/D00002/rdev.ali
+labels and raw timestamps under 45 seconds. Discovery reads selector-matched
+Running/Pending Pods with an IP directly, including unready Pods; it does not
+filter on Ready or rely on headless Service DNS after finish.
 
-## Full-run finalization blocker and required amendment
+In a separate authorized worker session, before the 60-second capture timeout,
+use the same private boundary directory and kubeconfig:
 
-`helm-chart/infra-test-client/templates/deployment.yaml` hardcodes `replicas: 2`,
-RollingUpdate `maxUnavailable: 0` / `maxSurge: 1`, and 20-second termination grace.
-`infra-kubernetes/environments/rdev.ali/test/client-application.yaml` enables Argo
-self-heal. Manual scale-to-zero can be reverted; rolling restart creates new,
-nonfinal processes. Collector timeout does not terminate client scheduling.
-Every process observed during the full window, including restarted processes,
-requires an explicit retained `traffic_final`. Therefore **do not enable replacement
-or start a full run using this runbook until a reviewed implementation task closes
-this defect**. There is no reliable supported finalization/restoration command today.
+```sh
+python3 finish_clients.py --boundary-dir /root/PRIVATE_RUN/disabled-boundary --expected-replicas 2
+```
 
-Proposed amendment for review: provide a GitOps-owned bounded measurement stop
-that ends scheduling in both current client processes while retaining their HTTP
-final evidence endpoints. Prove deadline settlement/session close and capture final
-markers within collector settling limits (at most five seconds); preserve prior
-restart finals. It must not permit a liveness restart or replacement process before
-capture completion. Alternatively a GitOps-owned replica stop must demonstrate
-final evidence stays discoverable during terminating/unready Pod lifecycle; the
-current Ready discovery and 10-second final endpoint lifetime cannot be assumed
-to provide this. Do not use an imperative scale/Argo race.
+Keep `replacementEnabled=false`. This controlled-finish path proof is still
+unverified until Task 4 records live results after review/deployment and specific
+action-time authorization. A disabled-path traffic PASS can prove this short
+capture only; it never establishes replacement acceptance.
 
-The new task must supply tested exact stop commands, lifecycle timing, expected
-process roster, bounded rollback and GitOps restoration to two Ready clients.
-At run end: converge replacement first; separately authorize the controlled stop;
-end measurement with continuous roster through its boundary; collect all process
-finals during bounded settling; finalize/hash/assess; then perform reviewed restore
-and verify 2/2 Ready with healthy SQL/metrics. Restored traffic is outside the closed
-window. Record restoration separately; its new processes cannot replace missing
-final markers from the measured window. Failure to finalize yields INCONCLUSIVE
-(or FAIL for observed failed SQL); preserve evidence and restore through reviewed recovery.
+## Reviewed client boundary, finish and restoration
 
-## Conditional replacement sequence after blocker is resolved
+Before either disabled proof or full-run finish, verify the published immutable
+image digest and live image IDs, `TEST_POD_UID` downward API, memory volume and
+UID/GID 65532 against the reviewed GitOps manifest. Require exactly two stable
+Running, initially Ready client Pods, distinct Pod names, UIDs, container IDs and
+process IDs. The helper binds that exact roster from direct `/evidence`; retain
+prior process finals from any mid-run restart in the same capture stream.
+
+Start a full collector before any enabled replacement, with fresh private output
+and boundary directories:
+
+```sh
+python3 worker_capture.py --output /root/PRIVATE_RUN/full-capture \
+  --inventory /root/PRIVATE_RUN/provider-inventory.json --seconds 5400 \
+  --boundary-dir /root/PRIVATE_RUN/full-boundary
+```
+
+After fleet convergence and separate action-time authorization for client finish,
+run in a second session:
+
+```sh
+python3 finish_clients.py --boundary-dir /root/PRIVATE_RUN/full-boundary --expected-replicas 2
+```
+
+The helper writes one unique `request.json`; the collector fsyncs the first
+settling frame before writing matching `ack.json`. The helper rechecks the exact
+roster, then concurrently invokes exactly two bounded commands of this form:
+`kubectl -n raptor-test exec EXACT_POD -- /client finish --expected-pod-uid EXACT_UID --expected-process-id EXACT_PROCESS_ID`.
+The distroless binary uses its private mode-0600 Unix socket at
+`/run/traffic-control/finish.sock`; no shell or TCP control endpoint is involved.
+Do not manually replay these calls. Request/ack/receipt files are fsynced mode
+0600 within a mode-0700 directory; never reuse a boundary for another action.
+
+Preserve `request.json`, `ack.json`, `receipt.json`, all ordered segment JSONL,
+`completion.json`, `summary.json` and hashes. Verify request IDs and exact roster
+match, every receipt client is acknowledged, every observed process has retained
+`final=true` evidence/`traffic_final`, Scheduled = Attempts + Skipped and Connected
+= 0, and no new finish-induced skips occurred. Reassess the ordered hashed manifest;
+a helper acknowledgement alone never establishes PASS. Both finals and receipt
+must arrive within five seconds of the boundary, including frames where only
+one process is final. Missing/late finals, changed identities, uncertain exec,
+missed polls or incomplete history yield INCONCLUSIVE; observed SQL failure,
+timeout or ambiguity retains FAIL precedence.
+
+The two-minute final hold keeps HTTP evidence/metrics and `/health` alive while
+`/ready` becomes false after sessions close. It does not extend settling. Capture
+must close and final evidence be durable before either process disappears.
+After the hold, Kubernetes restores the GitOps-owned two replicas automatically.
+Verify two new Ready process identities, live image digests and healthy SQL/metrics;
+record restoration separately, outside the closed window. Do not scale down or
+race Argo self-heal. A restart/deletion before durable final capture makes the
+window INCONCLUSIVE; restored processes cannot replace missing finals.
+
+Unknown finish outcome is never retried: retain evidence and sanitized receipt,
+read exact `/evidence` plus Pod/container identities, stop new replacement
+mutations, allow bounded restoration and reconcile the observed fleet. If clients
+do not restore, stop at reviewed recovery. Keep the flag false during disabled
+proof; during full-run faults restore it only after active work settles through
+the guarded rollout below. Full execution remains blocked until Task 4 verifies
+the disabled path and all later provider/cost/time/credential and action-time
+gates are satisfied. Approval of this runbook authorizes no runtime operation.
+
+## Conditional replacement sequence after disabled proof and action-time gates
 
 1. Recheck every gate and obtain exact action-time authorization. Start a **new**
-   full collector at 5,400 seconds maximum before flag enablement, with the provider
+   full collector with `--boundary-dir` as above at 5,400 seconds maximum before flag enablement, with the provider
    feed already healthy. One process/clock spans rollout, both approvals and client
    restarts; rotation never resets counters or identity. Do not splice clean windows.
 2. With producers quiesced and no unsettled work, run the hashed worker guard:
@@ -182,7 +225,7 @@ final markers from the measured window. Failure to finalize yields INCONCLUSIVE
 8. Convergence requires desired two, both originals absent, two distinct new
    protected healthy registered nodes, successful SQL and bound client readiness.
    Model result stays `acceptance: pending`. Use the separately reviewed stop and
-   restore sequence above to close the traffic window; this step is currently blocked.
+   restore sequence above to close the traffic window; Task 4 proof and action-time gates remain required.
 9. Reassess the original ordered manifest on a private copy:
 
    ```sh
@@ -307,7 +350,7 @@ fixtures, not cloud, image or traffic acceptance:
 | `helm template rdev-platform helm-chart/raptor-platform -f infra-kubernetes/environments/rdev.ali/values.yaml` | PASS render |
 | `scripts/rdev/check-platform-image.sh PINNED_IMAGE gateway` | NOT RUN: Docker unavailable, no built image inspected |
 
-Required before live execution: resolve finalization amendment; run remaining affected
+Required before live execution: verify Task 4 disabled-mode finalization path; run remaining affected
 Go/provider and actual pinned image acceptance in a suitable environment; review/deploy
 through existing workflow; verify live hashes, fresh preflight and disabled path proof;
 then obtain each action-time authorization. No live action was performed by Task 5.

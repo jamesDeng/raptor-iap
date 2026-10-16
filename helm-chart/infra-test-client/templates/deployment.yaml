@@ -27,14 +27,21 @@ spec:
           secret:
             secretName: {{ .Values.dsnSecretName | quote }}
             defaultMode: 0440
+        - name: traffic-control
+          emptyDir: {medium: Memory}
       containers:
         - name: client
           image: {{ .Values.image | quote }}
           env:
+            - name: TEST_POD_UID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.uid}
             - {name: TEST_DB_DSN_FILE, value: /private-db/dsn}
             - {name: TEST_ALLOW_PLAINTEXT_POC, value: {{ .Values.allowPlaintextPOC | quote }}}
           ports: [{name: metrics, containerPort: 9090}]
-          volumeMounts: [{name: database, mountPath: /private-db, readOnly: true}]
+          volumeMounts:
+            - {name: database, mountPath: /private-db, readOnly: true}
+            - {name: traffic-control, mountPath: /run/traffic-control, readOnly: false}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
           readinessProbe: {httpGet: {path: /ready, port: metrics}, periodSeconds: 2}
           livenessProbe: {httpGet: {path: /health, port: metrics}, periodSeconds: 10}
