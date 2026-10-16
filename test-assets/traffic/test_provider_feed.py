@@ -96,13 +96,86 @@ class FeedTests(unittest.TestCase):
             self.assertEqual(__import__('json').loads(p.read_text()),{'members':['i-one']})
             self.assertEqual(p.stat().st_mode & 0o777,0o600)
 
+    def test_successful_cadence_stops_at_runtime_boundary(self):
+        clock=[0.0];reads=[];writes=[]
+        def read(*,deadline):
+            reads.append(clock[0]);clock[0]+=2;return {}
+        def write(value,*,deadline):
+            writes.append(clock[0]);clock[0]+=1
+        feed.run_loop(read,write,interval=15,max_seconds=30,monotonic=lambda:clock[0],sleep=lambda n:clock.__setitem__(0,clock[0]+n))
+        self.assertEqual(reads,[0,15])
+        self.assertEqual(writes,[2,17])
+        self.assertEqual(clock[0],30)
+
+    def test_final_runtime_boundary_prevents_publication(self):
+        clock=[0.0];writes=[];reads=[]
+        def read(*,deadline):reads.append(clock[0]);clock[0]=5;return {}
+        with self.assertRaises(ValueError):
+            feed.run_loop(read,lambda value,**kw:writes.append(value),max_seconds=5,monotonic=lambda:clock[0])
+        self.assertEqual(reads,[0]);self.assertEqual(writes,[])
+
+    def test_slow_read_cannot_publish(self):
+        clock=[0.0];reads=[];writes=[]
+        def read(*,deadline):
+            reads.append(clock[0]);clock[0]=16;return {}
+        with self.assertRaises(ValueError):
+            feed.run_loop(read,lambda value,**kw:writes.append(value),monotonic=lambda:clock[0])
+        self.assertEqual(reads,[0]);self.assertEqual(writes,[])
+
+    def test_slow_targets_cannot_publish_worker_inventory(self):
+        from types import SimpleNamespace
+        clock=[0.0];writes=[];updates=[]
+        op=feed.Operator(SimpleNamespace())
+        def update(targets):
+            updates.append(targets);clock[0]=24
+        op.update_targets=update;op.atomic_worker_write=writes.append
+        deadline=feed.Deadline(15,monotonic=lambda:clock[0])
+        with self.assertRaises(ValueError):op.write(self.take(self.fixture()),deadline=deadline)
+        self.assertEqual(len(updates),1);self.assertEqual(writes,[])
+
+    def test_atomic_replace_refuses_expired_deadline(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=pathlib.Path(d)/'inventory.json';p.write_text('old')
+            with self.assertRaises(ValueError):feed.atomic_write(p,{},deadline=10,clock=lambda:10)
+            self.assertEqual(p.read_text(),'old')
+            self.assertEqual([x.name for x in pathlib.Path(d).iterdir()],['inventory.json'])
+
+    def test_fsync_crossing_deadline_preserves_previous_worker_file(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            p=pathlib.Path(d)/'inventory.json';p.write_text('old');clock=[0]
+            def fsync(fd):clock[0]=15
+            with patch.object(feed.os,'fsync',side_effect=fsync):
+                with self.assertRaises(ValueError):feed.atomic_write(p,{},deadline=15,clock=lambda:clock[0])
+            self.assertEqual(p.read_text(),'old')
+
+    def test_remote_execution_after_deadline_preserves_previous_worker_file(self):
+        from types import SimpleNamespace
+        import shlex,subprocess,time
+        with tempfile.TemporaryDirectory() as d:
+            p=pathlib.Path(d)/'inventory.json';p.write_text('old')
+            op=feed.Operator(SimpleNamespace(worker_inventory=str(p),workbench='offline-fixture'))
+            op.deadline=feed.Deadline(15,monotonic=lambda:0)
+            op.deadline.wall=time.time()-1
+            op.command=lambda argv:subprocess.run(shlex.split(argv[-1]),check=True,capture_output=True,text=True).stdout
+            with self.assertRaises(subprocess.CalledProcessError):op.atomic_worker_write({})
+            self.assertEqual(p.read_text(),'old')
+
+    def test_subprocess_timeout_uses_remaining_budget(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        op=feed.Operator(SimpleNamespace());op.deadline=feed.Deadline(15,monotonic=lambda:12)
+        with patch.object(feed.subprocess,'run',return_value=SimpleNamespace(stdout='ok')) as run:
+            self.assertEqual(op.command(['offline-fixture']),'ok')
+        self.assertEqual(run.call_args.kwargs['timeout'],3)
+
     def test_atomic_file_private(self):
         with tempfile.TemporaryDirectory() as d:
             p=pathlib.Path(d)/'inventory.json';feed.atomic_write(p,{'members':[]})
             self.assertEqual(p.stat().st_mode & 0o777,0o600)
     def test_loop_stops_on_failure_and_bounds(self):
         calls=[]
-        def fail():raise RuntimeError('sensitive')
+        def fail(*,deadline):raise RuntimeError('sensitive')
         with self.assertRaises(ValueError):feed.run_loop(fail,lambda x:calls.append(x),interval=15,max_seconds=5400)
         self.assertEqual(calls,[])
         with self.assertRaises(ValueError):feed.run_loop(lambda:{},lambda x:None,interval=16,max_seconds=5401)

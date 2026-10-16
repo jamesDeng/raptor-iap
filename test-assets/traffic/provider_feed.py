@@ -115,15 +115,32 @@ def snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_g
         raise ValueError('Provider refresh failed') from None
 
 
-def publish(snapshot, previous_targets, atomic_worker_write, update_targets):
+class Deadline:
+    """One absolute limit shared by every operation in a refresh."""
+    def __init__(self, when, *, monotonic=time.monotonic):
+        self.when = when
+        self.monotonic = monotonic
+        self.wall = time.time() + max(0, when - monotonic())
+
+    def remaining(self):
+        remaining = self.when - self.monotonic()
+        require(remaining > 0)
+        return remaining
+
+
+def publish(snapshot, previous_targets, atomic_worker_write, update_targets, *, deadline=None):
+    if deadline is not None:
+        deadline.remaining()
     targets = tuple(sorted(snapshot['privateAddresses'].items()))
     if targets != previous_targets:
         update_targets(targets)
+    if deadline is not None:
+        deadline.remaining()
     atomic_worker_write({key:snapshot[key] for key in FIELDS})
     return targets
 
 
-def atomic_write(path, value):
+def atomic_write(path, value, *, deadline=None, clock=time.time):
     """Write mode 0600 then fsync and replace in the destination directory."""
     path = Path(path)
     fd, temporary = tempfile.mkstemp(prefix='.'+path.name+'.', dir=path.parent)
@@ -133,6 +150,8 @@ def atomic_write(path, value):
             json.dump(value, stream, separators=(',', ':'))
             stream.flush()
             os.fsync(stream.fileno())
+        if deadline is not None and clock() >= deadline:
+            raise ValueError('Worker publication deadline exceeded')
         os.replace(temporary, path)
         directory = os.open(path.parent, os.O_RDONLY)
         try:
@@ -147,16 +166,20 @@ def atomic_write(path, value):
 def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monotonic, sleep=time.sleep):
     require(type(interval) is int and 1 <= interval <= 15 and type(max_seconds) is int and 1 <= max_seconds <= 5400)
     started = monotonic()
-    while monotonic() - started < max_seconds:
+    runtime_end = started + max_seconds
+    while monotonic() < runtime_end:
         tick = monotonic()
+        deadline = Deadline(min(tick + interval, runtime_end), monotonic=monotonic)
         try:
-            value = read()
-            require(monotonic() - tick < interval and monotonic() - started < max_seconds)
-            write(value)
-            require(monotonic() - tick < interval and monotonic() - started < max_seconds)
+            value = read(deadline=deadline)
+            deadline.remaining()
+            write(value, deadline=deadline)
+            deadline.remaining()
         except Exception:
             raise ValueError('Provider feed stopped; refresh or publication failed') from None
-        sleep(min(interval - (monotonic() - tick), max_seconds - (monotonic() - started)))
+        delay = min(tick + interval, runtime_end) - monotonic()
+        if delay > 0:
+            sleep(delay)
 
 
 class Operator:
@@ -164,10 +187,15 @@ class Operator:
     def __init__(self, args):
         self.args = args
         self.previous = ()
+        self.deadline = None
 
     def command(self, argv):
         try:
-            return subprocess.run(argv, check=True, capture_output=True, text=True, timeout=10).stdout
+            timeout = min(10, self.deadline.remaining()) if self.deadline is not None else 10
+            result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=timeout).stdout
+            if self.deadline is not None:
+                self.deadline.remaining()
+            return result
         except Exception:
             raise ValueError('Provider or Workbench command failed') from None
 
@@ -202,17 +230,22 @@ class Operator:
         health = self.aliyun('nlb','GetListenerHealthStatus',ListenerId=self.args.listener_id)
         return {'Servers':servers,'Listener':listener,'Health':health}
 
-    def read(self):
+    def read(self, *, deadline=None):
+        self.deadline = deadline
         # Timestamp at start, never after a slow provider read.
         return snapshot(self.fetch_ess,self.fetch_group,self.fetch_ecs,self.fetch_nlb,group_id=GROUP_ID,server_group_id=SERVER_GROUP_ID,now=datetime.now(timezone.utc))
 
     def remote(self, script, *arguments):
+        if self.deadline is not None:
+            self.deadline.remaining()
+        expires = self.deadline.wall if self.deadline is not None else time.time() + 10
+        script = 'import time\n_remote_deadline = '+repr(expires)+'\nif time.time() >= _remote_deadline: raise ValueError(\"Remote deadline exceeded\")\n' + script
         command = shlex.join(['python3','-c',script,*arguments])
         return self.command([self.args.workbench,'exec','-P',PROFILE,'-r',REGION,'-i',WORKER_ID,'-c',command])
 
     def atomic_worker_write(self, value):
         # The remote worker needs only stdlib Python; no repository deployment.
-        script = 'import json,os,tempfile,sys; from pathlib import Path\n' + _ATOMIC_SOURCE + '\natomic_write(sys.argv[1],json.loads(sys.argv[2]))'
+        script = 'import json,os,tempfile,sys,time; from pathlib import Path\n' + _ATOMIC_SOURCE + '\natomic_write(sys.argv[1],json.loads(sys.argv[2]),deadline=globals().get(\"_remote_deadline\"))'
         self.remote(script,self.args.worker_inventory,json.dumps(value,separators=(',',':')))
 
     def existing_targets(self):
@@ -234,19 +267,22 @@ class Operator:
         values = [{'targets':[address+':9930'],'labels':{'env':'rdev.ali','db_proxy_code':'DP00001','target_db_code':'D00002','ecs_instance_id':node}} for node,address in targets]
         self.remote(_TARGET_SCRIPT,self.args.kubeconfig,json.dumps(values,separators=(',',':')))
 
-    def write(self, value):
-        self.previous = publish(value,self.previous,self.atomic_worker_write,self.update_targets)
+    def write(self, value, *, deadline=None):
+        self.deadline = deadline
+        self.previous = publish(value,self.previous,self.atomic_worker_write,self.update_targets,deadline=deadline)
 
 
 # Keep the remote write identical to the locally tested implementation.
 import inspect
 _ATOMIC_SOURCE = inspect.getsource(atomic_write)
-_TARGET_SCRIPT = '''import json,os,stat,subprocess,sys
+_TARGET_SCRIPT = '''import json,os,stat,subprocess,sys,time
 path=sys.argv[1]
 assert stat.S_ISREG(os.stat(path).st_mode) and stat.S_IMODE(os.stat(path).st_mode)==0o600
 args=['kubectl','--kubeconfig',path,'-n','raptor-test']
 def run(extra):
- return subprocess.run(args+extra,check=True,capture_output=True,text=True,timeout=8).stdout
+ remaining=_remote_deadline-time.time()
+ if remaining<=0: raise ValueError('Remote deadline exceeded')
+ return subprocess.run(args+extra,check=True,capture_output=True,text=True,timeout=min(8,remaining)).stdout
 body=json.loads(run(['get','configmap','pgcat-provider-inventory','-o','json']))
 assert body['metadata']['name']=='pgcat-provider-inventory' and body['metadata']['namespace']=='raptor-test'
 assert 'targets.json' in body['data']

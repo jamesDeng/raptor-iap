@@ -89,7 +89,12 @@ current resourceVersion. It never creates the ConfigMap or any cloud resource.
 Targets use the existing PgCat port 9930 and DP00001/D00002 catalog labels.
 
 The loop starts a read at most every 15 seconds and lasts at most 5,400 seconds.
-Each subprocess has a timeout. A refresh/publication that misses its interval,
+Each refresh carries one absolute deadline capped by the interval and remaining
+runtime. Provider and Workbench subprocess timeouts use the remaining budget;
+remote kubectl calls share that deadline, and the worker refuses an inventory
+replacement after it expires, including after file fsync. The Mac and worker
+must have synchronized system clocks for the remote UTC deadline check.
+A refresh/publication that misses its interval,
 provider refusal, or Workbench failure stops the process with sanitized status;
 it never renews freshness using cached inventory. The previous file remains
 available and becomes stale for assessment after 30 seconds. A target update
