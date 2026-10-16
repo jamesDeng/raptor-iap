@@ -138,3 +138,21 @@ class SegmentedTests(unittest.TestCase):
                 w.append(f)
             self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'PASS')
             m=json.loads((p/'completion.json').read_text());self.assertEqual(len(m['segments']),2);self.assertEqual(m['segments'][1]['firstAt'],1800)
+
+
+class SamePodProcessHistory(unittest.TestCase):
+    def test_prior_process_final_survives_rotation_in_same_pod(self):
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'capture';writer=SegmentedCapture(path,max_segment_seconds=2)
+            writer.append(frame(0,0));writer.append(frame(1,1,True))
+            for t in (2,3):
+                f=frame(t,t-2,t==3);snap=f['pods'][0]['snapshot'];snap['sample']['processId']='replacement'
+                for event in snap['events']:event['processId']='replacement';event['at']+=2
+                if t==3:f['phase']='settling'
+                writer.append(f)
+            result=writer.finish(completed=True,cancelled=False,errors=[])
+            # The interim measurement frame has no active client; finals must
+            # still be retained even though traffic coverage is inconclusive.
+            self.assertEqual(result['status'],'INCONCLUSIVE')
+            markers=json.loads((path/'completion.json').read_text())['clientFinalMarkers']
+            self.assertEqual(markers,[{'uid':'pod','processId':'process','final':True},{'uid':'pod','processId':'replacement','final':True}])

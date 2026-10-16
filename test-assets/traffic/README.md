@@ -4,8 +4,8 @@ The operator collector runs on the verified ACK worker using its authorized
 Kubernetes configuration. It discovers the test-client Pod UIDs every second,
 reads each process's counters and event sequence directly, and fsyncs allowlisted
 JSONL outside the Pods. No database credential, SQL payload or auth token is
-retained. Give each run a fresh private output path. Duration is bounded to 30
-minutes. Collectors never mutate cloud or Kubernetes resources.
+retained. Give each run a fresh private output path. Duration is bounded to 90
+minutes. The collector only reads cloud and Kubernetes resources.
 
 The integration operator supplies an atomic provider-inventory JSON file with
 `observedAt`, `desired`, complete ESS `members` and NLB `healthyRegistered` IDs.
@@ -18,9 +18,9 @@ the expected test/poc_app identity, all with original raw source timestamps unde
 makes the coverage inconclusive, while already fsynced traffic evidence remains.
 
 The new client emits `traffic_final` after scheduling stops, all operation deadlines
-settle and sessions close; its final HTTP evidence remains readable for 10 seconds.
+settle and sessions close; a controlled finish holds final HTTP evidence for two minutes (ordinary SIGTERM retains its existing bounded shutdown behavior).
 The collector retains that final sample before a Pod disappears. A missing final
-sample is inconclusive. Final snapshots are cached by Pod UID so shutdown of an
+sample is inconclusive. Final snapshots are cached by (Pod UID, container ID) so shutdown of an
 already finalized HTTP endpoint cannot erase its retained terminal counters. A newly discovered process requires all startup events
 and no history before the capture boundary. Do not infer old counts from new zeros.
 Rolling restart before deploying this client revision cannot prove the old process
@@ -130,3 +130,40 @@ or unlisted segments and missing client final markers prevent PASS; a failed SQL
 operation retains FAIL precedence. A later clean segment cannot repair an earlier
 coverage loss. Running clients must provide explicit settled final snapshots for
 completion; a finite collector timeout alone does not establish client finality.
+
+### Exact client finalization boundary
+
+After separate action-time authorization for client finish, start the collector
+with a fresh shared private directory:
+
+```sh
+python3 worker_capture.py --output /private/new-capture --inventory inventory.json --seconds 5400 --boundary-dir /private/new-boundary
+python3 finish_clients.py --boundary-dir /private/new-boundary --expected-replicas 2
+```
+
+Run the second command in a separate session after fleet convergence. This helper
+performs a runtime mutation: exactly two concurrent bounded `kubectl exec` calls
+invoke `/client finish --expected-pod-uid UID --expected-process-id PID`. It reads
+current Pod names, UIDs, container IDs and evidence process IDs, writes one unique
+request, waits for the collector acknowledgement, and rechecks the exact roster
+before dispatch. No shell or TCP finish endpoint is used. The directory is mode
+0700; atomic request, acknowledgement and sanitized receipt files are mode 0600
+and fsynced. A directory/request cannot be reused for a second finish action.
+
+The collector appends and fsyncs the first settling frame before acknowledgement.
+It preserves one SegmentedCapture and one poll clock, including all earlier
+process finals across segment rotations. It waits for every observed process
+final and the helper receipt, for at most five seconds from the boundary. One
+final client cannot close the window while the other is active. A container
+restart in the same Pod is read anew. Changed or incomplete identities, malformed
+boundaries, missing/uncertain receipts, late polls or missing finals prevent PASS;
+observed SQL failure retains FAIL precedence. Retain all boundary files with the
+capture. The two-minute client hold does not extend this assessment deadline.
+
+An unknown exec result is never retried. The helper reads current identities and
+reports only whether the roster is unchanged; this does not prove finality or
+repair the result. Preserve evidence, reconcile the exact `/evidence` snapshots
+and Pod/container identities, and stop replacement mutations. Raw kubectl output,
+DSNs, kubeconfig and Secret values are never persisted by this helper. A successful
+receipt alone cannot establish traffic acceptance. These commands document a
+path requiring runtime authorization; implementation does not authorize a run.
