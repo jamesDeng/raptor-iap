@@ -78,7 +78,7 @@ def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Path 
         boundary_dir=Path(boundary_dir);private_directory(boundary_dir)
         if any(boundary_dir.iterdir()):raise ValueError('fresh boundary directory required')
     w=SegmentedCapture(Path(output),max_total_seconds=seconds)
-    start=time.monotonic();end=start+seconds;tick=start;cancelled=False;errors=[];final_snapshots={};request=None;settle_start=None;bound_roster=None
+    start=time.monotonic();end=start+seconds;tick=start;cancelled=False;errors=[];final_snapshots={};request=None;settle_start=None;bound_roster=None;boundary_completed=False
     def error(reason):errors.append({'at':utc(),'reason':reason})
     try:
         while True:
@@ -110,7 +110,17 @@ def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Path 
                         if frame['pods'] and all(p['snapshot']['sample']['Scheduled']==p['snapshot']['sample']['Attempts']+p['snapshot']['sample']['Skipped'] for p in frame['pods']):break
                     elif bound_roster is not None and w.finals and all(w.finals.values()):
                         bound={(r['uid'],r['processId']) for r in bound_roster}
-                        if bound.issubset(w.finals) and (boundary_dir/'receipt.json').exists():break
+                        if bound.issubset(w.finals) and (boundary_dir/'receipt.json').exists():
+                            receipt=read_json(boundary_dir/'receipt.json')
+                            expected={uid+'/'+pid for uid,pid in bound}
+                            if (set(receipt)!={'requestId','status','clients'} or receipt['requestId']!=request['requestId']
+                                or receipt['status']!='ACKNOWLEDGED' or not isinstance(receipt['clients'],dict)
+                                or set(receipt['clients'])!=expected
+                                or any(result!={'status':'acknowledged'} for result in receipt['clients'].values())):
+                                error('invalid or uncertain finish receipt');break
+                            if time.monotonic()>settle_start+5:
+                                error('finish receipt exceeded settling deadline');break
+                            boundary_completed=True;break
             except Exception:
                 error('client, boundary or provider snapshot unavailable')
                 # Retain SQL evidence even when the boundary itself is malformed.
@@ -122,13 +132,7 @@ def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Path 
     except KeyboardInterrupt:cancelled=True
     if boundary_dir is not None:
         if bound_roster is None or not w.finals or not all(w.finals.values()):error('missing client final marker or boundary')
-        receipt=boundary_dir/'receipt.json'
-        if not receipt.exists():error('finish command receipt unavailable')
-        if receipt.exists():
-            try:
-                r=read_json(receipt)
-                if request is None or r.get('requestId')!=request['requestId'] or r.get('status')!='ACKNOWLEDGED':error('uncertain finish command')
-            except Exception:error('invalid finish receipt')
+        if not boundary_completed:error('exact client finalization not completed within settling deadline')
     return w.finish(completed=not cancelled,cancelled=cancelled,errors=errors)
 
 def main():

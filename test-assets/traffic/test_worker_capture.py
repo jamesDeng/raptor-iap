@@ -125,7 +125,7 @@ class FinishBoundary(unittest.TestCase):
         def capture(*args):
             t=clock[0];f=frame(t,t);f['expectedReplicas']=2;f['pods']=[]
             for i,row in enumerate(ROSTER):
-                n=min(t,2+i) if kind in ('good','slow-final') else t
+                n=min(t,2+i)
                 pod=copy.deepcopy(frame(t,n)['pods'][0]);pod.update(uid=row['uid'],name=row['name'],containerId=row['containerId']);s=pod['snapshot'];s['sample']['processId']=row['processId']
                 for e in s['events']:e['processId']=row['processId']
                 s['final']=t>=(7 if kind=='late' else 2+i) and kind not in ('missing','failure');s['connected']=0 if s['final'] else 4
@@ -141,13 +141,24 @@ class FinishBoundary(unittest.TestCase):
                 atomic_json(boundary/'request.json',request)
             if t==2 and kind not in ('malformed','uid-mismatch','pid-mismatch','no-receipt'):
                 from finish_clients import atomic_json
-                atomic_json(boundary/'receipt.json',{'requestId':'one','status':'INCONCLUSIVE' if kind=='uncertain' else 'ACKNOWLEDGED'})
+                receipt={'requestId':'one','status':'INCONCLUSIVE' if kind=='uncertain' else 'ACKNOWLEDGED','clients':{r['uid']+'/'+r['processId']:{'status':'acknowledged'} for r in ROSTER}}
+                if kind=='receipt-no-clients':receipt.pop('clients')
+                if kind=='receipt-missing-client':receipt['clients'].pop('uid-0/process-0')
+                if kind=='receipt-unknown':receipt['clients']['uid-0/process-0']['status']='unknown'
+                if kind=='receipt-mismatched-client':receipt['clients']['wrong/process']=receipt['clients'].pop('uid-0/process-0')
+                atomic_json(boundary/'receipt.json',receipt)
             if t>=2:self.assertTrue((boundary/'ack.json').exists() or kind in ('malformed','uid-mismatch','pid-mismatch'))
             if kind=='slow-final' and t==3:clock[0]=7
             seen.append(f);return f
         with tempfile.TemporaryDirectory() as d:
             boundary=Path(d)/'boundary';boundary.mkdir(mode=0o700)
-            with patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]),patch.object(worker.time,'sleep',side_effect=lambda _:clock.__setitem__(0,clock[0]+1)):
+            import finish_clients
+            original_read=finish_clients.read_json
+            def read(path):
+                value=original_read(path)
+                if kind=='receipt-late-read' and path.name=='receipt.json':clock[0]=7
+                return value
+            with patch.object(finish_clients,'read_json',side_effect=read),patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]),patch.object(worker.time,'sleep',side_effect=lambda _:clock.__setitem__(0,clock[0]+1)):
                 result=worker.run_capture(Path(d)/'out',Path(d)/'inventory',8,boundary)
             if kind in ('uid-mismatch','pid-mismatch','malformed'):self.assertFalse((boundary/'ack.json').exists())
             retained=[json.loads(line) for p in sorted((Path(d)/'out').glob('segment-*.jsonl')) for line in p.read_text().splitlines()]
@@ -159,3 +170,7 @@ class FinishBoundary(unittest.TestCase):
             with self.subTest(kind=kind):self.assertEqual(self.run_boundary(kind)[0]['status'],'INCONCLUSIVE')
     def test_observed_failure_wins_over_missing_final(self):
         self.assertEqual(self.run_boundary('failure')[0]['status'],'FAIL')
+
+    def test_exact_receipt_required_before_deadline(self):
+        for kind in ('receipt-no-clients','receipt-missing-client','receipt-unknown','receipt-mismatched-client','receipt-late-read'):
+            with self.subTest(kind=kind):self.assertEqual(self.run_boundary(kind)[0]['status'],'INCONCLUSIVE')
