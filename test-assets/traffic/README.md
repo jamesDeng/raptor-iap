@@ -11,7 +11,8 @@ The integration operator supplies an atomic provider-inventory JSON file with
 `observedAt`, `desired`, complete ESS `members` and NLB `healthyRegistered` IDs.
 Refresh it from authoritative provider APIs every 15 seconds; age over 30 seconds
 makes assessment inconclusive. Prometheus coverage requires exactly those members,
-up=1 plus complete active/idle/waiting triplets for every observed pool/user and
+`up=1` scoped with `job="pgcat",env="rdev.ali",db_proxy_code="DP00001",target_db_code="D00002"`
+and pool queries scoped with `env="rdev.ali",db_proxy_code="DP00001",target_db_code="D00002"`, plus complete active/idle/waiting triplets for every observed pool/user and
 the expected test/poc_app identity, all with original raw source timestamps under
 45 seconds. Missing Prometheus
 makes the coverage inconclusive, while already fsynced traffic evidence remains.

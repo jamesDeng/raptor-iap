@@ -1,5 +1,5 @@
 """Run on the verified ACK worker. Read-only; no cloud credentials or mutations."""
-import argparse, concurrent.futures, datetime, json, os, subprocess, time, urllib.parse, urllib.request
+import argparse, concurrent.futures, datetime, json, math, os, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
 from capture_window import CaptureWindow, retain
 
@@ -14,8 +14,8 @@ def kubectl(*args):
     if r.returncode:raise RuntimeError('Kubernetes read failed')
     return json.loads(r.stdout)
 def query_metrics(base,stamp):
-    selector='{env="rdev.ali",db_proxy_code="b5267fa4-33b9-408c-a799-0ed56501061f",target_db_code="6b704ca0-401e-41cb-b71f-2d310c6943ba"}'
-    queries={'up':'timestamp(up{job="pgcat"} == 1)'}
+    selector='{env="rdev.ali",db_proxy_code="DP00001",target_db_code="D00002"}'
+    queries={'up':'timestamp(up{job="pgcat",'+selector[1:]+' == 1)'}
     for kind in ('active','idle','waiting'):
         name='pgcat_pools_cl_'+kind+selector;queries[kind]=name;queries[kind+'_timestamp']='timestamp('+name+')'
     def fetch(item):
@@ -24,16 +24,26 @@ def query_metrics(base,stamp):
         return key,r['data']['result']
     with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:results=dict(pool.map(fetch,queries.items()))
     nodes=[r['metric']['ecs_instance_id'] for r in results['up']]
-    if not nodes:raise ValueError('no scrape evidence')
+    if not nodes or any(not isinstance(n,str) or not n for n in nodes) or len(set(nodes))!=len(nodes):raise ValueError('invalid scrape evidence')
+    def numeric(value, count=False):
+        value=float(value)
+        if not math.isfinite(value) or (count and (value<0 or not value.is_integer() or value>2**53)):raise ValueError('invalid raw observation')
+        return value
+    up_stamps=[numeric(r['value'][1]) for r in results['up']]
     raw=[]
     for kind in ('active','idle','waiting'):
         def key(row):return (row['metric']['ecs_instance_id'],row['metric']['pool'],row['metric']['user'])
-        stamps={key(r):float(r['value'][1]) for r in results[kind+'_timestamp']}
+        stamps={key(r):numeric(r['value'][1]) for r in results[kind+'_timestamp']}
         values=results[kind]
-        if not values or len(stamps)!=len(results[kind+'_timestamp']) or set(stamps)!=set(key(r) for r in values):raise ValueError('incomplete source evidence')
+        if not values or len(stamps)!=len(results[kind+'_timestamp']) or len(values)!=len(stamps) or set(stamps)!=set(key(r) for r in values):raise ValueError('incomplete source evidence')
         for row in values:
-            node,pool,user=key(row);raw.append({'node':node,'pool':pool,'user':user,'kind':kind,'value':float(row['value'][1]),'sourceAt':stamps[key(row)]})
-    return {'observedAt':utc(),'sourceAt':min(float(r['value'][1]) for r in results['up']),'nodes':nodes,'available':True,'raw':raw}
+            node,pool,user=key(row)
+            if node not in nodes or not pool or not user:raise ValueError('foreign or invalid raw coverage')
+            raw.append({'node':node,'pool':pool,'user':user,'kind':kind,'value':numeric(row['value'][1],count=True),'sourceAt':stamps[key(row)]})
+    triplets={}
+    for row in raw:triplets.setdefault((row['node'],row['pool'],row['user']),set()).add(row['kind'])
+    if any(k!={'active','idle','waiting'} for k in triplets.values()) or any((n,'test','poc_app') not in triplets for n in nodes):raise ValueError('missing expected raw triplets')
+    return {'observedAt':utc(),'sourceAt':min(up_stamps),'nodes':nodes,'available':True,'raw':raw}
 def read_pod(p,final_snapshots):
     uid=p['metadata']['uid']
     if uid in final_snapshots:return {'uid':uid,'snapshot':final_snapshots[uid]}
@@ -52,7 +62,7 @@ def capture_frame(inventory_path,final_snapshots=None):
     try:
         svc=kubectl('get','service','rdev-test-metrics-metrics','-o','json');base='http://'+svc['spec']['clusterIP']+':9090'
         metrics=query_metrics(base,stamp)
-    except (ValueError,KeyError,OSError,RuntimeError):pass
+    except (ValueError,KeyError,TypeError,IndexError,OverflowError,OSError,RuntimeError):pass
     return {'at':stamp,'expectedReplicas':expected,'pods':rows,'inventory':inventory,'metrics':metrics}
 def main():
     a=argparse.ArgumentParser();a.add_argument('--output',required=True);a.add_argument('--inventory',required=True);a.add_argument('--seconds',type=int,default=60);v=a.parse_args()
