@@ -149,17 +149,52 @@ class FeedTests(unittest.TestCase):
                 with self.assertRaises(ValueError):feed.atomic_write(p,{},deadline=15,clock=lambda:clock[0])
             self.assertEqual(p.read_text(),'old')
 
-    def test_remote_execution_after_deadline_preserves_previous_worker_file(self):
+    def remote_fixture(self, *, probe_delay=0.2, command_delay=0, worker_offset=-30, reboot=False):
         from types import SimpleNamespace
-        import shlex,subprocess,time
+        import json,shlex,subprocess
+        op=feed.Operator(SimpleNamespace(workbench='offline-fixture'))
+        clock=[100.0];calls=[];boot='12345678-1234-1234-1234-123456789abc'
+        op.deadline=feed.Deadline(115,monotonic=lambda:clock[0])
+        def command(argv):
+            calls.append(argv)
+            if len(calls)==1:
+                clock[0]+=probe_delay
+                return json.dumps({'monotonic':1000.0,'boot':boot})
+            clock[0]+=command_delay
+            worker_mono=1000.0+probe_delay+command_delay
+            command_parts=shlex.split(argv[-1]);script=command_parts[2]
+            actual_boot='different-boot' if reboot else boot
+            preamble=("import time,builtins,io\ntime.monotonic=lambda:"+repr(worker_mono)+
+                      "\ntime.time=lambda:"+repr(clock[0]+worker_offset)+
+                      "\n_original_open=builtins.open\nbuiltins.open=lambda path,*a,**k:io.StringIO("+repr(actual_boot)+") if str(path)=='/proc/sys/kernel/random/boot_id' else _original_open(path,*a,**k)\n")
+            return subprocess.run(['python3','-c',preamble+script,*command_parts[3:]],check=True,capture_output=True,text=True).stdout
+        op.command=command
+        return op,calls
+
+    def test_worker_wall_clock_behind_does_not_extend_deadline(self):
+        op,calls=self.remote_fixture(worker_offset=-30)
+        self.assertEqual(op.remote("print('published')").strip(),'published')
+        self.assertEqual(len(calls),2)
+
+    def test_delayed_remote_command_refuses_even_with_worker_clock_behind(self):
+        import subprocess
         with tempfile.TemporaryDirectory() as d:
             p=pathlib.Path(d)/'inventory.json';p.write_text('old')
-            op=feed.Operator(SimpleNamespace(worker_inventory=str(p),workbench='offline-fixture'))
-            op.deadline=feed.Deadline(15,monotonic=lambda:0)
-            op.deadline.wall=time.time()-1
-            op.command=lambda argv:subprocess.run(shlex.split(argv[-1]),check=True,capture_output=True,text=True).stdout
-            with self.assertRaises(subprocess.CalledProcessError):op.atomic_worker_write({})
+            op,calls=self.remote_fixture(command_delay=20,worker_offset=-30)
+            op.args.worker_inventory=str(p)
+            with self.assertRaises(subprocess.CalledProcessError):op.atomic_worker_write({'members':[]})
             self.assertEqual(p.read_text(),'old')
+            self.assertEqual(len(calls),2)
+
+    def test_unbounded_clock_probe_latency_refuses_publication(self):
+        op,calls=self.remote_fixture(probe_delay=3)
+        with self.assertRaises(ValueError):op.remote("print('published')")
+        self.assertEqual(len(calls),1)
+
+    def test_worker_reboot_invalidates_clock_probe(self):
+        import subprocess
+        op,calls=self.remote_fixture(reboot=True)
+        with self.assertRaises(subprocess.CalledProcessError):op.remote("print('published')")
 
     def test_subprocess_timeout_uses_remaining_budget(self):
         from types import SimpleNamespace

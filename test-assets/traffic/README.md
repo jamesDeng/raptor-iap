@@ -91,9 +91,16 @@ Targets use the existing PgCat port 9930 and DP00001/D00002 catalog labels.
 The loop starts a read at most every 15 seconds and lasts at most 5,400 seconds.
 Each refresh carries one absolute deadline capped by the interval and remaining
 runtime. Provider and Workbench subprocess timeouts use the remaining budget;
-remote kubectl calls share that deadline, and the worker refuses an inventory
-replacement after it expires, including after file fsync. The Mac and worker
-must have synchronized system clocks for the remote UTC deadline check.
+before each remote operation the tool probes the exact worker's monotonic clock
+and Linux boot identity over Workbench. A probe round trip over two seconds, an
+invalid sample, or insufficient remaining budget refuses the operation. The
+worker expiry subtracts the full measured round trip from the budget at send,
+plus a 100 ms margin; this uses the earliest possible sample time. The remote
+process checks the boot identity and monotonic expiry, remote kubectl timeouts
+use that expiry, and file replacement checks it again after fsync. A reboot or
+delayed command therefore refuses publication. Wall-clock offset between Mac
+and worker does not extend this deadline; no wall-clock synchronization
+assumption is used.
 A refresh/publication that misses its interval,
 provider refusal, or Workbench failure stops the process with sanitized status;
 it never renews freshness using cached inventory. The previous file remains

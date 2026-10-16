@@ -3,12 +3,14 @@ import argparse
 import importlib.util
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import shlex
 import subprocess
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 
 REGION = 'ap-southeast-1'
@@ -120,7 +122,6 @@ class Deadline:
     def __init__(self, when, *, monotonic=time.monotonic):
         self.when = when
         self.monotonic = monotonic
-        self.wall = time.time() + max(0, when - monotonic())
 
     def remaining(self):
         remaining = self.when - self.monotonic()
@@ -140,7 +141,7 @@ def publish(snapshot, previous_targets, atomic_worker_write, update_targets, *, 
     return targets
 
 
-def atomic_write(path, value, *, deadline=None, clock=time.time):
+def atomic_write(path, value, *, deadline=None, clock=time.monotonic):
     """Write mode 0600 then fsync and replace in the destination directory."""
     path = Path(path)
     fd, temporary = tempfile.mkstemp(prefix='.'+path.name+'.', dir=path.parent)
@@ -235,13 +236,33 @@ class Operator:
         # Timestamp at start, never after a slow provider read.
         return snapshot(self.fetch_ess,self.fetch_group,self.fetch_ecs,self.fetch_nlb,group_id=GROUP_ID,server_group_id=SERVER_GROUP_ID,now=datetime.now(timezone.utc))
 
-    def remote(self, script, *arguments):
-        if self.deadline is not None:
-            self.deadline.remaining()
-        expires = self.deadline.wall if self.deadline is not None else time.time() + 10
-        script = 'import time\n_remote_deadline = '+repr(expires)+'\nif time.time() >= _remote_deadline: raise ValueError(\"Remote deadline exceeded\")\n' + script
+    def workbench(self, script, *arguments):
         command = shlex.join(['python3','-c',script,*arguments])
         return self.command([self.args.workbench,'exec','-P',PROFILE,'-r',REGION,'-i',WORKER_ID,'-c',command])
+
+    def remote(self, script, *arguments):
+        # Worker monotonic time is independent of Mac/worker wall-clock skew.
+        # A sample happened between send and receive. Subtract the entire RTT
+        # from the budget at send, choosing the earliest possible worker expiry.
+        deadline = self.deadline or Deadline(time.monotonic() + 10)
+        sent = deadline.monotonic()
+        budget = deadline.remaining()
+        sample = json.loads(self.workbench(_CLOCK_PROBE))
+        round_trip = deadline.monotonic() - sent
+        deadline.remaining()
+        require(0 <= round_trip <= 2)
+        require(set(sample) == {'monotonic','boot'})
+        worker_time = sample['monotonic']
+        require(type(worker_time) in (int,float) and math.isfinite(worker_time) and worker_time >= 0)
+        boot = sample['boot']
+        require(isinstance(boot,str) and str(uuid.UUID(boot)) == boot)
+        expires = worker_time + budget - round_trip - 0.1
+        require(expires > worker_time)
+        prefix = ('import time\n_remote_deadline = '+repr(expires)+
+                  '\nif open(\"/proc/sys/kernel/random/boot_id\").read().strip() != '+repr(boot)+
+                  ': raise ValueError(\"Worker clock identity changed\")'+
+                  '\nif time.monotonic() >= _remote_deadline: raise ValueError(\"Remote deadline exceeded\")\n')
+        return self.workbench(prefix + script,*arguments)
 
     def atomic_worker_write(self, value):
         # The remote worker needs only stdlib Python; no repository deployment.
@@ -275,12 +296,16 @@ class Operator:
 # Keep the remote write identical to the locally tested implementation.
 import inspect
 _ATOMIC_SOURCE = inspect.getsource(atomic_write)
+_CLOCK_PROBE = '''import json,time
+boot=open('/proc/sys/kernel/random/boot_id').read().strip()
+print(json.dumps({'monotonic':time.monotonic(),'boot':boot}))
+'''
 _TARGET_SCRIPT = '''import json,os,stat,subprocess,sys,time
 path=sys.argv[1]
 assert stat.S_ISREG(os.stat(path).st_mode) and stat.S_IMODE(os.stat(path).st_mode)==0o600
 args=['kubectl','--kubeconfig',path,'-n','raptor-test']
 def run(extra):
- remaining=_remote_deadline-time.time()
+ remaining=_remote_deadline-time.monotonic()
  if remaining<=0: raise ValueError('Remote deadline exceeded')
  return subprocess.run(args+extra,check=True,capture_output=True,text=True,timeout=min(8,remaining)).stdout
 body=json.loads(run(['get','configmap','pgcat-provider-inventory','-o','json']))
