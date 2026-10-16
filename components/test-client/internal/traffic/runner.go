@@ -38,8 +38,10 @@ type Config struct {
 type Runner struct {
 	Config Config
 	Ticks  <-chan time.Time
-	Dial   func(context.Context) (Session, error)
-	Emit   func(Event)
+	// Admit synchronizes batch scheduling with a controlled finish transition.
+	Admit func(schedule func()) bool
+	Dial  func(context.Context) (Session, error)
+	Emit  func(Event)
 }
 
 // Run stops scheduling on cancellation, but lets in-flight operations finish
@@ -156,16 +158,27 @@ func (r Runner) Run(ctx context.Context) error {
 					sessions[i] = dial()
 				}
 			}
-			batch++
-			for i, j := range jobs {
-				id := fmt.Sprintf("%s-%d-%d", c.ProcessID, i, batch)
-				emit(Event{Kind: "scheduled", OperationID: id})
-				select {
-				case j <- id:
-				default:
-					emit(Event{Kind: "skipped", OperationID: id})
+
+			schedule := func() {
+				batch++
+				for i, j := range jobs {
+					id := fmt.Sprintf("%s-%d-%d", c.ProcessID, i, batch)
+					emit(Event{Kind: "scheduled", OperationID: id})
+					select {
+					case j <- id:
+					default:
+						emit(Event{Kind: "skipped", OperationID: id})
+					}
 				}
 			}
+			if r.Admit != nil {
+				if !r.Admit(schedule) {
+					return nil
+				}
+			} else {
+				schedule()
+			}
+
 		}
 	}
 }

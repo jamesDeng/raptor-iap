@@ -1,7 +1,9 @@
 """Run on the verified ACK worker. Read-only; no cloud credentials or mutations."""
-import argparse, concurrent.futures, datetime, json, os, subprocess, time, urllib.parse, urllib.request
+from __future__ import annotations
+import argparse, concurrent.futures, datetime, json, math, os, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
-from capture_window import CaptureWindow, retain
+from segmented_capture import SegmentedCapture
+from capture_window import seconds as evidence_seconds
 
 def utc():return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def get(url):
@@ -14,8 +16,8 @@ def kubectl(*args):
     if r.returncode:raise RuntimeError('Kubernetes read failed')
     return json.loads(r.stdout)
 def query_metrics(base,stamp):
-    selector='{env="rdev.ali",db_proxy_code="b5267fa4-33b9-408c-a799-0ed56501061f",target_db_code="6b704ca0-401e-41cb-b71f-2d310c6943ba"}'
-    queries={'up':'timestamp(up{job="pgcat"} == 1)'}
+    selector='{env="rdev.ali",db_proxy_code="DP00001",target_db_code="D00002"}'
+    queries={'up':'timestamp(up{job="pgcat",'+selector[1:]+' == 1)'}
     for kind in ('active','idle','waiting'):
         name='pgcat_pools_cl_'+kind+selector;queries[kind]=name;queries[kind+'_timestamp']='timestamp('+name+')'
     def fetch(item):
@@ -24,62 +26,131 @@ def query_metrics(base,stamp):
         return key,r['data']['result']
     with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:results=dict(pool.map(fetch,queries.items()))
     nodes=[r['metric']['ecs_instance_id'] for r in results['up']]
-    if not nodes:raise ValueError('no scrape evidence')
+    if not nodes or any(not isinstance(n,str) or not n for n in nodes) or len(set(nodes))!=len(nodes):raise ValueError('invalid scrape evidence')
+    def numeric(value, count=False):
+        value=float(value)
+        if not math.isfinite(value) or (count and (value<0 or not value.is_integer() or value>2**53)):raise ValueError('invalid raw observation')
+        return value
+    up_stamps=[numeric(r['value'][1]) for r in results['up']]
     raw=[]
     for kind in ('active','idle','waiting'):
         def key(row):return (row['metric']['ecs_instance_id'],row['metric']['pool'],row['metric']['user'])
-        stamps={key(r):float(r['value'][1]) for r in results[kind+'_timestamp']}
+        stamps={key(r):numeric(r['value'][1]) for r in results[kind+'_timestamp']}
         values=results[kind]
-        if not values or len(stamps)!=len(results[kind+'_timestamp']) or set(stamps)!=set(key(r) for r in values):raise ValueError('incomplete source evidence')
+        if not values or len(stamps)!=len(results[kind+'_timestamp']) or len(values)!=len(stamps) or set(stamps)!=set(key(r) for r in values):raise ValueError('incomplete source evidence')
         for row in values:
-            node,pool,user=key(row);raw.append({'node':node,'pool':pool,'user':user,'kind':kind,'value':float(row['value'][1]),'sourceAt':stamps[key(row)]})
-    return {'observedAt':utc(),'sourceAt':min(float(r['value'][1]) for r in results['up']),'nodes':nodes,'available':True,'raw':raw}
+            node,pool,user=key(row)
+            if node not in nodes or not pool or not user:raise ValueError('foreign or invalid raw coverage')
+            raw.append({'node':node,'pool':pool,'user':user,'kind':kind,'value':numeric(row['value'][1],count=True),'sourceAt':stamps[key(row)]})
+    triplets={}
+    for row in raw:triplets.setdefault((row['node'],row['pool'],row['user']),set()).add(row['kind'])
+    if any(k!={'active','idle','waiting'} for k in triplets.values()) or any((n,'test','poc_app') not in triplets for n in nodes):raise ValueError('missing expected raw triplets')
+    return {'observedAt':utc(),'sourceAt':min(up_stamps),'nodes':nodes,'available':True,'raw':raw}
+def container_id(p):
+    statuses=p['status'].get('containerStatuses',[])
+    if len(statuses)!=1 or not statuses[0].get('containerID'):raise ValueError('exact client container identity unavailable')
+    return statuses[0]['containerID']
 def read_pod(p,final_snapshots):
-    uid=p['metadata']['uid']
-    if uid in final_snapshots:return {'uid':uid,'snapshot':final_snapshots[uid]}
-    snapshot=get('http://'+p['status']['podIP']+':9090/evidence')
-    if snapshot.get('final') is True:final_snapshots[uid]=snapshot
-    return {'uid':uid,'snapshot':snapshot}
+    uid=p['metadata']['uid'];cid=container_id(p);key=(uid,cid)
+    snapshot=final_snapshots.get(key)
+    if snapshot is None:
+        snapshot=get('http://'+p['status']['podIP']+':9090/evidence')
+        if snapshot.get('final') is True:final_snapshots[key]=snapshot
+    return {'uid':uid,'name':p['metadata'].get('name',''),'containerId':cid,'snapshot':snapshot}
 def capture_frame(inventory_path,final_snapshots=None):
     if final_snapshots is None:final_snapshots={}
     stamp=utc();pods=kubectl('get','pods','-l','app.kubernetes.io/name=rdev-test-client-client','-o','json')['items']
-    def one(p):return read_pod(p,final_snapshots)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:rows=list(pool.map(one,[p for p in pods if p['status'].get('podIP') and p['status'].get('phase') in ('Running','Pending')]))
-    deployment=kubectl('get','deployment','rdev-test-client-client','-o','json')
-    expected=deployment['spec']['replicas']
-    inventory=json.loads(Path(inventory_path).read_text())
+    unavailable=(ValueError,KeyError,TypeError,IndexError,OverflowError,OSError,RuntimeError,subprocess.TimeoutExpired)
+    def one(p):
+        try:return read_pod(p,final_snapshots)
+        except unavailable:return None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        observations=list(pool.map(one,[p for p in pods if p['status'].get('podIP') and p['status'].get('phase') in ('Running','Pending')]))
+    rows=[row for row in observations if row is not None]
+    # Zero is an invalid roster expectation in the retained evidence contract.
+    # Keep successful observations while ensuring incomplete reads cannot PASS.
+    expected=0
+    try:
+        deployment=kubectl('get','deployment','rdev-test-client-client','-o','json')
+        if all(row is not None for row in observations):expected=deployment['spec']['replicas']
+    except unavailable:pass
+    inventory={'observedAt':stamp,'desired':0,'members':[],'healthyRegistered':[]}
+    try:
+        source=json.loads(Path(inventory_path).read_text())
+        inventory={k:source[k] for k in inventory}
+    except unavailable:pass
     metrics={'observedAt':utc(),'sourceAt':stamp,'nodes':[],'available':False,'raw':[]}
     try:
         svc=kubectl('get','service','rdev-test-metrics-metrics','-o','json');base='http://'+svc['spec']['clusterIP']+':9090'
         metrics=query_metrics(base,stamp)
-    except (ValueError,KeyError,OSError,RuntimeError):pass
+    except (ValueError,KeyError,TypeError,IndexError,OverflowError,OSError,RuntimeError):pass
     return {'at':stamp,'expectedReplicas':expected,'pods':rows,'inventory':inventory,'metrics':metrics}
-def main():
-    a=argparse.ArgumentParser();a.add_argument('--output',required=True);a.add_argument('--inventory',required=True);a.add_argument('--seconds',type=int,default=60);v=a.parse_args()
-    if not 5<=v.seconds<=1800:raise SystemExit('bounded capture duration required')
-    os.umask(0o077)
-    if Path(v.output).exists():raise SystemExit('capture output already exists')
-    w=CaptureWindow(v.output);Path(v.output).touch(mode=0o600);start=time.monotonic();end=start+v.seconds;cancelled=False;errors=[];final_snapshots={}
+def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Path | None = None) -> dict:
+    from finish_clients import private_directory, read_json, atomic_json, validate_roster
+    if not 5<=seconds<=5400:raise ValueError('bounded capture duration required')
+    if boundary_dir is not None:
+        boundary_dir=Path(boundary_dir);private_directory(boundary_dir)
+        if any(boundary_dir.iterdir()):raise ValueError('fresh boundary directory required')
+    w=SegmentedCapture(Path(output),max_total_seconds=seconds)
+    start=time.monotonic();end=start+seconds;tick=start;cancelled=False;errors=[];final_snapshots={};request=None;settle_start=None;bound_roster=None;boundary_completed=False
+    def error(reason):errors.append({'at':utc(),'reason':reason})
     try:
-        tick=start
-        while time.monotonic()<end:
-            try:w.append(capture_frame(v.inventory,final_snapshots))
-            except Exception:errors.append({'at':utc(),'reason':'client or provider snapshot unavailable'})
-            tick+=1;time.sleep(max(0,tick-time.monotonic()))
-        # Extend the end boundary at most five seconds to settle finite operations.
-        settle_end=time.monotonic()+5
-        while time.monotonic()<settle_end:
+        while True:
+            now=time.monotonic()
+            if settle_start is not None and now>settle_start+5:break
+            if settle_start is None and now>=end:
+                if boundary_dir is not None:error('client boundary unavailable');break
+                settle_start=now
+            frame=None
             try:
-                frame=capture_frame(v.inventory,final_snapshots);frame['phase']='settling';w.append(frame)
-                if frame['pods'] and all(p['snapshot']['sample']['Scheduled']==p['snapshot']['sample']['Attempts']+p['snapshot']['sample']['Skipped'] for p in frame['pods']):break
-            except Exception:errors.append({'at':utc(),'reason':'settling snapshot unavailable'})
-            time.sleep(0.2)
+                frame=capture_frame(inventory,final_snapshots)
+                if boundary_dir is not None and request is None and (boundary_dir/'request.json').exists():
+                    request=read_json(boundary_dir/'request.json')
+                    if set(request)!={'requestId','roster'} or not isinstance(request['requestId'],str) or not request['requestId'] or len(request['requestId'])>256:raise ValueError('invalid boundary')
+                    candidate=validate_roster(request['roster'])
+                    current=validate_roster([dict(name=p['name'],uid=p['uid'],containerId=p['containerId'],processId=p['snapshot']['sample']['processId']) for p in frame['pods']])
+                    if current!=candidate:raise ValueError('boundary identity mismatch')
+                    bound_roster=candidate;settle_start=now
+                if settle_start is not None:frame['phase']='settling'
+                w.append(frame)
+                if settle_start is not None and time.monotonic()>settle_start+5:
+                    error('settling period exceeded');break
+                if boundary_dir is not None and bound_roster is not None:
+                    current=validate_roster([dict(name=p['name'],uid=p['uid'],containerId=p['containerId'],processId=p['snapshot']['sample']['processId']) for p in frame['pods']])
+                    if current!=bound_roster:error('client identity changed after boundary')
+                    if not (boundary_dir/'ack.json').exists():atomic_json(boundary_dir/'ack.json',request)
+                if settle_start is not None:
+                    if boundary_dir is None:
+                        if frame['pods'] and all(p['snapshot']['sample']['Scheduled']==p['snapshot']['sample']['Attempts']+p['snapshot']['sample']['Skipped'] for p in frame['pods']):break
+                    elif bound_roster is not None and w.finals and all(w.finals.values()):
+                        bound={(r['uid'],r['processId']) for r in bound_roster}
+                        if bound.issubset(w.finals) and (boundary_dir/'receipt.json').exists():
+                            receipt=read_json(boundary_dir/'receipt.json')
+                            expected={uid+'/'+pid for uid,pid in bound}
+                            if (set(receipt)!={'requestId','status','clients'} or receipt['requestId']!=request['requestId']
+                                or receipt['status']!='ACKNOWLEDGED' or not isinstance(receipt['clients'],dict)
+                                or set(receipt['clients'])!=expected
+                                or any(result!={'status':'acknowledged'} for result in receipt['clients'].values())):
+                                error('invalid or uncertain finish receipt');break
+                            if time.monotonic()>settle_start+5:
+                                error('finish receipt exceeded settling deadline');break
+                            boundary_completed=True;break
+            except Exception:
+                error('client, boundary or provider snapshot unavailable')
+                # Retain SQL evidence even when the boundary itself is malformed.
+                if frame is not None and (w.last is None or w.last!=evidence_seconds(frame['at'])):
+                    try:w.append(frame)
+                    except Exception:pass
+            if settle_start is not None and now>=settle_start+5:break
+            tick+=1;time.sleep(max(0,tick-time.monotonic()))
     except KeyboardInterrupt:cancelled=True
-    # Any unavailable poll is retained separately and prevents acceptance.
-    result=retain(v.output,completed=not cancelled,cancelled=cancelled)
-    if errors:
-        result['status']='FAIL' if result['status']=='FAIL' else 'INCONCLUSIVE';result['reasons'].append('unavailable capture poll')
-    Path(v.output+'.summary.json').write_text(json.dumps(result,indent=2)+'\n')
-    Path(v.output+'.completion.json').write_text(json.dumps({'completed':not cancelled,'errors':errors,'end':utc(),'pollSeconds':1})+'\n')
-    print(json.dumps(result))
+    if boundary_dir is not None:
+        if bound_roster is None or not w.finals or not all(w.finals.values()):error('missing client final marker or boundary')
+        if not boundary_completed:error('exact client finalization not completed within settling deadline')
+    return w.finish(completed=not cancelled,cancelled=cancelled,errors=errors)
+
+def main():
+    a=argparse.ArgumentParser();a.add_argument('--output',required=True);a.add_argument('--inventory',required=True);a.add_argument('--seconds',type=int,default=60);a.add_argument('--boundary-dir');v=a.parse_args()
+    os.umask(0o077)
+    print(json.dumps(run_capture(Path(v.output),Path(v.inventory),v.seconds,Path(v.boundary_dir) if v.boundary_dir else None)))
 if __name__=='__main__':main()

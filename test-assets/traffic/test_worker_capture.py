@@ -32,9 +32,62 @@ class MetricsExtraction(unittest.TestCase):
         with patch.object(worker,'get',side_effect=get):
             with self.assertRaises(ValueError):worker.query_metrics('http://fixture',1000)
 
+class StrictMetrics(MetricsExtraction):
+    def query(self, mutate):
+        def get(url):
+            from urllib.parse import urlparse, parse_qs
+            q=parse_qs(urlparse(url).query)['query'][0]
+            r=self.response(url);mutate(q,r['data']['result']);return r
+        with patch.object(worker,'get',side_effect=get):
+            return worker.query_metrics('http://fixture',1000)
+    def test_exact_scoped_queries(self):
+        queries=[]
+        self.query(lambda q,rows:queries.append(q))
+        selector='{env="rdev.ali",db_proxy_code="DP00001",target_db_code="D00002"}'
+        self.assertEqual(set(queries),{'timestamp(up{job="pgcat",env="rdev.ali",db_proxy_code="DP00001",target_db_code="D00002"} == 1)'} |
+                         {q for k in ('active','idle','waiting') for q in ('pgcat_pools_cl_'+k+selector,'timestamp(pgcat_pools_cl_'+k+selector+')')})
+    def test_reject_invalid_series(self):
+        def alter(q,rows,case):
+            if case=='duplicate up' and 'up{' in q:rows.append(rows[0])
+            if case=='missing up' and 'up{' in q:rows.pop()
+            if case=='foreign up' and 'up{' in q:rows[0]['metric']['ecs_instance_id']='foreign'
+            if case=='duplicate value' and q.startswith('pgcat_pools_cl_idle'):rows.append(rows[0])
+            if case=='missing timestamp' and q.startswith('timestamp(pgcat_pools_cl_idle'):rows.pop()
+            if case=='missing triplet' and 'pgcat_pools_cl_idle' in q:rows.pop()
+            if case=='wrong identity' and 'pgcat_pools' in q:
+                for row in rows:row['metric']['pool']='other'
+            if case in ('NaN','inf','0.5','-1') and q.startswith('pgcat_pools_cl_active'):rows[0]['value'][1]=case
+            if case=='nonfinite timestamp' and q.startswith('timestamp(pgcat_pools'):rows[0]['value'][1]='NaN'
+        for case in ('duplicate up','missing up','foreign up','duplicate value','missing timestamp','missing triplet','wrong identity','NaN','inf','0.5','-1','nonfinite timestamp'):
+            with self.subTest(case=case),self.assertRaises(ValueError):self.query(lambda q,rows:alter(q,rows,case))
+    def test_raw_allowlist(self):
+        m=self.query(lambda q,rows:None)
+        self.assertTrue(all(set(r)=={'node','pool','user','kind','value','sourceAt'} for r in m['raw']))
+
+
+class FrameMetricsFailure(unittest.TestCase):
+    def test_invalid_metrics_leave_client_evidence_available(self):
+        import tempfile, json
+        from pathlib import Path
+        pod={'metadata':{'uid':'old'},'status':{'containerStatuses':[{'containerID':'container'}],'podIP':'10.0.0.1','phase':'Running'}}
+        final={'final':True,'sample':{'processId':'old-process'}}
+        def kube(*args):
+            if args[1]=='pods':return {'items':[pod]}
+            if args[1]=='deployment':return {'spec':{'replicas':1}}
+            return {'spec':{'clusterIP':'10.0.0.2'}}
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'inventory.json';path.write_text(json.dumps({'members':['a','b']}))
+            for error in (ValueError('invalid series'),KeyError('label'),TypeError('malformed result')):
+                with self.subTest(error=type(error).__name__),patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'query_metrics',side_effect=error):
+                    frame=worker.capture_frame(str(path),{('old','container'):final})
+                self.assertEqual(frame['pods'],[{'uid':'old','name':'','containerId':'container','snapshot':final}])
+                self.assertFalse(frame['metrics']['available'])
+                self.assertEqual(frame['metrics']['raw'],[])
+
+
 class PodLifecycle(unittest.TestCase):
     def test_final_snapshot_cached_before_pod_endpoint_disappears(self):
-        cache={};pod={'metadata':{'uid':'old'},'status':{'podIP':'10.0.0.1'}}
+        cache={};pod={'metadata':{'uid':'old'},'status':{'containerStatuses':[{'containerID':'container'}],'podIP':'10.0.0.1'}}
         snapshot={'sample':{'processId':'old-process'},'final':True,'connected':0}
         with patch.object(worker,'get',return_value=snapshot) as read:
             self.assertEqual(worker.read_pod(pod,cache)['snapshot'],snapshot)
@@ -43,14 +96,124 @@ class PodLifecycle(unittest.TestCase):
             self.assertEqual(worker.read_pod(pod,cache)['snapshot'],snapshot)
             read.assert_not_called()
     def test_nonfinal_endpoint_loss_still_refuses(self):
-        cache={};pod={'metadata':{'uid':'old'},'status':{'podIP':'10.0.0.1'}}
+        cache={};pod={'metadata':{'uid':'old'},'status':{'containerStatuses':[{'containerID':'container'}],'podIP':'10.0.0.1'}}
         with patch.object(worker,'get',return_value={'final':False}):worker.read_pod(pod,cache)
         self.assertEqual(cache,{})
         with patch.object(worker,'get',side_effect=OSError('gone')):
             with self.assertRaises(OSError):worker.read_pod(pod,cache)
     def test_cached_final_does_not_cross_pod_uids(self):
-        cache={'old':{'final':True}};pod={'metadata':{'uid':'new'},'status':{'podIP':'10.0.0.1'}}
+        cache={'old':{'final':True}};pod={'metadata':{'uid':'new'},'status':{'containerStatuses':[{'containerID':'container'}],'podIP':'10.0.0.1'}}
         with patch.object(worker,'get',side_effect=OSError('unready')):
             with self.assertRaises(OSError):worker.read_pod(pod,cache)
 
 if __name__=='__main__':unittest.main()
+
+class FinishBoundary(unittest.TestCase):
+    def test_same_pod_new_container_reads_new_process(self):
+        p={'metadata':{'uid':'pod'},'status':{'podIP':'ip','containerStatuses':[{'name':'client','containerID':'old'}]}}
+        cache={}
+        with patch.object(worker,'get',return_value={'final':True,'sample':{'processId':'old'}}):worker.read_pod(p,cache)
+        p['status']['containerStatuses'][0]['containerID']='new'
+        with patch.object(worker,'get',return_value={'final':False,'sample':{'processId':'new'}}) as read:
+            self.assertEqual(worker.read_pod(p,cache)['snapshot']['sample']['processId'],'new');read.assert_called_once()
+    def run_boundary(self,kind):
+        import tempfile,json,copy
+        from pathlib import Path
+        from test_capture_window import frame
+        from test_finish_clients import ROSTER
+        clock=[0];seen=[]
+        def capture(*args):
+            t=clock[0];f=frame(t,t);f['expectedReplicas']=2;f['pods']=[]
+            for i,row in enumerate(ROSTER):
+                n=min(t,2+i)
+                pod=copy.deepcopy(frame(t,n)['pods'][0]);pod.update(uid=row['uid'],name=row['name'],containerId=row['containerId']);s=pod['snapshot'];s['sample']['processId']=row['processId']
+                for e in s['events']:e['processId']=row['processId']
+                s['final']=t>=(7 if kind=='late' else 2+i) and kind not in ('missing','failure');s['connected']=0 if s['final'] else 4
+                if kind=='new' and t>=2:pod['containerId']='replacement';s['sample']['processId']='replacement'
+                if kind=='failure' and t>=2:s['sample']['Failure']=1;s['sample']['Success']-=1;s['events'][-1]['outcome']='failure'
+                f['pods'].append(pod)
+            if t==1:
+                request={'requestId':'one','roster':ROSTER}
+                if kind=='malformed':request={'requestId':'one'}
+                if kind in ('uid-mismatch','pid-mismatch'):
+                    request['roster']=[dict(r) for r in ROSTER];request['roster'][0]['uid' if kind=='uid-mismatch' else 'processId']='changed'
+                from finish_clients import atomic_json
+                atomic_json(boundary/'request.json',request)
+            if t==2 and kind not in ('malformed','uid-mismatch','pid-mismatch','no-receipt'):
+                from finish_clients import atomic_json
+                receipt={'requestId':'one','status':'INCONCLUSIVE' if kind=='uncertain' else 'ACKNOWLEDGED','clients':{r['uid']+'/'+r['processId']:{'status':'acknowledged'} for r in ROSTER}}
+                if kind=='receipt-no-clients':receipt.pop('clients')
+                if kind=='receipt-missing-client':receipt['clients'].pop('uid-0/process-0')
+                if kind=='receipt-unknown':receipt['clients']['uid-0/process-0']['status']='unknown'
+                if kind=='receipt-mismatched-client':receipt['clients']['wrong/process']=receipt['clients'].pop('uid-0/process-0')
+                atomic_json(boundary/'receipt.json',receipt)
+            if t>=2:self.assertTrue((boundary/'ack.json').exists() or kind in ('malformed','uid-mismatch','pid-mismatch'))
+            if kind=='slow-final' and t==3:clock[0]=7
+            seen.append(f);return f
+        with tempfile.TemporaryDirectory() as d:
+            boundary=Path(d)/'boundary';boundary.mkdir(mode=0o700)
+            import finish_clients
+            original_read=finish_clients.read_json
+            def read(path):
+                value=original_read(path)
+                if kind=='receipt-late-read' and path.name=='receipt.json':clock[0]=7
+                return value
+            with patch.object(finish_clients,'read_json',side_effect=read),patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]),patch.object(worker.time,'sleep',side_effect=lambda _:clock.__setitem__(0,clock[0]+1)):
+                result=worker.run_capture(Path(d)/'out',Path(d)/'inventory',8,boundary)
+            if kind in ('uid-mismatch','pid-mismatch','malformed'):self.assertFalse((boundary/'ack.json').exists())
+            retained=[json.loads(line) for p in sorted((Path(d)/'out').glob('segment-*.jsonl')) for line in p.read_text().splitlines()]
+            return result,retained
+    def test_boundary_ack_and_one_final_does_not_close(self):
+        result,rows=self.run_boundary('good');self.assertEqual(result['status'],'PASS');self.assertEqual(rows[-1]['at'],3);self.assertEqual(rows[1]['phase'],'settling');self.assertFalse(rows[2]['pods'][1]['snapshot']['final'])
+    def test_missing_malformed_and_new_process_cannot_pass(self):
+        for kind in ('missing','malformed','new','late','uid-mismatch','pid-mismatch','no-receipt','uncertain','slow-final'):
+            with self.subTest(kind=kind):self.assertEqual(self.run_boundary(kind)[0]['status'],'INCONCLUSIVE')
+    def test_observed_failure_wins_over_missing_final(self):
+        self.assertEqual(self.run_boundary('failure')[0]['status'],'FAIL')
+
+    def test_exact_receipt_required_before_deadline(self):
+        for kind in ('receipt-no-clients','receipt-missing-client','receipt-unknown','receipt-mismatched-client','receipt-late-read'):
+            with self.subTest(kind=kind):self.assertEqual(self.run_boundary(kind)[0]['status'],'INCONCLUSIVE')
+
+class PartialFrameRetention(unittest.TestCase):
+    def check_partial(self, kind, sql_failure):
+        import json, tempfile
+        from pathlib import Path
+        from test_capture_window import frame
+        from segmented_capture import SegmentedCapture
+        with tempfile.TemporaryDirectory() as directory:
+            inventory=Path(directory)/'inventory.json'
+            inventory.write_text('{invalid' if kind=='inventory' else json.dumps(frame(0,0)['inventory']))
+            writer=SegmentedCapture(Path(directory)/'capture')
+            writer.append(frame(0,0))
+            for t in (1,2):
+                fixture=frame(t,t,final=t==2)
+                snapshot=fixture['pods'][0]['snapshot']
+                if sql_failure:
+                    snapshot['sample']['Failure']=1;snapshot['sample']['Success']-=1
+                    snapshot['events'][1]['outcome']='failure'
+                pods=[{'metadata':{'uid':uid},'status':{'podIP':uid,'phase':'Running','containerStatuses':[{'containerID':'container'}]}} for uid in ('pod','peer')]
+                def kube(*args):
+                    if args[1]=='pods':return {'items':pods if kind=='peer' else pods[:1]}
+                    if args[1]=='deployment':
+                        if kind=='deployment':raise RuntimeError('unavailable')
+                        return {'spec':{'replicas':1}}
+                    return {'spec':{'clusterIP':'metrics'}}
+                def get(url):
+                    if 'peer' in url:raise OSError('peer lost')
+                    return snapshot
+                with patch.object(worker,'utc',return_value=t),patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'get',side_effect=get),patch.object(worker,'query_metrics',return_value=fixture['metrics']):
+                    observed=worker.capture_frame(inventory)
+                self.assertEqual(observed['pods'][0]['snapshot'],snapshot)
+                if t==2:observed['phase']='settling'
+                writer.append(observed)
+            result=writer.finish(completed=True,cancelled=False,errors=[])
+            self.assertEqual(result['status'],'FAIL' if sql_failure else 'INCONCLUSIVE')
+            retained=[json.loads(line) for p in (Path(directory)/'capture').glob('segment-*.jsonl') for line in p.read_text().splitlines()]
+            self.assertEqual(retained[-1]['pods'][0]['snapshot']['sample']['Failure'],int(sql_failure))
+    def test_sql_failure_survives_peer_loss(self):self.check_partial('peer',True)
+    def test_sql_failure_survives_deployment_error(self):self.check_partial('deployment',True)
+    def test_sql_failure_survives_inventory_error(self):self.check_partial('inventory',True)
+    def test_partial_coverage_cannot_pass(self):
+        for kind in ('peer','deployment','inventory'):
+            with self.subTest(kind=kind):self.check_partial(kind,False)

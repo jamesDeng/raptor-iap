@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -253,5 +254,116 @@ func TestIdleInitialDialFailureRecovers(t *testing.T) {
 	}
 	if idle.calls != 0 || !idle.closed {
 		t.Fatal("idle connection must stay idle and close")
+	}
+}
+
+func TestClosedTicksDrainScheduledQueueWithoutSkipped(t *testing.T) {
+	ticks := make(chan time.Time)
+	s := &session{outcome: Success, gate: make(chan struct{}), started: make(chan struct{})}
+	var events []Event
+	scheduled := make(chan struct{}, 2)
+	done := make(chan error, 1)
+	r := Runner{Config: Config{Sessions: 1, Timeout: time.Second, ProcessID: "p"}, Ticks: ticks, Dial: func(context.Context) (Session, error) { return s, nil }, Emit: func(e Event) {
+		events = append(events, e)
+		if e.Kind == "scheduled" {
+			scheduled <- struct{}{}
+		}
+	}}
+	go func() { done <- r.Run(context.Background()) }()
+	ticks <- time.Now()
+	<-s.started
+	ticks <- time.Now()
+	<-scheduled
+	<-scheduled
+	close(ticks)
+	close(s.gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, e := range events {
+		counts[e.Kind]++
+	}
+	if counts["scheduled"] != 2 || counts["operation"] != 2 || counts["skipped"] != 0 || counts["connected"]-counts["disconnected"] != 0 || !s.closed {
+		t.Fatal(counts)
+	}
+}
+
+// A tick may already be inside an idle reconnect when finish is accepted.
+// It must not schedule another operation into the full worker queue afterward.
+func TestFinishDuringTickWithFullQueue(t *testing.T) {
+	ticks := make(chan time.Time)
+	active := &session{outcome: Success, gate: make(chan struct{}), started: make(chan struct{})}
+	reconnect := make(chan struct{})
+	release := make(chan struct{})
+	scheduled := make(chan struct{}, 3)
+	done := make(chan error, 1)
+	var events []Event
+	var finishing atomic.Bool
+	refused := make(chan struct{})
+	skipped := make(chan struct{}, 1)
+	calls := 0
+	r := Runner{Config: Config{Sessions: 2, Idle: 1, Timeout: time.Second, ProcessID: "p"}, Ticks: ticks,
+		Admit: func(schedule func()) bool {
+			if finishing.Load() {
+				close(refused)
+				return false
+			}
+			schedule()
+			return true
+		},
+		Dial: func(context.Context) (Session, error) {
+			calls++
+			if calls == 1 {
+				return active, nil
+			}
+			if calls == 5 {
+				close(reconnect)
+				<-release
+			}
+			return nil, errors.New("idle unavailable")
+		},
+		Emit: func(e Event) {
+			events = append(events, e)
+			if e.Kind == "skipped" {
+				skipped <- struct{}{}
+			}
+			if e.Kind == "scheduled" {
+				scheduled <- struct{}{}
+			}
+		},
+	}
+	go func() { done <- r.Run(context.Background()) }()
+	ticks <- time.Now()
+	<-scheduled
+	<-active.started
+	ticks <- time.Now()
+	<-scheduled
+	ticks <- time.Now()
+	<-reconnect
+	finishing.Store(true)
+	close(release)
+	select {
+	case <-refused:
+	case <-skipped:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not reach admission")
+	}
+	close(ticks)
+	close(active.gate)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("finish did not stop admitted tick")
+	}
+	counts := map[string]int{}
+	for _, e := range events {
+		counts[e.Kind]++
+	}
+	if counts["scheduled"] != 2 || counts["operation"] != 2 || counts["skipped"] != 0 || counts["connected"] != counts["disconnected"] {
+		t.Fatal(counts)
 	}
 }
