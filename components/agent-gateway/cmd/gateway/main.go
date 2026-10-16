@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/httpapi"
@@ -17,8 +18,17 @@ import (
 
 func main() {
 	migrate := flag.Bool("migrate", false, "Run schema-owner migrations")
+	idleCheck := flag.Bool("idle-check", false, "Check for queued or unsettled work")
 	flag.Parse()
+	if *idleCheck && *migrate {
+		log.Fatal("incompatible modes")
+	}
 	ctx := context.Background()
+	if *idleCheck {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+	}
 	databaseURL := os.Getenv("GATEWAY_DATABASE_URL")
 	if *migrate {
 		databaseURL = os.Getenv("MIGRATION_DATABASE_URL")
@@ -31,6 +41,13 @@ func main() {
 		log.Fatal("database unavailable")
 	}
 	defer p.Close()
+	if *idleCheck {
+		if (&execution.Store{Pool: p}).CheckIdle(ctx) != nil {
+			log.Fatal("gateway idle check failed")
+		}
+		fmt.Println("idle=true")
+		return
+	}
 	if *migrate {
 		if db.Migrate(ctx, p) != nil {
 			log.Fatal("migration failed")
