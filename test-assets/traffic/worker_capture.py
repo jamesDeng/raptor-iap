@@ -60,11 +60,25 @@ def read_pod(p,final_snapshots):
 def capture_frame(inventory_path,final_snapshots=None):
     if final_snapshots is None:final_snapshots={}
     stamp=utc();pods=kubectl('get','pods','-l','app.kubernetes.io/name=rdev-test-client-client','-o','json')['items']
-    def one(p):return read_pod(p,final_snapshots)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:rows=list(pool.map(one,[p for p in pods if p['status'].get('podIP') and p['status'].get('phase') in ('Running','Pending')]))
-    deployment=kubectl('get','deployment','rdev-test-client-client','-o','json')
-    expected=deployment['spec']['replicas']
-    inventory=json.loads(Path(inventory_path).read_text())
+    unavailable=(ValueError,KeyError,TypeError,IndexError,OverflowError,OSError,RuntimeError,subprocess.TimeoutExpired)
+    def one(p):
+        try:return read_pod(p,final_snapshots)
+        except unavailable:return None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        observations=list(pool.map(one,[p for p in pods if p['status'].get('podIP') and p['status'].get('phase') in ('Running','Pending')]))
+    rows=[row for row in observations if row is not None]
+    # Zero is an invalid roster expectation in the retained evidence contract.
+    # Keep successful observations while ensuring incomplete reads cannot PASS.
+    expected=0
+    try:
+        deployment=kubectl('get','deployment','rdev-test-client-client','-o','json')
+        if all(row is not None for row in observations):expected=deployment['spec']['replicas']
+    except unavailable:pass
+    inventory={'observedAt':stamp,'desired':0,'members':[],'healthyRegistered':[]}
+    try:
+        source=json.loads(Path(inventory_path).read_text())
+        inventory={k:source[k] for k in inventory}
+    except unavailable:pass
     metrics={'observedAt':utc(),'sourceAt':stamp,'nodes':[],'available':False,'raw':[]}
     try:
         svc=kubectl('get','service','rdev-test-metrics-metrics','-o','json');base='http://'+svc['spec']['clusterIP']+':9090'

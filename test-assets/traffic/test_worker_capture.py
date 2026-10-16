@@ -174,3 +174,46 @@ class FinishBoundary(unittest.TestCase):
     def test_exact_receipt_required_before_deadline(self):
         for kind in ('receipt-no-clients','receipt-missing-client','receipt-unknown','receipt-mismatched-client','receipt-late-read'):
             with self.subTest(kind=kind):self.assertEqual(self.run_boundary(kind)[0]['status'],'INCONCLUSIVE')
+
+class PartialFrameRetention(unittest.TestCase):
+    def check_partial(self, kind, sql_failure):
+        import json, tempfile
+        from pathlib import Path
+        from test_capture_window import frame
+        from segmented_capture import SegmentedCapture
+        with tempfile.TemporaryDirectory() as directory:
+            inventory=Path(directory)/'inventory.json'
+            inventory.write_text('{invalid' if kind=='inventory' else json.dumps(frame(0,0)['inventory']))
+            writer=SegmentedCapture(Path(directory)/'capture')
+            writer.append(frame(0,0))
+            for t in (1,2):
+                fixture=frame(t,t,final=t==2)
+                snapshot=fixture['pods'][0]['snapshot']
+                if sql_failure:
+                    snapshot['sample']['Failure']=1;snapshot['sample']['Success']-=1
+                    snapshot['events'][1]['outcome']='failure'
+                pods=[{'metadata':{'uid':uid},'status':{'podIP':uid,'phase':'Running','containerStatuses':[{'containerID':'container'}]}} for uid in ('pod','peer')]
+                def kube(*args):
+                    if args[1]=='pods':return {'items':pods if kind=='peer' else pods[:1]}
+                    if args[1]=='deployment':
+                        if kind=='deployment':raise RuntimeError('unavailable')
+                        return {'spec':{'replicas':1}}
+                    return {'spec':{'clusterIP':'metrics'}}
+                def get(url):
+                    if 'peer' in url:raise OSError('peer lost')
+                    return snapshot
+                with patch.object(worker,'utc',return_value=t),patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'get',side_effect=get),patch.object(worker,'query_metrics',return_value=fixture['metrics']):
+                    observed=worker.capture_frame(inventory)
+                self.assertEqual(observed['pods'][0]['snapshot'],snapshot)
+                if t==2:observed['phase']='settling'
+                writer.append(observed)
+            result=writer.finish(completed=True,cancelled=False,errors=[])
+            self.assertEqual(result['status'],'FAIL' if sql_failure else 'INCONCLUSIVE')
+            retained=[json.loads(line) for p in (Path(directory)/'capture').glob('segment-*.jsonl') for line in p.read_text().splitlines()]
+            self.assertEqual(retained[-1]['pods'][0]['snapshot']['sample']['Failure'],int(sql_failure))
+    def test_sql_failure_survives_peer_loss(self):self.check_partial('peer',True)
+    def test_sql_failure_survives_deployment_error(self):self.check_partial('deployment',True)
+    def test_sql_failure_survives_inventory_error(self):self.check_partial('inventory',True)
+    def test_partial_coverage_cannot_pass(self):
+        for kind in ('peer','deployment','inventory'):
+            with self.subTest(kind=kind):self.check_partial(kind,False)
