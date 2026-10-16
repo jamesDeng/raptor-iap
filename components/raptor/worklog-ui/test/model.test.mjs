@@ -22,3 +22,16 @@ test('elapsed time uses recorded timestamps only',async()=>{
  assert.equal(projectWorklog({},[{sequence:1,occurredAt:'2026-10-09T00:00:00Z'},{sequence:2,occurredAt:'2026-10-09T00:00:31Z'}]).durationSeconds,31);
  assert.equal(projectWorklog({},[{sequence:1},{sequence:2,occurredAt:'bad'}]).durationSeconds,null);
 });
+test('observations during an unambiguous tool call stay inside its collapsed activity',async()=>{
+ const {projectTranscript}=await load();
+ const base={requestId:'one',attemptId:'a',evidenceMode:'live'};
+ const model=projectTranscript({request:{id:'one'},execution:{status:'running'}},[
+  {...base,sequence:1,kind:'tool_start',details:{tool:'db_connection_probe'}},
+  {...base,sequence:2,kind:'progress',summary:'Observation db_connection_probe args-valid'},
+  {...base,sequence:3,kind:'tool_result',details:{tool:'db_connection_probe',status:'succeeded'}},
+ ]);
+ const part=model.messages[0].content[0];
+ assert.equal(part.type,'tool-call');
+ assert.deepEqual(model.records[part.toolCallId].events.map(e=>e.sequence),[1,2,3]);
+ assert.equal(model.messages[0].content.length,1);
+});

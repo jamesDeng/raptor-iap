@@ -4,14 +4,14 @@ import * as model from '../src/model.mjs';
 const snapshot={request:{id:'one'},execution:{status:'running'}};
 const event=(sequence,kind,summary,details={},attemptId='a')=>({requestId:'one',attemptId,sequence,kind,summary,details,evidenceMode:'live'});
 // Catches start/result shown twice, wrong tool pairing, retry cross-pairing and invented success.
-test('transcript pairs sequential tool calls without moving intervening narration',()=>{
+test('transcript pairs sequential tool calls and nests their progress observations',()=>{
  assert.equal(typeof model.projectTranscript,'function');
  const result=model.projectTranscript(snapshot,[event(1,'progress','Inspect deployment'),event(2,'tool_start','start',{tool:'status_get',status:'started'}),event(3,'progress','Waiting on infra'),event(4,'tool_result','failed',{tool:'status_get',status:'failed'}),event(5,'tool_start','retry',{tool:'status_get',status:'started'})]);
  const content=result.messages[0].content;
- assert.deepEqual(content.map(p=>p.type),['text','data','tool-call','text','data','tool-call']);
+ assert.deepEqual(content.map(p=>p.type),['text','data','tool-call','tool-call']);
  assert.equal(content[2].isError,true);assert.equal(content[2].result.status,'failed');
- assert.equal(content[5].result,undefined);assert.notEqual(content[2].toolCallId,content[5].toolCallId);
- assert.match(content[3].text,/Waiting on infra/);
+ assert.equal(content[3].result,undefined);assert.notEqual(content[2].toolCallId,content[3].toolCallId);
+ assert.equal(result.records[content[2].toolCallId].events[1].summary,'Waiting on infra');
  const updated=model.projectTranscript(snapshot,[event(2,'tool_start','start',{tool:'status_get'}),event(4,'tool_result','done',{tool:'status_get',status:'succeeded'})]);
  assert.equal(updated.messages[0].content[0].toolCallId,content[2].toolCallId);
 });
