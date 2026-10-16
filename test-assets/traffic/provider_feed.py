@@ -210,7 +210,7 @@ class Operator:
             raise ValueError('Provider read failed') from None
 
     def fetch_group(self):
-        body = self.aliyun('ess', 'DescribeScalingGroups', ScalingGroupIds=json.dumps([GROUP_ID]), PageNumber=1, PageSize=1)
+        body = self.aliyun('ess', 'DescribeScalingGroups', **{'ScalingGroupId.1':GROUP_ID, 'PageNumber':1, 'PageSize':1})
         require(body.get('PageNumber') == 1 and body.get('TotalCount') == 1)
         rows = body['ScalingGroups']['ScalingGroup']
         require(len(rows) == 1)
@@ -307,7 +307,7 @@ args=['kubectl','--kubeconfig',path,'-n','raptor-test']
 def run(extra):
  remaining=_remote_deadline-time.monotonic()
  if remaining<=0: raise ValueError('Remote deadline exceeded')
- return subprocess.run(args+extra,check=True,capture_output=True,text=True,timeout=min(8,remaining)).stdout
+ return subprocess.run(args+extra,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=min(8,remaining)).stdout
 body=json.loads(run(['get','configmap','pgcat-provider-inventory','-o','json']))
 assert body['metadata']['name']=='pgcat-provider-inventory' and body['metadata']['namespace']=='raptor-test'
 assert 'targets.json' in body['data']

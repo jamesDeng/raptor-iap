@@ -1,7 +1,7 @@
 """Run on the verified ACK worker. Read-only; no cloud credentials or mutations."""
-from __future__ import annotations
 import argparse, concurrent.futures, datetime, json, math, os, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
+from typing import Optional
 from segmented_capture import SegmentedCapture
 from capture_window import seconds as evidence_seconds
 
@@ -85,7 +85,7 @@ def capture_frame(inventory_path,final_snapshots=None):
         metrics=query_metrics(base,stamp)
     except (ValueError,KeyError,TypeError,IndexError,OverflowError,OSError,RuntimeError):pass
     return {'at':stamp,'expectedReplicas':expected,'pods':rows,'inventory':inventory,'metrics':metrics}
-def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Path | None = None) -> dict:
+def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Optional[Path] = None) -> dict:
     from finish_clients import private_directory, read_json, atomic_json, validate_roster
     if not 5<=seconds<=5400:raise ValueError('bounded capture duration required')
     if boundary_dir is not None:

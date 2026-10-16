@@ -22,7 +22,9 @@ def atomic_json(path, value):
         directory=os.open(str(path.parent),os.O_RDONLY)
         try:os.fsync(directory)
         finally:os.close(directory)
-    finally:temporary.unlink(missing_ok=True)
+    finally:
+        try:temporary.unlink()
+        except FileNotFoundError:pass
 
 
 def private_directory(path):
