@@ -3,7 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from capture_window import CaptureWindow, assess, seconds, clean
+from capture_window import CaptureWindow, assess, seconds, clean, COUNTERS
 
 
 def digest(path):
@@ -101,11 +101,21 @@ def assess_manifest(directory: Path):
                             finals[key]=snap.get('final',False)
                             # Independent numeric deltas remain observable even if
                             # the full assessor stops at malformed earlier evidence.
-                            counts=tuple(sample[k] for k in ('Failure','Timeout','Ambiguous'))
-                            if all(type(v) is int and v>=0 for v in counts):
+                            fields=COUNTERS+('sequence',)
+                            valid=all(type(sample[k]) is int and sample[k]>=0 for k in fields)
+                            if valid:
+                                valid=(sample['Attempts']==sum(sample[k] for k in ('Success','Failure','Timeout','Ambiguous')) and sample['Scheduled']>=sample['Attempts']+sample['Skipped'])
+                            if valid:
+                                counts=tuple(sample[k] for k in fields)
                                 old=failure_counters.get(key)
-                                if old is not None and any(v>before for v,before in zip(counts,old)):observed_failure=True
-                                failure_counters[key]=counts
+                                # A reset or corrupt lower observation must never
+                                # replace the last trustworthy cumulative baseline.
+                                if old is not None and any(v<before for v,before in zip(counts,old)):
+                                    issue('counter reset')
+                                else:
+                                    if old is not None and any(sample[k]>old[fields.index(k)] for k in ('Failure','Timeout','Ambiguous')):observed_failure=True
+                                    failure_counters[key]=counts
+                            else:issue('malformed retained evidence')
                         yield f
                 if not count or count!=s['frames'] or actual_first!=s['firstAt'] or actual_last!=s['lastAt']:issue('segment boundaries mismatch')
             except invalid:

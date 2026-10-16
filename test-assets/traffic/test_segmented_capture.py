@@ -78,6 +78,24 @@ class SegmentedTests(unittest.TestCase):
             self.assertEqual(result['status'],'FAIL')
             self.assertIn('malformed retained evidence',result['reasons'])
 
+    def test_corrupt_lower_counter_cannot_invent_failure(self):
+        from segmented_capture import digest
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'capture';w=SegmentedCapture(p,max_segment_seconds=2)
+            for t in range(4):
+                f=frame(t,t,t==3);sample=f['pods'][0]['snapshot']['sample']
+                sample['Failure']=5;sample['Scheduled']+=5;sample['Attempts']+=5
+                if t==3:f['phase']='settling'
+                w.append(f)
+            self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'PASS')
+            first=p/'segment-0001.jsonl';rows=[json.loads(line) for line in first.read_text().splitlines()]
+            rows[1]['pods'][0]['snapshot']['sample'].update(Success='invalid',Failure=0)
+            first.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            m=json.loads((p/'completion.json').read_text());m['segments'][0]['sha256']=digest(first);(p/'completion.json').write_text(json.dumps(m))
+            result=assess_manifest(p)
+            self.assertEqual(result['status'],'INCONCLUSIVE')
+            self.assertIn('malformed retained evidence',result['reasons'])
+
     def test_large_capture_streams_without_whole_file_reads(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'capture';w=SegmentedCapture(p)
