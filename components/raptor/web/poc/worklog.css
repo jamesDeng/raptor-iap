@@ -18,6 +18,7 @@
 .assistant-progress details[open]>summary:after{content:'⌃'}
 .assistant-progress summary:focus-visible{outline:2px solid var(--accent,#3159d9);outline-offset:4px}
 .assistant-progress .progress-activity-content{margin:4px 0 0 19px;padding-left:12px;border-left:1px solid var(--progress-border)}
+.assistant-progress .progress-activity:not([open])>.progress-activity-content,.assistant-progress .progress-activity-content[hidden]{display:none!important}
 .assistant-progress .progress-tool{margin:3px 0}
 .assistant-progress .progress-tool summary{font-size:13px}
 .assistant-progress .progress-tag{font-size:11px;margin-left:auto;color:var(--progress-muted);white-space:nowrap}
