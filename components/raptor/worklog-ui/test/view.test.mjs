@@ -17,11 +17,12 @@ test('readonly transcript interleaves narration and tool groups, retaining expan
   assert.equal(host.querySelector('input,textarea,form,[contenteditable="true"]'),null);
   assert.match(host.querySelector('.progress-narration')?.textContent??'',/Inspect request/);
   assert.equal(host.querySelector('script,img'),null);
-  const group=host.querySelector('details.progress-activity');assert.ok(group);assert.equal(group.open,false);assert.match(group.querySelector('summary').textContent,/展开/);group.querySelector('summary').click();
+  const group=host.querySelector('details.progress-activity');assert.ok(group);assert.equal(group.open,false);assert.match(group.querySelector('summary').textContent,/展开/);assert.equal(group.querySelector('.progress-activity-content').hidden,true);group.querySelector('summary').click();
   const tool=host.querySelector('details.progress-tool');assert.ok(tool);tool.querySelector('summary').click();await wait();
   assert.match(tool.textContent,/Running/);assert.match(tool.textContent,/live/);
   ui.updateWorklog(host,{snapshot,events:[...events,{...base,sequence:3,kind:'tool_result',summary:'tool_result: failed',details:{tool:'deployment_status_get',status:'failed',result:'<img src=x onerror=alert(1)>'}},{...base,sequence:4,kind:'approval_wait',summary:'Waiting for permission approval'}]});await wait();
-  assert.equal(host.querySelector('details.progress-activity').open,true);assert.match(host.querySelector('details.progress-activity summary').textContent,/收起/);assert.equal(host.querySelector('details.progress-tool').open,true);
+  assert.equal(host.querySelector('details.progress-activity').open,true);assert.match(host.querySelector('details.progress-activity summary').textContent,/收起/);assert.equal(host.querySelector('.progress-activity-content').hidden,false);assert.equal(host.querySelector('details.progress-tool').open,true);
+  host.querySelector('details.progress-activity>summary').click();await wait();assert.equal(host.querySelector('details.progress-activity').open,false);assert.match(host.querySelector('details.progress-activity summary').textContent,/展开/);assert.equal(host.querySelector('.progress-activity-content').hidden,true);
   assert.match(host.querySelector('.progress-tool').textContent,/Failed/);assert.ok(!host.querySelector('.progress-tool summary').textContent.includes('✓'));
   assert.match(host.textContent,/Waiting for permission approval/);assert.equal(host.querySelector('script,img'),null);
   ui.updateWorklog(host,{snapshot:{...snapshot,executionAvailable:false},unavailable:true});await wait();assert.match(host.textContent,/saved history/);
