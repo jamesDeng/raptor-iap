@@ -219,3 +219,5 @@ h2{font-size:22px}
 .progress-connection-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
 .progress-connection[data-state="connected"] .progress-connection-badge{background:#edf8f2;color:#246744}
 .progress-connection[data-state="connecting"] .progress-connection-badge,.progress-connection[data-state="authenticating"] .progress-connection-badge,.progress-connection[data-state="reconnecting"] .progress-connection-badge{background:#fff8eb;color:#805816}
+
+#session-loading{min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted)}

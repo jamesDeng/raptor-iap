@@ -35,7 +35,7 @@ export function setSessionView(document,signedIn){
  document.getElementById(signedIn?'workspace-feedback':'login-feedback').append(document.getElementById('message'));
 }
 let csrf='';
-export async function api(path,{method='GET',body,headers={}}={}){const epoch=pageEpoch;try{const response=await fetch('/api/v1'+path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...headers},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});const result=await response.json();if(!response.ok)throw new Error(result.error?.code??'Unavailable');return result.data;}catch(error){error.pageEpoch=epoch;throw error;}}
+export async function api(path,{method='GET',body,headers={}}={}){const epoch=pageEpoch;try{const response=await fetch('/api/v1'+path,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...headers},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});const result=await response.json();if(!response.ok){const error=new Error(result.error?.code??'Unavailable');error.status=response.status;throw error;}return result.data;}catch(error){error.pageEpoch=epoch;throw error;}}
 function node(tag,text){const el=document.createElement(tag);if(text!==undefined)el.textContent=String(text);return el;}
 function button(text,fn){const el=node('button',text);el.type='button';el.addEventListener('click',()=>Promise.resolve(fn()).catch(showError));return el;}
 export function showError(error){if(error.pageEpoch!==undefined&&error.pageEpoch!==pageEpoch)return;document.getElementById('message').textContent=error.message??'Unavailable';}
@@ -115,7 +115,7 @@ async function start(){
  const pullRequests=createPullRequestController({read:id=>api(`/requests/${encodeURIComponent(id)}/pull-request-actions`),onChange:(id,view)=>{if(id===requestId)renderPullRequests($('pull-request-list'),view);}});
  const conversationSend=async(id,input)=>{if(id!==requestId||!csrf)throw Error('ConversationClosed');const receipt=await api(`/requests/${encodeURIComponent(id)}/messages`,{method:'POST',body:input});if(id===requestId){void progress.renew(id);void refreshRequest(id).catch(showError)}return receipt};
  const progress=createDirectProgressController({read:(id,cursor)=>api(`/requests/${encodeURIComponent(id)}/events?after=${cursor}`),ticket:id=>api(`/requests/${encodeURIComponent(id)}/progress-ticket`,{method:'POST',body:{}}),onChange:state=>{updateWorklog($('t3-worklog'),{unavailable:state.unavailable});renderProgress(state.events);const connection=progressConnectionStatus(state);$('progress-connection').dataset.state=connection.status;if($('progress-connection-label').textContent!==connection.label)$('progress-connection-label').textContent=connection.label;if($('progress-availability').textContent!==connection.detail)$('progress-availability').textContent=connection.detail;if(state.execution&&requestView){requestView={...requestView,execution:state.execution,executionAvailable:true};renderExecutionResult(requestView);updateWorklog($('t3-worklog'),{conversation:{...requestView.conversation,onSend:conversationSend}});$('request-state').textContent=`${state.execution.status} · ${state.execution.runtimeMode??'unverified'} execution`;renderRequestTabs();}if(state.mode==='complete')refreshRequest(state.requestId).catch(showError);else if(state.mode==='polling')refreshRequest(state.requestId).catch(showError);}});
- function panel(name){setPageContext(document,name,catalogKind,currentTab);resetWorklog($('t3-worklog'),name==='login-panel');setSessionView(document,name!=='login-panel');updateNavigation(name,currentTab,catalogKind);for(const id of ['catalog-panel','object-detail','requests-panel','request-panel','new-request-panel','login-panel'])$(id).hidden=id!==name;}
+ function panel(name){setPageContext(document,name,catalogKind,currentTab);$('session-loading').hidden=true;resetWorklog($('t3-worklog'),name==='login-panel');setSessionView(document,name!=='login-panel');updateNavigation(name,currentTab,catalogKind);for(const id of ['catalog-panel','object-detail','requests-panel','request-panel','new-request-panel','login-panel'])$(id).hidden=id!==name;}
  function skillOptions(select){select.replaceChildren();for(const v of releases){const option=node('option',v.tag);option.value=v.tag;select.append(option);}}
  function pickedSkills(select){return releases.find(v=>v.tag===select.value)??{tag:'',commitSha:''};}
  function fillEnvironments(){const select=$('environment');select.replaceChildren();for(const [name,values]of groupEnvironments(envs)){const group=node('optgroup');group.label=name;for(const env of values){const option=node('option',`${env.code} · ${env.stage}`);option.value=env.code;group.append(option);}select.append(group);}}
@@ -225,6 +225,20 @@ async function start(){
  for(const b of document.querySelectorAll('[data-action]'))b.onclick=async()=>{try{await api(`/requests/${requestId}/actions`,{method:'POST',body:{action:b.dataset.action,instructions:$('instructions').value}});await refreshRequest(requestId);}catch(err){showError(err);}};
  $('skills-change').onsubmit=async e=>{e.preventDefault();try{await api(`/requests/${requestId}/skills`,{method:'POST',body:{...pickedSkills($('change-skills')),strategy:e.target.elements.strategy.value}});await refreshRequest(requestId);}catch(err){showError(err);}};
  window.addEventListener('pagehide',()=>progress.close());
- try{const session=await api('/session');csrf=session.csrf;$('identity').textContent=session.user.username;await refreshCatalog();try{await restoreRoute();}catch(error){showError(error);}}catch{panel('login-panel');}finally{$('login').querySelector('button[type="submit"]').disabled=false;}
+ async function enterSession(){
+  $('session-loading').hidden=false;$('session-status').textContent='Checking session…';$('session-retry').hidden=true;
+  try{
+   const session=await api('/session');csrf=session.csrf;$('identity').textContent=session.user.username;
+   await refreshCatalog();
+   // Reveal the authenticated workspace before restoring a route that can fail independently.
+   setSessionView(document,true);$('session-loading').hidden=true;
+   try{await restoreRoute();}catch(error){showError(error);}
+  }catch(error){
+   if(error.status===401){csrf='';panel('login-panel');}
+   else{$('session-status').textContent='Unable to load your workspace. Please retry.';$('session-retry').hidden=false;}
+  }finally{$('login').querySelector('button[type="submit"]').disabled=false;}
+ }
+ $('session-retry').onclick=()=>enterSession();
+ await enterSession();
 }
 if(typeof document!=='undefined')start().catch(showError);
