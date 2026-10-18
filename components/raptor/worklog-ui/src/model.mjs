@@ -61,7 +61,18 @@ export function projectTranscript(snapshot={}, events=[], localMessages=[]) {
    const toolEvent=part.type==='text'&&event&&
     (event.kind==='tool_result'||event.kind==='tool_start'||
      (event.kind==='progress'&&/^Observation\b/.test(event.summary??'')));
-   if(part.type==='tool-call'||toolEvent){
+   const next=message.content[i+2],nextEvent=message.content[i+3]?.type==='data'?message.content[i+3].data:null;
+   const followedByTool=next?.type==='tool-call'||(next?.type==='text'&&nextEvent&&
+    (nextEvent.kind==='tool_result'||nextEvent.kind==='tool_start'||
+     (nextEvent.kind==='progress'&&/^Observation\b/.test(nextEvent.summary??''))));
+   if(part.type==='text'&&event&&!toolEvent){
+    grouped.push(part);activity=null;
+    if(followedByTool){
+     activity={type:'data',name:'tool-activity',data:{items:[{type:'record',event}]}};
+     grouped.push(activity);
+    }else grouped.push(message.content[i+1]);
+    i++;
+   }else if(part.type==='tool-call'||toolEvent){
     if(!activity){activity={type:'data',name:'tool-activity',data:{items:[]}};grouped.push(activity);}
     activity.data.items.push(part.type==='tool-call'?{type:'call',part}:{type:'event',event});
     if(toolEvent)i++;
