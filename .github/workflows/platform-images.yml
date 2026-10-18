@@ -192,7 +192,7 @@ jobs:
         working-directory: components/agent-harness
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Harness and request page contracts
-        run: node --test components/agent-harness/*.test.mjs components/raptor/web/poc/*test.mjs tests/harness/go-platform-web.test.mjs
+        run: node --test components/agent-harness/*.test.mjs components/raptor/platform-frontend/poc/*test.mjs tests/harness/go-platform-web.test.mjs
       - name: Verify assistant-ui transcript and generated assets
         working-directory: components/raptor/worklog-ui
         run: |

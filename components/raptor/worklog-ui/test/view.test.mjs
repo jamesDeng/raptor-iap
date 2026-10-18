@@ -7,7 +7,7 @@ test('readonly transcript interleaves narration and tool groups, retaining expan
  const dom=new JSDOM('<div id="root"></div>',{url:'http://localhost/',pretendToBeVisual:true});
  Object.assign(globalThis,{window:dom.window,document:dom.window.document,HTMLElement:dom.window.HTMLElement,MutationObserver:dom.window.MutationObserver,requestAnimationFrame:dom.window.requestAnimationFrame.bind(dom.window),cancelAnimationFrame:dom.window.cancelAnimationFrame.bind(dom.window),ResizeObserver:class{observe(){} unobserve(){} disconnect(){}}});
  dom.window.HTMLElement.prototype.scrollTo=function(options){this.scrollTop=options.top??this.scrollTop;};
- const ui=await import('../../web/poc/worklog.js');
+ const ui=await import('../../platform-frontend/poc/worklog.js');
  const host=document.getElementById('root');
  const snapshot={request:{id:'one'},execution:{status:'running',checkpointStatus:'pending',cleanupStatus:'pending'}};
  const base={requestId:'one',attemptId:'a',evidenceMode:'live',occurredAt:'2026-10-09T00:00:00Z'};
@@ -32,7 +32,7 @@ test('readonly transcript interleaves narration and tool groups, retaining expan
 });
 test('production composer renders receipts and clears Request state on navigation',async()=>{
  const dom=new JSDOM('<div id="root"></div>',{url:'http://localhost/',pretendToBeVisual:true});Object.assign(globalThis,{window:dom.window,document:dom.window.document,Element:dom.window.Element,HTMLElement:dom.window.HTMLElement,MutationObserver:dom.window.MutationObserver,requestAnimationFrame:dom.window.requestAnimationFrame.bind(dom.window),cancelAnimationFrame:dom.window.cancelAnimationFrame.bind(dom.window),ResizeObserver:class{observe(){}unobserve(){}disconnect(){}}});dom.window.HTMLElement.prototype.scrollTo=function(){};
- const ui=await import('../../web/poc/worklog.js'),host=document.getElementById('root');let sends=0;
+ const ui=await import('../../platform-frontend/poc/worklog.js'),host=document.getElementById('root');let sends=0;
  try{const snapshot={request:{id:'r',definition:{operations:[{name:'application.question',parameters:{question:'Original question'}}]}},conversation:{canSend:true,messages:[{messageId:'m',text:'<img src=x> Follow up',status:'accepted'}]},execution:{status:'running'}};
  ui.updateWorklog(host,{snapshot,events:[],conversation:{canSend:true,onSend:async()=>{sends++;return {status:'accepted'}}}});await wait();assert.ok(host.querySelector('textarea[aria-label="Message to agent"]'));assert.match(host.textContent,/Original question/);assert.match(host.textContent,/awaiting delivery/);assert.equal(host.querySelector('img'),null);
  ui.updateWorklog(host,{events:[{requestId:'r',sequence:1,kind:'message',summary:'<img src=x> Follow up',details:{messageId:'m',role:'user',status:'answered'}},{requestId:'r',sequence:2,kind:'message',summary:'First final answer',details:{messageId:'t',role:'assistant',status:'answered'}}]});await wait();assert.match(host.textContent,/Answered/);assert.match(host.textContent,/First final answer/);assert.equal(host.querySelectorAll('.conversation-user').length,2);
