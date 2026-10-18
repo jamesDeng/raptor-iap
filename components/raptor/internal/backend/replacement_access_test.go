@@ -9,16 +9,27 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/modelproviders"
 )
+
+type replacementModelPolicy struct{}
+
+func (replacementModelPolicy) ValidateSelection(_ context.Context, provider modelproviders.ProviderID, model modelproviders.ModelID) (int64, error) {
+	if provider != "codex" || model != "gpt-6-luna" {
+		return 0, modelproviders.ErrInvalidModel
+	}
+	return 1, nil
+}
 
 func TestReplacementAccessRequiresAuthoritativeScope(t *testing.T) {
 	s, _, _ := accessFixture(t)
+	s.Requests.ModelPolicy = replacementModelPolicy{}
 	ctx := context.Background()
 	proxy, err := s.Catalog.CreateObject(ctx, catalog.CreateObjectInput{Kind: "db-proxy", Name: "Proxy"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := s.Requests.Create(ctx, domain.User{ID: domain.NewID()}, "replace", domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: proxy.Code}, EnvCode: "rdev.ali", Model: "gpt-5.6-luna", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{}}}})
+	request, err := s.Requests.Create(ctx, domain.User{ID: domain.NewID()}, "replace", domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: proxy.Code}, EnvCode: "rdev.ali", ProviderID: "codex", Model: "gpt-6-luna", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "replacement"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
