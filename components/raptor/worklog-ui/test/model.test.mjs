@@ -31,7 +31,21 @@ test('observations during an unambiguous tool call stay inside its collapsed act
   {...base,sequence:3,kind:'tool_result',details:{tool:'db_connection_probe',status:'succeeded'}},
  ]);
  const part=model.messages[0].content[0];
- assert.equal(part.type,'tool-call');
- assert.deepEqual(model.records[part.toolCallId].events.map(e=>e.sequence),[1,2,3]);
+ assert.equal(part.name,'tool-activity');
+ assert.deepEqual(model.records[part.data.items[0].part.toolCallId].events.map(e=>e.sequence),[1,2,3]);
  assert.equal(model.messages[0].content.length,1);
+});
+test('ambiguous adjacent tool events share one activity without invented pairing',async()=>{
+ const {projectTranscript}=await load();
+ const base={requestId:'one',attemptId:'a',evidenceMode:'live'};
+ const model=projectTranscript({request:{id:'one'},execution:{status:'completed'}},[
+  {...base,sequence:1,kind:'tool_start',details:{tool:'probe'}},
+  {...base,sequence:2,kind:'tool_start',details:{tool:'probe'}},
+  {...base,sequence:3,kind:'progress',summary:'Observation probe args-valid'},
+  {...base,sequence:4,kind:'tool_result',summary:'tool_result: succeeded',details:{tool:'probe',status:'succeeded'}},
+ ]);
+ const parts=model.messages[0].content;
+ assert.equal(parts.length,1);assert.equal(parts[0].name,'tool-activity');
+ assert.deepEqual(parts[0].data.items.map(item=>item.type),['call','call','event','event']);
+ assert.deepEqual(Object.values(model.records).map(record=>record.events.length),[1,1]);
 });

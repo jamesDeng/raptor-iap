@@ -1,13 +1,12 @@
 import {createContext,useContext,useState,useMemo,useRef,useEffect} from 'react';
 import {createRoot,type Root} from 'react-dom/client';
-import {AssistantRuntimeProvider,useExternalStoreRuntime,ThreadPrimitive,MessagePrimitive,groupPartByType,useAuiState} from '@assistant-ui/react';
+import {AssistantRuntimeProvider,useExternalStoreRuntime,ThreadPrimitive,MessagePrimitive,useAuiState} from '@assistant-ui/react';
 import {ConversationComposer} from './ConversationComposer';
 import {createMessageSender,getConversationState,clearConversationState} from './conversation.mjs';
 import {projectTranscript} from './model.mjs';
 type View={snapshot?:any;events?:any[];unavailable?:boolean;conversation?:any};
 const roots=new WeakMap<HTMLElement,{root:Root;view:View}>();
 const ModelContext=createContext<any>(null);
-const groupBy=groupPartByType({'tool-call':['group-tools']});
 const convertMessage=(message:any)=>message;
 const rejectSend=async()=>{throw new Error('ReadOnlyProgress')};
 const labels:any={sending:'Sending',send_failed:'Send failed — retry with the same ID',accepted:'Accepted · awaiting delivery',queued:'Queued',delivered:'Delivered to agent',answered:'Answered',interrupted:'Interrupted · outcome uncertain',rejected:'Rejected'};
@@ -20,9 +19,9 @@ function Tool({part}:{part:any}){
  const icon=status==='succeeded'?'✓':status==='failed'?'!':status==='cancelled'?'×':pending&&record?.active?'◌':'◇';
  return <details className="progress-tool"><summary><span aria-hidden="true">{icon}</span><span>{part.toolName}</span><span className="progress-tag">{label}</span></summary><div className="progress-tool-detail">{record?.events.map((event:any)=><div key={event.sequence}><p>{event.summary}</p><div className="progress-metadata">{event.evidenceMode??'unverified'} · {event.kind}{event.occurredAt&&<> · <time dateTime={event.occurredAt}>{event.occurredAt}</time></>}</div>{event.details&&<pre>{JSON.stringify(event.details,null,2)}</pre>}</div>)}</div></details>;
 }
-function ActivityGroup({part,children,model}:{part:any;children:any;model:any}){const [open,setOpen]=useState(false);return <details className="progress-activity" open={open} onToggle={(event)=>setOpen(event.currentTarget.open)}><summary><span aria-hidden="true">⚒</span>Tool activity · {part.indices.length}{part.status.type==='running'&&model.running&&<span className="progress-running">Running</span>}<span className="progress-tag">{open?'Collapse':'Expand'}</span></summary><div className="progress-activity-content" hidden={!open}>{children}</div></details>}
-function AssistantMessage(){const model=useContext(ModelContext);return <MessagePrimitive.Root className="progress-message"><MessagePrimitive.GroupedParts groupBy={groupBy} indicator="never">{({part,children}:any)=>{
- if(part.type==='group-tools')return <ActivityGroup part={part} model={model}>{children}</ActivityGroup>;
+function ActivityGroup({part,model}:{part:any;model:any}){const [open,setOpen]=useState(false),items=part.data.items;return <details className="progress-activity" open={open} onToggle={(event)=>setOpen(event.currentTarget.open)}><summary><span aria-hidden="true">⚒</span>Tool activity · {items.length}{model.running&&items.some((item:any)=>item.type==='call'&&model.records[item.part.toolCallId]?.active)&&<span className="progress-running">Running</span>}<span className="progress-tag">{open?'Collapse':'Expand'}</span></summary><div className="progress-activity-content" hidden={!open}>{items.map((item:any,index:number)=>item.type==='call'?<Tool key={item.part.toolCallId} part={item.part}/>:<details key={`${item.event.sequence}:${index}`} className="progress-tool"><summary><span aria-hidden="true">◇</span><span>{item.event.summary||item.event.kind}</span></summary><div className="progress-tool-detail"><div className="progress-metadata">{item.event.evidenceMode??'unverified'} · {item.event.kind}{item.event.occurredAt&&<> · <time dateTime={item.event.occurredAt}>{item.event.occurredAt}</time></>}</div>{item.event.details&&<pre>{JSON.stringify(item.event.details,null,2)}</pre>}</div></details>)}</div></details>}
+function AssistantMessage(){const model=useContext(ModelContext);return <MessagePrimitive.Root className="progress-message"><MessagePrimitive.GroupedParts indicator="never">{({part}:any)=>{
+ if(part.type==='data'&&part.name==='tool-activity')return <ActivityGroup part={part} model={model}/>;
  if(part.type==='text')return <p className="progress-narration">{part.text}</p>;
  if(part.type==='data'&&part.name==='progress-event'){const event=part.data;return <div className="progress-event-record"><div className="progress-metadata">{event.evidenceMode??'unverified'} · {event.kind??'event'}{event.occurredAt&&<> · <time dateTime={event.occurredAt}>{event.occurredAt}</time></>}</div>{event.details&&Object.keys(event.details).length>0&&<details className="progress-record-details"><summary>Recorded event details</summary><pre>{JSON.stringify(event.details,null,2)}</pre></details>}</div>;}
 
