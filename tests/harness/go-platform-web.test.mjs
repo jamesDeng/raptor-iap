@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateParameters,groupEnvironments,createProgressController,discoveryView} from '../../components/raptor/web/poc/app.js';
+import {validateParameters,groupEnvironments,createProgressController,discoveryView} from '../../components/raptor/platform-frontend/poc/app.js';
 test('required fields and scalar values are validated',()=>{const schema={required:['size'],properties:{size:{type:'integer',minimum:1}}};assert.equal(validateParameters(schema,{}).length,1);assert.equal(validateParameters(schema,{size:1}).length,0);assert.ok(validateParameters(schema,{size:'1'}).length);assert.ok(validateParameters(schema,{size:0}).length);});
 test('environment selector groups globally unique environments',()=>{const groups=groupEnvironments([{code:'adev',groupCode:'biz-a'},{code:'bdev',groupCode:'biz-b'}]);assert.equal(groups.get('biz-a')[0].code,'adev');assert.equal(groups.size,2);});
 test('saved history and two-second polling survive page refresh',async()=>{let delay;const p=createProgressController({read:async()=>({events:[{sequence:1,summary:'saved'}]}),schedule:(fn,ms)=>{delay=ms;return 1},cancel:()=>{}});await p.select('request');assert.equal(p.state.events[0].summary,'saved');assert.equal(delay,2000);p.close();});
@@ -9,7 +9,7 @@ test('discovery failure is different from an empty deployment list',()=>{assert.
 
 // Exercise the page loader itself, including its ordering around the controller.
 import {readFileSync} from 'node:fs';
-const pageSource=readFileSync(new URL('../../components/raptor/web/poc/app.js',import.meta.url),'utf8');
+const pageSource=readFileSync(new URL('../../components/raptor/platform-frontend/poc/app.js',import.meta.url),'utf8');
 test('page navigation ignores a request load that finishes after a newer selection',async()=>{
  const source=pageSource.match(/async function loadRequest\(id,replace=false\)\{([\s\S]*?)\n async function refreshRequest/)[1];
  let resolveOld,selectedProgress;

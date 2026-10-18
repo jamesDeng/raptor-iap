@@ -125,7 +125,7 @@ def make_server(store: Store, root: Path, port: int=8765) -> ThreadingHTTPServer
             path=url.path
             query=parse_qs(url.query,keep_blank_values=True)
             if self.command=='GET' and path in ASSETS and not query:
-                name,mime=ASSETS[path];file=Path(__file__).parent/'web'/name
+                name,mime=ASSETS[path];file=Path(__file__).parent/'platform-frontend'/name
                 if not file.is_file():raise NotFound()
                 self._send(200,body=file.read_bytes(),content_type=mime);return
             if path=='/api/session' and self.command=='GET' and not query:

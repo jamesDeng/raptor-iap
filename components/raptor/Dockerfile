@@ -1,8 +1,15 @@
+FROM node:22.23.3-alpine AS admin-frontend
+WORKDIR /admin
+RUN npm install --global pnpm@10.28.2
+COPY admin-frontend/ ./
+RUN pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org
+RUN pnpm build
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=admin-frontend /admin/dist ./admin-frontend/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/backend ./cmd/backend
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/frontend ./cmd/frontend
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/open-api ./cmd/open-api
@@ -17,5 +24,6 @@ RUN apk add --no-cache ca-certificates git libstdc++ && addgroup -g 10001 app &&
 COPY --from=build /out/ /usr/local/bin/
 COPY --from=model-helper /usr/local/bin/node /usr/local/bin/node
 COPY --from=model-helper /opt/raptor-model-auth /opt/raptor-model-auth
+COPY admin-frontend/LICENSE.vben /usr/share/licenses/raptor-admin/LICENSE.vben
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/backend"]

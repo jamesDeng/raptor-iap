@@ -3,7 +3,7 @@ package frontend
 import (
 	"fmt"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
-	"github.com/jamesDeng/raptor-iap/components/raptor/web"
+	platformfrontend "github.com/jamesDeng/raptor-iap/components/raptor/platform-frontend"
 	"io/fs"
 	"net/http"
 	"net/http/httputil"
@@ -20,7 +20,7 @@ func NewHandler(backendURL string) (http.Handler, error) {
 	}
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) { httpx.Error(w, 503, "Unavailable") }
-	files, e := fs.Sub(web.Files, "poc")
+	files, e := fs.Sub(platformfrontend.Files, "poc")
 	if e != nil {
 		return nil, e
 	}

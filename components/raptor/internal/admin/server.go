@@ -1,71 +1,68 @@
 package admin
 
 import (
-	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
+	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
+
+	adminfrontend "github.com/jamesDeng/raptor-iap/components/raptor/admin-frontend"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
 )
 
-type adminPage struct{ title, description, panel, script, refresh string }
-
-var adminPages = map[string]adminPage{
-	"/users":              {"Users", "Manage platform accounts and access levels.", usersPanel, "", ""},
-	"/environment-groups": {"Environment groups", "Organize deployment environments under platform groups.", groupPanel, environmentScript, "refreshEnvironments()"},
-	"/environments":       {"Environments", "Manage cloud targets and source repositories for each stage.", environmentListPanel, environmentScript, "refreshEnvironmentPage()"},
-	"/ai-models":          {"AI models", "Connect model providers and configure available models.", `<div id="model-admin"></div>`, modelScript, "refreshModelProviders()"},
-	"/github-pat":         {"GitHub token", "Manage the credential for repository change attempts.", githubPATPanel, githubPATScript, "refreshGitHubPAT()"},
-}
+var environmentPage = regexp.MustCompile(`^/environments/[A-Za-z0-9][A-Za-z0-9._-]*(/edit)?$`)
 
 func NewHandler(backendURL string) (http.Handler, error) {
 	u, e := url.Parse(backendURL)
-	if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, fmtURL()
+	if e != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, fmt.Errorf("invalid backend URL")
 	}
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) { httpx.Error(w, 503, "BackendUnavailable") }
+	files, e := fs.Sub(adminfrontend.Files, "dist")
+	if e != nil {
+		return nil, e
+	}
+	index, e := fs.ReadFile(files, "index.html")
+	if e != nil {
+		return nil, e
+	}
+	assets := http.FileServer(http.FS(files))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			proxy.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path == "/" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Raptor Admin</title></head><body><script>const routes={'#users-section':'/users','#groups-section':'/environment-groups','#environments-section':'/environments','#model-admin':'/ai-models'};location.replace(routes[location.hash]||'/users')</script><a href="/users">Continue to Users</a></body></html>`))
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+		if r.Method != "GET" && r.Method != "HEAD" {
+			w.Header().Set("Allow", "GET, HEAD")
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		config, ok := adminPages[r.URL.Path]
-		if r.URL.Path == "/environments" && r.URL.Query().Get("mode") == "create" {
-			config = adminPage{"Create environment", "Set the cloud target and source repositories.", environmentFormPanel, environmentScript, "refreshEnvironmentPage()"}
-		}
-		if !ok && strings.HasPrefix(r.URL.Path, "/environments/") {
-			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/environments/"), "/")
-			if parts[0] != "" && (len(parts) == 1 || (len(parts) == 2 && parts[1] == "edit")) {
-				if len(parts) == 1 {
-					config = adminPage{"Environment details", "Cloud target and source repositories.", environmentDetailPanel, environmentScript, "refreshEnvironmentPage()"}
-				} else {
-					config = adminPage{"Edit environment", "Update the cloud target and source repositories.", environmentFormPanel, environmentScript, "refreshEnvironmentPage()"}
-				}
-				ok = true
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/assets/") {
+			info, err := fs.Stat(files, strings.TrimPrefix(p, "/"))
+			if err != nil || info.IsDir() {
+				http.NotFound(w, r)
+				return
 			}
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			assets.ServeHTTP(w, r)
+			return
 		}
-		if !ok {
+		known := p == "/" || p == "/users" || p == "/environment-groups" || p == "/environments" || p == "/ai-models" || p == "/github-pat" || environmentPage.MatchString(p)
+		if !known {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		content := strings.Replace(page, "<!-- PAGE_CONTENT -->", config.panel, 1)
-		content = strings.Replace(content, "</style>", environmentStyles+"</style>", 1)
-		content = strings.Replace(content, "<!-- PAGE_TITLE -->", config.title, 1)
-		content = strings.Replace(content, "<!-- PAGE_DESCRIPTION -->", config.description, 1)
-		activePath := r.URL.Path
-		if strings.HasPrefix(activePath, "/environments/") {
-			activePath = "/environments"
+		if r.Method != "HEAD" {
+			_, _ = w.Write(index)
 		}
-		content = strings.Replace(content, `href="`+activePath+`"`, `href="`+activePath+`" aria-current="page"`, 1)
-		content = strings.Replace(content, "<!-- PAGE_SCRIPT -->", config.script+`<script>async function refreshPage(){`+config.refresh+`}</script>`, 1)
-		_, _ = w.Write([]byte(content))
 	}), nil
 }
