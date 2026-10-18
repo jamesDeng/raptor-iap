@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 const task={task_id:'synthetic-task',question:'<script>private question</script>',model:'gpt-5.6-luna',snapshot:{name:'<img src=x>',version:1,provenance:'owner-entered'},snapshot_sha256:'b'.repeat(64),blocked:false,attempts:[{attempt_id:'attempt-one',state:'completed',stage:'finished',answer:'<img src=x onerror=alert(1)>',outcomes:{answer:'completed',checkpoint:'saved',cleanup:'confirmed',overall:'completed',error:null},events:[{stage:'starting',timestamp:'synthetic time'}],evidence:{actual_model:'gpt-5.6-luna',context_sha256:'b'.repeat(64),tool_succeeded:true,usage:[{input:3,output:2,total_tokens:5}]}}]};
 
 test('presentation separates model answer from checkpoint and cleanup success',async()=>{
- const {taskPresentation}=await import('../../components/raptor/web/app.js');
+ const {taskPresentation}=await import('../../components/raptor/platform-frontend/app.js');
  assert.equal(taskPresentation(task).state,'completed');
  assert.equal(taskPresentation(task).actualModel,'gpt-5.6-luna');
  for(const kind of ['checkpoint','cleanup']){
@@ -28,7 +28,7 @@ class Element{
 }
 
 test('answers, questions and attempt history are literal text',async()=>{
- const {renderTask}=await import('../../components/raptor/web/app.js');
+ const {renderTask}=await import('../../components/raptor/platform-frontend/app.js');
  const doc={createElement:tag=>new Element(tag,doc)};
  const container=new Element('section',doc),data=structuredClone(task);
  data.attempts.unshift({...data.attempts[0],attempt_id:'old',state:'failed',answer:'previous <script>answer</script>'});
@@ -37,7 +37,7 @@ test('answers, questions and attempt history are literal text',async()=>{
 });
 
 test('transport retry keeps submission identity and a new question gets a new identity',async()=>{
- const {createQuestionSubmission}=await import('../../components/raptor/web/app.js');
+ const {createQuestionSubmission}=await import('../../components/raptor/platform-frontend/app.js');
  const one=createQuestionSubmission({app_id:'app',question:'one',model:'gpt-5.6-luna'});
  const received=[];let failed=false;
  const api=async(_path,{body})=>{received.push(structuredClone(body));if(!failed){failed=true;throw Error('NetworkUnavailable');}return {task_id:'saved'};};
@@ -48,7 +48,7 @@ test('transport retry keeps submission identity and a new question gets a new id
 });
 
 test('API wrapper obtains request token, sends JSON and exposes only fixed errors',async()=>{
- const {apiRequest}=await import('../../components/raptor/web/app.js');const original=global.fetch;const calls=[];
+ const {apiRequest}=await import('../../components/raptor/platform-frontend/app.js');const original=global.fetch;const calls=[];
  try{
   global.fetch=async(url,options={})=>{calls.push({url,options});return {ok:true,json:async()=>({data:url==='/api/session'?{token:'synthetic-request-token'}:{saved:true}})};};
   assert.deepEqual(await apiRequest('/api/apps',{method:'POST',body:{name:'synthetic'}}),{saved:true});
@@ -59,7 +59,7 @@ test('API wrapper obtains request token, sends JSON and exposes only fixed error
 });
 
  test('application name stays distinct from dependency names in the same form',async()=>{
- const {applicationFields}=await import('../../components/raptor/web/app.js');
+ const {applicationFields}=await import('../../components/raptor/platform-frontend/app.js');
  const values={name:'demo-db-client',owner:'owner',environment:'poc',region:'ap-southeast-1',ack_cluster_id:'',namespace:'',deployment:''};
  const form={elements:{name:{value:''}},querySelector:selector=>({value:values[selector.match(/name="([^"]+)"/)[1]]})};
  assert.deepEqual(applicationFields(form),{...values,ack_cluster_id:null,namespace:null,deployment:null});
@@ -92,7 +92,7 @@ test('late submission and task-action responses cannot change a newly selected a
    return {ok:true,json:async()=>({data})};
   };
   try{
-   await import('../../components/raptor/web/app.js?navigation='+action);
+   await import('../../components/raptor/platform-frontend/app.js?navigation='+action);
    await new Promise(resolve=>setImmediate(resolve));
    if(action!=='restore'){
     await nodes.apps.children.find(e=>e.textContent.startsWith('A ·')).listeners.click();

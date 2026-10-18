@@ -19,12 +19,12 @@ npm test
 npm run check:assets
 ```
 
-Commit the generated `../web/poc/worklog.js` and `worklog.css` so the existing Go embed and container build needs no Node runtime. CSS is scoped to `.assistant-progress` and matches the approved dark probe. It explicitly resets platform summary weights, open-summary margins and pre backgrounds inside the host. The surrounding Request shell keeps its platform theme.
+Commit the generated `../platform-frontend/poc/worklog.js` and `worklog.css` so the existing Go embed and container build needs no Node runtime. CSS is scoped to `.assistant-progress` and matches the approved dark probe. It explicitly resets platform summary weights, open-summary margins and pre backgrounds inside the host. The surrounding Request shell keeps its platform theme.
 
 From repository root:
 
 ```sh
-node --test components/raptor/web/poc/*.test.mjs tests/harness/go-platform-web.test.mjs
+node --test components/raptor/platform-frontend/poc/*.test.mjs tests/harness/go-platform-web.test.mjs
 ```
 
 The jsdom component test exercises the real production bundle, expansion preservation, escaped content and readonly display. Layout observer/scroll shims are confined to tests; actual browser scrolling is checked separately.

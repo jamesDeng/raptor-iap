@@ -42,6 +42,6 @@ Required private deployment configuration (integration owner only): backend `RAP
 
 The owner migration runner applies embedded SQL files in lexical order under its advisory lock. Migrations are replay-safe. 002 adds global catalog code uniqueness, source attempt/sequence constraints and public view cache; 003 adds hashed opaque tokens and immutable/revocable attempt grants. Duplicate existing catalog/source sequences fail migration rather than silently rewriting identity. Run on a disposable local PostgreSQL cluster first; this session has not applied it to platform RDS.
 
-From `components/raptor`, use a localhost-only TEST_DATABASE_URL and run `go test ./...`, `go vet ./...`, and `node --test web/poc/question.test.mjs ../../tests/harness/go-platform-web.test.mjs`. Do not use live cloud databases for testutil: it creates/drops test databases and test roles.
+From `components/raptor`, use a localhost-only TEST_DATABASE_URL and run `go test ./...`, `go vet ./...`, and `node --test platform-frontend/poc/question.test.mjs ../../tests/harness/go-platform-web.test.mjs`. Do not use live cloud databases for testutil: it creates/drops test databases and test roles.
 
 The local browser fixture verifies form submission, delayed progress, answer and desktop/narrow layout. Mock observations and model names are fixture data. Live browser acceptance, grants, image publishing, shared release configuration and rollout belong to the integration owner after authorization and contract agreement.

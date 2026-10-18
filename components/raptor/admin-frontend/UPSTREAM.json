@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/vbenjs/vue-vben-admin",
+  "commit": "151d80f9e5fb63f2ed8a8c432e1adf2eba253271",
+  "variant": "VbenAdminLayout with Ant Design Vue; minimal production workspace dependency closure",
+  "packages": [
+    "@vben-core/composables",
+    "@vben-core/design",
+    "@vben-core/icons",
+    "@vben-core/layout-ui",
+    "@vben-core/shadcn-ui",
+    "@vben-core/shared",
+    "@vben-core/typings"
+  ],
+  "changes": "Package manifests omit upstream development tooling. Application and build configuration are Raptor-owned. Design manifest omits the unused complete @iconify/json icon collection; Raptor uses local Ant Design controls and registers the mobile toggle icons locally, avoiding external icon requests. Includes upstream internal/tsconfig with unused manifest dependencies omitted. Tailwind theme disables automatic source discovery to exclude generated dist assets and make rebuilds deterministic; explicit package/application sources are retained."
+}
