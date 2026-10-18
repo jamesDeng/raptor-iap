@@ -49,3 +49,16 @@ test('ambiguous adjacent tool events share one activity without invented pairing
  assert.deepEqual(parts[0].data.items.map(item=>item.type),['call','call','event','event']);
  assert.deepEqual(Object.values(model.records).map(record=>record.events.length),[1,1]);
 });
+test('narration record details join the following tool activity',async()=>{
+ const {projectTranscript}=await load();
+ const base={requestId:'one',attemptId:'a',evidenceMode:'live'};
+ const model=projectTranscript({request:{id:'one'},execution:{status:'completed'}},[
+  {...base,sequence:1,kind:'progress',summary:'Checking the workload',details:{runtimeSequence:3,status:'running'}},
+  {...base,sequence:2,kind:'tool_start',details:{tool:'deployment_status_get'}},
+  {...base,sequence:3,kind:'tool_result',details:{tool:'deployment_status_get',status:'succeeded'}},
+ ]);
+ const parts=model.messages[0].content;
+ assert.deepEqual(parts.map(part=>part.type==='data'?part.name:part.type),['text','tool-activity']);
+ assert.deepEqual(parts[1].data.items.map(item=>item.type),['record','call']);
+ assert.equal(parts[1].data.items[0].event.details.runtimeSequence,3);
+});

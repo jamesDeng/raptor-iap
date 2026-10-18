@@ -8,9 +8,10 @@ test('transcript pairs sequential tool calls and nests their progress observatio
  assert.equal(typeof model.projectTranscript,'function');
  const result=model.projectTranscript(snapshot,[event(1,'progress','Inspect deployment'),event(2,'tool_start','start',{tool:'status_get',status:'started'}),event(3,'progress','Waiting on infra'),event(4,'tool_result','failed',{tool:'status_get',status:'failed'}),event(5,'tool_start','retry',{tool:'status_get',status:'started'})]);
  const content=result.messages[0].content;
- assert.deepEqual(content.map(p=>p.type),['text','data','data']);
- const calls=content[2].data.items.map(item=>item.part);
- assert.equal(content[2].name,'tool-activity');
+ assert.deepEqual(content.map(p=>p.type),['text','data']);
+ const calls=content[1].data.items.filter(item=>item.type==='call').map(item=>item.part);
+ assert.equal(content[1].name,'tool-activity');
+ assert.equal(content[1].data.items[0].type,'record');
  assert.equal(calls[0].isError,true);assert.equal(calls[0].result.status,'failed');
  assert.equal(calls[1].result,undefined);assert.notEqual(calls[0].toolCallId,calls[1].toolCallId);
  assert.equal(result.records[calls[0].toolCallId].events[1].summary,'Waiting on infra');
