@@ -84,7 +84,10 @@ python3 test-assets/traffic/provider_feed.py \
 This reads authoritative ESS/ECS/NLB scope and listener health, atomically publishes
 inventory and reconciles only the existing `raptor-test/pgcat-provider-inventory`
 ConfigMap targets. It does not acquire credentials or create cloud resources.
-Publication failure stops the feed; do not refresh freshness from cached inventory.
+The read-only ESS/ECS/NLB calls use Alibaba CLI `--retry-count 2`; any CLI-internal
+retries must complete within the same absolute 15-second refresh deadline.
+Unrecovered read, timeout or publication failure stops the feed; do not refresh
+freshness from cached inventory. Workbench and ConfigMap writes are not retried.
 Age >30 seconds, wrong roster or target discrepancy blocks acceptance. If target
 update succeeded but inventory publication failed, reconcile before restarting.
 

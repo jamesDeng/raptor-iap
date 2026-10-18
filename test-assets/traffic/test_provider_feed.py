@@ -85,6 +85,54 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(len(op.fetch_nlb()['Servers']),2)
         self.assertEqual([x[0] for x in calls],['ListServerGroupServers','ListServerGroupServers','GetListenerAttribute','GetListenerHealthStatus'])
 
+    def test_provider_reads_use_bounded_cli_retry(self):
+        from types import SimpleNamespace
+        op=feed.Operator(SimpleNamespace())
+        commands=[]
+        def command(argv):
+            commands.append(argv)
+            return '{}'
+        op.command=command
+        for service,operation in (('ess','DescribeScalingGroups'),('ess','DescribeScalingInstances'),
+                                  ('ecs','DescribeInstances'),('nlb','ListServerGroupServers'),
+                                  ('nlb','GetListenerAttribute'),('nlb','GetListenerHealthStatus')):
+            with self.subTest(operation=operation):
+                op.aliyun(service,operation)
+        self.assertEqual(len(commands),6)
+        for argv in commands:
+            self.assertEqual(argv.count('--retry-count'),1)
+            self.assertEqual(argv[argv.index('--retry-count')+1],'2')
+        op.aliyun('ecs','DeleteInstance')
+        self.assertNotIn('--retry-count',commands[-1])
+
+    def test_workbench_and_configmap_commands_have_no_cli_retry(self):
+        from types import SimpleNamespace
+        op=feed.Operator(SimpleNamespace(workbench='offline-workbench',kubeconfig='/private/kubeconfig'))
+        commands=[]
+        op.command=lambda argv:commands.append(argv) or ''
+        op.workbench('print("probe")')
+        op.workbench(feed._TARGET_SCRIPT,'/private/kubeconfig','[]')
+        self.assertEqual(len(commands),2)
+        for argv in commands:
+            self.assertNotIn('--retry-count',argv)
+            self.assertNotIn('--retry-count',argv[-1])
+
+    def test_read_reaching_deadline_after_cli_call_cannot_publish(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        clock=[0.0];writes=[];commands=[]
+        op=feed.Operator(SimpleNamespace())
+        def cli(argv,**kwargs):
+            commands.append(argv)
+            clock[0]=15.0
+            return SimpleNamespace(stdout='{}')
+        with patch.object(feed.subprocess,'run',side_effect=cli):
+            with self.assertRaises(ValueError):
+                feed.run_loop(op.read,lambda value,**kwargs:writes.append(value),
+                              interval=15,max_seconds=15,monotonic=lambda:clock[0])
+        self.assertEqual(len(commands),1)
+        self.assertEqual(writes,[])
+
     def test_remote_write_runs_the_tested_atomic_implementation(self):
         from types import SimpleNamespace
         import subprocess
