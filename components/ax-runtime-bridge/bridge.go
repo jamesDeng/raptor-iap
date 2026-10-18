@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/url"
 	"os"
 	"path"
@@ -324,7 +325,7 @@ func (s *Service) Ensure(ctx context.Context, r Request) (Response, error) {
 			return out, e
 		}
 	}
-	_, e := s.Backend.Resume(ctx, r.name())
+	resumedTask, e := s.Backend.Resume(ctx, r.name())
 	if e != nil {
 		return out, ErrUnknown
 	}
@@ -332,21 +333,40 @@ func (s *Service) Ensure(ctx context.Context, r Request) (Response, error) {
 	defer cancel()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	lastTask := resumedTask
 	for {
 		task, err := s.Backend.Get(readyCtx, r.name())
 		if err != nil || task == nil || !r.ownsTask(task, v.Image) {
+			if readyCtx.Err() != nil {
+				logReadinessEnd(r.name(), lastTask, readyCtx.Err())
+			}
 			return out, ErrUnknown
 		}
+		lastTask = task
 		if task.Ready {
 			break
 		}
 		select {
 		case <-readyCtx.Done():
+			logReadinessEnd(r.name(), lastTask, readyCtx.Err())
 			return out, ErrUnknown
 		case <-ticker.C:
 		}
 	}
 	return out, nil
+}
+
+func logReadinessEnd(actor string, task *TaskView, err error) {
+	outcome := "canceled"
+	if errors.Is(err, context.DeadlineExceeded) {
+		outcome = "deadline"
+	}
+	phase := "unknown"
+	ready := false
+	if task != nil {
+		phase, ready = task.Phase, task.Ready
+	}
+	log.Printf("AX bridge ensure readiness outcome=%s actor=%s phase=%s ready=%t", outcome, actor, phase, ready)
 }
 func (s *Service) Start(ctx context.Context, r Request) (Response, error) {
 	s.mu.Lock()

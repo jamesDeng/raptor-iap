@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	env "github.com/agent-substrate/env/proto/ateenv/v1alpha"
 	"github.com/google/ax/internal/substrate"
@@ -16,6 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"path"
 	"strings"
@@ -75,8 +77,10 @@ func (b *SDKBackend) Get(ctx context.Context, n string) (*TaskView, error) {
 	return v, nil
 }
 func (b *SDKBackend) guestWorkspaceReady(ctx context.Context, n string) bool {
+	started := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+b.Router+"/readyz?check=workspace", nil)
 	if err != nil {
+		log.Printf("AX guest workspace probe actor=%s outcome=request_error elapsed_ms=%d", n, time.Since(started).Milliseconds())
 		return false
 	}
 	req.Header.Set("ate-target-actor", b.Atespace+"/"+n)
@@ -84,10 +88,24 @@ func (b *SDKBackend) guestWorkspaceReady(ctx context.Context, n string) bool {
 	client := &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
+		kind := "other"
+		var netErr net.Error
+		switch {
+		case errors.Is(err, context.Canceled):
+			kind = "canceled"
+		case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+			kind = "timeout"
+		}
+		log.Printf("AX guest workspace probe actor=%s outcome=transport_error error_kind=%s elapsed_ms=%d", n, kind, time.Since(started).Milliseconds())
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("AX guest workspace probe actor=%s outcome=http_status status=%d elapsed_ms=%d", n, resp.StatusCode, time.Since(started).Milliseconds())
+		return false
+	}
+	log.Printf("AX guest workspace probe actor=%s outcome=ready status=200 elapsed_ms=%d", n, time.Since(started).Milliseconds())
+	return true
 }
 func (b *SDKBackend) Create(ctx context.Context, n, seal string) (*TaskView, error) {
 	t, e := b.AX.CreateTask(ctx, &ax.CreateTaskRequest{Task: &ax.Task{ApiVersion: "ax.dev/v1alpha1", Kind: "Task", Metadata: &ax.ObjectMeta{Name: n, Atespace: b.Atespace}, Spec: &ax.TaskSpec{Image: b.Image, Debug: true, Env: []*ax.EnvVar{{Name: "RAPTOR_BINDING_SHA256", Value: seal}}, Workspaces: []*ax.WorkspaceRef{{Name: "raptor-runtime", Path: "/workspace"}}}}})
