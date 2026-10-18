@@ -105,11 +105,23 @@ func repositoryChange(def domain.RequestInput) bool {
 	modelValid := (def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && def.Model != "")
 	return def.Type == "agent" && def.Object.Kind == "application" && len(def.Operations) == 1 && def.Operations[0].Name == "repository.change" && modelValid && sha.MatchString(def.Skills.CommitSHA)
 }
+func replacementModelValid(def domain.RequestInput) bool {
+	if def.Model == "gpt-5.6-luna" && def.ProviderID == "" && def.ConnectionVersion == 0 {
+		return true // Historical request definitions remain readable.
+	}
+	if def.ProviderID != "codex" || def.ConnectionVersion <= 0 {
+		return false
+	}
+	if replacementMode(def) == "qualification" {
+		return def.Model != ""
+	}
+	return def.Model == "gpt-5.6-luna" || (replacementMode(def) == "replacement" && (def.Model == "gpt-6-luna" || def.Model == "gpt-6.1-sol"))
+}
 func supported(def domain.RequestInput) bool {
 	if question(def) || repositoryChange(def) {
 		return true
 	}
-	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && validReplacementParameters(def.Operations[0].Parameters) && ((def.ProviderID == "" && def.ConnectionVersion == 0 && def.Model == "gpt-5.6-luna") || (def.ProviderID == "codex" && def.ConnectionVersion > 0 && (def.Model == "gpt-5.6-luna" || (replacementMode(def) == "qualification" && def.Model != "")))) && sha.MatchString(def.Skills.CommitSHA)
+	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && validReplacementParameters(def.Operations[0].Parameters) && replacementModelValid(def) && sha.MatchString(def.Skills.CommitSHA)
 }
 func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, error) {
 	var out Issued

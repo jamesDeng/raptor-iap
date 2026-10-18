@@ -45,7 +45,26 @@ func TestQualificationSupportsConfiguredCurrentModel(t *testing.T) {
 		t.Fatal("configured qualification model rejected")
 	}
 	d.Operations[0].Parameters["mode"] = "replacement"
+	if !supported(d) {
+		t.Fatal("configured GPT-6 Luna replacement rejected")
+	}
+	d.Model = "gpt-6.1-sol"
+	if !supported(d) {
+		t.Fatal("configured GPT-6.1 Sol replacement rejected")
+	}
+	d.ConnectionVersion = 0
 	if supported(d) {
-		t.Fatal("replacement model restriction broadened")
+		t.Fatal("unconnected replacement model accepted")
+	}
+	d.ConnectionVersion = 3
+	d.Model = "gpt-6-sol"
+	if supported(d) {
+		t.Fatal("unapproved replacement model accepted")
+	}
+	d.ProviderID = ""
+	d.ConnectionVersion = 0
+	d.Model = "gpt-5.6-luna"
+	if !supported(d) {
+		t.Fatal("stored legacy replacement became unreadable")
 	}
 }
