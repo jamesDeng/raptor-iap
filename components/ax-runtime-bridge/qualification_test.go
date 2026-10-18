@@ -27,6 +27,16 @@ func TestQualificationWireAcceptedForCleanup(t *testing.T) {
 		t.Fatal("qualification cleanup rejected", err)
 	}
 }
+func TestReplacementWireAcceptedForLifecycle(t *testing.T) {
+	r := qualificationRequest(t)
+	r.Binding.ExecutionMode = "replacement"
+	if err := r.validate(true); err != nil {
+		t.Fatalf("replacement creation rejected: %v", err)
+	}
+	if err := r.validate(false); err != nil {
+		t.Fatalf("replacement cleanup rejected: %v", err)
+	}
+}
 func TestQualificationBindingCannotBroadenOtherOperations(t *testing.T) {
 	for _, change := range []func(*Request){
 		func(r *Request) { r.Binding.Operation = "application.question"; r.Binding.ObjectKind = "application" },
@@ -42,7 +52,7 @@ func TestQualificationBindingCannotBroadenOtherOperations(t *testing.T) {
 			t.Fatal("foreign qualification binding accepted")
 		}
 	}
-	for _, mode := range []string{"", "replacement", "unknown"} {
+	for _, mode := range []string{"", "unknown"} {
 		r := qualificationRequest(t)
 		raw, _ := json.Marshal(r)
 		var wire map[string]any
@@ -52,6 +62,22 @@ func TestQualificationBindingCannotBroadenOtherOperations(t *testing.T) {
 		json.Unmarshal(raw, &r)
 		if r.validate(false) == nil {
 			t.Fatal("non-qualification profile accepted", mode)
+		}
+	}
+}
+func TestReplacementBindingStaysScoped(t *testing.T) {
+	for _, change := range []func(*Request){
+		func(r *Request) { r.Binding.ObjectKind = "application" },
+		func(r *Request) { r.Binding.Operation = "application.question" },
+		func(r *Request) { r.Binding.EnvCode = "prod.ali" },
+		func(r *Request) { r.Binding.ProviderID = ""; r.Binding.ConnectionVersion = 0 },
+		func(r *Request) { r.Repositories = []Repository{{}} },
+	} {
+		r := qualificationRequest(t)
+		r.Binding.ExecutionMode = "replacement"
+		change(&r)
+		if r.validate(false) == nil {
+			t.Fatal("foreign replacement binding accepted")
 		}
 	}
 }
