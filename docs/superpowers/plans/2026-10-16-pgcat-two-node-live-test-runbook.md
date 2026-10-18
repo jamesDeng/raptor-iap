@@ -1,9 +1,14 @@
 # PgCat two-node live-test operator runbook
 
-Status: **full execution BLOCKED** pending a sustained disabled-mode
-finish/restoration proof and later action-time gates. A short disabled-mode
-capture passed on 2026-10-18; its assessed window was 12 seconds, so it does
-not establish the planned 60-second path proof or replacement acceptance.
+Status: sustained disabled-mode finish/restoration proof **PASS** on 2026-10-18:
+62 measurement frames, 384 successful operations, zero missed polls, exact
+two-client finals and 2/2 restoration. The first detached attempt was
+INCONCLUSIVE after its cap elapsed before finish; both attempts were retained.
+The provider feed exited cleanly, the evidence archive readback hash matched,
+and both copies of the temporary kubeconfig were removed. **Full execution remains BLOCKED**
+pending fresh preflight, explicit direction to change the currently false
+replacement flag, and its separate action-time gates. Disabled-mode PASS does
+not establish replacement acceptance.
 This document authorizes no credential transfer, Secret change, rollout or replacement.
 Use the approved [design](../specs/2026-10-16-pgcat-two-node-live-test-design.md),
 existing `agent-skills/pgcat-replacement/SKILL.md` two-node strategy, and
@@ -163,10 +168,11 @@ use the same private boundary directory and kubeconfig:
 python3 finish_clients.py --boundary-dir /root/PRIVATE_RUN/disabled-boundary --expected-replicas 2
 ```
 
-Keep `replacementEnabled=false`. The 2026-10-18 short controlled-finish
-capture recorded both finals, clean SQL, private retention and 2/2 restoration,
-but closed after 12 assessed seconds. Repeat the sustained disabled path with
-fresh credentials and action-time authorization before unblocking full execution.
+Keep `replacementEnabled=false`. The first 2026-10-18 controlled-finish
+capture closed after 12 assessed seconds. A later detached capture retained
+62 measurement frames and passed the exact finalization, feed, traffic and
+restoration checks. Repeat this proof if the client image, provider feed,
+runtime scope or other relevant implementation changes before a full run.
 A disabled-path traffic PASS establishes only that observed window; it never
 establishes replacement acceptance.
 
@@ -230,9 +236,11 @@ read exact `/evidence` plus Pod/container identities, stop new replacement
 mutations, allow bounded restoration and reconcile the observed fleet. If clients
 do not restore, stop at reviewed recovery. Keep the flag false during disabled
 proof; during full-run faults restore it only after active work settles through
-the guarded rollout below. Full execution remains blocked until Task 4 verifies
-the disabled path and all later provider/cost/time/credential and action-time
-gates are satisfied. Approval of this runbook authorizes no runtime operation.
+the guarded rollout below. The disabled path has a dated observed proof;
+full execution remains blocked until fresh provider/cost/time/credential and
+action-time gates are satisfied, including explicit direction to change the
+currently false replacement flag. Approval of this runbook authorizes no
+runtime operation.
 
 ## Reviewed recovery for a stale finish socket
 
