@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	ax "github.com/google/ax/pkg/apis/v1alpha1"
 	"google.golang.org/grpc"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -75,6 +77,86 @@ func TestGuestWorkspaceReadyUsesTargetedRouterProbe(t *testing.T) {
 	status = http.StatusOK
 	if !backend.guestWorkspaceReady(context.Background(), "raptor-attempt") {
 		t.Fatal("ready guest rejected")
+	}
+}
+
+func TestGuestWorkspaceProbeReportsSanitizedHTTPAndTransportOutcomes(t *testing.T) {
+	var logs bytes.Buffer
+	prior := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prior) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("PRIVATE_RESPONSE_BODY"))
+	}))
+	backend := &SDKBackend{Router: strings.TrimPrefix(server.URL, "http://"), Atespace: "raptor-runtime"}
+	if backend.guestWorkspaceReady(context.Background(), "raptor-attempt") {
+		t.Fatal("503 probe accepted")
+	}
+	if got := logs.String(); !strings.Contains(got, "outcome=http_status status=503") || !strings.Contains(got, "elapsed_ms=") || strings.Contains(got, "PRIVATE_RESPONSE_BODY") {
+		t.Fatalf("missing sanitized HTTP diagnosis: %q", got)
+	}
+	logs.Reset()
+	server.Close()
+	if backend.guestWorkspaceReady(context.Background(), "raptor-attempt") {
+		t.Fatal("closed-router probe accepted")
+	}
+	if got := logs.String(); !strings.Contains(got, "outcome=transport_error") || strings.Contains(got, server.URL) {
+		t.Fatalf("missing sanitized transport diagnosis: %q", got)
+	}
+}
+
+type unreadyBackend struct{ fakeBackend }
+
+func (f *unreadyBackend) Resume(context.Context, string) (*TaskView, error) {
+	f.task.Phase = "Running"
+	f.task.Ready = false
+	return f.task, nil
+}
+
+func TestEnsureReportsLastAXPhaseWhenReadinessDeadlineExpires(t *testing.T) {
+	var logs bytes.Buffer
+	prior := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prior) })
+	f := &unreadyBackend{}
+	s := service(t, &f.fakeBackend)
+	s.Backend = f
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := s.Ensure(ctx, request()); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("expected fail-closed unknown outcome, got %v", err)
+	}
+	if got := logs.String(); !strings.Contains(got, "readiness outcome=deadline") || !strings.Contains(got, "phase=Running ready=false") {
+		t.Fatalf("missing last AX readiness state: %q", got)
+	}
+}
+
+type blockedReadinessBackend struct{ unreadyBackend }
+
+func (f *blockedReadinessBackend) Get(ctx context.Context, name string) (*TaskView, error) {
+	if f.task != nil && f.task.Phase == "Running" {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return f.unreadyBackend.Get(ctx, name)
+}
+
+func TestEnsureReportsLastAXPhaseWhenGetTaskHitsDeadline(t *testing.T) {
+	var logs bytes.Buffer
+	prior := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prior) })
+	f := &blockedReadinessBackend{}
+	s := service(t, &f.fakeBackend)
+	s.Backend = f
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := s.Ensure(ctx, request()); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("expected fail-closed unknown outcome, got %v", err)
+	}
+	if got := logs.String(); !strings.Contains(got, "readiness outcome=deadline") || !strings.Contains(got, "phase=Running ready=false") {
+		t.Fatalf("missing AX state when GetTask hits deadline: %q", got)
 	}
 }
 
