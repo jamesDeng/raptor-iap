@@ -62,3 +62,17 @@ test('narration record details join the following tool activity',async()=>{
  assert.deepEqual(parts[1].data.items.map(item=>item.type),['record','call']);
  assert.equal(parts[1].data.items[0].event.details.runtimeSequence,3);
 });
+test('earlier status details join tool activity across intervening narration',async()=>{
+ const {projectTranscript}=await load();
+ const base={requestId:'one',attemptId:'a',evidenceMode:'live'};
+ const model=projectTranscript({request:{id:'one'},execution:{status:'completed'}},[
+  {...base,sequence:1,kind:'status',summary:'status: started',details:{status:'started'}},
+  {...base,sequence:2,kind:'progress',summary:'I will inspect the workload',details:{runtimeSequence:3,status:'running'}},
+  {...base,sequence:3,kind:'tool_start',summary:'tool_start: started',details:{tool:'deployment_status_get'}},
+  {...base,sequence:4,kind:'tool_result',summary:'tool_result: succeeded',details:{tool:'deployment_status_get',status:'succeeded'}},
+ ]);
+ const parts=model.messages[0].content;
+ assert.deepEqual(parts.map(part=>part.type==='data'?part.name:part.type),['text','text','tool-activity']);
+ assert.deepEqual(parts[2].data.items.map(item=>item.type),['record','record','call']);
+ assert.deepEqual(parts[2].data.items.slice(0,2).map(item=>item.event.sequence),[1,2]);
+});
