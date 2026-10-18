@@ -65,8 +65,15 @@ func TestQualificationAcceptsConfiguredCurrentModel(t *testing.T) {
 	in.Definition, _ = json.Marshal(d)
 	h = sha256.Sum256(in.Definition)
 	in.DefinitionSHA256 = hex.EncodeToString(h[:])
+	if _, _, e = ParseLiveOperation(in, "attempt"); e != nil {
+		t.Fatal("configured GPT-6 Luna replacement rejected", e)
+	}
+	d["model"] = "gpt-6-sol"
+	in.Definition, _ = json.Marshal(d)
+	h = sha256.Sum256(in.Definition)
+	in.DefinitionSHA256 = hex.EncodeToString(h[:])
 	if _, _, e = ParseLiveOperation(in, "attempt"); e == nil {
-		t.Fatal("replacement model restriction broadened")
+		t.Fatal("unapproved replacement model accepted")
 	}
 }
 
@@ -111,7 +118,12 @@ func TestQualificationCheckpointAcceptsSelectedConfiguredModel(t *testing.T) {
 		t.Fatal("changed model checkpoint accepted")
 	}
 	b.ExecutionMode = "replacement"
-	if b.SessionModelAllowed() {
-		t.Fatal("replacement session restriction broadened")
+	cp.Model = b.Model
+	if !b.SessionModelAllowed() || !cp.validFor(b) {
+		t.Fatal("configured GPT-6 Luna replacement checkpoint rejected")
+	}
+	b.Model = "gpt-6-sol"
+	if b.SessionModelAllowed() || cp.validFor(b) {
+		t.Fatal("unapproved replacement checkpoint accepted")
 	}
 }
