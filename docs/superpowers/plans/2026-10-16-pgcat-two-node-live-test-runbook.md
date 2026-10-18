@@ -1,7 +1,9 @@
 # PgCat two-node live-test operator runbook
 
-Status: offline preparation only; **full execution BLOCKED** pending Task 4
-verified disabled-mode finish/restoration proof and later action-time gates.
+Status: **full execution BLOCKED** pending a sustained disabled-mode
+finish/restoration proof and later action-time gates. A short disabled-mode
+capture passed on 2026-10-18; its assessed window was 12 seconds, so it does
+not establish the planned 60-second path proof or replacement acceptance.
 This document authorizes no credential transfer, Secret change, rollout or replacement.
 Use the approved [design](../specs/2026-10-16-pgcat-two-node-live-test-design.md),
 existing `agent-skills/pgcat-replacement/SKILL.md` two-node strategy, and
@@ -71,6 +73,44 @@ arguments, transcripts, Git, evidence or receipts; `KUBECONFIG` contains a path 
 Transfer only reviewed collector modules (`worker_capture.py`, `capture_window.py`,
 `segmented_capture.py`, `finish_clients.py`) and the hashed guard binary matching worker architecture.
 Record worker SHA-256 readback. Use fresh private output paths; never reuse a capture directory.
+Run the collector detached from the Workbench CLI `exec` that launches it.
+An attached collector holds that Workbench session open and can block the
+feed's next Workbench call past its 15-second deadline. The 2026-10-18
+disabled capture saw a feed stop during an attached collector; a harmless
+overlap probe made a concurrent `exec true` time out after 10 seconds, while
+a correctly detached eight-second probe launched in 0.3 seconds and wrote
+a mode-0600 exit status. This supports a Workbench contention diagnosis;
+the original sanitized feed error does not identify its exact failing call.
+Do not overlap Workbench CLI sessions intentionally. Launch, status reads,
+finish and cleanup should be short, sequential calls; verify feed publication
+and provider age after each. Any missed feed deadline or freshness gap makes
+the capture INCONCLUSIVE. Never lengthen the feed deadline or publish cached
+inventory to hide contention.
+
+For either capture, use a fresh mode-0700 worker run directory and a unique
+mode-0700 boundary directory. First verify `collector.exit` and
+`collector.exit.tmp` do not exist. In a **short** Workbench `exec`, run the
+following from the worker; replace every `PRIVATE_RUN` and `CAPTURE_ARGS`
+with the reviewed exact paths and arguments shown below. Keep the semicolon
+before `nohup`: joining `cd` and `nohup` with `&& ... &` can background the
+whole command list and leave Workbench attached to its output.
+
+```sh
+cd /root/PRIVATE_RUN || exit 1
+umask 077; export KUBECONFIG=/root/PRIVATE_RUN/kubeconfig
+nohup sh -c 'python3 worker_capture.py CAPTURE_ARGS > collector.log 2>&1; code=$?; printf "%s\n" "$code" > collector.exit.tmp; mv collector.exit.tmp collector.exit' </dev/null >/dev/null 2>&1 &
+printf '%s\n' "$!" > collector.pid
+```
+
+Treat `collector.pid` as a diagnostic only; never use a reused PID as proof of
+process identity. Confirm the Workbench launch returns promptly and a separate
+short status call finds the collector active or its final status. At closure,
+require `collector.exit` mode 0600 with code 0, `completion.json`, ordered
+manifest, hashes and assessed summary. Missing, malformed or nonzero status,
+an early exit, or a Workbench timeout is INCONCLUSIVE pending inspection;
+retain private logs and evidence. Do not launch a second collector over an
+uncertain first one. Finish commands still run in a separate authorized short
+session; check the feed's latest successful publication afterward.
 Start the provider feed on the Mac from this repository (placeholders must be
 resolved and authorized, not pasted literally):
 
@@ -91,11 +131,12 @@ freshness from cached inventory. Workbench and ConfigMap writes are not retried.
 Age >30 seconds, wrong roster or target discrepancy blocks acceptance. If target
 update succeeded but inventory publication failed, reconcile before restarting.
 
-With replacement flag still false, run on the authorized worker with private
-`KUBECONFIG` and reviewed modules colocated:
+With replacement flag still false, use the detached launch above on the
+authorized worker with private `KUBECONFIG` and reviewed modules colocated.
+For `CAPTURE_ARGS`, use:
 
 ```sh
-python3 worker_capture.py --output /root/PRIVATE_RUN/disabled-60s \
+--output /root/PRIVATE_RUN/disabled-60s \
   --inventory /root/PRIVATE_RUN/provider-inventory.json --seconds 60 \
   --boundary-dir /root/PRIVATE_RUN/disabled-boundary
 ```
@@ -114,10 +155,12 @@ use the same private boundary directory and kubeconfig:
 python3 finish_clients.py --boundary-dir /root/PRIVATE_RUN/disabled-boundary --expected-replicas 2
 ```
 
-Keep `replacementEnabled=false`. This controlled-finish path proof is still
-unverified until Task 4 records live results after review/deployment and specific
-action-time authorization. A disabled-path traffic PASS can prove this short
-capture only; it never establishes replacement acceptance.
+Keep `replacementEnabled=false`. The 2026-10-18 short controlled-finish
+capture recorded both finals, clean SQL, private retention and 2/2 restoration,
+but closed after 12 assessed seconds. Repeat the sustained disabled path with
+fresh credentials and action-time authorization before unblocking full execution.
+A disabled-path traffic PASS establishes only that observed window; it never
+establishes replacement acceptance.
 
 ## Reviewed client boundary, finish and restoration
 
@@ -128,11 +171,12 @@ Running, initially Ready client Pods, distinct Pod names, UIDs, container IDs an
 process IDs. The helper binds that exact roster from direct `/evidence`; retain
 prior process finals from any mid-run restart in the same capture stream.
 
-Start a full collector before any enabled replacement, with fresh private output
-and boundary directories:
+Start a full collector before any enabled replacement, using the detached
+launch and closure checks above with fresh private output and boundary
+directories. For `CAPTURE_ARGS`, use:
 
 ```sh
-python3 worker_capture.py --output /root/PRIVATE_RUN/full-capture \
+--output /root/PRIVATE_RUN/full-capture \
   --inventory /root/PRIVATE_RUN/provider-inventory.json --seconds 5400 \
   --boundary-dir /root/PRIVATE_RUN/full-boundary
 ```
