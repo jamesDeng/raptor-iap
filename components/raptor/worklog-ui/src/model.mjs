@@ -52,28 +52,27 @@ export function projectTranscript(snapshot={}, events=[], localMessages=[]) {
  }
  for(const v of conversation)add(v);
  // Keep uncertain tool results and observations in recorded order without
- // claiming they belong to a particular call. Group only adjacent activity.
+ // claiming they belong to a particular call. Fold earlier event details into
+ // the next tool group while leaving narration text in the timeline.
  for(const message of messages){
   if(message.role!=='assistant'||message.metadata?.custom?.receipt)continue;
-  const grouped=[];let activity;
+  const grouped=[];let activity,pendingRecords=[];
   for(let i=0;i<message.content.length;i++){
    const part=message.content[i],event=message.content[i+1]?.type==='data'?message.content[i+1].data:null;
    const toolEvent=part.type==='text'&&event&&
     (event.kind==='tool_result'||event.kind==='tool_start'||
      (event.kind==='progress'&&/^Observation\b/.test(event.summary??'')));
-   const next=message.content[i+2],nextEvent=message.content[i+3]?.type==='data'?message.content[i+3].data:null;
-   const followedByTool=next?.type==='tool-call'||(next?.type==='text'&&nextEvent&&
-    (nextEvent.kind==='tool_result'||nextEvent.kind==='tool_start'||
-     (nextEvent.kind==='progress'&&/^Observation\b/.test(nextEvent.summary??''))));
+   const followedByTool=message.content.slice(i+2).some((next,index,remaining)=>next.type==='tool-call'||
+    (next.type==='text'&&remaining[index+1]?.type==='data'&&
+     (remaining[index+1].data.kind==='tool_result'||remaining[index+1].data.kind==='tool_start'||
+      (remaining[index+1].data.kind==='progress'&&/^Observation\b/.test(remaining[index+1].data.summary??'')))));
    if(part.type==='text'&&event&&!toolEvent){
     grouped.push(part);activity=null;
-    if(followedByTool){
-     activity={type:'data',name:'tool-activity',data:{items:[{type:'record',event}]}};
-     grouped.push(activity);
-    }else grouped.push(message.content[i+1]);
+    if(followedByTool)pendingRecords.push({type:'record',event});
+    else grouped.push(message.content[i+1]);
     i++;
    }else if(part.type==='tool-call'||toolEvent){
-    if(!activity){activity={type:'data',name:'tool-activity',data:{items:[]}};grouped.push(activity);}
+    if(!activity){activity={type:'data',name:'tool-activity',data:{items:pendingRecords}};grouped.push(activity);pendingRecords=[];}
     activity.data.items.push(part.type==='tool-call'?{type:'call',part}:{type:'event',event});
     if(toolEvent)i++;
    }else{activity=null;grouped.push(part);}
