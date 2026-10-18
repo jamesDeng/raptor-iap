@@ -34,7 +34,7 @@ func (v CheckpointVerifier) VerifyCheckpoint(ctx context.Context, r execution.Ve
 	bad := func() (execution.VerifiedCheckpoint, error) {
 		return execution.VerifiedCheckpoint{}, ErrCheckpointVerification
 	}
-	if v.Objects == nil || v.Prefix == "" || path.Clean(v.Prefix) != v.Prefix || strings.HasPrefix(v.Prefix, "/") || r.Bytes < 1 || r.Bytes > 16*1024*1024 || r.PiVersion != "0.99.2" || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(r.SHA256) || !strings.HasPrefix(r.ArchiveKey, v.Prefix+"/") || path.Clean(r.ArchiveKey) != r.ArchiveKey || !strings.HasSuffix(r.ArchiveKey, ".tgz") || r.ChecksumKey != strings.TrimSuffix(r.ArchiveKey, ".tgz")+".sha256" {
+	if v.Objects == nil || v.Prefix == "" || path.Clean(v.Prefix) != v.Prefix || strings.HasPrefix(v.Prefix, "/") || r.Bytes < 1 || r.Bytes > 16*1024*1024 || (r.PiVersion != "0.99.2" && r.PiVersion != "1.3.0") || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(r.SHA256) || !strings.HasPrefix(r.ArchiveKey, v.Prefix+"/") || path.Clean(r.ArchiveKey) != r.ArchiveKey || !strings.HasSuffix(r.ArchiveKey, ".tgz") || r.ChecksumKey != strings.TrimSuffix(r.ArchiveKey, ".tgz")+".sha256" {
 		return bad()
 	}
 	algorithm, e := v.Objects.BucketEncryption(ctx)

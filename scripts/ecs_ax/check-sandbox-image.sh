@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 docker run --rm --volume "$root/scripts/contracts:/scripts/contracts:ro" --entrypoint /bin/sh "$1" -ec '
  test -x /usr/local/bin/ax-task-runner
- test "$(pi --version)" = 0.99.2
+ test "$(pi --version)" = 1.3.0
  aliyun version
  kubectl version --client
  psql --version

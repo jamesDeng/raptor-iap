@@ -12,7 +12,10 @@ test('Codex OAuth state packs and restores for a subsequent request',async()=>{
   fs.writeFileSync(path.join(source,'auth.json'),JSON.stringify(credential));
   fs.writeFileSync(path.join(source,'sessions','request.jsonl'),'fixture session');
   const ref=await createCheckpoint({stateRoot:source,mountRoot:mount,generation:'22222222-2222-4222-8222-222222222222'});
+  assert.equal(ref.pi_version,'1.3.0');
   await restoreCheckpoint({reference:ref,stateRoot:target,mountRoot:mount});
+  await restoreCheckpoint({reference:{...ref,pi_version:'0.99.2'},stateRoot:path.join(root,'legacy'),mountRoot:mount,bootstrapOnly:true});
+  await assert.rejects(restoreCheckpoint({reference:{...ref,pi_version:'9.0.0'},stateRoot:path.join(root,'unsupported'),mountRoot:mount}),/InvalidCheckpoint/);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target,'auth.json'),'utf8')),credential);
   assert.equal(fs.readFileSync(path.join(target,'sessions','request.jsonl'),'utf8'),'fixture session');
  }finally{fs.rmSync(root,{recursive:true,force:true});}

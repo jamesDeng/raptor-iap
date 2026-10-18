@@ -45,6 +45,12 @@ class StateTests(unittest.TestCase):
   with self.assertRaises(ValueError):save_ledger(p/'ledger.json',load_ledger(self.root/'missing',self.cfg()))
  def test_state_permissions(self):
   c=self.cfg();p=self.root/'state/ledger.json';save_ledger(p,load_ledger(p,c));self.assertEqual(p.stat().st_mode&511,384);self.assertEqual(p.parent.stat().st_mode&511,448)
+ def test_checkpoint_accepts_upgraded_pi_and_legacy_bootstrap(self):
+  for version in ('0.99.2','1.3.0'):
+   d=config_data();d['bootstrap_checkpoint']['pi_version']=version
+   self.assertEqual(self.cfg(d).bootstrap_checkpoint.pi_version,version)
+  d=config_data();d['bootstrap_checkpoint']['pi_version']='9.0.0'
+  with self.assertRaises(ValueError):self.cfg(d)
  def test_checkpoint_cannot_escape_bucket_prefix(self):
   c=self.cfg();d=config_data()['bootstrap_checkpoint'];d['archive_key']='other/state.tgz'
   with self.assertRaises(ValueError):validate_checkpoint(d,c,bootstrap=True)

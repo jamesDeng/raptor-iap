@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.source="https://github.com/jamesDeng/raptor-iap"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@0.99.2 \
+    && npm install --global --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.3.0 \
     && npm cache clean --force
 
 # Keep the official base's root user and writable account files for sandbox init.
