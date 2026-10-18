@@ -124,9 +124,9 @@ func validRepository(v Repository) bool {
 func (r Request) validate(mutation bool) error {
 	b := r.Binding
 	modelValid := (b.ProviderID == "" && b.ConnectionVersion == 0 && b.Model == "gpt-5.6-luna") || (b.ProviderID == "codex" && b.ConnectionVersion > 0 && label.MatchString(b.Model))
-	qualification := b.Operation == "db-proxy.replace-nodes" && b.ObjectKind == "db-proxy" && b.ExecutionMode == "qualification" && b.EnvCode == "rdev.ali" && b.ProviderID == "codex" && b.ConnectionVersion > 0 && len(r.Repositories) == 0
+	pgcat := b.Operation == "db-proxy.replace-nodes" && b.ObjectKind == "db-proxy" && (b.ExecutionMode == "qualification" || b.ExecutionMode == "replacement") && b.EnvCode == "rdev.ali" && b.ProviderID == "codex" && b.ConnectionVersion > 0 && len(r.Repositories) == 0
 	application := b.ObjectKind == "application" && b.ExecutionMode == "" && ((b.Operation == "application.question" && b.EnvCode == "rdev.ali") || (b.Operation == "repository.change" && label.MatchString(b.EnvCode)))
-	if !uuid.MatchString(b.RequestID) || !uuid.MatchString(b.AttemptID) || (!qualification && !application) || !label.MatchString(b.ObjectCode) || !commit.MatchString(b.SkillsCommit) || !digest.MatchString(b.DefinitionSHA256) || b.ClusterID == "" || !modelValid {
+	if !uuid.MatchString(b.RequestID) || !uuid.MatchString(b.AttemptID) || (!pgcat && !application) || !label.MatchString(b.ObjectCode) || !commit.MatchString(b.SkillsCommit) || !digest.MatchString(b.DefinitionSHA256) || b.ClusterID == "" || !modelValid {
 		return ErrInvalid
 	}
 	if b.Operation == "application.question" && len(r.Repositories) != 0 {
