@@ -1,7 +1,7 @@
 import {createDirectProgressController,progressConnectionStatus} from './direct-progress.js?v=connection-status-2';
 const {updateWorklog,resetWorklog}=typeof document==='undefined'?{updateWorklog:()=>false,resetWorklog:()=>{}}:await import('./worklog.js?v=request-conversation-1');
 export function operationModelChoices(operation,mode,choices) {
- return operation==='db-proxy.replace-nodes'&&mode!=='qualification'?choices.filter(m=>m.modelId==='gpt-5.6-luna'):choices;
+ return operation==='db-proxy.replace-nodes'&&mode!=='qualification'?choices.filter(m=>m.providerId==='codex'&&['gpt-6-luna','gpt-6.1-sol'].includes(m.modelId)):choices;
 }
 export function liveModelOperation(name){return ['application.question','repository.change','db-proxy.replace-nodes'].includes(name);}
 export function validateParameters(schema, values) {

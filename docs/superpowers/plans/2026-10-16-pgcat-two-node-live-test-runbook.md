@@ -24,14 +24,19 @@ Expected originals at design time: `i-t4n5kisq7u820wbx8nri`, `i-t4n5kisq7u820wbx
 Verify both actual baseline originals before creating the immutable request.
 
 Before any live action, present fresh cost/balance and forecast including four-node
-peak, runtime and retention within RMB 1,000; record observation time and source.
+peak, runtime and retention within the owner-approved ceiling; record observation
+time and source. The original ceiling was RMB 1,000. On 2026-10-18 the owner
+raised the whole-POC ceiling to CNY 1,200 net pretax for this one test after
+the billed October net reached CNY 959.08. This amendment does not remove the
+fresh forecast, balance, delayed-billing, or stop gates.
 Do not start after 21:30 Asia/Shanghai; stop new mutations by 22:45; reserve
 reconciliation/credential deletion before daily 23:59 stop. Defer if the remaining
 budget cannot cover the entire capture, approvals and cleanup. Capture maximum is
 5,400 seconds, each segment maximum 1,800 seconds, provider refresh 15 seconds.
 
 Verify signed-in Raptor creator/admin and supported replacement model
-`gpt-5.6-luna`; qualification model support is not replacement support.
+`gpt-6-luna` on the deployed Raptor and Gateway images; qualification model
+support or a local source change is not replacement support.
 Keep `skills-v0.4.0` immutable. Record resolved tag commit, selected skill SHA,
 request definition SHA, source Git SHA, collector/provider source hashes,
 worker artifact hashes and guard binary hash; record registry image digests,
@@ -283,7 +288,7 @@ remain live qualification gates; offline tests do not establish either outcome.
    Verification checks effective loaded config, owner chain, new Pod UID and readiness.
 3. Resume only authorized producers to create **one new immutable** signed-in
    `db-proxy.replace-nodes` request, `executionMode: replacement`, model
-   `gpt-5.6-luna`, pinned `skills-v0.4.0`, resolved exact scope. Record request ID,
+   `gpt-6-luna`, pinned `skills-v0.4.0`, resolved exact scope. Record request ID,
    definition SHA and skills commit; keep identical across all resumes. Prior
    qualification `87b0ba57-a6d3-487a-96e7-530426e35878` cannot be converted/reused.
 4. Agent records/protects originals; expand once 2→4; qualify both new nodes with
@@ -374,7 +379,7 @@ private addresses or kubeconfig content. Review before public sharing.
 | root | `schemaVersion: 1`, `runId: string`, `startedAt/endAt: timestamp|null`, `scope`, `artifacts`, `request`, `approvals: array`, `fleetBefore/fleetAfter`, `captures: array`, `assessment`, `cleanup`, `retention` |
 | scope | `envCode: rdev.ali`, `proxyCode: DP00001`, `targetDbCode: D00002`, `applicationCode: A00003`, `groupId`, `serverGroupId`, `clusterId`, `workerId`, `applicationUid`: string |
 | artifacts | `sourceCommit`, `skillsTag: skills-v0.4.0`, `skillsCommit`, `skillSha256`, `guardBinarySha256`: string|null; `sourceFiles/workerFiles: array<{relativePath:string,sha256}>`; `images: array<{component:string,digest:string,liveImageId:string|null}>` |
-| request | `requestId`, `definitionSha256`, `selectedSkillCommit`: string|null; `model: gpt-5.6-luna`, `executionMode: replacement`, `convergence: true|false|null`, `acceptance: pending` |
+| request | `requestId`, `definitionSha256`, `selectedSkillCommit`: string|null; `model: gpt-6-luna`, `executionMode: replacement`, `convergence: true|false|null`, `acceptance: pending` |
 | each approval | `actionId`, `approvalId`, `requestId`, `definitionSha256`, `bindingDigest`: string; `fromDesired/toDesired: integer`, `decision: approved|denied|pending|unknown`, `pausedAt/resumedAt/decidedAt: timestamp|null`, `submission: not_submitted|submitted|unknown`, `providerRequestId: string|null` |
 | fleet snapshot | `observedAt: timestamp|null`, `desired: integer|null`, `members: array<{instanceId:string,protected:boolean|null,healthy:boolean|null,registered:boolean|null}>` |
 | each capture | `kind: disabled-path|full-window`, `manifestRelativePath: string`, `manifestSha256`, `segments: array<{relativePath:string,sha256}>`, `pathProof: complete|incomplete|unknown`, `observedProcesses: array<{podUid:string,processId:string,finalObserved:boolean}>`, `status: PASS|FAIL|INCONCLUSIVE`, `reasonCodes: array<string>` |

@@ -14,13 +14,13 @@
 
 - Exact scope: `rdev.ali`, `DP00001`, `D00002`, `A00003`, ESS `asg-t4necb4dfmu6o3z2rn0g`, NLB group `sgp-xs5s42tihtl6ja2a67`, ACK worker `i-t4nj1bitmcz7cuoch82h`. Rediscover original IDs before execution.
 - `replacementEnabled=false` through implementation and disabled-mode capture. The earlier native qualification PASS is separate from replacement and traffic acceptance.
-- Full run uses a **new** immutable replacement request, `gpt-5.6-luna`, pinned `skills-v0.4.0`, two distinct request-bound human approvals, and one continuous traffic window.
+- The 2026-10-18 model amendment makes the full run use a **new** immutable replacement request with `gpt-6-luna`, pinned `skills-v0.4.0`, two distinct request-bound human approvals, and one continuous traffic window. Verify the reviewed model-admission release on live Raptor and Gateway before starting.
 - Poll client and metrics evidence every second, provider inventory at least every 15 seconds; provider age >30 seconds, metrics source age >45 seconds, or a poll gap >3 seconds prevents PASS.
 - Rotate segments at ≤30 minutes, bound the complete capture to ≤90 minutes, and require a completion manifest with hashes and an explicit final marker.
 - No secret payload, DSN, SQL payload, token, or kubeconfig in Git, logs, shell arguments, receipts, retained evidence, or Terraform state. Do not read the older private Secret snapshots as update input.
 - No new cloud resources or IAM through CLI/console. Required provisioning uses Terraform PR plan/comment and reviewed apply; application release uses existing image-pin/Argo GitOps flow.
 - Do not transfer a kubeconfig or enable replacement without separate, specific action-time authorization. Follow `working/skills/ack-workbench-cli/SKILL.md` for ACK worker access; if that transfer is rejected, stop.
-- Live run begins by 21:30 Asia/Shanghai, stops new mutations by 22:45, precedes the 23:59 owner stop, and stays within the RMB 1,000 ceiling.
+- Live run begins by 21:30 Asia/Shanghai, stops new mutations by 22:45, precedes the 23:59 owner stop, and stays within the owner-amended CNY 1,200 net pretax whole-POC ceiling for this run (originally RMB 1,000).
 
 ## Review Focus
 

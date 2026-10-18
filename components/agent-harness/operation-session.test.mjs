@@ -28,3 +28,8 @@ test('tampered session content refuses resume',()=>{
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'pi-session-')));
  try{const manager=openOperationSession({sdk:{SessionManager},stateRoot:root,binding});manager.appendMessage({role:'user',content:'hello',timestamp:Date.now()});const ref=operationSessionReference(manager,binding,root);fs.appendFileSync(manager.getSessionFile(),'{}\n');assert.throws(()=>openOperationSession({sdk:{SessionManager},stateRoot:root,binding,sessionReference:ref}),/InvalidSessionReference/);}finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+test('replacement session binds a connected GPT-6 model across resume',()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'pi-session-')));
+ const selected={...binding,operation:'db-proxy.replace-nodes',executionMode:'replacement',providerId:'codex',connectionVersion:3,model:'gpt-6-luna'};
+ try{const manager=openOperationSession({sdk:{SessionManager},stateRoot:root,binding:selected});manager.appendMessage({role:'user',content:'replacement',timestamp:Date.now()});const ref=operationSessionReference(manager,selected,root);assert.equal(openOperationSession({sdk:{SessionManager},stateRoot:root,binding:selected,sessionReference:ref}).getSessionId(),manager.getSessionId());assert.throws(()=>openOperationSession({sdk:{SessionManager},stateRoot:root,binding:{...selected,model:'gpt-6.1-sol'},sessionReference:ref}),/InvalidSessionReference/);assert.throws(()=>openOperationSession({sdk:{SessionManager},stateRoot:root,binding:{...selected,connectionVersion:0}}),/InvalidSessionReference/);}finally{fs.rmSync(root,{recursive:true,force:true});}
+});

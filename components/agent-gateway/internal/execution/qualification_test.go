@@ -70,6 +70,33 @@ func TestQualificationAcceptsConfiguredCurrentModel(t *testing.T) {
 	}
 }
 
+func TestReplacementAcceptsPinnedGPT6CodexModels(t *testing.T) {
+	for _, model := range []string{"gpt-6-luna", "gpt-6.1-sol"} {
+		t.Run(model, func(t *testing.T) {
+			in := replacementInput(t)
+			var d map[string]any
+			json.Unmarshal(in.Definition, &d)
+			d["model"], d["providerId"], d["connectionVersion"] = model, "codex", float64(3)
+			d["operations"].([]any)[0].(map[string]any)["parameters"] = map[string]any{"mode": "replacement"}
+			in.Definition, _ = json.Marshal(d)
+			h := sha256.Sum256(in.Definition)
+			in.DefinitionSHA256 = hex.EncodeToString(h[:])
+			b, _, err := ParseLiveOperation(in, "attempt")
+			if err != nil || !b.journalValid() || !b.SessionModelAllowed() {
+				t.Fatalf("pinned replacement model rejected: %v", err)
+			}
+			b.ConnectionVersion = 0
+			if b.journalValid() || b.SessionModelAllowed() {
+				t.Fatal("unbound model accepted")
+			}
+			b.ConnectionVersion, b.Model = 3, "gpt-6-sol"
+			if b.journalValid() || b.SessionModelAllowed() {
+				t.Fatal("unapproved replacement model accepted")
+			}
+		})
+	}
+}
+
 func TestQualificationCheckpointAcceptsSelectedConfiguredModel(t *testing.T) {
 	b, _ := qualificationResultFixture()
 	b.Model = "gpt-6-luna"
