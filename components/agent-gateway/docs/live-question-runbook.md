@@ -27,7 +27,7 @@ Existing SERVICE_USERNAME/SERVICE_PASSWORD authenticate Gateway APIs and Raptor 
 
 LiveConfig JSON keys: infraUsername, infraPassword, accountId, region (ap-southeast-1), teamId, templateId, bucket, bucketPrefix, volumeName, volumeId, executionRoleArn, bootstrapCheckpoint, raptorMcpUrl, infraMcpUrl, harnessDir (`/opt/raptor-harness`). Bootstrap descriptor uses archiveKey/checksumKey/sha256/bytes/piVersion/encryption/verifiedAt. Startup independently verifies the archive, checksum, sizes and remote AES256 encryption; a supplied verifiedAt is not proof.
 
-Template prerequisites: existing Singapore sandbox team/template/OSS Volume; Node exactly 22.23.3 and Python3 available to user. Preparation fails if absent. Pi coding-agent and pi-mcp are pinned 0.99.2; npm ci uses the lockfile, with install scripts disabled. Harness files/config use umask 077. Attempt MCP credential/config/progress/logs live outside the auth archive root. The archive allowlists auth.json and session files; each request starts a fresh conversation. OAuth only, no API-key fallback.
+Template prerequisites: existing Singapore sandbox team/template/OSS Volume; Node exactly 22.23.3 and Python3 available to user. Preparation fails if absent. Pi coding-agent, pi-ai and pi-mcp are pinned 1.3.0; npm ci uses the lockfile, with install scripts disabled. Harness files/config use umask 077. Attempt MCP credential/config/progress/logs live outside the auth archive root. The archive allowlists auth.json and session files; each request starts a fresh conversation. OAuth only, no API-key fallback.
 
 Limits: one leased worker and durable slot, 600-second overall attempt, sandbox TTL no more than 900 seconds, 90-second model call, ten assistant turns, 1024 output tokens per response. Question <=2000 code points/8 KiB; answer <=16 KiB; terminal/progress <=64 KiB; checkpoint <=16 MiB. No inferred successful completion from answer existence.
 
@@ -117,3 +117,5 @@ exact-session checkpoint restoration, new attempt credentials, browser ingress
 and ticket renewal, cleanup, and interrupted-message recovery on that runtime.
 Keep flags off until that deployed acceptance is reviewed. No provisioning is
 required or performed by this feature.
+
+PI upgrade rollout: deploy the gateway readers accepting checkpoints from both 0.99.2 and 1.3.0 before selecting the 1.3.0 guest image. Existing 0.99.2 bootstrap checkpoints remain supported. After 1.3.0 checkpoints are written, rollback must retain readers supporting 1.3.0; an old 0.99.2-only gateway or guest cannot safely resume them.

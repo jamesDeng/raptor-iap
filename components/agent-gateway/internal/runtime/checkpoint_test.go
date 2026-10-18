@@ -40,10 +40,14 @@ func TestCheckpointVerifierRequiresRemoteEncryptedContent(t *testing.T) {
 	hash := hex.EncodeToString(sum[:])
 	ref := execution.VerifiedCheckpoint{ArchiveKey: "auth/lifecycle/g.tgz", ChecksumKey: "auth/lifecycle/g.sha256", SHA256: hash, Bytes: 7, PiVersion: "0.99.2"}
 	good := fixtureObjects{archive: "archive", checksum: hash, encryption: "AES256", size: 7}
-	for _, name := range []string{"good", "encryption", "size", "hash", "checksum", "prefix", "missing", "partial"} {
+	for _, name := range []string{"good", "upgraded", "unsupported", "encryption", "size", "hash", "checksum", "prefix", "missing", "partial"} {
 		t.Run(name, func(t *testing.T) {
 			f, r := good, ref
 			switch name {
+			case "upgraded":
+				r.PiVersion = "1.3.0"
+			case "unsupported":
+				r.PiVersion = "9.0.0"
 			case "encryption":
 				f.encryption = ""
 			case "size":
@@ -61,7 +65,7 @@ func TestCheckpointVerifierRequiresRemoteEncryptedContent(t *testing.T) {
 			}
 			v := CheckpointVerifier{Objects: f, Prefix: "auth", Now: func() time.Time { return time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC) }}
 			out, e := v.VerifyCheckpoint(context.Background(), r)
-			if name == "good" {
+			if name == "good" || name == "upgraded" {
 				if e != nil || out.Encryption != "AES256" || out.VerifiedAt.IsZero() {
 					t.Fatal(out, e)
 				}

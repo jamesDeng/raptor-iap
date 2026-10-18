@@ -15,7 +15,7 @@ test('probe observation enforces turn limit and rejects error result',async()=>{
 test('real SDK sessions enforce fresh context, token limits and bounded timeout without a provider call',async()=>{
  const {runReadProbe}=await import('../../components/agent-harness/pi-adapter.mjs');
  const entry=new URL(import.meta.resolve('../../components/agent-harness/node_modules/@earendil-works/pi-coding-agent/dist/index.js'));
- const {createAssistantMessageEventStream}=await import(new URL('../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js',entry));
+ const {createAssistantMessageEventStream}=await import(new URL('../../components/agent-harness/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js',import.meta.url));
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'pi-session-')));
  const originalTimer=global.setTimeout;let deadlineSeen=false;
  try{

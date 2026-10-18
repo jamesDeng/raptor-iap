@@ -328,3 +328,12 @@ func TestPublicNarrationRejectsInvalidEnvelopes(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckpointPiUpgradeCompatibility(t *testing.T) {
+	for _, version := range []string{"0.99.2", "1.3.0", "9.0.0"} {
+		ref := VerifiedCheckpoint{ArchiveKey: "auth/lifecycle/upgrade.tgz", ChecksumKey: "auth/lifecycle/upgrade.sha256", SHA256: strings.Repeat("a", 64), Bytes: 100, PiVersion: version, Encryption: "AES256", VerifiedAt: time.Now()}
+		if ref.valid() != (version != "9.0.0") {
+			t.Errorf("checkpoint version %s compatibility rejected", version)
+		}
+	}
+}

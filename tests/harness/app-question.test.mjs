@@ -33,8 +33,8 @@ test('context tool executes saved data and rejects alternate selectors',async()=
 test('real SDK exposes only context tool, uses immutable data and fresh sessions',async()=>{
  const {runAppQuestion}=await import('../../components/agent-harness/app-question.mjs');
  const entry=new URL(import.meta.resolve('../../components/agent-harness/node_modules/@earendil-works/pi-coding-agent/dist/index.js'));
- const {createAssistantMessageEventStream}=await import(new URL('../node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js',entry));
- const {getCurrentTools}=await import(new URL('../node_modules/@earendil-works/pi-ai/dist/index.js',entry));
+ const {createAssistantMessageEventStream}=await import(new URL('../../components/agent-harness/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js',import.meta.url));
+ const {getCurrentTools}=await import(new URL('../../components/agent-harness/node_modules/@earendil-works/pi-ai/dist/index.js',import.meta.url));
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'app-question-')));
  const originalTimer=global.setTimeout;let mode='normal',calls=0,seen=[],deadlineSeen=false;
  try{

@@ -82,7 +82,7 @@ test('qualification pause catalog admits only the exact human-approval wait thro
  const {createGuardedFetch}=await import('./mcp-runtime.mjs');
  const {operationCapabilities,operationToolSchema}=await import('./operation-profile.mjs');
  const entry=new URL(import.meta.resolve('@earendil-works/pi-coding-agent'));
- const {validateToolArguments}=await import(new URL('../node_modules/@earendil-works/pi-ai/dist/utils/validation.js',entry));
+ const {validateToolArguments}=await import('@earendil-works/pi-ai/utils/validation');
  const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'qualification'};
  const scope={envCode:'rdev.ali',proxyCode:'DP00001',groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'DB00001',application:{envCode:'rdev.ali',appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
  const tools=operationCapabilities(b,scope).raptor.map(name=>({name,inputSchema:operationToolSchema('raptor',name)}));

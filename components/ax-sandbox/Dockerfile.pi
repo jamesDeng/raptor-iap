@@ -1,5 +1,8 @@
-# Existing verified Raptor Pi0.99.2 release. Extend it with the AX guest daemon.
+# Existing pinned Raptor base; upgrade its Pi CLI before adding the AX guest daemon.
 FROM ghcr.io/jamesdeng/raptor-iap-pi@sha256:4fc6772c0577156f5722d7474e3e1ea30173496f63acf5253f35c7c512535289
+RUN npm install --global --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.3.0 \
+    && test "$(pi --version)" = "1.3.0" \
+    && npm cache clean --force
 RUN apt-get update && apt-get install -y --no-install-recommends python3 procps openssh-client postgresql-client ca-certificates curl gh && rm -rf /var/lib/apt/lists/*
 # Official version-pinned tools; hashes verified before executable installation.
 RUN curl -fsSL https://github.com/aliyun/aliyun-cli/releases/download/v3.5.1/aliyun-cli-linux-3.5.1-amd64.tgz -o /tmp/aliyun.tgz \

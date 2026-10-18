@@ -148,7 +148,7 @@ func validJournalKind(k string) bool {
 	return k == "provider" || k == "probe_cleanup" || k == "prepare" || k == "restore" || (strings.HasPrefix(k, "reconcile_key:") && journalName.MatchString(k)) || k == "key" || k == "sandbox" || k == "command" || k == "access" || k == "checkpoint" || k == "terminate" || k == "revoke_key" || k == "revoke_access"
 }
 func (c VerifiedCheckpoint) valid() bool {
-	if c.PiVersion != "0.99.2" || c.Encryption != "AES256" || c.VerifiedAt.IsZero() || !shaPattern.MatchString(c.SHA256) || c.Bytes < 1 || c.Bytes > 16*1024*1024 || !strings.HasSuffix(c.ArchiveKey, ".tgz") || c.ChecksumKey != strings.TrimSuffix(c.ArchiveKey, ".tgz")+".sha256" {
+	if (c.PiVersion != "0.99.2" && c.PiVersion != "1.3.0") || c.Encryption != "AES256" || c.VerifiedAt.IsZero() || !shaPattern.MatchString(c.SHA256) || c.Bytes < 1 || c.Bytes > 16*1024*1024 || !strings.HasSuffix(c.ArchiveKey, ".tgz") || c.ChecksumKey != strings.TrimSuffix(c.ArchiveKey, ".tgz")+".sha256" {
 		return false
 	}
 	for _, key := range []string{c.ArchiveKey, c.ChecksumKey} {

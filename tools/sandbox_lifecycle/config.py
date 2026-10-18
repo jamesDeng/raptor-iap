@@ -48,7 +48,7 @@ def checkpoint_shape(value):
   ref=CheckpointRef(**value)
   if not all(_key(v) for v in (ref.archive_key,ref.checksum_key)):raise ValueError()
   if not ref.archive_key.endswith('.tgz') or ref.checksum_key!=ref.archive_key[:-4]+'.sha256':raise ValueError()
-  if not re.fullmatch('[a-f0-9]{64}',ref.sha256) or type(ref.bytes) is not int or not 0<ref.bytes<=LIMIT or ref.pi_version!='0.99.2':raise ValueError()
+  if not re.fullmatch('[a-f0-9]{64}',ref.sha256) or type(ref.bytes) is not int or not 0<ref.bytes<=LIMIT or ref.pi_version not in ('0.99.2','1.3.0'):raise ValueError()
   return ref
  except (TypeError,KeyError,ValueError,AttributeError):raise ValueError('InvalidCheckpoint') from None
 

@@ -24,7 +24,7 @@ sleep 3
 [[ "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$container")" == none ]]
 
 docker exec "$container" /bin/bash -euo pipefail -c '
-  [[ "$(pi --version)" == "0.99.2" ]]
+  [[ "$(pi --version)" == "1.3.0" ]]
   node -e '\''const actual = process.versions.node.split(".").map(Number); const floor = [22,19,0]; for (let i=0;i<3;i++) { if (actual[i]>floor[i]) process.exit(0); if (actual[i]<floor[i]) process.exit(1); }'\''
   [[ -x /bin/bash ]]
   git --version >/dev/null
