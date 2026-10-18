@@ -13,7 +13,7 @@ Preserve existing routes, cookie sessions, CSRF, administrator denial, secret cl
 - [x] Add failing API/session and browser acceptance tests; implement cookie/CSRF client and all existing Admin page workflows.
 - [x] Add failing Go routing tests, replace old page renderer with embedded SPA and preserve API proxy/legacy hashes.
 - [x] Integrate Docker and CI build/asset verification; run existing regression suites and production build.
-- [ ] Obtain independent review, resolve material findings, open PR, wait for checks and merge.
+- [x] Obtain independent review, resolve material findings, open PR, wait for checks and merge.
 - [ ] Publish image, pin it through GitOps PR, verify live routing and pages, document evidence and limitations.
 
 ## Execution evidence
@@ -24,3 +24,6 @@ Preserve existing routes, cookie sessions, CSRF, administrator denial, secret cl
 - Independent review found a pending-save navigation race. Regraded as Important because a late redirect can discard context in another editor. The browser regression failed before the active-component guard and passed afterward. No review findings remain deferred.
 - Browser acceptance covers all migrated workflows with synthetic API fixtures against the compiled Go server and production CSP. Desktop/mobile screenshots were inspected; responsive navigation was corrected.
 - Current worker kubeconfig is expired. Do not transfer a replacement without the specifically required authorization; use public browser verification and GitOps evidence for this release.
+
+- Source migration merged in PR #247 as `0728b379554339bfa0e3f24b99752eb81e86f458`; all required checks passed. Publication run 39120891008 passed, including published image packaging checks. Raptor digest `sha256:aef7a42ace94d70f354ca63f470ac98f55124ee53317478d81fc5b84717e97d6` was read from the completed publication job through the GitHub connector.
+- The rdev release preserves the gateway image, hostnames and backend routing. The prior release source revision is an ancestor of this image source, preserving newer platform activity changes.
