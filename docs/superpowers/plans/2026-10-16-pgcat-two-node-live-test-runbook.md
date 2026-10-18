@@ -52,7 +52,7 @@ current action-time authorization; approval of this document alone is insufficie
 New IAM or cloud resources return to the component Terraform PR with sanitized
 plan comment and reviewed apply. Do not provision via CLI or expand IAM here.
 
-## Worker preparation and disabled 60-second path proof
+## Worker preparation and disabled 60-second measurement proof
 
 Read project-root `working/skills/ack-workbench-cli/SKILL.md` before Workbench use.
 Use only profile `infra-ops-poc`, region `ap-southeast-1`, exact worker above on
@@ -137,9 +137,17 @@ For `CAPTURE_ARGS`, use:
 
 ```sh
 --output /root/PRIVATE_RUN/disabled-60s \
-  --inventory /root/PRIVATE_RUN/provider-inventory.json --seconds 60 \
+  --inventory /root/PRIVATE_RUN/provider-inventory.json --seconds 75 \
   --boundary-dir /root/PRIVATE_RUN/disabled-boundary
 ```
+
+The 75-second cap allows at least 60 seconds of measurement before the one-time
+finish request and its bounded settling. Start the finish helper after at least
+60 seconds of collector runtime, with enough time left before the cap to record
+the request, both finals and receipt. Confirm at least 60 ordered one-second
+measurement frames from retained evidence; elapsed wall time alone does not
+prove coverage. If the finish cannot begin with that headroom, let the run end
+INCONCLUSIVE and start a fresh authorized capture instead of rushing the gate.
 
 Verify direct client Pod UID/container/process evidence access and private
 Prometheus access, one-second continuity, exact provider roster, `up=1` and
@@ -148,7 +156,7 @@ labels and raw timestamps under 45 seconds. Discovery reads selector-matched
 Running/Pending Pods with an IP directly, including unready Pods; it does not
 filter on Ready or rely on headless Service DNS after finish.
 
-In a separate authorized worker session, before the 60-second capture timeout,
+In a separate authorized worker session, before the 75-second collector cap,
 use the same private boundary directory and kubeconfig:
 
 ```sh
