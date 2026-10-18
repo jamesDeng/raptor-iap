@@ -11,5 +11,5 @@
     "@vben-core/shared",
     "@vben-core/typings"
   ],
-  "changes": "Package manifests omit upstream development tooling. Application and build configuration are Raptor-owned. Design manifest omits the unused complete @iconify/json icon collection; Raptor uses local Ant Design controls and disables Vben Iconify toggle buttons. Includes upstream internal/tsconfig with unused manifest dependencies omitted. Tailwind theme disables automatic source discovery to exclude generated dist assets and make rebuilds deterministic; explicit package/application sources are retained."
+  "changes": "Package manifests omit upstream development tooling. Application and build configuration are Raptor-owned. Design manifest omits the unused complete @iconify/json icon collection; Raptor uses local Ant Design controls and registers the mobile toggle icons locally, avoiding external icon requests. Includes upstream internal/tsconfig with unused manifest dependencies omitted. Tailwind theme disables automatic source discovery to exclude generated dist assets and make rebuilds deterministic; explicit package/application sources are retained."
 }
