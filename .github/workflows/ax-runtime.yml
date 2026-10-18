@@ -2,10 +2,10 @@ name: AX runtime
 on:
   pull_request:
     branches: [main]
-    paths: ['components/ax-runtime-bridge/**', 'third_party/ax/**', 'scripts/ecs_ax/**', '.github/workflows/ax-runtime.yml']
+    paths: ['components/ax-runtime-bridge/**', 'third_party/ax/**', 'scripts/ecs_ax/**', 'infra-kubernetes/environments/rdev.ali/ecs-ax/bridge-release.json', '.github/workflows/ax-runtime.yml']
   push:
     branches: [main]
-    paths: ['components/ax-runtime-bridge/**', 'third_party/ax/**', 'scripts/ecs_ax/**', '.github/workflows/ax-runtime.yml']
+    paths: ['components/ax-runtime-bridge/**', 'third_party/ax/**', 'scripts/ecs_ax/**', 'infra-kubernetes/environments/rdev.ali/ecs-ax/bridge-release.json', '.github/workflows/ax-runtime.yml']
   workflow_dispatch:
 permissions:
   contents: read
