@@ -227,3 +227,5 @@ jobs:
         run: |
           pnpm exec playwright install --with-deps chromium
           pnpm test:e2e
+          PLAYWRIGHT_MODULE="$PWD/node_modules/@playwright/test" node ../platform-frontend/test/session-entry.cjs
+          PLAYWRIGHT_MODULE="$PWD/node_modules/@playwright/test" node ../platform-frontend/test/login-bootstrap.cjs
