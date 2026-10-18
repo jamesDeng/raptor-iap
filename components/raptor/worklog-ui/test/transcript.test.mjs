@@ -8,27 +8,29 @@ test('transcript pairs sequential tool calls and nests their progress observatio
  assert.equal(typeof model.projectTranscript,'function');
  const result=model.projectTranscript(snapshot,[event(1,'progress','Inspect deployment'),event(2,'tool_start','start',{tool:'status_get',status:'started'}),event(3,'progress','Waiting on infra'),event(4,'tool_result','failed',{tool:'status_get',status:'failed'}),event(5,'tool_start','retry',{tool:'status_get',status:'started'})]);
  const content=result.messages[0].content;
- assert.deepEqual(content.map(p=>p.type),['text','data','tool-call','tool-call']);
- assert.equal(content[2].isError,true);assert.equal(content[2].result.status,'failed');
- assert.equal(content[3].result,undefined);assert.notEqual(content[2].toolCallId,content[3].toolCallId);
- assert.equal(result.records[content[2].toolCallId].events[1].summary,'Waiting on infra');
+ assert.deepEqual(content.map(p=>p.type),['text','data','data']);
+ const calls=content[2].data.items.map(item=>item.part);
+ assert.equal(content[2].name,'tool-activity');
+ assert.equal(calls[0].isError,true);assert.equal(calls[0].result.status,'failed');
+ assert.equal(calls[1].result,undefined);assert.notEqual(calls[0].toolCallId,calls[1].toolCallId);
+ assert.equal(result.records[calls[0].toolCallId].events[1].summary,'Waiting on infra');
  const updated=model.projectTranscript(snapshot,[event(2,'tool_start','start',{tool:'status_get'}),event(4,'tool_result','done',{tool:'status_get',status:'succeeded'})]);
- assert.equal(updated.messages[0].content[0].toolCallId,content[2].toolCallId);
+ assert.equal(updated.messages[0].content[0].data.items[0].part.toolCallId,calls[0].toolCallId);
 });
 test('different attempts, unknown results and request boundaries retain provenance',()=>{
  assert.equal(typeof model.projectTranscript,'function');
  const result=model.projectTranscript(snapshot,[event(1,'tool_start','first',{tool:'status_get'}),event(2,'tool_result','orphan',{tool:'status_get',status:'cancelled'},'b'),{...event(3,'progress','other'),requestId:'other'},event(4,'approval_wait','Wait for reviewer',{},'b')]);
  assert.equal(result.messages.length,2);
- assert.equal(result.messages[0].content[0].result,undefined);
- assert.match(result.messages[1].content[0].text,/orphan/);
- assert.match(result.messages[1].content[2].text,/Wait for reviewer/);
+ assert.equal(result.messages[0].content[0].data.items[0].part.result,undefined);
+ assert.match(result.messages[1].content[0].data.items[0].event.summary,/orphan/);
+ assert.match(result.messages[1].content[1].text,/Wait for reviewer/);
  assert.ok(!JSON.stringify(result.messages).includes('other'));
 });
 test('only an explicitly recorded success receives success classification',()=>{
  assert.equal(typeof model.projectTranscript,'function');
  for(const status of ['cancelled','failed','pending','unknown',undefined]){
   const result=model.projectTranscript(snapshot,[event(1,'tool_start','start',{tool:'tool'}),event(2,'tool_result','end',{tool:'tool',status})]);
-  const part=result.messages[0].content[0];assert.equal(part.result.status,status??'unknown');
+  const part=result.messages[0].content[0].data.items[0].part;assert.equal(part.result.status,status??'unknown');
   assert.equal(part.isError,status==='failed'||status==='cancelled');
  }
  const result=model.projectTranscript({request:{id:'one'},execution:{status:'running',result:{answer:'Available'},checkpointStatus:'pending',cleanupStatus:'pending'}},[]);
@@ -48,7 +50,8 @@ test('Gateway review pause is not marked running and completed lifecycle is reco
 
 test('orphan results preserve their public details and provenance',()=>{
  const result=model.projectTranscript(snapshot,[event(1,'tool_result','result without start',{tool:'status_get',status:'unknown',result:'recorded observation'})]);
- assert.equal(result.messages[0].content[1].type,'data');
- assert.equal(result.messages[0].content[1].data.details.result,'recorded observation');
- assert.equal(result.messages[0].content[1].data.evidenceMode,'live');
+ const item=result.messages[0].content[0].data.items[0];
+ assert.equal(item.type,'event');
+ assert.equal(item.event.details.result,'recorded observation');
+ assert.equal(item.event.evidenceMode,'live');
 });

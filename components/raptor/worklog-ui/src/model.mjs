@@ -51,10 +51,28 @@ export function projectTranscript(snapshot={}, events=[], localMessages=[]) {
   }else{segment.content.push(...narration(event));}
  }
  for(const v of conversation)add(v);
+ // Keep uncertain tool results and observations in recorded order without
+ // claiming they belong to a particular call. Group only adjacent activity.
+ for(const message of messages){
+  if(message.role!=='assistant'||message.metadata?.custom?.receipt)continue;
+  const grouped=[];let activity;
+  for(let i=0;i<message.content.length;i++){
+   const part=message.content[i],event=message.content[i+1]?.type==='data'?message.content[i+1].data:null;
+   const toolEvent=part.type==='text'&&event&&
+    (event.kind==='tool_result'||event.kind==='tool_start'||
+     (event.kind==='progress'&&/^Observation\b/.test(event.summary??'')));
+   if(part.type==='tool-call'||toolEvent){
+    if(!activity){activity={type:'data',name:'tool-activity',data:{items:[]}};grouped.push(activity);}
+    activity.data.items.push(part.type==='tool-call'?{type:'call',part}:{type:'event',event});
+    if(toolEvent)i++;
+   }else{activity=null;grouped.push(part);}
+  }
+  message.content=grouped;
+ }
  for(const [index,message] of messages.entries()){
   if(message.role==='user'||message.metadata?.custom?.receipt)continue;
   const active=index===messages.length-1&&(!snapshot.execution?.attemptId||message.attempt===snapshot.execution.attemptId);
-  for(const part of message.content){if(part.type==='tool-call')records[part.toolCallId].active=active&&running;}
+  for(const part of message.content){if(part.name==='tool-activity')for(const item of part.data.items)if(item.type==='call')records[item.part.toolCallId].active=active&&running;}
   message.status=active&&running?{type:'running'}:active&&waiting?{type:'requires-action',reason:'interrupt'}:{type:'complete',reason:'unknown'};
   delete message.attempt;
  }
