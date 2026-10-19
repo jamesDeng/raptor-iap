@@ -97,6 +97,11 @@ func (s *Service) Action(ctx context.Context, id, action, instructions string) e
 		}
 		payload["attemptId"] = terminal.AttemptID
 	}
+	if action == "continue" && status == "failed" {
+		if _, e = tx.Exec(ctx, "UPDATE raptor.outbox SET failed_reason='superseded terminal pause' WHERE entity_id=$1 AND topic='signal' AND payload->>'kind'='pause' AND NOT delivered AND failed_reason=''", id); e != nil {
+			return domain.ErrUnavailable
+		}
+	}
 	if e = QueueSignal(ctx, tx, id, action, payload); e != nil {
 		return domain.ErrUnavailable
 	}
