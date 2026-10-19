@@ -115,3 +115,19 @@ test('adjacent activity-only attempts render as one row without reviving old too
  assert.equal(model.records[groups[0].data.items[0].part.toolCallId].active,false);
  assert.equal(model.records[groups[0].data.items[1].part.toolCallId].active,true);
 });
+test('MCP error and selector progress stay inside collapsed activity',async()=>{
+ const {projectTranscript}=await load();
+ const base={requestId:'one',evidenceMode:'live'};
+ const model=projectTranscript({request:{id:'one'},execution:{status:'completed'}},[
+  {...base,attemptId:'a',sequence:1,kind:'tool_start',details:{tool:'infra.cloud_identity_get'}},
+  {...base,attemptId:'a',sequence:2,kind:'progress',summary:'MCP infra.cloud_identity_get sdk-error',details:{status:'failed'}},
+  {...base,attemptId:'b',sequence:3,kind:'progress',summary:'MCP infra.deployments_list local-selector',details:{status:'failed'}},
+ ]);
+ const groups=model.messages.flatMap(message=>message.content.filter(part=>part.name==='tool-activity'));
+ assert.equal(groups.length,1);
+ assert.deepEqual(groups[0].data.items.map(item=>item.type),['call','event']);
+ assert.equal(model.messages.flatMap(message=>message.content.filter(part=>part.type==='text')).length,0);
+ const call=groups[0].data.items[0].part;
+ assert.deepEqual(model.records[call.toolCallId].events.map(event=>event.summary).slice(1),['MCP infra.cloud_identity_get sdk-error']);
+ assert.equal(groups[0].data.items[1].event.summary,'MCP infra.deployments_list local-selector');
+});

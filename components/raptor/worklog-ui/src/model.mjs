@@ -61,7 +61,7 @@ export function projectTranscript(snapshot={}, events=[], localMessages=[]) {
    const part=message.content[i],event=message.content[i+1]?.type==='data'?message.content[i+1].data:null;
    const toolEvent=part.type==='text'&&event&&
     (event.kind==='tool_result'||event.kind==='tool_start'||
-     (event.kind==='progress'&&/^Observation\b/.test(event.summary??'')));
+     (event.kind==='progress'&&/^(?:Observation|MCP)\b/.test(event.summary??'')));
    if(part.type==='text'&&event&&!toolEvent){
     grouped.push(part);
     if(activity)activity.data.items.push({type:'record',event});
