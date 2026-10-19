@@ -76,3 +76,29 @@ test('earlier status details join tool activity across intervening narration',as
  assert.deepEqual(parts[2].data.items.map(item=>item.type),['record','record','call']);
  assert.deepEqual(parts[2].data.items.slice(0,2).map(item=>item.event.sequence),[1,2]);
 });
+test('interleaved narration and tool calls share one activity group',async()=>{
+ const {projectTranscript}=await load();
+ const base={requestId:'one',attemptId:'a',evidenceMode:'live'};
+ const model=projectTranscript({request:{id:'one'},execution:{status:'completed'}},[
+  {...base,sequence:1,kind:'progress',summary:'I will inspect the workload',details:{runtimeSequence:1}},
+  {...base,sequence:2,kind:'tool_start',details:{tool:'first'}},
+  {...base,sequence:3,kind:'tool_result',details:{tool:'first',status:'succeeded'}},
+  {...base,sequence:4,kind:'progress',summary:'Now checking the baseline',details:{runtimeSequence:2}},
+  {...base,sequence:5,kind:'tool_start',details:{tool:'second'}},
+  {...base,sequence:6,kind:'tool_result',details:{tool:'second',status:'succeeded'}},
+ ]);
+ const groups=model.messages[0].content.filter(part=>part.name==='tool-activity');
+ assert.equal(groups.length,1);
+ assert.deepEqual(groups[0].data.items.map(item=>item.type),['record','call','record','call']);
+ assert.deepEqual(model.messages[0].content.filter(part=>part.type==='text').map(part=>part.text),['I will inspect the workload','Now checking the baseline']);
+});
+test('recorded details without a following tool still appear in the activity group',async()=>{
+ const {projectTranscript}=await load();
+ const base={requestId:'one',attemptId:'a',evidenceMode:'live'};
+ const model=projectTranscript({request:{id:'one'},execution:{status:'completed'}},[
+  {...base,sequence:1,kind:'progress',summary:'Qualification checked',details:{runtimeSequence:1}},
+ ]);
+ const parts=model.messages[0].content;
+ assert.deepEqual(parts.map(part=>part.type==='data'?part.name:part.type),['text','tool-activity']);
+ assert.deepEqual(parts[1].data.items.map(item=>item.type),['record']);
+});
