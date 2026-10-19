@@ -119,8 +119,8 @@ require `collector.exit` mode 0600 with code 0, `completion.json`, ordered
 manifest, hashes and assessed summary. Missing, malformed or nonzero status,
 an early exit, or a Workbench timeout is INCONCLUSIVE pending inspection;
 retain private logs and evidence. Do not launch a second collector over an
-uncertain first one. Finish commands still run in a separate authorized short
-session; check the feed's latest successful publication afterward.
+uncertain first one. Use the reviewed one-use worker control for finish while
+the feed is active; check the feed's latest successful publication afterward.
 Start the provider feed on the Mac from this repository (placeholders must be
 resolved and authorized, not pasted literally):
 
@@ -268,6 +268,43 @@ Automatic restoration after a normal controlled exit and stale-socket recovery
 remain live qualification gates; offline tests do not establish either outcome.
 
 ## Conditional replacement sequence after disabled proof and action-time gates
+
+### Worker control while provider feed is active
+
+The local Workbench CLI can stall a simultaneous provider feed when a second
+`exec` opens a worker shell. Before starting the full capture, stage the reviewed
+`worker_control.py`, the verified guard binary, and `finish_clients.py` in a
+private mode-0700 worker run directory. Start one detached worker control process
+per fixed action (`enable`, `finish`, `disable`), each bound to the exact run ID,
+SHA-256 of its one expected trigger, fixed cluster/group/proxy/region, and a
+maximum 7,200-second wait. Start all watchers shortly before the collector;
+the extra time covers setup, the collector's 5,400-second maximum and cleanup.
+Download each private `control/ACTION.heartbeat.json` before its trigger and
+require the exact run ID/action plus a timestamp no more than 15 seconds old;
+if clocks disagree or the heartbeat is stale, stop and inspect without upload.
+Use separate `commands/` and `control/` directories, both mode 0700. The worker
+accepts an owned, single-link trigger at mode 0600 or Workbench's observed mode
+0644 inside that private directory. Workbench CLI **upload**
+delivers the exact one-use JSON trigger; Workbench CLI **download** retrieves the
+sanitized status receipt. Do not issue another Workbench `exec` while the feed
+and capture are active. Test a `probe` trigger and receipt with the provider feed
+running before using the action processes.
+
+The control helper claims a trigger before any action and refuses a duplicate,
+changed digest, scope or action. Consequential actions share a nonblocking
+worker lock. `enable` and `disable` each call the existing guard once, persist
+its sanitized set receipt before requesting rollout, then require rollout and
+effective-config verification on a Ready new Pod. A set, rollout or verify error
+is `INCONCLUSIVE`; inspect live state privately and do not repeat or reverse an
+uncertain mutation automatically. `finish` calls the existing exact-identity
+client helper once for `full-boundary` and reports only its sanitized
+acknowledgement. A client error is `INCONCLUSIVE` and needs identity/evidence
+reconciliation. Keep trigger and receipts out of Git and the public repository;
+remove them with the temporary run directory after evidence retention and
+credential cleanup. The helper does not authorize a flag change or finish by
+itself: run the existing action-time gates before delivering each trigger.
+If no status receipt arrives after an upload, classify the action as uncertain;
+never reupload that trigger or assume the mutation did not happen.
 
 1. Recheck every gate and obtain exact action-time authorization. Start a **new**
    full collector with `--boundary-dir` as above at 5,400 seconds maximum before flag enablement, with the provider
