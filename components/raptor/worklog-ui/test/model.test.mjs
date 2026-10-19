@@ -102,3 +102,16 @@ test('recorded details without a following tool still appear in the activity gro
  assert.deepEqual(parts.map(part=>part.type==='data'?part.name:part.type),['text','tool-activity']);
  assert.deepEqual(parts[1].data.items.map(item=>item.type),['record']);
 });
+test('adjacent activity-only attempts render as one row without reviving old tools',async()=>{
+ const {projectTranscript}=await load();
+ const base={requestId:'one',evidenceMode:'live'};
+ const model=projectTranscript({request:{id:'one'},execution:{status:'running',attemptId:'b'}},[
+  {...base,attemptId:'a',sequence:1,kind:'tool_start',details:{tool:'first'}},
+  {...base,attemptId:'b',sequence:2,kind:'tool_start',details:{tool:'second'}},
+ ]);
+ const groups=model.messages.flatMap(message=>message.content.filter(part=>part.name==='tool-activity'));
+ assert.equal(groups.length,1);
+ assert.deepEqual(groups[0].data.items.map(item=>item.part.toolName),['first','second']);
+ assert.equal(model.records[groups[0].data.items[0].part.toolCallId].active,false);
+ assert.equal(model.records[groups[0].data.items[1].part.toolCallId].active,true);
+});

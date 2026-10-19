@@ -39,7 +39,7 @@ export function projectTranscript(snapshot={}, events=[], localMessages=[]) {
   if(event.kind==='tool_start'&&typeof name==='string'&&name){
    const id=`${model.requestId}:${attempt}:${event.sequence}`;
    const part={type:'tool-call',toolCallId:id,toolName:name,args:{},argsText:''};
-   segment.content.push(part);records[id]={events:[event],status:'started'};
+   segment.content.push(part);records[id]={events:[event],status:'started',attemptId:attempt};
    const candidates=pending.get(name)??[];candidates.push(part);pending.set(name,candidates);
   }else if(event.kind==='tool_result'&&pending.get(name)?.length===1){
    const part=pending.get(name)[0],status=event.details?.status??'unknown';
@@ -79,10 +79,28 @@ export function projectTranscript(snapshot={}, events=[], localMessages=[]) {
   }
   message.content=grouped;
  }
+ // Adjacent attempts can end and begin with activity only. Join their rows
+ // while retaining each tool's own attempt for the running indicator.
+ for(let i=1;i<messages.length;){
+  const previous=messages[i-1],current=messages[i];
+  const tail=previous.content.at(-1),head=current.content[0];
+  if(previous.role==='assistant'&&current.role==='assistant'&&
+   !previous.metadata?.custom?.receipt&&!current.metadata?.custom?.receipt&&
+   tail?.name==='tool-activity'&&head?.name==='tool-activity'){
+   tail.data.items.push(...head.data.items);
+   current.content.shift();
+   if(!current.content.length){messages.splice(i,1);continue;}
+  }
+  i++;
+ }
+ const currentAttempt=snapshot.execution?.attemptId??model.events.at(-1)?.attemptId;
  for(const [index,message] of messages.entries()){
   if(message.role==='user'||message.metadata?.custom?.receipt)continue;
   const active=index===messages.length-1&&(!snapshot.execution?.attemptId||message.attempt===snapshot.execution.attemptId);
-  for(const part of message.content){if(part.name==='tool-activity')for(const item of part.data.items)if(item.type==='call')records[item.part.toolCallId].active=active&&running;}
+  for(const part of message.content){if(part.name==='tool-activity')for(const item of part.data.items)if(item.type==='call'){
+   const record=records[item.part.toolCallId];
+   record.active=running&&(!currentAttempt||record.attemptId===currentAttempt);
+  }}
   message.status=active&&running?{type:'running'}:active&&waiting?{type:'requires-action',reason:'interrupt'}:{type:'complete',reason:'unknown'};
   delete message.attempt;
  }
