@@ -303,14 +303,19 @@ func (b *SDKBackend) Process(ctx context.Context, n, id string) (bool, int, erro
 	defer c.Close()
 	v, e := p.GetProcess(ctx, &env.GetProcessRequest{ProcessId: id})
 	if e != nil {
+		log.Printf("AX guest process poll failed grpc_code=%s", status.Code(e))
 		return false, 0, ErrUnknown
 	}
 	switch v.GetState() {
 	case env.ProcessState_PROCESS_STATE_RUNNING:
 		return false, 0, nil
 	case env.ProcessState_PROCESS_STATE_EXITED:
+		if v.GetExitCode() != 0 {
+			log.Printf("AX guest process exited nonzero code=%d", v.GetExitCode())
+		}
 		return true, int(v.GetExitCode()), nil
 	default:
+		log.Printf("AX guest process poll unexpected state=%d", v.GetState())
 		return false, 0, ErrUnknown
 	}
 }

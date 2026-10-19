@@ -35,6 +35,24 @@ type axRun struct {
 	observation           ObservationMaterial
 }
 
+func axPollFailureCategory(err error) string {
+	switch {
+	case errors.Is(err, ErrFileNotFound):
+		return "file_absent"
+	case errors.Is(err, ErrRuntimeUnavailable):
+		return "runtime_unavailable"
+	case errors.Is(err, ErrCommandUnconfirmed):
+		return "command_unconfirmed"
+	default:
+		return "other"
+	}
+}
+
+func axPollError(stage string, err error) error {
+	log.Printf("AX inference poll failed stage=%s category=%s", stage, axPollFailureCategory(err))
+	return err
+}
+
 func (a *AXLive) call(ctx context.Context, r AXRequest) (AXResponse, error) {
 	if a.Bridge == nil {
 		return AXResponse{}, ErrConfiguration
@@ -272,18 +290,19 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 	var out execution.LiveObservation
 	r := a.axRuns[h.RequestID]
 	if r == nil || h.ID != "raptor-"+r.start.Binding.AttemptID {
-		return out, ErrRuntimeUnavailable
+		return out, axPollError("run_identity", ErrRuntimeUnavailable)
 	}
 	if r.start.Binding.ProviderID == "codex" && !r.modelRevoked && a.ModelCredentials.Valid(ctx, r.start.Binding) != nil {
+		log.Printf("AX inference poll stage=model_validate category=unconfirmed")
 		r.modelRevoked = true
 		if e := a.Cancel(ctx, h); e != nil {
-			return out, e
+			return out, axPollError("model_cancel", e)
 		}
 	}
 	if r.start.Binding.ProviderID == "codex" && !r.modelRefreshProcessed {
 		update, readError := a.read(ctx, r.start, "/tmp/raptor-private/model-refresh.json", 65536)
 		if readError != nil && !errors.Is(readError, ErrFileNotFound) {
-			return out, readError
+			return out, axPollError("model_refresh_read", readError)
 		}
 		if readError == nil {
 			r.modelRefreshProcessed = true
@@ -299,43 +318,46 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 			}
 			ackBytes, _ := json.Marshal(ack)
 			if e := a.write(ctx, r.start, "/tmp/raptor-private/model-refresh-ack.json", ackBytes); e != nil {
-				return out, e
+				return out, axPollError("model_refresh_ack", e)
 			}
 		}
 	}
 	raw, e := a.read(ctx, r.start, "/tmp/raptor-private/attempt-progress.jsonl", 65536)
 	if e != nil && !errors.Is(e, ErrFileNotFound) {
-		return out, e
+		return out, axPollError("progress_read", e)
 	}
 	if e == nil {
 		out.Events, e = decodeProgress(raw, cursor, append(append(append(a.Config.RedactionValues(), r.observation.Secrets...), r.start.Access.Credential), modelSecretValues(r.modelLease)...)...)
 		if e != nil {
-			return out, e
+			return out, axPollError("progress_decode", e)
 		}
 	}
 	out.Turns, e = observeConversation(ctx, out.Events, r.start.Binding, func(c context.Context, p string, l int64) ([]byte, error) { return a.read(c, r.start, p, l) }, append(append(a.Config.RedactionValues(), r.start.Access.Credential), modelSecretValues(r.modelLease)...))
 	if e != nil {
-		return out, e
+		return out, axPollError("conversation_observe", e)
 	}
 	req := a.request(r.start, "poll")
 	req.Phase = "inference"
 	v, e := a.call(ctx, req)
 	if e != nil {
-		return out, e
+		return out, axPollError("process_poll", e)
 	}
 	if !v.Terminal {
 		return out, nil
 	}
 	raw, e = a.read(ctx, r.start, "/tmp/raptor-private/attempt-result.json", 65536)
 	if e != nil {
-		return out, e
+		return out, axPollError("terminal_read", e)
 	}
 	terminal, e := decodeTerminal(raw, r.start.Binding, append(append(append(a.Config.RedactionValues(), r.observation.Secrets...), r.start.Access.Credential), modelSecretValues(r.modelLease)...))
-	if e == nil {
-		e = checkTerminalScope(terminal, r.start.Access.ReplacementScope)
+	if e != nil {
+		return out, axPollError("terminal_decode", ErrCommandUnconfirmed)
 	}
-	if e != nil || (terminal.Passed || terminal.Paused != nil) && v.ExitCode != 0 {
-		return out, ErrCommandUnconfirmed
+	if e = checkTerminalScope(terminal, r.start.Access.ReplacementScope); e != nil {
+		return out, axPollError("terminal_scope", ErrCommandUnconfirmed)
+	}
+	if (terminal.Passed || terminal.Paused != nil) && v.ExitCode != 0 {
+		return out, axPollError("terminal_exit", ErrCommandUnconfirmed)
 	}
 	r.terminal = &terminal
 	settled := terminal.observation()
