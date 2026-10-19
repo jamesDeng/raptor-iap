@@ -23,8 +23,8 @@ test('different attempts, unknown results and request boundaries retain provenan
  const result=model.projectTranscript(snapshot,[event(1,'tool_start','first',{tool:'status_get'}),event(2,'tool_result','orphan',{tool:'status_get',status:'cancelled'},'b'),{...event(3,'progress','other'),requestId:'other'},event(4,'approval_wait','Wait for reviewer',{},'b')]);
  assert.equal(result.messages.length,2);
  assert.equal(result.messages[0].content[0].data.items[0].part.result,undefined);
- assert.match(result.messages[1].content[0].data.items[0].event.summary,/orphan/);
- assert.match(result.messages[1].content[1].text,/Wait for reviewer/);
+ assert.match(result.messages[0].content[0].data.items[1].event.summary,/orphan/);
+ assert.match(result.messages[1].content[0].text,/Wait for reviewer/);
  assert.ok(!JSON.stringify(result.messages).includes('other'));
 });
 test('only an explicitly recorded success receives success classification',()=>{
