@@ -12,6 +12,16 @@ type SignalClient interface {
 	SendSignal(context.Context, string, json.RawMessage) error
 }
 
+func terminalPause(status, topic string, payload json.RawMessage) bool {
+	if topic != "signal" || status != "cancelled" && status != "completed" && status != "failed" {
+		return false
+	}
+	var signal struct {
+		Kind string `json:"kind"`
+	}
+	return json.Unmarshal(payload, &signal) == nil && signal.Kind == "pause"
+}
+
 func (s *Service) DispatchPending(ctx context.Context, c GatewayClient) error {
 	for i := 0; i < 50; i++ {
 		tx, e := s.Pool.Begin(ctx)
@@ -28,6 +38,23 @@ func (s *Service) DispatchPending(ctx context.Context, c GatewayClient) error {
 		if e != nil {
 			_ = tx.Rollback(ctx)
 			return domain.ErrUnavailable
+		}
+		if topic == "signal" {
+			var status string
+			if e = tx.QueryRow(ctx, "SELECT status FROM raptor.requests WHERE id=$1", entity).Scan(&status); e != nil {
+				_ = tx.Rollback(ctx)
+				return domain.ErrUnavailable
+			}
+			if terminalPause(status, topic, payload) {
+				if _, e = tx.Exec(ctx, "UPDATE raptor.outbox SET failed_reason='superseded terminal pause' WHERE id=$1", id); e != nil {
+					_ = tx.Rollback(ctx)
+					return domain.ErrUnavailable
+				}
+				if e = tx.Commit(ctx); e != nil {
+					return domain.ErrUnavailable
+				}
+				continue
+			}
 		}
 		if topic == "dispatch" {
 			e = c.PutRequest(ctx, entity)
