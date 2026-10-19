@@ -27,7 +27,9 @@ Before any live action, present fresh cost/balance and forecast including four-n
 peak, runtime and retention within the owner-approved ceiling; record observation
 time and source. The original ceiling was RMB 1,000. On 2026-10-18 the owner
 raised the whole-POC ceiling to CNY 1,200 net pretax for this one test after
-the billed October net reached CNY 959.08. This amendment does not remove the
+the billed October net reached CNY 959.08. On 2026-10-19 the owner raised the
+ceiling to CNY 1,500 net while emphasizing affordability and careful spending.
+This is a stop limit, not a spending target. These amendments do not remove the
 fresh forecast, balance, delayed-billing, or stop gates.
 Do not start after 21:30 Asia/Shanghai; stop new mutations by 22:45; reserve
 reconciliation/credential deletion before daily 23:59 stop. Defer if the remaining
