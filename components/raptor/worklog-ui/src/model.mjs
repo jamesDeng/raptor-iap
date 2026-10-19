@@ -62,20 +62,20 @@ export function projectTranscript(snapshot={}, events=[], localMessages=[]) {
    const toolEvent=part.type==='text'&&event&&
     (event.kind==='tool_result'||event.kind==='tool_start'||
      (event.kind==='progress'&&/^Observation\b/.test(event.summary??'')));
-   const followedByTool=message.content.slice(i+2).some((next,index,remaining)=>next.type==='tool-call'||
-    (next.type==='text'&&remaining[index+1]?.type==='data'&&
-     (remaining[index+1].data.kind==='tool_result'||remaining[index+1].data.kind==='tool_start'||
-      (remaining[index+1].data.kind==='progress'&&/^Observation\b/.test(remaining[index+1].data.summary??'')))));
    if(part.type==='text'&&event&&!toolEvent){
-    grouped.push(part);activity=null;
-    if(followedByTool)pendingRecords.push({type:'record',event});
-    else grouped.push(message.content[i+1]);
+    grouped.push(part);
+    if(activity)activity.data.items.push({type:'record',event});
+    else pendingRecords.push({type:'record',event});
     i++;
    }else if(part.type==='tool-call'||toolEvent){
     if(!activity){activity={type:'data',name:'tool-activity',data:{items:pendingRecords}};grouped.push(activity);pendingRecords=[];}
     activity.data.items.push(part.type==='tool-call'?{type:'call',part}:{type:'event',event});
     if(toolEvent)i++;
-   }else{activity=null;grouped.push(part);}
+   }else{grouped.push(part);}
+  }
+  if(pendingRecords.length){
+   if(activity)activity.data.items.push(...pendingRecords);
+   else grouped.push({type:'data',name:'tool-activity',data:{items:pendingRecords}});
   }
   message.content=grouped;
  }
