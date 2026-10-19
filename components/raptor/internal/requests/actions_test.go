@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+type continueAfterPauseClient struct {
+	pauses    int
+	continues int
+}
+
+func (*continueAfterPauseClient) PutRequest(context.Context, string) error { return nil }
+
+func (c *continueAfterPauseClient) SendSignal(_ context.Context, _ string, payload json.RawMessage) error {
+	var signal struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(payload, &signal); err != nil {
+		return err
+	}
+	if signal.Kind == "pause" {
+		c.pauses++
+		return domain.ErrUnavailable
+	}
+	if signal.Kind == "continue" {
+		c.continues++
+	}
+	return nil
+}
+
 func TestActionsPersistSignal(t *testing.T) {
 	s, in, u := setup(t)
 	ctx := context.Background()
@@ -60,6 +84,9 @@ func TestQualificationContinueBindsTerminalAttempt(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	if _, e = s.Pool.Exec(ctx, "UPDATE raptor.outbox SET delivered=true WHERE entity_id=$1 AND topic='dispatch'", r.ID); e != nil {
+		t.Fatal(e)
+	}
 	if e = s.Action(ctx, r.ID, "continue", "retry"); !errors.Is(e, domain.ErrConflict) {
 		t.Fatal("missing terminal view accepted", e)
 	}
@@ -71,8 +98,21 @@ func TestQualificationContinueBindsTerminalAttempt(t *testing.T) {
 	if _, e = s.Pool.Exec(ctx, "UPDATE raptor.requests SET status='failed' WHERE id=$1", r.ID); e != nil {
 		t.Fatal(e)
 	}
+	pauseID := domain.NewID()
+	pause, _ := json.Marshal(map[string]any{"signalId": pauseID, "kind": "pause", "payload": map[string]string{"reason": "waiting_approval"}})
+	if _, e = s.Pool.Exec(ctx, "INSERT INTO raptor.outbox(id,topic,entity_id,payload) VALUES($1,'signal',$2,$3)", pauseID, r.ID, pause); e != nil {
+		t.Fatal(e)
+	}
 	if e = s.Action(ctx, r.ID, "continue", "retry"); e != nil {
 		t.Fatal(e)
+	}
+	var pauseReason string
+	if e = s.Pool.QueryRow(ctx, "SELECT failed_reason FROM raptor.outbox WHERE id=$1", pauseID).Scan(&pauseReason); e != nil || pauseReason != "superseded terminal pause" {
+		t.Fatalf("stale pause blocked queued retry: reason=%q err=%v", pauseReason, e)
+	}
+	client := &continueAfterPauseClient{}
+	if e = s.DispatchPending(ctx, client); e != nil || client.pauses != 0 || client.continues != 1 {
+		t.Fatalf("retry dispatch blocked: pauses=%d continues=%d err=%v", client.pauses, client.continues, e)
 	}
 	var raw []byte
 	if e = s.Pool.QueryRow(ctx, "SELECT payload FROM raptor.outbox WHERE entity_id=$1 AND topic='signal' ORDER BY created_at DESC LIMIT 1", r.ID).Scan(&raw); e != nil {
