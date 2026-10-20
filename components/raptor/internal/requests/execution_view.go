@@ -165,7 +165,9 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 	}
 	defer tx.Rollback(ctx)
 	var status, control string
-	if e = tx.QueryRow(ctx, "SELECT status,control_state FROM raptor.requests WHERE id=$1 FOR UPDATE", r.ID).Scan(&status, &control); e != nil {
+	var approvalResumePending bool
+	var approvalResumeAt *time.Time
+	if e = tx.QueryRow(ctx, "SELECT status,control_state,approval_resume_pending,approval_resume_at FROM raptor.requests WHERE id=$1 FOR UPDATE", r.ID).Scan(&status, &control, &approvalResumePending, &approvalResumeAt); e != nil {
 		return nil, nil, false, domain.ErrUnavailable
 	}
 	var oldBody []byte
@@ -179,6 +181,20 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 		if json.Unmarshal(oldBody, &old) != nil {
 			return nil, nil, false, domain.ErrUnavailable
 		}
+	}
+	// Approval queues the request before Gateway leaves its paused state.
+	// The last public view may belong to an earlier attempt, or may not exist.
+	if status == "queued" && approvalResumePending {
+		stamp, _ := candidate["updatedAt"].(string)
+		updated, parseErr := time.Parse(time.RFC3339Nano, stamp)
+		if approvalResumeAt == nil || parseErr != nil || !updated.After(*approvalResumeAt) || candidate["status"] == "waiting_approval" {
+			if old == nil {
+				return nil, nil, false, nil
+			}
+			return old, &oldSync, false, nil
+		}
+	}
+	if old != nil {
 		stale := false
 		// A poll may race continuation dispatch and return the previous terminal
 		// attempt. Keep a queued qualification open until Gateway exposes its
@@ -222,7 +238,7 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 	}
 	next, _ := candidate["status"].(string)
 	if (control == "" || control == "cancel_requested") && status != "completed" && status != "cancelled" {
-		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status=$2 WHERE id=$1", r.ID, next); e != nil {
+		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status=$2,approval_resume_pending=CASE WHEN $2='queued' THEN approval_resume_pending ELSE false END WHERE id=$1", r.ID, next); e != nil {
 			return nil, nil, false, domain.ErrUnavailable
 		}
 	}

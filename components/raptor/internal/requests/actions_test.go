@@ -7,6 +7,7 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"testing"
+	"time"
 )
 
 type continueAfterPauseClient struct {
@@ -50,6 +51,74 @@ func TestActionsPersistSignal(t *testing.T) {
 	s.Pool.QueryRow(ctx, "SELECT count(*) FROM raptor.outbox WHERE topic='signal'").Scan(&n)
 	if n != 1 {
 		t.Fatal("action signal missing")
+	}
+}
+
+func TestApprovedPauseIgnoresStaleWaitingSnapshot(t *testing.T) {
+	s, in, u := setup(t)
+	ctx := context.Background()
+	r, err := s.Create(ctx, u, "approved-pause", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := domain.NewID()
+	running := map[string]any{"attemptId": attempt, "status": "running", "updatedAt": time.Now().UTC().Format(time.RFC3339Nano)}
+	if _, _, _, err = s.syncExecution(ctx, r, running); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Pool.Exec(ctx, "UPDATE raptor.requests SET status='queued',approval_resume_pending=true,approval_resume_at=clock_timestamp() WHERE id=$1", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, _, changed, err := s.syncExecution(ctx, r, running)
+	if err != nil || changed {
+		t.Fatalf("pre-approval running view accepted: changed=%v err=%v", changed, err)
+	}
+	waiting := map[string]any{"attemptId": domain.NewID(), "status": "waiting_approval", "updatedAt": time.Now().UTC().Format(time.RFC3339Nano)}
+	_, _, changed, err = s.syncExecution(ctx, r, waiting)
+	if err != nil || changed {
+		t.Fatalf("stale waiting view accepted: changed=%v err=%v", changed, err)
+	}
+	var status string
+	if err = s.Pool.QueryRow(ctx, "SELECT status FROM raptor.requests WHERE id=$1", r.ID).Scan(&status); err != nil || status != "queued" {
+		t.Fatalf("approved request status=%q err=%v", status, err)
+	}
+	runningNext := map[string]any{"attemptId": waiting["attemptId"], "status": "running", "updatedAt": time.Now().Add(time.Second).UTC().Format(time.RFC3339Nano)}
+	if _, _, changed, err = s.syncExecution(ctx, r, runningNext); err != nil || !changed {
+		t.Fatalf("resumed Gateway state not accepted: changed=%v err=%v", changed, err)
+	}
+	var pending bool
+	if err = s.Pool.QueryRow(ctx, "SELECT status,approval_resume_pending FROM raptor.requests WHERE id=$1", r.ID).Scan(&status, &pending); err != nil || status != "running" || pending {
+		t.Fatalf("resumed request status=%q marker=%v err=%v", status, pending, err)
+	}
+	if _, err = s.Pool.Exec(ctx, "UPDATE raptor.requests SET approval_resume_pending=true,approval_resume_at=clock_timestamp() WHERE id=$1", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Pause(ctx, r.ID, "waiting_approval"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Pool.QueryRow(ctx, "SELECT status,approval_resume_pending FROM raptor.requests WHERE id=$1", r.ID).Scan(&status, &pending); err != nil || status != "waiting_approval" || pending {
+		t.Fatalf("new pause status=%q marker=%v err=%v", status, pending, err)
+	}
+}
+
+func TestApprovedPauseIgnoresWaitingSnapshotWithoutSavedView(t *testing.T) {
+	s, in, u := setup(t)
+	ctx := context.Background()
+	r, err := s.Create(ctx, u, "approved-pause-unpolled", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Pool.Exec(ctx, "UPDATE raptor.requests SET approval_resume_pending=true WHERE id=$1", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	waiting := map[string]any{"attemptId": domain.NewID(), "status": "waiting_approval", "updatedAt": time.Now().UTC().Format(time.RFC3339Nano)}
+	_, _, changed, err := s.syncExecution(ctx, r, waiting)
+	if err != nil || changed {
+		t.Fatalf("unpolled approved pause accepted: changed=%v err=%v", changed, err)
+	}
+	var status string
+	if err = s.Pool.QueryRow(ctx, "SELECT status FROM raptor.requests WHERE id=$1", r.ID).Scan(&status); err != nil || status != "queued" {
+		t.Fatalf("approved request status=%q err=%v", status, err)
 	}
 }
 func TestDirectContinueRetriesFailedTargetsLocally(t *testing.T) {

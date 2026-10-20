@@ -125,7 +125,8 @@ func (s *Service) Decide(ctx context.Context, user domain.User, id string, in De
 		}
 		return domain.Approval{}, domain.ErrUnavailable
 	}
-	if _, e = tx.Exec(ctx, "SELECT id FROM raptor.requests WHERE id=$1 FOR UPDATE", requestID); e != nil {
+	var requestStatus, control string
+	if e = tx.QueryRow(ctx, "SELECT status,control_state FROM raptor.requests WHERE id=$1 FOR UPDATE", requestID).Scan(&requestStatus, &control); e != nil {
 		return domain.Approval{}, domain.ErrUnavailable
 	}
 	a, e := scan(tx.QueryRow(ctx, "SELECT id::text,request_id::text,action_id,binding,state,guidance FROM raptor.approvals WHERE id=$1 FOR UPDATE", id))
@@ -139,6 +140,14 @@ func (s *Service) Decide(ctx context.Context, user domain.User, id string, in De
 	a.Guidance, _ = json.Marshal(in)
 	if _, e = tx.Exec(ctx, "UPDATE raptor.approvals SET state=$2,guidance=$3,decided_by=$4 WHERE id=$1", id, a.State, a.Guidance, user.ID); e != nil {
 		return a, domain.ErrUnavailable
+	}
+	if in.Decision == "approve" && requestStatus == "waiting_approval" && control == "" {
+		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status='queued',approval_resume_pending=true,approval_resume_at=clock_timestamp() WHERE id=$1", a.RequestID); e != nil {
+			return a, domain.ErrUnavailable
+		}
+		if _, e = tx.Exec(ctx, "UPDATE raptor.outbox SET failed_reason='superseded approved pause' WHERE entity_id=$1 AND topic='signal' AND payload->>'kind'='pause' AND NOT delivered AND failed_reason=''", a.RequestID); e != nil {
+			return a, domain.ErrUnavailable
+		}
 	}
 	kind := "approval"
 	if in.Decision == "deny" {

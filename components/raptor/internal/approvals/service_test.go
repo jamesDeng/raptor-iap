@@ -2,11 +2,48 @@ package approvals
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/testutil"
 	"testing"
 )
+
+func TestApprovalQueuesWaitingRequestAndRetiresPendingPause(t *testing.T) {
+	ctx := context.Background()
+	p := testutil.Database(t)
+	if err := db.Migrate(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	id, user := domain.NewID(), domain.User{ID: domain.NewID(), Role: "user"}
+	if _, err := p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash,status) VALUES($1,$2,'resume','hash','{"type":"agent","envCode":"adev"}','schema','waiting_approval')`, id, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{Pool: p}
+	a, err := s.Request(ctx, ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "runtime.qualification-resume", EnvCode: "adev", Target: map[string]any{"requestId": id}, Parameters: map[string]any{"phase": "resume"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pauseID := domain.NewID()
+	pause, _ := json.Marshal(map[string]any{"signalId": pauseID, "kind": "pause", "payload": map[string]string{"reason": "waiting_approval"}})
+	if _, err = p.Exec(ctx, "INSERT INTO raptor.outbox(id,topic,entity_id,payload) VALUES($1,'signal',$2,$3)", pauseID, id, pause); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Decide(ctx, user, a.ID, DecisionInput{Decision: "approve"}); err != nil {
+		t.Fatal(err)
+	}
+	var status, reason string
+	if err = p.QueryRow(ctx, "SELECT status FROM raptor.requests WHERE id=$1", id).Scan(&status); err != nil || status != "queued" {
+		t.Fatalf("approved request status=%q err=%v", status, err)
+	}
+	var pending bool
+	if err = p.QueryRow(ctx, "SELECT approval_resume_pending FROM raptor.requests WHERE id=$1", id).Scan(&pending); err != nil || !pending {
+		t.Fatalf("approved resume marker=%v err=%v", pending, err)
+	}
+	if err = p.QueryRow(ctx, "SELECT failed_reason FROM raptor.outbox WHERE id=$1", pauseID).Scan(&reason); err != nil || reason != "superseded approved pause" {
+		t.Fatalf("old pause reason=%q err=%v", reason, err)
+	}
+}
 
 func TestBoundApproval(t *testing.T) {
 	ctx := context.Background()
