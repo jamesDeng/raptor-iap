@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"io"
 	"os"
@@ -101,59 +102,72 @@ func (t terminalFile) observation() execution.LiveObservation {
 	return out
 }
 
+type terminalRejection struct{ category string }
+
+func (e terminalRejection) Error() string { return ErrRuntimeUnavailable.Error() }
+func (e terminalRejection) Unwrap() error { return ErrRuntimeUnavailable }
+
+func terminalRejectCategory(err error) string {
+	var rejection terminalRejection
+	if errors.As(err, &rejection) {
+		return rejection.category
+	}
+	return "other"
+}
+
 func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (terminalFile, error) {
 	var out terminalFile
 	if len(raw) > 65536 {
-		return out, ErrRuntimeUnavailable
+		return out, terminalRejection{"size"}
 	}
 	for _, secret := range secrets {
 		if secret != "" && bytes.Contains(raw, []byte(secret)) {
-			return out, ErrRuntimeUnavailable
+			return out, terminalRejection{"secret"}
 		}
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	if d.Decode(&out) != nil {
-		return out, ErrRuntimeUnavailable
+		return out, terminalRejection{"json_schema"}
 	}
 	var extra any
 	if d.Decode(&extra) != io.EOF {
-		return out, ErrRuntimeUnavailable
+		return out, terminalRejection{"json_schema"}
 	}
 	if out.Passed && (out.Result == nil || execution.ValidateLiveResult(*out.Result, b, secrets...) != nil) {
-		return out, ErrRuntimeUnavailable
+		return out, terminalRejection{"result"}
 	}
 	if out.SessionReference != nil {
 		if out.SessionReference.Version != 1 {
-			return out, ErrRuntimeUnavailable
+			return out, terminalRejection{"session_reference"}
 		}
 		if _, e := out.SessionReference.checkpoint(execution.VerifiedCheckpoint{}).ReferenceFor(b); e != nil {
-			return out, ErrRuntimeUnavailable
+			return out, terminalRejection{"session_reference"}
 		}
 	}
 	if out.Passed && b.Operation == "db-proxy.replace-nodes" && out.SessionReference == nil {
-		return out, ErrRuntimeUnavailable
+		return out, terminalRejection{"session_reference"}
 	}
-	allowed := map[string]bool{"NeedsSignIn": true, "Cancelled": true, "Timeout": true, "TurnLimit": true, "McpUnavailable": true, "ToolFailed": true, "MissingEvidence": true, "MutationAlreadySubmitted": true, "InvalidEvidence": true, "InvalidResult": true, "UnexpectedToolCatalog": true, "InvalidProgress": true, "ModelFailed": true, "RunnerFailed": true, "CheckpointFailed": true, "CredentialRefreshUnconfirmed": true}
+	allowed := map[string]bool{"NeedsSignIn": true, "Cancelled": true, "Timeout": true, "TurnLimit": true, "McpUnavailable": true, "ToolFailed": true, "MissingEvidence": true, "MutationAlreadySubmitted": true, "InvalidEvidence": true, "InvalidResult": true, "UnexpectedToolCatalog": true, "InvalidProgress": true, "ModelFailed": true, "RunnerFailed": true, "CheckpointFailed": true, "CredentialRefreshUnconfirmed": true, "InvalidJob": true, "InvalidApprovalPause": true, "InvalidSessionReference": true, "InvalidSkillsRelease": true, "ObservationCleanupFailed": true}
 	if out.Paused != nil {
 		p := out.Paused
 		if b.Operation != "db-proxy.replace-nodes" || b.ObjectKind != "db-proxy" || !p.Valid() || (p.Kind == "resource" && p.BindingDigest != b.DefinitionSHA256) || p.RequestID != b.RequestID || p.DefinitionSHA256 != b.DefinitionSHA256 || out.SessionReference == nil || out.Passed || out.Error != "" || out.CheckpointError != "" || out.Result != nil || out.Phase != "live-inference" {
-			return out, ErrRuntimeUnavailable
+			return out, terminalRejection{"pause"}
 		}
 	}
 	if len(out.Usage) > 10 {
-		return out, ErrRuntimeUnavailable
+		return out, terminalRejection{"usage"}
 	}
 	for _, u := range out.Usage {
 		if u.Input < 0 || u.Output < 0 || u.TotalTokens < 0 || u.Input > 10000000 || u.Output > 10000000 || u.TotalTokens > 10000000 {
-			return out, ErrRuntimeUnavailable
+			return out, terminalRejection{"usage"}
 		}
 	}
 	if !out.Passed && out.Paused == nil && !allowed[out.Error] {
-		return out, ErrRuntimeUnavailable
+		return out, terminalRejection{"failure_code"}
 	}
 	if out.Result != nil && execution.ValidateLiveResult(*out.Result, b, secrets...) != nil {
-		return out, ErrRuntimeUnavailable
+		return out, terminalRejection{"result"}
 	}
 	return out, nil
 }
