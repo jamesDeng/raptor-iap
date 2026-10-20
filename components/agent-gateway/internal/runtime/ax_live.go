@@ -289,8 +289,13 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int64) (execution.LiveObservation, error) {
 	var out execution.LiveObservation
 	r := a.axRuns[h.RequestID]
-	if r == nil || h.ID != "raptor-"+r.start.Binding.AttemptID {
-		return out, axPollError("run_identity", ErrRuntimeUnavailable)
+	if r == nil {
+		log.Printf("AX inference poll failed stage=run_identity category=run_absent")
+		return out, ErrRuntimeUnavailable
+	}
+	if h.ID != "raptor-"+r.start.Binding.AttemptID {
+		log.Printf("AX inference poll failed stage=run_identity category=handle_mismatch")
+		return out, ErrRuntimeUnavailable
 	}
 	if r.start.Binding.ProviderID == "codex" && !r.modelRevoked && a.ModelCredentials.Valid(ctx, r.start.Binding) != nil {
 		log.Printf("AX inference poll stage=model_validate category=unconfirmed")
