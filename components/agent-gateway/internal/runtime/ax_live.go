@@ -351,6 +351,7 @@ func (a *AXLive) Poll(ctx context.Context, h execution.RuntimeHandle, cursor int
 	}
 	terminal, e := decodeTerminal(raw, r.start.Binding, append(append(append(a.Config.RedactionValues(), r.observation.Secrets...), r.start.Access.Credential), modelSecretValues(r.modelLease)...))
 	if e != nil {
+		log.Printf("AX terminal rejected category=%s", terminalRejectCategory(e))
 		return out, axPollError("terminal_decode", ErrCommandUnconfirmed)
 	}
 	if e = checkTerminalScope(terminal, r.start.Access.ReplacementScope); e != nil {

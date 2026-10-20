@@ -30,6 +30,31 @@ func TestTerminalRejectsIdentityPartialAndSecret(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalAcceptsHarnessFailureCodesWithoutLosingFailure(t *testing.T) {
+	b := execution.AttemptBinding{RequestID: "request", AttemptID: "attempt"}
+	for _, code := range []string{"InvalidJob", "InvalidApprovalPause", "InvalidSessionReference", "InvalidSkillsRelease", "ObservationCleanupFailed"} {
+		raw, _ := json.Marshal(map[string]any{"phase": "live-inference", "passed": false, "error": code})
+		out, err := decodeTerminal(raw, b, nil)
+		if err != nil || out.Error != code || out.Passed {
+			t.Fatalf("harness failure %s was not preserved: %+v, %v", code, out, err)
+		}
+	}
+}
+
+func TestTerminalRejectionReportsFixedCategory(t *testing.T) {
+	b := execution.AttemptBinding{RequestID: "request", AttemptID: "attempt"}
+	for _, tc := range []struct{ raw, category string }{
+		{`{"phase":"live-inference","passed":false,"error":"ForeignFailure"}`, "failure_code"},
+		{`{"phase":"live-inference","passed":false,"error":"NeedsSignIn","extra":"unexpected"}`, "json_schema"},
+		{`{"phase":"live-inference","passed":false,"error":"Bearer private"}`, "secret"},
+	} {
+		_, err := decodeTerminal([]byte(tc.raw), b, []string{"private"})
+		if err == nil || terminalRejectCategory(err) != tc.category {
+			t.Fatalf("terminal category %q: got %q (%v)", tc.category, terminalRejectCategory(err), err)
+		}
+	}
+}
 func TestProgressOnlyConsumesCompleteContiguousRows(t *testing.T) {
 	raw := `{"runtimeSequence":1,"kind":"status","outcome":"started","occurredAt":"2026-10-07T00:00:00Z"}` + "\n" + `{"runtimeSequence":2`
 	events, e := decodeProgress([]byte(raw), 0)
