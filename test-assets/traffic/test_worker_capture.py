@@ -217,3 +217,60 @@ class PartialFrameRetention(unittest.TestCase):
     def test_partial_coverage_cannot_pass(self):
         for kind in ('peer','deployment','inventory'):
             with self.subTest(kind=kind):self.check_partial(kind,False)
+
+class OptionalTimingDiagnostic(unittest.TestCase):
+    def test_timing_disk_errors_cannot_prevent_capture_completion(self):
+        import os, tempfile
+        from pathlib import Path
+        from test_capture_window import frame
+        real_fdopen=os.fdopen
+        class BrokenTiming:
+            def __init__(self,stream,kind):self.stream=stream;self.kind=kind
+            def write(self,value):
+                if self.kind=='write':raise OSError('disk full')
+                return self.stream.write(value)
+            def close(self):
+                self.stream.close()
+                raise OSError('flush failed')
+        for kind in ('write','close'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);clock=[0.0];first=[True]
+                def fdopen(fd,*args,**kwargs):
+                    stream=real_fdopen(fd,*args,**kwargs)
+                    if first[0]:first[0]=False;return BrokenTiming(stream,kind)
+                    return stream
+                def capture(*_):return frame(int(clock[0]),int(clock[0]),final=clock[0]>=5)
+                with patch.object(worker.os,'fdopen',side_effect=fdopen),patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]),patch.object(worker.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)):
+                    result=worker.run_capture(root/'capture',root/'inventory',5,timing_output=root/'timing.jsonl')
+                self.assertEqual(result['status'],'PASS')
+                self.assertTrue((root/'capture'/'completion.json').exists())
+                self.assertTrue((root/'capture'/'summary.json').exists())
+
+    def test_failed_read_is_timed_without_changing_retained_evidence(self):
+        import json, os, tempfile
+        from pathlib import Path
+        from test_capture_window import frame
+        def run(root, diagnostic):
+            clock=[0.0]
+            def capture(*_):
+                second=int(clock[0])
+                clock[0]+=.25 if second==1 else .125
+                if second==1:raise TimeoutError('private endpoint detail')
+                return frame(second,second,final=second>=5)
+            with patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]),patch.object(worker.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)):
+                verdict=worker.run_capture(root/'capture',root/'inventory',5,timing_output=root/'timing.jsonl' if diagnostic else None)
+            evidence=[p.read_bytes() for p in sorted((root/'capture').glob('segment-*.jsonl'))]
+            completion=json.loads((root/'capture'/'completion.json').read_text())
+            return verdict,evidence,completion
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);plain=root/'plain';timed=root/'timed';plain.mkdir();timed.mkdir()
+            a=run(plain,False);b=run(timed,True)
+            self.assertEqual(a[0],b[0]);self.assertEqual(a[1],b[1]);self.assertEqual(a[2]['missingPollCount'],b[2]['missingPollCount'])
+            self.assertEqual(b[0]['status'],'INCONCLUSIVE')
+            rows=[json.loads(line) for line in (timed/'timing.jsonl').read_text().splitlines()]
+            self.assertEqual(len(rows),6)
+            self.assertEqual([row['outcome'] for row in rows].count('unavailable'),1)
+            self.assertEqual(rows[1]['captureMs'],250)
+            self.assertIsNone(rows[1]['appendMs'])
+            self.assertEqual(os.stat(timed/'timing.jsonl').st_mode&0o777,0o600)
+            self.assertNotIn('private endpoint detail',(timed/'timing.jsonl').read_text())
