@@ -24,7 +24,7 @@ func (s *Service) Pause(ctx context.Context, id, reason string) error {
 	if e = QueueSignal(ctx, tx, id, "pause", map[string]string{"reason": reason}); e != nil {
 		return domain.ErrUnavailable
 	}
-	if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status=$2 WHERE id=$1", id, reason); e != nil {
+	if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status=$2,approval_resume_pending=false WHERE id=$1", id, reason); e != nil {
 		return domain.ErrUnavailable
 	}
 	return tx.Commit(ctx)

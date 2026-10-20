@@ -107,11 +107,11 @@ func (s *Service) Action(ctx context.Context, id, action, instructions string) e
 	}
 	if action == "cancel" || action == "block" {
 		state := map[string]string{"cancel": "cancelled", "block": "blocked"}[action]
-		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status=$2,control_state=$2 WHERE id=$1", id, state); e != nil {
+		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status=$2,control_state=$2,approval_resume_pending=false WHERE id=$1", id, state); e != nil {
 			return domain.ErrUnavailable
 		}
 	} else if action == "continue" {
-		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status='queued',control_state='' WHERE id=$1", id); e != nil {
+		if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status='queued',control_state='',approval_resume_pending=false WHERE id=$1", id); e != nil {
 			return domain.ErrUnavailable
 		}
 	}
