@@ -131,6 +131,14 @@ operation retains FAIL precedence. A later clean segment cannot repair an earlie
 coverage loss. Running clients must provide explicit settled final snapshots for
 completion; a finite collector timeout alone does not establish client finality.
 
+For a disabled-mode timing diagnosis, add `--timing-output /private/new-timing.jsonl`
+with a fresh path outside the capture directory. This optional mode-0600 log
+records each attempt's capture and evidence-append duration, including reads
+that fail before a frame is retained. It records no exception text, endpoint,
+credential, or client identity. Keep it private with the capture artifacts.
+The assessor does not read this log; it does not change the three-second gap
+rule, missing-poll count, or traffic verdict.
+
 ### Exact client finalization boundary
 
 After separate action-time authorization for client finish, start the collector

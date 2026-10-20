@@ -1,5 +1,5 @@
 """Run on the verified ACK worker. Read-only; no cloud credentials or mutations."""
-import argparse, concurrent.futures, datetime, json, math, os, subprocess, time, urllib.parse, urllib.request
+import argparse, concurrent.futures, datetime, json, math, os, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 from typing import Optional
 from segmented_capture import SegmentedCapture
@@ -85,14 +85,22 @@ def capture_frame(inventory_path,final_snapshots=None):
         metrics=query_metrics(base,stamp)
     except (ValueError,KeyError,TypeError,IndexError,OverflowError,OSError,RuntimeError):pass
     return {'at':stamp,'expectedReplicas':expected,'pods':rows,'inventory':inventory,'metrics':metrics}
-def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Optional[Path] = None) -> dict:
+def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Optional[Path] = None, timing_output: Optional[Path] = None) -> dict:
     from finish_clients import private_directory, read_json, atomic_json, validate_roster
     if not 5<=seconds<=5400:raise ValueError('bounded capture duration required')
     if boundary_dir is not None:
         boundary_dir=Path(boundary_dir);private_directory(boundary_dir)
         if any(boundary_dir.iterdir()):raise ValueError('fresh boundary directory required')
     w=SegmentedCapture(Path(output),max_total_seconds=seconds)
+    timing_stream=None
+    if timing_output is not None:
+        flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL
+        if hasattr(os,'O_NOFOLLOW'):flags|=os.O_NOFOLLOW
+        fd=os.open(str(timing_output),flags,0o600)
+        os.fchmod(fd,0o600)
+        timing_stream=os.fdopen(fd,'w',buffering=1)
     start=time.monotonic();end=start+seconds;tick=start;cancelled=False;errors=[];final_snapshots={};request=None;settle_start=None;bound_roster=None;boundary_completed=False
+    attempt=0
     def error(reason):errors.append({'at':utc(),'reason':reason})
     try:
         while True:
@@ -101,9 +109,11 @@ def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Optio
             if settle_start is None and now>=end:
                 if boundary_dir is not None:error('client boundary unavailable');break
                 settle_start=now
-            frame=None
+            frame=None;capture_ms=None;append_ms=None;outcome='unavailable';attempt+=1
             try:
-                frame=capture_frame(inventory,final_snapshots)
+                read_start=time.monotonic()
+                try:frame=capture_frame(inventory,final_snapshots)
+                finally:capture_ms=round((time.monotonic()-read_start)*1000,3)
                 if boundary_dir is not None and request is None and (boundary_dir/'request.json').exists():
                     request=read_json(boundary_dir/'request.json')
                     if set(request)!={'requestId','roster'} or not isinstance(request['requestId'],str) or not request['requestId'] or len(request['requestId'])>256:raise ValueError('invalid boundary')
@@ -112,7 +122,10 @@ def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Optio
                     if current!=candidate:raise ValueError('boundary identity mismatch')
                     bound_roster=candidate;settle_start=now
                 if settle_start is not None:frame['phase']='settling'
-                w.append(frame)
+                append_start=time.monotonic()
+                try:w.append(frame)
+                finally:append_ms=round((time.monotonic()-append_start)*1000,3)
+                outcome='recorded'
                 if settle_start is not None and time.monotonic()>settle_start+5:
                     error('settling period exceeded');break
                 if boundary_dir is not None and bound_roster is not None:
@@ -139,18 +152,33 @@ def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Optio
                 error('client, boundary or provider snapshot unavailable')
                 # Retain SQL evidence even when the boundary itself is malformed.
                 if frame is not None and (w.last is None or w.last!=evidence_seconds(frame['at'])):
-                    try:w.append(frame)
+                    append_start=time.monotonic()
+                    try:w.append(frame);outcome='partial'
                     except Exception:pass
+                    finally:append_ms=round((time.monotonic()-append_start)*1000,3)
+            finally:
+                if timing_stream is not None:
+                    try:
+                        timing_stream.write(json.dumps({'version':1,'attempt':attempt,'at':utc(),'captureMs':capture_ms,'appendMs':append_ms,'outcome':outcome},separators=(',',':'))+'\n')
+                    except OSError:
+                        print('optional timing output unavailable',file=sys.stderr)
+                        failed_stream=timing_stream;timing_stream=None
+                        try:failed_stream.close()
+                        except OSError:pass
             if settle_start is not None and now>=settle_start+5:break
             tick+=1;time.sleep(max(0,tick-time.monotonic()))
     except KeyboardInterrupt:cancelled=True
     if boundary_dir is not None:
         if bound_roster is None or not w.finals or not all(w.finals.values()):error('missing client final marker or boundary')
         if not boundary_completed:error('exact client finalization not completed within settling deadline')
-    return w.finish(completed=not cancelled,cancelled=cancelled,errors=errors)
+    try:return w.finish(completed=not cancelled,cancelled=cancelled,errors=errors)
+    finally:
+        if timing_stream is not None:
+            try:timing_stream.close()
+            except OSError:print('optional timing output unavailable',file=sys.stderr)
 
 def main():
-    a=argparse.ArgumentParser();a.add_argument('--output',required=True);a.add_argument('--inventory',required=True);a.add_argument('--seconds',type=int,default=60);a.add_argument('--boundary-dir');v=a.parse_args()
+    a=argparse.ArgumentParser();a.add_argument('--output',required=True);a.add_argument('--inventory',required=True);a.add_argument('--seconds',type=int,default=60);a.add_argument('--boundary-dir');a.add_argument('--timing-output');v=a.parse_args()
     os.umask(0o077)
-    print(json.dumps(run_capture(Path(v.output),Path(v.inventory),v.seconds,Path(v.boundary_dir) if v.boundary_dir else None)))
+    print(json.dumps(run_capture(Path(v.output),Path(v.inventory),v.seconds,Path(v.boundary_dir) if v.boundary_dir else None,Path(v.timing_output) if v.timing_output else None)))
 if __name__=='__main__':main()
