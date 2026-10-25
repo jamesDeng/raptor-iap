@@ -51,6 +51,7 @@ type liveDriver struct {
 	binding                         AttemptBinding
 	cleanup                         bool
 	result                          *LiveResult
+	failureCode                     string
 }
 
 func (r *liveDriver) Start(_ context.Context, s LiveStart) (RuntimeHandle, error) {
@@ -63,8 +64,32 @@ func (r *liveDriver) Poll(context.Context, RuntimeHandle, int64) (LiveObservatio
 	if r.polls == 1 {
 		return LiveObservation{Events: []RuntimeEvent{{RuntimeSequence: 1, Kind: "status", Outcome: "running", OccurredAt: time.Now().UTC()}}}, nil
 	}
+	if r.failureCode != "" {
+		return LiveObservation{Terminal: true, FailureCode: r.failureCode}, nil
+	}
 	result := validLiveResult(r.binding)
 	return LiveObservation{Terminal: true, Result: &result}, nil
+}
+func TestLiveWorkerPreservesAcceptedTerminalFailureAfterCleanup(t *testing.T) {
+	w, x, runtime, access := workerFixture(t)
+	runtime.failureCode = "InvalidApprovalPause"
+	ctx := context.Background()
+	if e := w.RunNext(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if e := w.RunActive(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if e := w.RunActive(ctx); e != nil {
+		t.Fatal(e)
+	}
+	got, e := w.Store.Get(ctx, x.RequestID)
+	if e != nil || got.Status != "failed" || got.FailureCode != "InvalidApprovalPause" || got.RecoveryNeeded || !access.revoked {
+		t.Fatalf("terminal failure was masked or cleanup was incomplete: status=%s failure=%s recovery=%t revoked=%t err=%v", got.Status, got.FailureCode, got.RecoveryNeeded, access.revoked, e)
+	}
+	if e := w.RunActive(ctx); e != nil || runtime.polls != 2 {
+		t.Fatalf("ended attempt was polled again: polls=%d err=%v", runtime.polls, e)
+	}
 }
 func (r *liveDriver) Checkpoint(context.Context, RuntimeHandle) (VerifiedCheckpoint, error) {
 	return verifiedCheckpoint(), nil
