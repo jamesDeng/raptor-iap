@@ -464,8 +464,10 @@ func readyPod(p map[string]any, since time.Time) bool {
 	if m["namespace"] != namespace || str(m["name"]) == "" || str(m["uid"]) == "" || m["deletionTimestamp"] != nil || s["phase"] != "Running" {
 		return false
 	}
-	started, e := time.Parse(time.RFC3339Nano, str(s["startTime"]))
-	if e != nil || !started.After(since) {
+	startText := str(s["startTime"])
+	started, e := time.Parse(time.RFC3339Nano, startText)
+	fractional := strings.ContainsAny(startText, ".,")
+	if e != nil || (fractional && !started.After(since)) || (!fractional && started.Before(since.Truncate(time.Second))) {
 		return false
 	}
 	conditions, _ := s["conditions"].([]any)
@@ -497,6 +499,11 @@ func verify(ctx context.Context, r runner, want bool, rv string, since time.Time
 	m := obj(d["metadata"])
 	status := obj(d["status"])
 	generation := number(m["generation"])
+	annotations := obj(obj(obj(d["spec"])["template"])["metadata"])
+	restarted, restartErr := time.Parse(time.RFC3339Nano, str(obj(annotations["annotations"])["kubectl.kubernetes.io/restartedAt"]))
+	if restartErr != nil || !restarted.After(since) {
+		return verification{}, rejected
+	}
 	if number(obj(d["spec"])["replicas"]) != 1 || number(status["observedGeneration"]) != generation {
 		return verification{}, rejected
 	}
@@ -527,7 +534,7 @@ func verify(ctx context.Context, r runner, want bool, rv string, since time.Time
 		if !ours {
 			continue
 		}
-		if rsm["uid"] != ref["uid"] || rsm["namespace"] != namespace || matched != nil || !readyPod(p, since) {
+		if rsm["uid"] != ref["uid"] || rsm["namespace"] != namespace || matched != nil || !readyPod(p, restarted) {
 			return verification{}, rejected
 		}
 		matched = p
@@ -558,7 +565,7 @@ func verify(ctx context.Context, r runner, want bool, rv string, since time.Time
 		p := obj(v)
 		meta := obj(p["metadata"])
 		if meta["name"] == pm["name"] {
-			if meta["uid"] != pm["uid"] || !readyPod(p, since) || !loadedConfigBinding(d, p) {
+			if meta["uid"] != pm["uid"] || !readyPod(p, restarted) || !loadedConfigBinding(d, p) {
 				return verification{}, rejected
 			}
 			found = true
