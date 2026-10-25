@@ -50,6 +50,7 @@ run "catalog_tag_migration_exact_resources" {
   assert {
     condition = slice(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement, 5, length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement)) == [
       { Effect = "Allow", Action = ["ess:UntagResources"], Resource = ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"] },
+      { Effect = "Allow", Action = ["ess:SetInstancesProtection"], Resource = ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"] },
       { Effect = "Allow", Action = ["ecs:UntagResources"], Resource = ["acs:ecs:ap-southeast-1:123456789012:securitygroup/sg-test"] },
       { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:123456789012:loadbalancer/nlb-test", "acs:nlb:ap-southeast-1:123456789012:serverGroup/sgp-test"] },
       { Effect = "Allow", Action = ["rds:UntagResources"], Resource = ["acs:rds:ap-southeast-1:123456789012:dbinstance/pgm-test"] }
@@ -66,5 +67,26 @@ run "catalog_untag_absent_by_default" {
   assert {
     condition     = length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement) == 5
     error_message = "No catalog migration grant should exist without explicit target configuration."
+  }
+}
+
+run "protected_pgcat_instances_apply_only" {
+  command = plan
+  variables {
+    catalog_untag_targets = {
+      scaling_group_id  = "asg-test"
+      security_group_id = "sg-test"
+      load_balancer_id  = "nlb-test"
+      server_group_id   = "sgp-test"
+      db_instance_id    = "pgm-test"
+    }
+  }
+  assert {
+    condition = length([for s in jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement : s if contains(s.Action, "ess:SetInstancesProtection")]) == 1 && try(one([for s in jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement : s if contains(s.Action, "ess:SetInstancesProtection")]).Resource == ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"], false)
+    error_message = "Only the apply role may reassert protection on the exact PgCat scaling group."
+  }
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.fleet_read.policy_document).Statement : s if contains(s.Action, "ess:SetInstancesProtection")]) == 0
+    error_message = "The planning role must not change instance protection."
   }
 }
