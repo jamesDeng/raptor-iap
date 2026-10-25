@@ -59,7 +59,7 @@
 
 **Interfaces:**
 - `capture_frame()` copies the exact schema-2 provider allowlist into each frame; an absent or malformed field yields retained unavailable evidence, never a fabricated healthy default.
-- `clean(frame) -> dict` preserves schema 1 when `schemaVersion` is absent and schema 2 only when all exact fields and row keys are present. `assess` rejects a changed `feedSession` or nonmonotonic `sequence`.
+- `clean(frame) -> dict` preserves schema 1 when `schemaVersion` is absent and schema 2 only when all exact fields and row keys are present. `assess` accepts repeated identical snapshots, but a changed schema-2 snapshot requires the same `feedSession`, `sequence == previous+1`, and later observedAt; restart, skip, rollback, or changed content at the same sequence is INCONCLUSIVE.
 - `assess(frames, ...) -> dict` maintains a per-ID backend obligation across frames. It releases an old ID only after fresh complete all-pool/user zero triplets followed by a fresh provider frame proving backend absence. Its existing SQL and finalization rules remain authoritative.
 
 - [ ] **Step 1: Write failing fixtures** for all five Review Focus cases, schema-2 complete 2→4→3→2 transitions, missing/duplicate/foreign state rows, stale provider/metrics, and historical schema-1 unchanged. Explicitly test first-frame negative counters and SQL-failure precedence.
