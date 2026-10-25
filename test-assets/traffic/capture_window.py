@@ -152,7 +152,12 @@ class CaptureWindow:
         frame=clean(frame)
         for p in frame['pods']:
             s=p['snapshot'];key=(p['uid'],s['sample']['processId']);last=self._sequences.get(key,s['sample']['sequence'] if not self._started else 0)
-            s['events']=[e for e in s['events'] if e['sequence']>last]
+            if not self._started and frame['inventory'].get('schemaVersion')==2:
+                # The baseline may trim old history, never an explicit outcome
+                # at or after this capture's first retained boundary.
+                s['events']=[e for e in s['events'] if seconds(e['at'])>=seconds(frame['at'])]
+            else:
+                s['events']=[e for e in s['events'] if e['sequence']>last]
         raw=json.dumps(frame,separators=(',',':'),allow_nan=False)+'\n'
         if len(raw)>2*1024*1024:raise ValueError('frame bound exceeded')
         fd=os.open(str(self.path),os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
@@ -164,13 +169,50 @@ class CaptureWindow:
             for line in f:
                 if len(line)>2*1024*1024:raise ValueError('frame bound exceeded')
                 yield json.loads(line)
+def observed_sql_failure(frame,start):
+    """Recognize explicit v2 SQL evidence independently of coverage validation."""
+    try:
+        if frame['inventory'].get('schemaVersion')!=2:return False
+        pods=frame['pods']
+        if not isinstance(pods,list):return False
+    except (KeyError,TypeError,AttributeError):return False
+    for pod in pods:
+        try:
+            snap=pod['snapshot'];sample=snap['sample'];pid=sample['processId']
+            if not isinstance(pod['uid'],str) or not pod['uid'] or not isinstance(pid,str) or not pid:continue
+            if any(type(sample.get(k)) is int and sample[k]>0 for k in ('Failure','Timeout','Ambiguous')):return True
+            now=seconds(frame['at'])
+            if start is None or not isinstance(snap['events'],list):continue
+        except (KeyError,TypeError,ValueError,OverflowError):continue
+        for event in snap['events']:
+            try:
+                if (event['processId']==pid and event['kind']=='operation' and
+                    type(event['sequence']) is int and event['sequence']>0 and
+                    isinstance(event.get('operationId'),str) and event['operationId'] and
+                    start<=seconds(event['at'])<=now+1 and
+                    isinstance(event.get('outcome'),str) and event['outcome'].lower() in ('failure','timeout','ambiguous')):
+                    return True
+            except (KeyError,TypeError,ValueError,OverflowError):continue
+    return False
+
+
 def assess(frames,cancelled=False,completed=False,max_gap=3):
     reasons=[];failure=False;success=0;processes={};seen_pods={};last_poll=None;first_poll=None;process_pods={};settling_start=None
     transitions=TransitionEvidence();schema=None
     def issue(reason):
         if reason not in reasons:reasons.append(reason)
-    try:
+    def observations():
+        nonlocal failure
+        start=None
         for frame in frames:
+            if start is None:
+                try:start=seconds(frame['at'])
+                except (KeyError,TypeError,ValueError,OverflowError):pass
+            failure=observed_sql_failure(frame,start) or failure
+            yield frame
+    stream=observations()
+    try:
+        for frame in stream:
             frame=clean(frame);now=seconds(frame['at'])
             if first_poll is None:first_poll=now
             poll_limit=min(max_gap,3) if frame['inventory'].get('schemaVersion')==2 else max_gap
@@ -268,6 +310,12 @@ def assess(frames,cancelled=False,completed=False,max_gap=3):
         for s in processes.values():
             if s['pending'] or s['baselinePending'] or s['last']['Scheduled']!=s['last']['Attempts']+s['last']['Skipped']:issue('operations in flight at boundary')
         if first_poll is None or first_poll==last_poll or success==0:issue('no covered successful traffic')
+    except (KeyError,TypeError,ValueError,OverflowError):issue('malformed retained evidence')
+    # Detailed assessment may stop on corruption; consume the remaining bounded
+    # stream so safely observable v2 failures, including a process's first sample,
+    # cannot be hidden. Historical v1 failure-baseline semantics stay unchanged.
+    try:
+        for _ in stream:pass
     except (KeyError,TypeError,ValueError,OverflowError):issue('malformed retained evidence')
     if cancelled or not completed:issue('capture cancelled or missing completion marker')
     return {'status':'FAIL' if failure else 'INCONCLUSIVE' if reasons else 'PASS','success':success,'reasons':reasons}

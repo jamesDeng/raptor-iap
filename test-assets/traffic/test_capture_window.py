@@ -284,4 +284,48 @@ class TransitionDepartureOrder(unittest.TestCase):
         self.assertEqual(assess(fs)['status'],'INCONCLUSIVE')
 
 
+def review_failure_frames(outcome='failure', different_process=False, event_only=False):
+    fs=[transition_frame(0),transition_frame(1)]
+    if not event_only:fs[0]['pods'][0]['snapshot']['sample']['Scheduled']=-1
+    snap=fs[1]['pods'][0]['snapshot']
+    if different_process:
+        fs[1]['pods'][0]['uid']='later-pod';snap['sample']['processId']='later-process'
+        for event in snap['events']:event['processId']='later-process'
+    if event_only:
+        for counter in ('Scheduled','Attempts','Success'):snap['sample'][counter]=0
+    else:
+        snap['sample'].update(Failure=1,Attempts=2,Scheduled=2)
+    snap['events'][-1]['outcome']=outcome if event_only else 'success'
+    snap.update(final=True,connected=0);fs[1]['phase']='settling'
+    return fs
+
+
+class ReviewedFailurePrecedence(unittest.TestCase):
+    def test_invalid_counter_does_not_hide_later_first_failure(self):
+        for different in (False,True):
+            with self.subTest(different_process=different):
+                result=assess(review_failure_frames(different_process=different))
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('malformed retained evidence',result['reasons'])
+    def test_negative_events_override_unchanged_counters(self):
+        for outcome in ('failure','timeout','ambiguous'):
+            with self.subTest(outcome=outcome):
+                result=assess(review_failure_frames(outcome=outcome,event_only=True))
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('event/counter mismatch',result['reasons'])
+    def test_invalid_or_pre_window_event_cannot_establish_failure(self):
+        for case in ('old','future','foreign process','bad sequence','absent operation'):
+            fs=review_failure_frames(event_only=True);event=fs[1]['pods'][0]['snapshot']['events'][-1]
+            if case=='old':event['at']=-1
+            if case=='future':event['at']=100
+            if case=='foreign process':event['processId']='foreign'
+            if case=='bad sequence':event['sequence']=-1
+            if case=='absent operation':event['operationId']=''
+            with self.subTest(case=case):self.assertEqual(assess(fs)['status'],'INCONCLUSIVE')
+    def test_historical_event_mismatch_verdict_is_unchanged(self):
+        fs=review_failure_frames(event_only=True)
+        for f in fs:f['inventory']={k:f['inventory'][k] for k in ('observedAt','desired','members','healthyRegistered')}
+        self.assertEqual(assess(fs)['status'],'INCONCLUSIVE')
+
+
 if __name__=='__main__':unittest.main()

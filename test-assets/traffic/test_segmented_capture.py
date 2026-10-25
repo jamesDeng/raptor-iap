@@ -181,3 +181,37 @@ class TransitionSegments(unittest.TestCase):
                 else:f['phase']='settling';f['pods'][0]['snapshot'].update(final=True,connected=0)
                 w.append(f)
             self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'FAIL')
+
+
+class ReviewedSegmentedFailures(unittest.TestCase):
+    def test_later_first_failure_survives_invalid_early_counter(self):
+        from test_capture_window import review_failure_frames
+        for different in (False,True):
+            with self.subTest(different_process=different),tempfile.TemporaryDirectory() as d:
+                w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
+                for f in review_failure_frames(different_process=different):w.append(f)
+                result=w.finish(completed=True,cancelled=False,errors=[])
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('malformed retained evidence',result['reasons'])
+    def test_negative_events_override_unchanged_counters(self):
+        from test_capture_window import review_failure_frames
+        for outcome in ('failure','timeout','ambiguous'):
+            with self.subTest(outcome=outcome),tempfile.TemporaryDirectory() as d:
+                w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
+                for f in review_failure_frames(outcome=outcome,event_only=True):w.append(f)
+                result=w.finish(completed=True,cancelled=False,errors=[])
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('event/counter mismatch',result['reasons'])
+
+    def test_in_window_failure_in_first_snapshot_is_retained(self):
+        from test_capture_window import transition_frame,assess
+        fs=[transition_frame(0),transition_frame(1)]
+        initial=fs[0]['pods'][0]['snapshot'];initial['sample']['sequence']=2
+        initial['events']=[dict(processId='process',sequence=1,at=0,kind='scheduled',operationId='first'),
+                           dict(processId='process',sequence=2,at=0,kind='operation',operationId='first',outcome='failure')]
+        fs[1]['phase']='settling';fs[1]['pods'][0]['snapshot'].update(final=True,connected=0)
+        self.assertEqual(assess(fs)['status'],'FAIL')
+        with tempfile.TemporaryDirectory() as d:
+            w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
+            for f in fs:w.append(f)
+            self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'FAIL')
