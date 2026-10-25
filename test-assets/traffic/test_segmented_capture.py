@@ -215,3 +215,49 @@ class ReviewedSegmentedFailures(unittest.TestCase):
             w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
             for f in fs:w.append(f)
             self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'FAIL')
+
+
+class PartialPodManifestEvidence(unittest.TestCase):
+    def test_authenticated_partial_frame_preserves_other_pod_failure(self):
+        from test_capture_window import partial_pod_failure_frame,transition_frame
+        from segmented_capture import digest
+        for event_only in (False,True):
+            with self.subTest(event_only=event_only),tempfile.TemporaryDirectory() as d:
+                directory=Path(d)/'capture';w=SegmentedCapture(directory,max_segment_seconds=1)
+                first=partial_pod_failure_frame(event_only)
+                first['pods'][0]['snapshot']['sample']['Scheduled']=0
+                w.append(first)
+                final=transition_frame(1);final['phase']='settling';final['pods'][0]['snapshot'].update(final=True,connected=0)
+                w.append(final);w.finish(completed=True,cancelled=False,errors=[])
+                path=directory/'segment-0001.jsonl';row=json.loads(path.read_text())
+                del row['pods'][0]['snapshot']['sample']['Scheduled']
+                path.write_text(json.dumps(row)+'\n')
+                manifest=directory/'completion.json';metadata=json.loads(manifest.read_text())
+                metadata['segments'][0]['sha256']=digest(path);manifest.write_text(json.dumps(metadata))
+                result=assess_manifest(directory)
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('malformed retained evidence',result['reasons'])
+
+    def test_partial_shapes_cannot_break_metadata_after_append(self):
+        from test_capture_window import partial_pod_failure_frame,transition_frame
+        for case in ('missing uid','missing process','missing sequence','opaque counter','opaque event','overflow duration'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as d:
+                directory=Path(d)/'capture';w=SegmentedCapture(directory,max_segment_seconds=1)
+                first=partial_pod_failure_frame();pod=first['pods'][0];snap=pod['snapshot']
+                if case=='missing uid':del pod['uid']
+                if case=='missing process':del snap['sample']['processId']
+                if case=='missing sequence':del snap['sample']['sequence']
+                if case=='opaque counter':snap['sample']['Scheduled']={'password':'do-not-retain'}
+                if case=='opaque event':snap['events']=[{'privateAddress':'10.20.30.40'}]
+                if case=='overflow duration':
+                    snap['events']=[dict(processId='process',at=0,sequence=1,kind='connected',durationSeconds=10**400)]
+                try:
+                    w.append(first)
+                    final=transition_frame(1);final['phase']='settling';final['pods'][0]['snapshot'].update(final=True,connected=0)
+                    w.append(final);result=w.finish(completed=True,cancelled=False,errors=[])
+                except (KeyError,TypeError,ValueError,OverflowError):result={'status':'INCONCLUSIVE'}
+                self.assertEqual(result['status'],'FAIL')
+                metadata=json.loads((directory/'completion.json').read_text())
+                self.assertEqual([row['frames'] for row in metadata['segments']],[1,1])
+                raw=''.join(p.read_text() for p in directory.glob('segment-*.jsonl'))
+                self.assertNotIn('do-not-retain',raw);self.assertNotIn('10.20.30.40',raw)

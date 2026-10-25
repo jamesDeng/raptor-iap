@@ -36,12 +36,12 @@ def clean_inventory(source):
         if not isinstance(inv['feedSession'],str) or str(uuid.UUID(inv['feedSession']))!=inv['feedSession']:raise ValueError('session')
         if type(inv['sequence']) is not int or inv['sequence']<1:raise ValueError('sequence')
         seconds(inv['observedAt'])
-        if type(inv['desired']) is not int or not 1<=inv['desired']<=4:raise ValueError('desired')
+        if type(inv['desired']) is not int or not 2<=inv['desired']<=4:raise ValueError('desired')
         for key in ('members','healthyRegistered'):
             values=inv[key]
             if not isinstance(values,list) or len(values)>4 or any(not isinstance(n,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',n) for n in values):raise ValueError('ids')
             if values!=sorted(set(values)):raise ValueError('ids')
-        if not inv['members']:raise ValueError('empty members')
+        if not 2<=len(inv['members'])<=4:raise ValueError('member count')
         for key,fields in (('memberStates',MEMBER_FIELDS),('backendStates',BACKEND_FIELDS)):
             if not isinstance(inv[key],list) or len(inv[key])>4:raise ValueError('states')
             inv[key]=[{k:row[k] for k in fields} for row in inv[key]]
@@ -131,39 +131,101 @@ class TransitionEvidence:
                 if self.obligations[node] is None:self.obligations[node]=max(now,seconds(met['observedAt']))
 
 
+def clean_client_pods(rows):
+    """Sanitize partial v2 clients independently; never copy an opaque value."""
+    complete=[True]
+    def pick(value,predicate):
+        try:
+            if predicate(value):return value
+        except (TypeError,ValueError,OverflowError):pass
+        complete[0]=False;return None
+    def identity(value):return isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_.:/-]{1,256}',value) is not None
+    def integer(value):return type(value) is int
+    def timestamp(value):
+        try:seconds(value);return True
+        except (TypeError,ValueError,OverflowError):return False
+    def mapping(value):
+        if isinstance(value,dict):return value
+        complete[0]=False;return {}
+    def sequence(value):
+        if isinstance(value,list):return value
+        complete[0]=False;return []
+    pods=[]
+    for item in sequence(rows):
+        p=mapping(item);snap=mapping(p.get('snapshot'));sample=mapping(snap.get('sample'))
+        cleaned={'processId':pick(sample.get('processId'),identity),'at':pick(sample.get('at'),timestamp)}
+        for key in COUNTERS+('sequence',):cleaned[key]=pick(sample.get(key),integer)
+        events=[]
+        for item in sequence(snap.get('events')):
+            event=mapping(item)
+            row={'processId':pick(event.get('processId'),identity),'sequence':pick(event.get('sequence'),integer),
+                 'at':pick(event.get('at'),timestamp),
+                 'kind':pick(event.get('kind'),lambda v:v in ('scheduled','operation','skipped','connected','disconnected','connection_failure'))}
+            if 'operationId' in event or row['kind'] in ('scheduled','operation','skipped'):
+                row['operationId']=pick(event.get('operationId'),identity)
+            if 'outcome' in event or row['kind']=='operation':
+                row['outcome']=pick(event.get('outcome'),lambda v:isinstance(v,str) and v.lower() in ('success','failure','timeout','ambiguous'))
+            if 'durationSeconds' in event:
+                row['durationSeconds']=pick(event['durationSeconds'],lambda v:type(v) in (int,float) and math.isfinite(v) and v>=0)
+            events.append(row)
+        pods.append({'uid':pick(p.get('uid'),identity),'snapshot':{'sample':cleaned,'events':events,
+                     'connected':pick(snap.get('connected'),integer),'truncated':pick(snap.get('truncated'),lambda v:type(v) is bool),
+                     'final':pick(snap.get('final',False),lambda v:type(v) is bool)}})
+    return pods,complete[0]
+
+
+def client_identity(pod):
+    sample=pod['snapshot']['sample'];uid=pod['uid'];pid=sample['processId']
+    return (uid,pid) if isinstance(uid,str) and uid and isinstance(pid,str) and pid else None
+
+
 def clean(frame):
     # Only schema-defined non-secret observations are persisted.
-    pods=[]
-    for p in frame['pods']:
-        s=p['snapshot'];a=s['sample']
-        pods.append({'uid':p['uid'],'snapshot':{'sample':{k:a[k] for k in ('processId','at','sequence')+COUNTERS},'events':[{k:e[k] for k in EVENT_FIELDS if k in e} for e in s['events']], 'connected':s['connected'],'truncated':s['truncated'],'final':s.get('final',False)}})
     inventory=clean_inventory(frame.get('inventory',{'schemaVersion':2}))
+    complete=True
+    if inventory.get('schemaVersion')==2:
+        pods,complete=clean_client_pods(frame.get('pods'))
+    else:
+        pods=[]
+        for p in frame['pods']:
+            s=p['snapshot'];a=s['sample']
+            pods.append({'uid':p['uid'],'snapshot':{'sample':{k:a[k] for k in ('processId','at','sequence')+COUNTERS},'events':[{k:e[k] for k in EVENT_FIELDS if k in e} for e in s['events']], 'connected':s['connected'],'truncated':s['truncated'],'final':s.get('final',False)}})
     try:
         metrics=dict({k:frame['metrics'][k] for k in ('observedAt','sourceAt','nodes','available')},raw=[{k:r[k] for k in ('node','pool','user','kind','value','sourceAt')} for r in frame['metrics']['raw']])
     except (KeyError,TypeError):
         if inventory.get('schemaVersion')!=2:raise
         metrics=dict(observedAt=0,sourceAt=0,nodes=[],available=False,raw=[])
-    return {'at':frame['at'],'phase':frame.get('phase','measurement'),'expectedReplicas':frame.get('expectedReplicas',len(pods)),'pods':pods,'inventory':inventory,'metrics':metrics}
+    return {'at':frame['at'],'phase':frame.get('phase','measurement'),'expectedReplicas':frame.get('expectedReplicas',len(pods)) if complete else 0,'pods':pods,'inventory':inventory,'metrics':metrics}
 class CaptureWindow:
     def __init__(self,path):
         self._sequences={};self._started=False
         self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
     def append(self,frame):
         frame=clean(frame)
+        version=frame['inventory'].get('schemaVersion',1)
+        sequences={}
         for p in frame['pods']:
-            s=p['snapshot'];key=(p['uid'],s['sample']['processId']);last=self._sequences.get(key,s['sample']['sequence'] if not self._started else 0)
-            if not self._started and frame['inventory'].get('schemaVersion')==2:
-                # The baseline may trim old history, never an explicit outcome
-                # at or after this capture's first retained boundary.
-                s['events']=[e for e in s['events'] if seconds(e['at'])>=seconds(frame['at'])]
-            else:
-                s['events']=[e for e in s['events'] if e['sequence']>last]
+            snap=p['snapshot'];sample=snap['sample'];key=client_identity(p)
+            if version==2 and (key is None or type(sample['sequence']) is not int or sample['sequence']<0):continue
+            if version==1:key=(p['uid'],sample['processId'])
+            last=self._sequences.get(key,sample['sequence'] if not self._started else 0)
+            if not self._started and version==2:
+                # Preserve invalid event markers and explicit in-window outcomes.
+                def retain_event(event):
+                    try:return seconds(event['at'])>=seconds(frame['at'])
+                    except (TypeError,ValueError,OverflowError):return True
+                snap['events']=[e for e in snap['events'] if retain_event(e)]
+            elif version==2:
+                snap['events']=[e for e in snap['events'] if type(e['sequence']) is not int or e['sequence']>last]
+            else:snap['events']=[e for e in snap['events'] if e['sequence']>last]
+            sequences[key]=sample['sequence']
         raw=json.dumps(frame,separators=(',',':'),allow_nan=False)+'\n'
         if len(raw)>2*1024*1024:raise ValueError('frame bound exceeded')
         fd=os.open(str(self.path),os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
         with os.fdopen(fd,'a') as f:f.write(raw);f.flush();os.fsync(f.fileno())
         self._started=True
-        for p in frame['pods']:self._sequences[(p['uid'],p['snapshot']['sample']['processId'])]=p['snapshot']['sample']['sequence']
+        self._sequences.update(sequences)
+        return frame
     def read(self):
         with self.path.open() as f:
             for line in f:

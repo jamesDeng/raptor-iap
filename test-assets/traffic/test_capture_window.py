@@ -328,4 +328,62 @@ class ReviewedFailurePrecedence(unittest.TestCase):
         self.assertEqual(assess(fs)['status'],'INCONCLUSIVE')
 
 
+def partial_pod_failure_frame(event_only=False, negative=True):
+    f=transition_frame(0);f['expectedReplicas']=2
+    malformed=f['pods'][0]
+    del malformed['snapshot']['sample']['Scheduled']
+    malformed['snapshot']['privatePayload']={'address':'10.20.30.40','password':'do-not-retain'}
+    malformed['privateAddress']='10.20.30.40'
+    other=frame(0,0)['pods'][0];other['uid']='pod-b';snap=other['snapshot'];snap['sample']['processId']='process-b'
+    if negative and event_only:
+        snap['sample']['sequence']=2
+        snap['events']=[dict(processId='process-b',sequence=1,at=0,kind='scheduled',operationId='b'),
+                        dict(processId='process-b',sequence=2,at=0,kind='operation',operationId='b',outcome='failure')]
+    elif negative:snap['sample'].update(Failure=1,Attempts=1,Scheduled=1)
+    snap['privatePayload']={'password':'do-not-retain'}
+    f['pods'].append(other);f['privateAddress']='10.20.30.40'
+    return f
+
+
+class PartialPodEvidence(unittest.TestCase):
+    def test_direct_assessment_preserves_other_pod_failure(self):
+        for event_only in (False,True):
+            with self.subTest(event_only=event_only):
+                result=assess([partial_pod_failure_frame(event_only),transition_frame(1)])
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('malformed retained evidence',result['reasons'])
+    def test_live_append_preserves_safe_failure_and_no_raw_payload(self):
+        for event_only in (False,True):
+            with self.subTest(event_only=event_only),tempfile.TemporaryDirectory() as d:
+                w=CaptureWindow(Path(d)/'capture.jsonl')
+                try:
+                    w.append(partial_pod_failure_frame(event_only));w.append(transition_frame(1))
+                    result=assess(w.read())
+                except (KeyError,TypeError,ValueError):result={'status':'INCONCLUSIVE'}
+                self.assertEqual(result['status'],'FAIL')
+                stored=w.path.read_text();self.assertNotIn('10.20.30.40',stored);self.assertNotIn('do-not-retain',stored)
+    def test_partial_pod_never_becomes_complete_after_repeated_cleaning(self):
+        from capture_window import clean
+        f=partial_pod_failure_frame(negative=False)
+        try:
+            cleaned=clean(clean(f));got=cleaned['expectedReplicas']
+        except (KeyError,TypeError,ValueError):got=None
+        self.assertEqual(got,0)
+        self.assertEqual(assess([cleaned,transition_frame(1)])['status'],'INCONCLUSIVE')
+    def test_schema_one_partial_structure_still_rejected(self):
+        from capture_window import clean
+        f=partial_pod_failure_frame();f['inventory']={k:f['inventory'][k] for k in ('observedAt','desired','members','healthyRegistered')}
+        with self.assertRaises(KeyError):clean(f)
+
+
+class ProviderMinimumBounds(unittest.TestCase):
+    def test_desired_one_with_two_valid_members_is_inconclusive(self):
+        fs=[transition_frame(0),transition_frame(1)]
+        for f in fs:f['inventory']['desired']=1
+        self.assertEqual(assess(fs)['status'],'INCONCLUSIVE')
+    def test_single_member_with_valid_desired_is_inconclusive(self):
+        fs=[transition_frame(0,('a',),desired=2),transition_frame(1,('a',),desired=2)]
+        self.assertEqual(assess(fs)['status'],'INCONCLUSIVE')
+
+
 if __name__=='__main__':unittest.main()

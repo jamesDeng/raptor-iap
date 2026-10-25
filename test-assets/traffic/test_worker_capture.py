@@ -302,4 +302,27 @@ class TransitionInventoryCapture(unittest.TestCase):
                     else:self.assertEqual(got['inventory']['desired'],0)
 
 
+class PartialPodWorkerEvidence(unittest.TestCase):
+    def test_worker_retains_one_poll_failure_when_other_pod_is_malformed(self):
+        import tempfile,json
+        from pathlib import Path
+        from test_capture_window import partial_pod_failure_frame,transition_frame
+        for event_only in (False,True):
+            with self.subTest(event_only=event_only),tempfile.TemporaryDirectory() as d:
+                root=Path(d);clock=[0.0]
+                def capture(*_):
+                    t=int(clock[0])
+                    if t==0:return partial_pod_failure_frame(event_only)
+                    f=transition_frame(t)
+                    if t>=5:f['pods'][0]['snapshot'].update(final=True,connected=0)
+                    return f
+                with patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]),patch.object(worker.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)):
+                    result=worker.run_capture(root/'capture',root/'inventory',5)
+                self.assertEqual(result['status'],'FAIL')
+                raw=''.join(p.read_text() for p in (root/'capture').glob('segment-*.jsonl'))
+                self.assertNotIn('10.20.30.40',raw);self.assertNotIn('do-not-retain',raw)
+                completion=json.loads((root/'capture'/'completion.json').read_text())
+                self.assertEqual(sum(s['frames'] for s in completion['segments']),6)
+
+
 if __name__=='__main__':unittest.main()
