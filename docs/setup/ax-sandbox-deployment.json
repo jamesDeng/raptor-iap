@@ -84,5 +84,29 @@
       "scope": "ACK Basic and Pro do not expose PCR/CTB APIs and kubelet projection configuration; cannot satisfy native AX/Substrate deployment requirements",
       "source": "Read directly from ticket UI"
     }
+  },
+  "retirement": {
+    "date": "2026-10-25",
+    "status": "complete",
+    "terraform_removal_pr": "https://github.com/jamesDeng/raptor-iap/pull/290",
+    "state_prefix": "ax-sandbox.ali",
+    "final_managed_resource_count": 0,
+    "post_removal_plan": "no changes",
+    "removed": [
+      "ACK cluster",
+      "dedicated API EIP and association",
+      "dedicated subnet",
+      "ACK-managed API CLB",
+      "control-plane ENIs",
+      "cluster security group",
+      "dedicated worker RAM role",
+      "temporary PR plan policy and attachment"
+    ],
+    "preserved": [
+      "shared rdev VPC",
+      "current rdev ACK cluster and worker role",
+      "current ECS/k3s AX node"
+    ],
+    "earlier_fields": "Historical deployment observations; retirement supersedes retained-resource status."
   }
 }
