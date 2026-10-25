@@ -18,7 +18,7 @@ module "proxy" {
   metrics_client_cidrs   = ["10.70.1.0/24"]
   image_id               = "ubuntu_24_04_x64_20G_alibase_20260916.vhd"
   container_image        = "ghcr.io/jamesdeng/raptor-pgcat@sha256:cc29d36a4437eeda529966c4fceba7f330db152e7bc08e2932f17b944805f0c8"
-  instance_class         = "ecs.e-c1m2.large"
+  instance_class         = "ecs.e-c1m1.large"
   secret_reference       = "oss://${var.config_bucket}/rdev.ali/pgcat-test/config.json?versionId=${var.proxy_secret_version}"
   execution_role_name    = "raptor-iap-rdev-pgcat-config"
   bootstrap_revision     = "744951df8415b4f4cfd4b78a6d7bb6e994ed11c2"
