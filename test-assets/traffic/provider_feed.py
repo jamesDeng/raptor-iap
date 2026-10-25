@@ -29,6 +29,19 @@ RETRYABLE_READS = frozenset({
     ('nlb', 'GetListenerAttribute'),
     ('nlb', 'GetListenerHealthStatus'),
 })
+FAILURE_STAGES = frozenset({
+    'startup', 'ess-group', 'ess-members', 'ecs-instances', 'nlb-servers',
+    'nlb-listener', 'nlb-health', 'targets-read', 'targets-update',
+    'inventory-write', 'read', 'publish', 'loop', 'ess-transition',
+    'nlb-backend-state',
+})
+
+
+class FeedStop(ValueError):
+    """Only a fixed stage name may leave the local provider process."""
+    def __init__(self, stage):
+        self.stage = stage if stage in FAILURE_STAGES else 'loop'
+        super().__init__('Provider feed stopped at '+self.stage+'; evidence is no longer refreshed')
 
 _spec = importlib.util.spec_from_file_location('provider_inventory', Path(__file__).parents[1] / 'metrics/provider_inventory.py')
 _inventory = importlib.util.module_from_spec(_spec)
@@ -55,7 +68,9 @@ def collect_backends(fetch, server_group_id):
             node = row.get('ServerId')
             require(isinstance(node, str) and node and node not in seen)
             require(row.get('ServerGroupId') == server_group_id and row.get('ServerType') == 'Ecs')
-            require(row.get('Port') == 6432 and row.get('Status') == 'Available')
+            require(row.get('Port') == 6432 and isinstance(row.get('Status'), str))
+            if row['Status'] != 'Available':
+                raise FeedStop('nlb-backend-state')
             require(type(row.get('Weight')) is int and 0 <= row['Weight'] <= 100)
             seen.add(node)
             rows.append(row)
@@ -121,6 +136,12 @@ def snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_g
         return {'observedAt':now.timestamp(), 'desired':desired, 'members':ids,
                 'healthyRegistered':sorted(node for node in ids if registered.get(node) and node not in bad),
                 'privateAddresses':addresses}
+    except FeedStop:
+        raise
+    except ValueError as error:
+        if str(error) == 'Transitional provider inventory':
+            raise FeedStop('ess-transition') from None
+        raise ValueError('Provider refresh failed') from None
     except Exception:
         raise ValueError('Provider refresh failed') from None
 
@@ -184,8 +205,10 @@ def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monot
             deadline.remaining()
             write(value, deadline=deadline)
             deadline.remaining()
+        except FeedStop:
+            raise
         except Exception:
-            raise ValueError('Provider feed stopped; refresh or publication failed') from None
+            raise FeedStop('loop') from None
         delay = min(tick + interval, runtime_end) - monotonic()
         if delay > 0:
             sleep(delay)
@@ -197,6 +220,7 @@ class Operator:
         self.args = args
         self.previous = ()
         self.deadline = None
+        self.stage = 'startup'
 
     def command(self, argv):
         try:
@@ -220,6 +244,7 @@ class Operator:
             raise ValueError('Provider read failed') from None
 
     def fetch_group(self):
+        self.stage = 'ess-group'
         body = self.aliyun('ess', 'DescribeScalingGroups', **{'ScalingGroupId.1':GROUP_ID, 'PageNumber':1, 'PageSize':1})
         require(body.get('PageNumber') == 1 and body.get('TotalCount') == 1)
         rows = body['ScalingGroups']['ScalingGroup']
@@ -227,24 +252,35 @@ class Operator:
         return rows[0]
 
     def fetch_ess(self, page):
+        self.stage = 'ess-members'
         return self.aliyun('ess', 'DescribeScalingInstances', ScalingGroupId=GROUP_ID, PageNumber=page, PageSize=50)
 
     def fetch_ecs(self, ids):
+        self.stage = 'ecs-instances'
         body = self.aliyun('ecs', 'DescribeInstances', InstanceIds=json.dumps(ids), VpcId=VPC_ID, PageNumber=1, PageSize=100)
         require(body.get('TotalCount') == len(ids) and body.get('PageNumber') == 1)
         return body['Instances']['Instance']
 
     def fetch_nlb(self):
+        self.stage = 'nlb-servers'
         servers = collect_backends(lambda token:self.aliyun('nlb','ListServerGroupServers',ServerGroupId=SERVER_GROUP_ID,MaxResults=100,NextToken=token), SERVER_GROUP_ID)
+        self.stage = 'nlb-listener'
         listener = self.aliyun('nlb','GetListenerAttribute',ListenerId=self.args.listener_id)
         require(listener.get('ListenerId') == self.args.listener_id)
+        self.stage = 'nlb-health'
         health = self.aliyun('nlb','GetListenerHealthStatus',ListenerId=self.args.listener_id)
         return {'Servers':servers,'Listener':listener,'Health':health}
 
     def read(self, *, deadline=None):
         self.deadline = deadline
+        self.stage = 'read'
         # Timestamp at start, never after a slow provider read.
-        return snapshot(self.fetch_ess,self.fetch_group,self.fetch_ecs,self.fetch_nlb,group_id=GROUP_ID,server_group_id=SERVER_GROUP_ID,now=datetime.now(timezone.utc))
+        try:
+            return snapshot(self.fetch_ess,self.fetch_group,self.fetch_ecs,self.fetch_nlb,group_id=GROUP_ID,server_group_id=SERVER_GROUP_ID,now=datetime.now(timezone.utc))
+        except FeedStop:
+            raise
+        except Exception:
+            raise FeedStop(self.stage) from None
 
     def workbench(self, script, *arguments):
         command = shlex.join(['python3','-c',script,*arguments])
@@ -275,11 +311,13 @@ class Operator:
         return self.workbench(prefix + script,*arguments)
 
     def atomic_worker_write(self, value):
+        self.stage = 'inventory-write'
         # The remote worker needs only stdlib Python; no repository deployment.
         script = 'import json,os,tempfile,sys,time; from pathlib import Path\n' + _ATOMIC_SOURCE + '\natomic_write(sys.argv[1],json.loads(sys.argv[2]),deadline=globals().get(\"_remote_deadline\"))'
         self.remote(script,self.args.worker_inventory,json.dumps(value,separators=(',',':')))
 
     def existing_targets(self):
+        self.stage = 'targets-read'
         rows = json.loads(self.remote(_TARGET_SCRIPT,self.args.kubeconfig))
         targets = {}
         require(isinstance(rows, list))
@@ -295,12 +333,17 @@ class Operator:
         return tuple(sorted(targets.items()))
 
     def update_targets(self, targets):
+        self.stage = 'targets-update'
         values = [{'targets':[address+':9930'],'labels':{'env':'rdev.ali','db_proxy_code':'DP00001','target_db_code':'D00002','ecs_instance_id':node}} for node,address in targets]
         self.remote(_TARGET_SCRIPT,self.args.kubeconfig,json.dumps(values,separators=(',',':')))
 
     def write(self, value, *, deadline=None):
         self.deadline = deadline
-        self.previous = publish(value,self.previous,self.atomic_worker_write,self.update_targets,deadline=deadline)
+        self.stage = 'publish'
+        try:
+            self.previous = publish(value,self.previous,self.atomic_worker_write,self.update_targets,deadline=deadline)
+        except Exception:
+            raise FeedStop(self.stage) from None
 
 
 # Keep the remote write identical to the locally tested implementation.
@@ -341,9 +384,12 @@ def main():
         require(args.worker_inventory.startswith('/') and args.kubeconfig.startswith('/') and args.worker_inventory != args.kubeconfig)
         operator = Operator(args)
         operator.previous = operator.existing_targets()
+        operator.stage = 'loop'
         run_loop(operator.read,operator.write,interval=args.interval,max_seconds=args.max_seconds)
+    except FeedStop as error:
+        parser.exit(1,str(error)+'\n')
     except Exception:
-        parser.exit(1,'Provider feed stopped; evidence is no longer refreshed.\n')
+        parser.exit(1,str(FeedStop(operator.stage if 'operator' in locals() else 'startup'))+'\n')
 
 
 if __name__ == '__main__':
