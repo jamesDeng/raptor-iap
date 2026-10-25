@@ -23,16 +23,22 @@ Rediscover exact scope and Deployment UID; mismatches require review, not editin
 Expected originals at design time: `i-t4n5kisq7u820wbx8nri`, `i-t4n5kisq7u820wbx8nrj`.
 Verify both actual baseline originals before creating the immutable request.
 
-Before any live action, present fresh cost/balance and forecast including four-node
-peak, runtime and retention within the owner-approved ceiling; record observation
-time and source. The original ceiling was RMB 1,000. On 2026-10-18 the owner
+Check Alibaba billing and available balance once per calendar day before that
+day's first live action. Present the day's cost/balance observation and forecast,
+including four-node peak, runtime and retention within the owner-approved
+ceiling; record observation time and source. Reuse that observation for further
+actions that day rather than querying billing repeatedly. The original ceiling
+was RMB 1,000. On 2026-10-18 the owner
 raised the whole-POC ceiling to CNY 1,200 net pretax for this one test after
 the billed October net reached CNY 959.08. On 2026-10-19 the owner raised the
 ceiling to CNY 1,500 net while emphasizing affordability and careful spending.
+On 2026-10-25 the owner raised the whole-POC net ceiling to CNY 1,800,
+while asking for a clear progress summary and continued cost care.
 This is a stop limit, not a spending target. These amendments do not remove the
-fresh forecast, balance, delayed-billing, or stop gates.
-Do not start after 21:30 Asia/Shanghai; stop new mutations by 22:45; reserve
-reconciliation/credential deletion before daily 23:59 stop. Defer if the remaining
+daily forecast, balance, delayed-billing, or stop gates.
+Do not start after 21:30 Asia/Shanghai; stop POC work and hand off by the owner's
+22:30 cutoff, including reconciliation and credential deletion. The existing
+daily resource shutdown remains scheduled for 23:59. Defer if the remaining
 budget cannot cover the entire capture, approvals and cleanup. Capture maximum is
 5,400 seconds, each segment maximum 1,800 seconds, provider refresh 15 seconds.
 
