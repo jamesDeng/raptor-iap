@@ -17,21 +17,21 @@ class FeedTests(unittest.TestCase):
         ecs = {node:{'InstanceId':node,'VpcAttributes':{'VpcId':feed.VPC_ID,'PrivateIpAddress':{'IpAddress':['10.0.0.'+str(n+1)]}}} for n,node in enumerate(ids)}
         nlb = {'Servers':[{'ServerId':node,'ServerGroupId':'sgp','ServerType':'Ecs','Port':6432,'Status':'Available','Weight':100} for node in ids], 'Listener':{'ListenerId':'lsn','ServerGroupId':'sgp','ListenerPort':6432,'ListenerStatus':'Running'}, 'Health':{'ListenerHealthStatus':[{'ListenerId':'lsn','ListenerPort':6432,'ServerGroupInfos':[{'ServerGroupId':'sgp','HeathCheckEnabled':True,'NonNormalServers':[]}]}]}}
         return pages,group,ecs,nlb
-    def take(self, f):
+    def take(self, f, **kwargs):
         pages,group,ecs,nlb=f
-        return feed.snapshot(lambda p:pages[p-1],lambda:group,lambda ids:[ecs[n] for n in ids],lambda:nlb,group_id='asg',server_group_id='sgp',now=datetime(2026,10,16,tzinfo=timezone.utc))
+        return feed.snapshot(lambda p:pages[p-1],lambda:group,lambda ids:[ecs[n] for n in ids if n in ecs],lambda:nlb,group_id='asg',server_group_id='sgp',now=datetime(2026,10,16,tzinfo=timezone.utc),**kwargs)
     def test_complete_two_three_four(self):
         for count in (2,3,4):
             s=self.take(self.fixture(count));self.assertEqual(len(s['members']),count);self.assertEqual(s['members'],s['healthyRegistered'])
     def test_fail_closed_invalid_inventory(self):
-        for kind in ('count','page','foreign','duplicate','pending','unhealthy','vpc','address','backend','health','listener'):
+        for kind in ('count','page','foreign','duplicate','unknown-lifecycle','unknown-health','vpc','address','backend','health','listener'):
             f=self.fixture();pages,g,e,n=f
             if kind=='count':pages[1]['TotalCount']=3
             if kind=='page':pages[1]['PageNumber']=1
             if kind=='foreign':pages[0]['ScalingInstances']['ScalingInstance'][0]['ScalingGroupId']='other'
             if kind=='duplicate':pages[1]['ScalingInstances']['ScalingInstance'][0]['InstanceId']='i-0'
-            if kind=='pending':pages[0]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']='Pending'
-            if kind=='unhealthy':pages[0]['ScalingInstances']['ScalingInstance'][0]['HealthStatus']='Unhealthy'
+            if kind=='unknown-lifecycle':pages[0]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']='Unknown'
+            if kind=='unknown-health':pages[0]['ScalingInstances']['ScalingInstance'][0]['HealthStatus']='Unknown'
             if kind=='vpc':e['i-0']['VpcAttributes']['VpcId']='other'
             if kind=='address':e['i-0']['VpcAttributes']['PrivateIpAddress']['IpAddress']=[]
             if kind=='backend':n['Servers'][0]['ServerGroupId']='other'
@@ -41,6 +41,208 @@ class FeedTests(unittest.TestCase):
     def test_unhealthy_backend_excluded(self):
         f=self.fixture();f[3]['Health']['ListenerHealthStatus'][0]['ServerGroupInfos'][0]['NonNormalServers']=[{'ServerId':'i-0','Port':6432,'Status':'Unhealthy'}]
         self.assertEqual(self.take(f)['healthyRegistered'],['i-1'])
+
+    def test_schema_two_snapshot_has_complete_sorted_states(self):
+        result=self.take(self.fixture())
+        self.assertEqual(result, {
+            'schemaVersion':2, 'observedAt':1792108800.0, 'desired':2,
+            'members':['i-0','i-1'],
+            'memberStates':[{'id':'i-0','lifecycle':'Protected','health':'Healthy','addressKnown':True},
+                            {'id':'i-1','lifecycle':'Protected','health':'Healthy','addressKnown':True}],
+            'backendStates':[{'id':'i-0','status':'Available','weight':100,'listenerHealth':'Normal'},
+                             {'id':'i-1','status':'Available','weight':100,'listenerHealth':'Normal'}],
+            'healthyRegistered':['i-0','i-1'],
+            'privateAddresses':{'i-0':'10.0.0.1','i-1':'10.0.0.2'}})
+
+    def test_new_pending_member_without_ecs_or_backend_is_explicit(self):
+        for lifecycle in ('Pending','Pending:Wait'):
+            fixture=self.fixture(3)
+            fixture[0][2]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']=lifecycle
+            fixture[3]['Servers'].pop()
+            for missing in ('instance','address'):
+                with self.subTest(lifecycle=lifecycle,missing=missing):
+                    if missing=='instance':fixture[2].pop('i-2')
+                    else:fixture[2]['i-2']={'InstanceId':'i-2','VpcAttributes':{'VpcId':feed.VPC_ID,'PrivateIpAddress':{'IpAddress':[]}}}
+                    result=self.take(fixture,known_ids=('i-0','i-1'))
+                    self.assertEqual(result['memberStates'][-1],{'id':'i-2','lifecycle':lifecycle,'health':'Healthy','addressKnown':False})
+                    self.assertEqual(result['healthyRegistered'],['i-0','i-1'])
+                    self.assertNotIn('i-2',result['privateAddresses'])
+
+    def test_every_documented_transition_state_is_preserved(self):
+        for lifecycle in ('InService','Pending','Pending:Wait','Protected','Standby','Stopped','Removing','Removing:Wait'):
+            for health in ('Healthy','Unhealthy'):
+                fixture=self.fixture()
+                fixture[0][0]['ScalingInstances']['ScalingInstance'][0].update(LifecycleState=lifecycle,HealthStatus=health)
+                result=self.take(fixture)
+                self.assertEqual(result['memberStates'][0],{'id':'i-0','lifecycle':lifecycle,'health':health,'addressKnown':True})
+        for status in ('Adding','Configuring','Removing'):
+            fixture=self.fixture();fixture[3]['Servers'][0]['Status']=status
+            result=self.take(fixture)
+            self.assertEqual(result['backendStates'][0],{'id':'i-0','status':status,'weight':100,'listenerHealth':'Normal'})
+            self.assertEqual(result['healthyRegistered'],['i-1'])
+        for health in ('Initial','Unhealthy','Unavailable'):
+            fixture=self.fixture();fixture[3]['Health']['ListenerHealthStatus'][0]['ServerGroupInfos'][0]['NonNormalServers']=[{'ServerId':'i-0','Port':6432,'Status':health}]
+            self.assertEqual(self.take(fixture)['backendStates'][0]['listenerHealth'],health)
+        fixture=self.fixture();fixture[3]['Servers'][0]['Weight']=0
+        self.assertEqual(self.take(fixture)['healthyRegistered'],['i-1'])
+
+    def test_departed_backend_needs_exact_prior_ess_identity_and_decrease(self):
+        fixture=self.fixture(4)
+        fixture[0].pop();fixture[1]['DesiredCapacity']=3
+        for page in fixture[0]:page['TotalCount']=3
+        for known,allowance,valid in ((('i-0','i-1','i-2','i-3'),1,True),
+                                      (('i-0','i-1','i-2','i-3'),0,False),
+                                      (('i-0','i-1','i-2'),1,False)):
+            with self.subTest(known=known,allowance=allowance):
+                if valid:
+                    result=self.take(fixture,known_ids=known,allowed_departures=allowance)
+                    self.assertEqual([row['id'] for row in result['backendStates']],['i-0','i-1','i-2','i-3'])
+                    self.assertEqual(result['healthyRegistered'],['i-0','i-1','i-2'])
+                else:
+                    with self.assertRaises(ValueError):self.take(fixture,known_ids=known,allowed_departures=allowance)
+        fixture[0].pop();fixture[1]['DesiredCapacity']=2
+        for page in fixture[0]:page['TotalCount']=2
+        with self.assertRaises(ValueError):self.take(fixture,known_ids=('i-0','i-1','i-2','i-3'),allowed_departures=1)
+        self.assertEqual(len(self.take(fixture,known_ids=('i-0','i-1','i-2','i-3'),allowed_departures=2)['backendStates']),4)
+
+    def test_backend_and_previously_known_pending_member_require_ecs_address(self):
+        for status in ('Available','Adding','Configuring','Removing'):
+            fixture=self.fixture();fixture[3]['Servers'][0]['Status']=status;fixture[2].pop('i-0')
+            with self.subTest(status=status),self.assertRaises(ValueError):self.take(fixture)
+        fixture=self.fixture(3);fixture[3]['Servers'].pop();fixture[2].pop('i-2')
+        fixture[0][2]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']='Pending'
+        with self.assertRaises(ValueError):self.take(fixture,known_ids=('i-2',),required_address_ids=('i-2',))
+        fixture[0][2]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']='Protected'
+        with self.assertRaises(ValueError):self.take(fixture)
+
+    def test_transition_pagination_is_complete_and_bounded(self):
+        for kind in ('count','page','duplicate','foreign','truncated','overflow'):
+            pages=self.fixture()[0]
+            if kind=='count':pages[1]['TotalCount']=3
+            if kind=='page':pages[1]['PageNumber']=1
+            if kind=='duplicate':pages[1]['ScalingInstances']['ScalingInstance'][0]['InstanceId']='i-0'
+            if kind=='foreign':pages[1]['ScalingInstances']['ScalingInstance'][0]['ScalingGroupId']='other'
+            if kind=='truncated':pages[1]['ScalingInstances']['ScalingInstance']=[]
+            if kind=='overflow':pages[0]['TotalCount']=5
+            with self.subTest(kind=kind),self.assertRaises(ValueError):feed.collect_transition_members(lambda p:pages[p-1],'asg')
+
+    def test_retained_targets_survive_backend_absence_until_explicit_cleanup(self):
+        fixture=self.fixture();writes=[];updates=[]
+        value=dict(self.take(fixture),feedSession='12345678-1234-4234-8234-123456789abc',sequence=1)
+        old=(('i-old','10.0.0.9'),)
+        retained=feed.publish(value,(),writes.append,updates.append,retain_targets=old)
+        self.assertEqual(retained,(('i-0','10.0.0.1'),('i-1','10.0.0.2'),('i-old','10.0.0.9')))
+        final=feed.publish(value,retained,writes.append,updates.append)
+        self.assertEqual(final,(('i-0','10.0.0.1'),('i-1','10.0.0.2')))
+        self.assertEqual(set(writes[0]),{'schemaVersion','feedSession','sequence','observedAt','desired','members','memberStates','backendStates','healthyRegistered'})
+        self.assertNotIn('10.0.0.',__import__('json').dumps(writes))
+        with self.assertRaises(ValueError):feed.publish(value,retained,writes.append,updates.append,retain_targets=(('i-0','10.0.0.9'),))
+
+    def operator_fixture(self):
+        from types import SimpleNamespace
+        op=feed.Operator(SimpleNamespace());fixture=self.fixture(4)
+        fixture[1]['ScalingGroupId']=feed.GROUP_ID
+        for page in fixture[0]:page['ScalingInstances']['ScalingInstance'][0]['ScalingGroupId']=feed.GROUP_ID
+        for row in fixture[3]['Servers']:row['ServerGroupId']=feed.SERVER_GROUP_ID
+        fixture[3]['Listener']['ServerGroupId']=feed.SERVER_GROUP_ID
+        fixture[3]['Health']['ListenerHealthStatus'][0]['ServerGroupInfos'][0]['ServerGroupId']=feed.SERVER_GROUP_ID
+        op.fetch_ess=lambda page:fixture[0][page-1]
+        op.fetch_group=lambda:fixture[1]
+        op.fetch_ecs=lambda ids:[fixture[2][node] for node in ids if node in fixture[2]]
+        op.fetch_nlb=lambda:fixture[3]
+        return op,fixture
+
+    def test_operator_session_sequence_and_delayed_departures(self):
+        import uuid
+        op,fixture=self.operator_fixture();writes=[];updates=[]
+        op.atomic_worker_write=writes.append;op.update_targets=updates.append
+        op.write(op.read())
+        fixture[1]['DesiredCapacity']=3
+        op.write(op.read())  # Desired decrease precedes the eventual ESS departure.
+        fixture[0].pop()
+        for page in fixture[0]:page['TotalCount']=3
+        op.write(op.read());op.write(op.read())
+        fixture[3]['Servers'].pop();fixture[2].pop('i-3')
+        op.write(op.read())
+        fixture[1]['DesiredCapacity']=2
+        op.write(op.read())
+        fixture[0].pop()
+        for page in fixture[0]:page['TotalCount']=2
+        op.write(op.read())
+        self.assertEqual([row['sequence'] for row in writes],[1,2,3,4,5,6,7])
+        sessions={row['feedSession'] for row in writes}
+        self.assertEqual(len(sessions),1)
+        self.assertEqual(str(uuid.UUID(next(iter(sessions)))),next(iter(sessions)))
+        self.assertNotEqual(feed.Operator(op.args).feedSession,next(iter(sessions)))
+        self.assertEqual(len(op.previous),4)
+        self.assertEqual(op.known_ids,{'i-0','i-1','i-2','i-3'})
+        self.assertEqual(op.allowed_departures,2)
+        # A failed publication cannot advance the retained session or history.
+        def fail(value):raise RuntimeError('private failure')
+        op.atomic_worker_write=fail
+        with self.assertRaises(ValueError):op.write(op.read())
+        self.assertEqual(op.sequence,7)
+
+    def test_addressless_pending_survives_fresh_ticks_but_known_address_cannot_disappear(self):
+        op,fixture=self.operator_fixture();writes=[]
+        op.atomic_worker_write=writes.append;op.update_targets=lambda value:None
+        fixture[3]['Servers'].pop()
+        fixture[0][3]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']='Pending'
+        fixture[2].pop('i-3')
+        op.write(op.read());op.write(op.read())
+        self.assertFalse(writes[-1]['memberStates'][-1]['addressKnown'])
+        fixture[2]['i-3']={'InstanceId':'i-3','VpcAttributes':{'VpcId':feed.VPC_ID,'PrivateIpAddress':{'IpAddress':['10.0.0.4']}}}
+        op.write(op.read())
+        fixture[2].pop('i-3')
+        with self.assertRaises(ValueError):op.read()
+        self.assertEqual(op.sequence,3)
+
+    def test_operator_rejects_unexpected_departure_without_decrease(self):
+        op,fixture=self.operator_fixture();op.atomic_worker_write=lambda value:None;op.update_targets=lambda value:None
+        op.write(op.read());fixture[0].pop()
+        for page in fixture[0]:page['TotalCount']=3
+        with self.assertRaises(ValueError):op.read()
+
+    def test_ecs_adapter_accepts_complete_partial_result_for_pending_identity(self):
+        from types import SimpleNamespace
+        op=feed.Operator(SimpleNamespace())
+        op.aliyun=lambda *args,**kwargs:{'TotalCount':1,'PageNumber':1,'Instances':{'Instance':[{'InstanceId':'i-0'}]}}
+        self.assertEqual(op.fetch_ecs(['i-0','i-pending']),[{'InstanceId':'i-0'}])
+        op.aliyun=lambda *args,**kwargs:{'TotalCount':2,'PageNumber':1,'Instances':{'Instance':[{'InstanceId':'i-0'}]}}
+        with self.assertRaises(ValueError):op.fetch_ecs(['i-0','i-pending'])
+
+    def test_changed_targets_require_exact_readback_before_publication(self):
+        import json,subprocess
+        from types import SimpleNamespace
+        for changed in (False,True):
+            with self.subTest(changed=changed),tempfile.TemporaryDirectory() as directory:
+                kube=pathlib.Path(directory)/'config';kube.write_text('private');kube.chmod(0o600)
+                targets=[{'targets':['10.0.0.'+str(n+1)+':9930'],'labels':{'env':'rdev.ali','db_proxy_code':'DP00001','target_db_code':'D00002','ecs_instance_id':'i-'+str(n)}} for n in range(2)]
+                body={'metadata':{'name':'pgcat-provider-inventory','namespace':'raptor-test','resourceVersion':'17'},'data':{'targets.json':'[]'}}
+                # Exercise the actual embedded remote script with a fake kubectl boundary.
+                preamble=('import subprocess,json,time\n_calls=[]\n'+
+                    'def fixture_run(argv,**kwargs):\n'+
+                    ' _calls.append(argv)\n'+
+                    ' if argv[5]=="patch":\n'+
+                    '  patch=json.loads(argv[-1]); assert patch["metadata"]["resourceVersion"]=="17"\n'+
+                    '  return type("Result",(),{"stdout":""})()\n'+
+                    ' body='+repr(body)+'\n'+
+                    ' if len(_calls)>2: body["data"]["targets.json"]='+repr(json.dumps([] if changed else targets))+'\n'+
+                    ' return type("Result",(),{"stdout":json.dumps(body)})()\n'+
+                    'subprocess.run=fixture_run\n_remote_deadline=time.monotonic()+15\n')
+                op=feed.Operator(SimpleNamespace(kubeconfig=str(kube)));writes=[]
+                op.atomic_worker_write=writes.append
+                op.remote=lambda script,*args:subprocess.run(['python3','-c',preamble+script,*args],capture_output=True,text=True,check=True).stdout
+                value=self.take(self.fixture())
+                if changed:
+                    with self.assertRaises(ValueError):op.write(value)
+                else:
+                    op.write(value)
+                    self.assertEqual(len(writes),1)
+                if changed:
+                    self.assertEqual(writes,[])
+                    self.assertEqual(op.sequence,0)
+                    self.assertEqual(op.known_ids,set())
 
     def test_group_read_failure_reports_only_fixed_stage(self):
         from types import SimpleNamespace
@@ -83,9 +285,9 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(getattr(caught.exception,'stage',None),'targets-update')
         self.assertNotIn('private Workbench',str(caught.exception))
 
-    def test_transitional_ess_member_has_distinct_sanitized_category(self):
+    def test_unknown_ess_state_has_distinct_sanitized_category(self):
         fixture=self.fixture()
-        fixture[0][0]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']='Pending'
+        fixture[0][0]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']='Unknown'
         with self.assertRaises(ValueError) as caught:
             self.take(fixture)
         self.assertEqual(getattr(caught.exception,'stage',None),'ess-transition')
@@ -112,11 +314,11 @@ class FeedTests(unittest.TestCase):
         self.assertNotIn('targets-read',output.getvalue())
 
     def test_publish_allowlist_and_changed_targets(self):
-        writes=[];updates=[];s=self.take(self.fixture())
+        writes=[];updates=[];s=dict(self.take(self.fixture()),feedSession='12345678-1234-4234-8234-123456789abc',sequence=1)
         previous=feed.publish(s,(),writes.append,updates.append)
         feed.publish(s,previous,writes.append,updates.append)
         self.assertEqual(len(updates),1)
-        self.assertEqual(set(writes[0]),{'observedAt','desired','members','healthyRegistered'})
+        self.assertEqual(set(writes[0]),{'schemaVersion','feedSession','sequence','observedAt','desired','members','memberStates','backendStates','healthyRegistered'})
     def test_nlb_pagination_rejects_changed_count_duplicate_and_cursor(self):
         rows=self.fixture()[3]['Servers']
         for kind in ('valid','count','duplicate','cursor','truncated'):

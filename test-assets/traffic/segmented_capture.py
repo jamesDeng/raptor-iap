@@ -3,7 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from capture_window import CaptureWindow, assess, seconds, clean, COUNTERS
+from capture_window import CaptureWindow, assess, seconds, clean, COUNTERS, observed_sql_failure, client_identity
 
 
 def digest(path):
@@ -39,10 +39,14 @@ class SegmentedCapture:
         if self.current is None:
             name='segment-%04d.jsonl'%(len(self.segments)+1);self.window.path=self.directory/name
             self.current={'path':name,'basename':name,'firstAt':frame['at'],'lastAt':frame['at'],'frames':0}
-        self.window.append(frame)
+        frame=self.window.append(frame)
         self.current['lastAt']=frame['at'];self.current['frames']+=1;self.last=now
         for p in frame['pods']:
-            s=p['snapshot'];self.finals[(p['uid'],s['sample']['processId'])]=s.get('final',False)
+            s=p['snapshot'];key=client_identity(p)
+            if frame['inventory'].get('schemaVersion')==2:
+                if key is None:continue
+            else:key=(p['uid'],s['sample']['processId'])
+            self.finals[key]=s.get('final',False)
     def finish(self,*,completed: bool,cancelled: bool,errors: list):
         if self.finished:raise ValueError('capture already finished')
         self._close();self.finished=True
@@ -87,7 +91,9 @@ def assess_manifest(directory: Path):
                         if not line:break
                         if len(line)>2*1024*1024:raise ValueError('frame bound exceeded')
                         try:
-                            f=clean(json.loads(line));now=seconds(f['at'])
+                            source=json.loads(line)
+                            if observed_sql_failure(source,window_first if window_first is not None else first):observed_failure=True
+                            f=clean(source);now=seconds(f['at'])
                         except invalid:
                             issue('malformed retained evidence');continue
                         count+=1
@@ -97,7 +103,11 @@ def assess_manifest(directory: Path):
                         limit=m['maxTotalSeconds']+(5 if f['phase']=='settling' else 0)
                         if now-window_first>limit:issue('total capture bound exceeded')
                         for pod in f['pods']:
-                            snap=pod['snapshot'];sample=snap['sample'];key=(pod['uid'],sample['processId'])
+                            snap=pod['snapshot'];sample=snap['sample'];key=client_identity(pod)
+                            if f['inventory'].get('schemaVersion')==2:
+                                if key is None:
+                                    issue('malformed retained evidence');continue
+                            else:key=(pod['uid'],sample['processId'])
                             finals[key]=snap.get('final',False)
                             # Independent numeric deltas remain observable even if
                             # the full assessor stops at malformed earlier evidence.

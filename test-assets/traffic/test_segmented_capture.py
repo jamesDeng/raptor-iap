@@ -156,3 +156,108 @@ class SamePodProcessHistory(unittest.TestCase):
             self.assertEqual(result['status'],'INCONCLUSIVE')
             markers=json.loads((path/'completion.json').read_text())['clientFinalMarkers']
             self.assertEqual(markers,[{'uid':'pod','processId':'process','final':True},{'uid':'pod','processId':'replacement','final':True}])
+
+
+class TransitionSegments(unittest.TestCase):
+    def test_transition_obligations_cross_segments(self):
+        from test_capture_window import transition_window
+        for missing in (False,True):
+            with self.subTest(missing=missing),tempfile.TemporaryDirectory() as d:
+                w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=2)
+                fs=transition_window()
+                if missing:
+                    for row in fs[2]['metrics']['raw']:
+                        if row['node']=='a':row['value']=1
+                    fs[3]['metrics']['nodes'].remove('a');fs[3]['metrics']['raw']=[r for r in fs[3]['metrics']['raw'] if r['node']!='a']
+                for f in fs:w.append(f)
+                self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'INCONCLUSIVE' if missing else 'PASS')
+    def test_first_frame_failure_survives_retention_and_missing_provider(self):
+        from test_capture_window import transition_frame
+        with tempfile.TemporaryDirectory() as d:
+            w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
+            for t in range(2):
+                f=transition_frame(t);s=f['pods'][0]['snapshot']['sample'];s.update(Failure=1,Attempts=t+1,Scheduled=t+1)
+                if t==0:del f['inventory']['backendStates']
+                else:f['phase']='settling';f['pods'][0]['snapshot'].update(final=True,connected=0)
+                w.append(f)
+            self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'FAIL')
+
+
+class ReviewedSegmentedFailures(unittest.TestCase):
+    def test_later_first_failure_survives_invalid_early_counter(self):
+        from test_capture_window import review_failure_frames
+        for different in (False,True):
+            with self.subTest(different_process=different),tempfile.TemporaryDirectory() as d:
+                w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
+                for f in review_failure_frames(different_process=different):w.append(f)
+                result=w.finish(completed=True,cancelled=False,errors=[])
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('malformed retained evidence',result['reasons'])
+    def test_negative_events_override_unchanged_counters(self):
+        from test_capture_window import review_failure_frames
+        for outcome in ('failure','timeout','ambiguous'):
+            with self.subTest(outcome=outcome),tempfile.TemporaryDirectory() as d:
+                w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
+                for f in review_failure_frames(outcome=outcome,event_only=True):w.append(f)
+                result=w.finish(completed=True,cancelled=False,errors=[])
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('event/counter mismatch',result['reasons'])
+
+    def test_in_window_failure_in_first_snapshot_is_retained(self):
+        from test_capture_window import transition_frame,assess
+        fs=[transition_frame(0),transition_frame(1)]
+        initial=fs[0]['pods'][0]['snapshot'];initial['sample']['sequence']=2
+        initial['events']=[dict(processId='process',sequence=1,at=0,kind='scheduled',operationId='first'),
+                           dict(processId='process',sequence=2,at=0,kind='operation',operationId='first',outcome='failure')]
+        fs[1]['phase']='settling';fs[1]['pods'][0]['snapshot'].update(final=True,connected=0)
+        self.assertEqual(assess(fs)['status'],'FAIL')
+        with tempfile.TemporaryDirectory() as d:
+            w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
+            for f in fs:w.append(f)
+            self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'FAIL')
+
+
+class PartialPodManifestEvidence(unittest.TestCase):
+    def test_authenticated_partial_frame_preserves_other_pod_failure(self):
+        from test_capture_window import partial_pod_failure_frame,transition_frame
+        from segmented_capture import digest
+        for event_only in (False,True):
+            with self.subTest(event_only=event_only),tempfile.TemporaryDirectory() as d:
+                directory=Path(d)/'capture';w=SegmentedCapture(directory,max_segment_seconds=1)
+                first=partial_pod_failure_frame(event_only)
+                first['pods'][0]['snapshot']['sample']['Scheduled']=0
+                w.append(first)
+                final=transition_frame(1);final['phase']='settling';final['pods'][0]['snapshot'].update(final=True,connected=0)
+                w.append(final);w.finish(completed=True,cancelled=False,errors=[])
+                path=directory/'segment-0001.jsonl';row=json.loads(path.read_text())
+                del row['pods'][0]['snapshot']['sample']['Scheduled']
+                path.write_text(json.dumps(row)+'\n')
+                manifest=directory/'completion.json';metadata=json.loads(manifest.read_text())
+                metadata['segments'][0]['sha256']=digest(path);manifest.write_text(json.dumps(metadata))
+                result=assess_manifest(directory)
+                self.assertEqual(result['status'],'FAIL')
+                self.assertIn('malformed retained evidence',result['reasons'])
+
+    def test_partial_shapes_cannot_break_metadata_after_append(self):
+        from test_capture_window import partial_pod_failure_frame,transition_frame
+        for case in ('missing uid','missing process','missing sequence','opaque counter','opaque event','overflow duration'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as d:
+                directory=Path(d)/'capture';w=SegmentedCapture(directory,max_segment_seconds=1)
+                first=partial_pod_failure_frame();pod=first['pods'][0];snap=pod['snapshot']
+                if case=='missing uid':del pod['uid']
+                if case=='missing process':del snap['sample']['processId']
+                if case=='missing sequence':del snap['sample']['sequence']
+                if case=='opaque counter':snap['sample']['Scheduled']={'password':'do-not-retain'}
+                if case=='opaque event':snap['events']=[{'privateAddress':'10.20.30.40'}]
+                if case=='overflow duration':
+                    snap['events']=[dict(processId='process',at=0,sequence=1,kind='connected',durationSeconds=10**400)]
+                try:
+                    w.append(first)
+                    final=transition_frame(1);final['phase']='settling';final['pods'][0]['snapshot'].update(final=True,connected=0)
+                    w.append(final);result=w.finish(completed=True,cancelled=False,errors=[])
+                except (KeyError,TypeError,ValueError,OverflowError):result={'status':'INCONCLUSIVE'}
+                self.assertEqual(result['status'],'FAIL')
+                metadata=json.loads((directory/'completion.json').read_text())
+                self.assertEqual([row['frames'] for row in metadata['segments']],[1,1])
+                raw=''.join(p.read_text() for p in directory.glob('segment-*.jsonl'))
+                self.assertNotIn('do-not-retain',raw);self.assertNotIn('10.20.30.40',raw)

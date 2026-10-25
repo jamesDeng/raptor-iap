@@ -23,16 +23,22 @@ Rediscover exact scope and Deployment UID; mismatches require review, not editin
 Expected originals at design time: `i-t4n5kisq7u820wbx8nri`, `i-t4n5kisq7u820wbx8nrj`.
 Verify both actual baseline originals before creating the immutable request.
 
-Before any live action, present fresh cost/balance and forecast including four-node
-peak, runtime and retention within the owner-approved ceiling; record observation
-time and source. The original ceiling was RMB 1,000. On 2026-10-18 the owner
+Check Alibaba billing and available balance once per calendar day before that
+day's first live action. Present the day's cost/balance observation and forecast,
+including four-node peak, runtime and retention within the owner-approved
+ceiling; record observation time and source. Reuse that observation for further
+actions that day rather than querying billing repeatedly. The original ceiling
+was RMB 1,000. On 2026-10-18 the owner
 raised the whole-POC ceiling to CNY 1,200 net pretax for this one test after
 the billed October net reached CNY 959.08. On 2026-10-19 the owner raised the
 ceiling to CNY 1,500 net while emphasizing affordability and careful spending.
+On 2026-10-25 the owner raised the whole-POC net ceiling to CNY 1,800,
+while asking for a clear progress summary and continued cost care.
 This is a stop limit, not a spending target. These amendments do not remove the
-fresh forecast, balance, delayed-billing, or stop gates.
-Do not start after 21:30 Asia/Shanghai; stop new mutations by 22:45; reserve
-reconciliation/credential deletion before daily 23:59 stop. Defer if the remaining
+daily forecast, balance, delayed-billing, or stop gates.
+Do not start after 21:30 Asia/Shanghai; stop POC work and hand off by the owner's
+22:30 cutoff, including reconciliation and credential deletion. The existing
+daily resource shutdown remains scheduled for 23:59. Defer if the remaining
 budget cannot cover the entire capture, approvals and cleanup. Capture maximum is
 5,400 seconds, each segment maximum 1,800 seconds, provider refresh 15 seconds.
 
@@ -63,6 +69,50 @@ finalization/restoration, and (e) settled disable/rollout and cleanup. Each requ
 current action-time authorization; approval of this document alone is insufficient.
 New IAM or cloud resources return to the component Terraform PR with sanitized
 plan comment and reviewed apply. Do not provision via CLI or expand IAM here.
+
+## Transition evidence release gate (2026-10-25)
+
+The recorded replacement request `0bad9b07-625e-42cb-a021-257775e08930`
+was cancelled and settled after its provider feed stopped; its retained result
+remains **INCONCLUSIVE**. Do not reopen that request or reinterpret its historical
+schema-1 archive. Keep `replacementEnabled=false` while preparing this release;
+a current readback is required before any later live action. Local synthetic
+traffic PASS does not establish overall replacement acceptance.
+
+The reviewed provider/collector source, including the independently approved
+partial multi-Pod evidence fix, is bound to commit
+`8094452784cfa4969c1cb2648e484369389b277c`. The following SHA-256 values bind
+that source and the unchanged worker helpers; this is local source verification,
+not a live installation or traffic proof.
+Before release, require whole-branch independent review, passing CI and merge;
+record the final resolved release commit and confirm these files match its tree.
+If any source bytes change, repeat review and verification and replace the
+binding before use. A hash match alone does not prove worker installation.
+
+| Source under `test-assets/traffic/` | SHA-256 |
+|---|---|
+| `provider_feed.py` (local operator) | `69d580fd71ebadf7936bff92a1a981e48996755839abb47a324e8e02938ad9cb` |
+| `worker_capture.py` | `167a07649e6756bfd914e7d01f8507c686ced712937873813d43282aa394e3dd` |
+| `capture_window.py` | `ffc30e6d37ee37f83da3a44bbbbc2ead5556891924ffdbc23e51f2a07a4961b7` |
+| `segmented_capture.py` | `2ad61819b59ff8ef10e1de3873029eecd349a920b734c8b480e8dcfbae5f7411` |
+| `finish_clients.py` | `c048e7fb18a8685ce03547487652e0adfd86d51ba2211730b4ff25755d66ac1e` |
+| `worker_control.py` | `9e9018d4d1072607adbaef0fd00a730582548b14f8a4a3034e1b21d2fcd5ce9e` |
+
+Verify local provider bytes and read back every staged worker module's SHA-256
+before launching either process. Keep a per-file worker bundle manifest in the
+private receipt, together with the existing guard binary and image bindings.
+Require a fresh replacement-disabled capture using schema 2, exact two-client
+finalization and verified 2/2 restoration before considering a new paid run.
+The older disabled-mode proof does not qualify this changed feed/collector.
+
+Recheck the one-operator, time and cost gates before that later run. The
+2026-10-25 billing observation is already complete: reuse its recorded balance,
+cost and forecast rather than querying billing again that day. A subsequent
+calendar day needs its own daily observation. The CNY 1,800 net whole-POC ceiling,
+21:30 Shanghai live-start cutoff and 22:30 handoff including cleanup remain
+binding. Defer even before 21:30 if approvals, full capture, reconciliation,
+retention and credential deletion cannot finish by 22:30. This local release
+preparation authorizes no paid attempt, flag change or credential work.
 
 ## Worker preparation and disabled 60-second measurement proof
 
@@ -142,6 +192,37 @@ Unrecovered read, timeout or publication failure stops the feed; do not refresh
 freshness from cached inventory. Workbench and ConfigMap writes are not retried.
 Age >30 seconds, wrong roster or target discrepancy blocks acceptance. If target
 update succeeded but inventory publication failed, reconcile before restarting.
+
+Read back the worker inventory and retained collector frames: require
+`schemaVersion: 2`, the same UUID `feedSession`, positive `sequence`, fresh
+`observedAt`, exact desired capacity, complete `members`/`memberStates` and
+`backendStates`, and matching `healthyRegistered`. No private addresses or raw
+provider payload may enter the retained evidence. Identical publications may
+repeat across one-second frames; a changed publication must advance sequence
+by exactly one with a later timestamp in the same session. Restart, skip,
+rollback, malformed state or changed content at the same sequence is
+INCONCLUSIVE; never splice a new feed into an existing assessed window.
+
+Reconcile monitoring targets before the matching inventory publication. A
+changed list requires a resourceVersion-bound ConfigMap patch and exact target
+readback within the same absolute 15-second deadline. An unchanged list may use
+the existing no-patch path only under the one-operator gate. Keep every previously
+observed backend's target through the entire assessed window, including after
+its ESS membership or NLB registration disappears. Do not remove an old target
+merely because the current desired count dropped.
+
+Every NLB backend requires fresh successful scrape coverage and complete raw
+active/idle/waiting triplets for `test`/`poc_app`, regardless of Adding,
+Configuring, Removing, weight or listener health. Only a never-ready Pending or
+Pending:Wait ESS member absent from NLB may lack metrics/address evidence.
+An Adding backend without an exporter scrape makes the full window INCONCLUSIVE.
+Retain the old node obligation until a fresh complete zero observation for
+**all** reported pools/users is followed by a later fresh provider publication
+showing backend absence. A repeated provider snapshot at zero time is not that
+later proof. Any later nonzero observation restores the obligation. All-backends
+unhealthy is also INCONCLUSIVE. Keep metrics observation age at most 3 seconds,
+scrape/raw age at most 45 seconds, provider age at most 30 seconds and client
+poll gaps at most 3 seconds; do not widen these limits to obtain PASS.
 
 With replacement flag still false, use the detached launch above on the
 authorized worker with private `KUBECONFIG` and reviewed modules colocated.
@@ -387,7 +468,21 @@ rollout needs reconciliation; never claim disable succeeded from an attempted co
 Confirm checkpoint status, absence of attempt sandbox and owned keys, revoked
 attempt access and final client/fleet state. No blind retry or automatic fleet repair.
 
-Stop the owned feed and collector, retain only allowlisted evidence, completion,
+After closing the assessed window, stop the owned feed and collector before
+final target reconciliation so a retained-target feed cannot undo cleanup.
+Under the authorized one-operator scope, read the complete fresh final ESS/NLB
+fleet; on successful replacement this must be exactly the two new nodes.
+Reconcile `raptor-test/pgcat-provider-inventory` to the exact authoritative final
+target list using its current resourceVersion and verify the ConfigMap target
+readback. No obsolete old-node target may remain. On a fault, reconcile only to
+the verified actual fleet; do not assume the intended two-node result or remove
+a still-registered backend. Record unresolved scope or readback as incomplete
+cleanup and block overall PASS until reviewed recovery; preserve any observed
+SQL FAIL. Record the sanitized authoritative final node IDs, ConfigMap target
+IDs, readback time and exact-match outcome in `cleanup.targetReconciliation`
+in the private settlement receipt; never retain target addresses.
+
+Retain only allowlisted evidence, completion,
 hashes and sanitized receipt in the **existing** private encrypted OSS evidence
 prefix with verified object encryption and bounded lifecycle/expiry. Record exact
 private retention reference in private receipt; do not invent a bucket or retention
@@ -423,15 +518,33 @@ private addresses or kubeconfig content. Review before public sharing.
 | fleet snapshot | `observedAt: timestamp|null`, `desired: integer|null`, `members: array<{instanceId:string,protected:boolean|null,healthy:boolean|null,registered:boolean|null}>` |
 | each capture | `kind: disabled-path|full-window`, `manifestRelativePath: string`, `manifestSha256`, `segments: array<{relativePath:string,sha256}>`, `pathProof: complete|incomplete|unknown`, `observedProcesses: array<{podUid:string,processId:string,finalObserved:boolean}>`, `status: PASS|FAIL|INCONCLUSIVE`, `reasonCodes: array<string>` |
 | assessment | `status: PASS|FAIL|INCONCLUSIVE|NOT_RUN`, `controlEvidenceComplete: boolean`, `clientFinalization: blocked|complete|incomplete|not_run`, `reasonCodes: array<string>` |
-| cleanup | `flagFalseVerified`, `checkpointSettled`, `sandboxAbsent`, `keysAbsent`, `accessRevoked`, `clientsRestored`, `localKubeconfigAbsent`, `workerKubeconfigAbsent`, `runFilesRemoved`: true|false|null; `verifiedAt: timestamp|null` |
+| cleanup | `flagFalseVerified`, `checkpointSettled`, `sandboxAbsent`, `keysAbsent`, `accessRevoked`, `clientsRestored`, `localKubeconfigAbsent`, `workerKubeconfigAbsent`, `runFilesRemoved`: true|false|null; `verifiedAt: timestamp|null`; `targetReconciliation` |
+| cleanup.targetReconciliation | `observedAt: timestamp|null`, `finalInstanceIds: array<string>|null`, `targetInstanceIds: array<string>|null`, `exactMatchVerified: true|false|null` |
 | retention | `encryptedVerified: boolean|null`, `hashesVerified: boolean|null`, `expiresAt: timestamp|null`, `privateReference: string|null` |
+
+`cleanup.targetReconciliation` is required even when verification is unresolved.
+`finalInstanceIds` is the complete fresh authoritative final ESS/NLB union;
+`targetInstanceIds` is the ConfigMap readback's exact target ID set. Each observed
+array must be sorted, unique and contain at most four nonsecret instance IDs;
+missing observations remain `null`, not an empty successful result.
+`observedAt` records the final target readback time after capture closure and
+feed/collector stop. `exactMatchVerified` is true only after the resourceVersion-
+bound reconciliation and exact readback described above. Unknown, stale or
+mismatched observations cannot set it true. This records IDs and an outcome,
+never addresses, raw ConfigMap data or credentials.
 
 For a real full run require two approvals with distinct action/approval IDs and
 ordered (4,3),(3,2) transitions, matching request/definition; no pending/unknown
 approval counts as permission. Bind hashes to actual artifacts. Overall PASS
 requires full capture PASS, control evidence complete, finalization complete,
-verified retention and all applicable cleanup checks true. A disabled-path capture
-can never establish replacement acceptance. A blocked or unexecuted run records
+verified retention and all applicable cleanup checks true, including
+`cleanup.targetReconciliation.exactMatchVerified: true`, a non-null post-window
+`observedAt`, and equal non-null `finalInstanceIds`/`targetInstanceIds` matching
+the two new members in `fleetAfter` with both originals absent. An omitted or
+unresolved target reconciliation blocks overall PASS; preserve SQL FAIL
+precedence. Historical receipts without this evidence do not satisfy the new
+release gate. A disabled-path capture can never establish replacement acceptance.
+A blocked or unexecuted run records
 NOT_RUN, not PASS. This schema's `processId` is the collector's process identity,
 not a guessed Pod name; `null` cleanup checks remain unresolved.
 

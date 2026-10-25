@@ -8,7 +8,10 @@ retained. Give each run a fresh private output path. Duration is bounded to 90
 minutes. The collector only reads cloud and Kubernetes resources.
 
 The integration operator supplies an atomic provider-inventory JSON file with
-`observedAt`, `desired`, complete ESS `members` and NLB `healthyRegistered` IDs.
+schema 2, one feed session, successful-publication sequence, `observedAt`,
+`desired`, complete ESS `members`/`memberStates`, and NLB `backendStates`/
+`healthyRegistered` IDs. Historical schema-1 captures retain their original
+interpretation.
 Refresh it from authoritative provider APIs every 15 seconds; age over 30 seconds
 makes assessment inconclusive. Prometheus coverage requires exactly those members,
 `up=1` scoped with `job="pgcat",env="rdev.ali",db_proxy_code="DP00001",target_db_code="D00002"`
@@ -71,22 +74,48 @@ from historical configuration and is validated against live listener attributes
 and health on every read. Supply `--listener-id` if the reviewed binding changes.
 No saved configuration or historical listener value establishes current health.
 
-ESS pages must have stable counts and page numbers with complete distinct healthy
-members in service or protected. ECS must supply one distinct private address per
-member in the exact VPC. NLB enumeration follows every cursor with stable counts,
-rejects duplicate/foreign backends, and reads both `GetListenerAttribute` and
-`GetListenerHealthStatus`. Truncated health or mismatched listener/server-group
-scope refuses publication. `healthyRegistered` excludes zero-weight and explicitly
-non-normal backends; status and weight alone cannot establish health.
+ESS pages must have stable counts and page numbers with complete distinct IDs
+bounded to the four-node test. The feed retains every documented ESS lifecycle
+and Healthy/Unhealthy state, plus every NLB Adding/Available/Configuring/Removing
+backend. NLB enumeration follows every cursor with stable counts and reads both
+`GetListenerAttribute` and `GetListenerHealthStatus`. Unknown states, incomplete
+pagination, or mismatched listener/server-group scope refuse publication.
+`healthyRegistered` contains exactly current ESS IDs with an Available,
+positive-weight backend and Normal listener health; Normal is inferred only from
+absence in the complete non-normal list under enabled health checks.
+
+ECS must supply one distinct private address in the exact VPC for every backend
+and every non-pending member. A Pending/Pending:Wait member absent NLB may remain
+addressless across fresh ticks only while it has never had an address, appeared
+in NLB, or reached a non-pending lifecycle in this process. Its state explicitly
+records `addressKnown=false`. No previously required address may silently vanish.
+The process remembers exact earlier ESS IDs and sequential desired decreases
+4→3 and 3→2, each once. Earlier ESS IDs absent now must fit that departure count;
+only those exact earlier IDs may remain NLB backends after leaving ESS. Approval
+receipts remain a separate final acceptance gate.
 
 The worker file is atomically replaced in its own directory, fsynced and mode
-0600. It contains exactly `observedAt`, `desired`, sorted `members`, and sorted
-`healthyRegistered`. Private addresses exist only transiently for metrics target
-reconciliation; they never enter the worker inventory or retained JSONL. The feed
-reads the existing `raptor-test/pgcat-provider-inventory` targets at startup, then
-patches only its `targets.json` on a verified roster/address change, using its
-current resourceVersion. It never creates the ConfigMap or any cloud resource.
-Targets use the existing PgCat port 9930 and DP00001/D00002 catalog labels.
+0600. Schema 2 contains exactly `schemaVersion`, `feedSession`, `sequence`,
+`observedAt`, `desired`, sorted `members`, sorted `memberStates`, sorted
+`backendStates`, and sorted `healthyRegistered`. A member row contains `id`,
+`lifecycle`, `health`, and `addressKnown`; a backend row contains `id`, `status`,
+`weight`, and `listenerHealth`. `feedSession` is one random non-secret UUID for
+the process lifetime. `sequence` starts at one and advances only after successful
+publication. A restart has a different session and cannot silently continue the
+same assessed window. Private addresses exist only transiently for metrics target
+reconciliation; they never enter worker inventory or retained JSONL.
+
+The feed reads existing `raptor-test/pgcat-provider-inventory` targets at startup.
+It retains all targets learned in successful publications throughout the process,
+including nodes no longer in ESS/NLB, so later zero-client evidence remains
+observable. A changed target list is patched with its current resourceVersion and
+read back exactly in the same remote script before matching worker publication.
+Unchanged exact lists skip the update; the single-operator gate and fresh metrics
+assessment cover external drift. It never creates the ConfigMap or cloud resources.
+Targets use existing PgCat port 9930 and DP00001/D00002 catalog labels. After the
+assessed window closes, explicitly reconcile to the exact fresh final ESS/NLB
+fleet and verify targets during authorized cleanup; restarting this feed does not
+repair or preserve the evidence continuity of the earlier window.
 
 The loop starts a read at most every 15 seconds and lasts at most 5,400 seconds.
 Each refresh carries one absolute deadline capped by the interval and remaining

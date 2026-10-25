@@ -106,7 +106,6 @@ class PodLifecycle(unittest.TestCase):
         with patch.object(worker,'get',side_effect=OSError('unready')):
             with self.assertRaises(OSError):worker.read_pod(pod,cache)
 
-if __name__=='__main__':unittest.main()
 
 class FinishBoundary(unittest.TestCase):
     def test_same_pod_new_container_reads_new_process(self):
@@ -274,3 +273,56 @@ class OptionalTimingDiagnostic(unittest.TestCase):
             self.assertIsNone(rows[1]['appendMs'])
             self.assertEqual(os.stat(timed/'timing.jsonl').st_mode&0o777,0o600)
             self.assertNotIn('private endpoint detail',(timed/'timing.jsonl').read_text())
+
+
+class TransitionInventoryCapture(unittest.TestCase):
+    def test_retains_schema_two_and_unavailable_without_losing_clients(self):
+        import tempfile,json,copy
+        from pathlib import Path
+        from test_capture_window import transition_frame
+        original=transition_frame(0)
+        pod={'metadata':{'uid':'pod'},'status':{'containerStatuses':[{'containerID':'container'}],'podIP':'private','phase':'Running'}}
+        def kube(*args):
+            if args[1]=='pods':return {'items':[pod]}
+            if args[1]=='deployment':return {'spec':{'replicas':1}}
+            return {'spec':{'clusterIP':'private'}}
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'inventory.json'
+            for case in ('complete','missing field','missing row key'):
+                source=copy.deepcopy(original['inventory']);source['privateAddresses']={'a':'private'}
+                if case=='missing field':del source['backendStates']
+                if case=='missing row key':del source['memberStates'][0]['health']
+                path.write_text(json.dumps(source))
+                with self.subTest(case=case),patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'get',return_value=original['pods'][0]['snapshot']),patch.object(worker,'query_metrics',return_value=original['metrics']):
+                    got=worker.capture_frame(path)
+                    self.assertEqual(got['inventory'].get('schemaVersion'),2)
+                    self.assertNotIn('private',str(got['inventory']))
+                    self.assertEqual(got['pods'][0]['snapshot'],original['pods'][0]['snapshot'])
+                    if case=='complete':self.assertEqual(got['inventory'],original['inventory'])
+                    else:self.assertEqual(got['inventory']['desired'],0)
+
+
+class PartialPodWorkerEvidence(unittest.TestCase):
+    def test_worker_retains_one_poll_failure_when_other_pod_is_malformed(self):
+        import tempfile,json
+        from pathlib import Path
+        from test_capture_window import partial_pod_failure_frame,transition_frame
+        for event_only in (False,True):
+            with self.subTest(event_only=event_only),tempfile.TemporaryDirectory() as d:
+                root=Path(d);clock=[0.0]
+                def capture(*_):
+                    t=int(clock[0])
+                    if t==0:return partial_pod_failure_frame(event_only)
+                    f=transition_frame(t)
+                    if t>=5:f['pods'][0]['snapshot'].update(final=True,connected=0)
+                    return f
+                with patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]),patch.object(worker.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)):
+                    result=worker.run_capture(root/'capture',root/'inventory',5)
+                self.assertEqual(result['status'],'FAIL')
+                raw=''.join(p.read_text() for p in (root/'capture').glob('segment-*.jsonl'))
+                self.assertNotIn('10.20.30.40',raw);self.assertNotIn('do-not-retain',raw)
+                completion=json.loads((root/'capture'/'completion.json').read_text())
+                self.assertEqual(sum(s['frames'] for s in completion['segments']),6)
+
+
+if __name__=='__main__':unittest.main()
