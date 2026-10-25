@@ -34,18 +34,19 @@
 **Files:**
 - Modify: `test-assets/traffic/provider_feed.py`
 - Test: `test-assets/traffic/test_provider_feed.py`
+- Test: `test-assets/traffic/test_worker_python36.py` if the same-script patch/readback changes its command expectation
 - Update: `test-assets/traffic/README.md`
 
 **Interfaces:**
-- `snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_group_id, now, known_ids=(), previous_desired=None) -> dict` returns schema-2 provider fields plus transient `privateAddresses`. `Operator` adds its own immutable `feedSession` UUID and next successful-publication `sequence` before publication.
+- `snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_group_id, now, known_ids=(), allowed_departures=0, required_address_ids=()) -> dict` returns schema-2 provider fields plus transient `privateAddresses`. `allowed_departures` counts only observed sequential 4→3 and 3→2 desired decreases; an NLB-only ID must be in `known_ids`, and previously seen ESS IDs absent now may not exceed that count. `required_address_ids` remembers any node previously address-known, NLB-registered, or service-ready. `Operator` adds its own immutable `feedSession` UUID and next successful-publication `sequence` before publication.
 - `collect_transition_members(fetch_ess, group_id) -> list[dict]` validates complete pagination and preserves permitted lifecycle/health states without changing `test-assets/metrics/provider_inventory.py`.
-- `Operator` retains exact earlier ESS/backend IDs, desired capacity, targets, one UUID `feedSession`, and successful-publication sequence for the single process lifetime. `publish(..., retain_targets=())` writes only the schema-2 allowlist to the worker after resourceVersion-checked target reconciliation.
+- `Operator` retains exact earlier ESS IDs, last desired capacity, sequential decrease count, required-address IDs, targets, one UUID `feedSession`, and successful-publication sequence for the single process lifetime. `publish(..., retain_targets=())` writes only the schema-2 allowlist to the worker after resourceVersion-checked target reconciliation.
 
-- [ ] **Step 1: Write failing tests** for Pending ESS with no ECS address and no NLB backend, `Adding`/`Configuring`/`Removing` NLB backends, old backend after a previous-desired decrease, foreign backend, missing ECS address for any backend, changed pagination, retained target lifetime, and feed UUID/sequence. Assert exact schema-2 fields and no address in published evidence.
+- [ ] **Step 1: Write failing tests** for Pending ESS with no ECS address and no NLB backend, `Adding`/`Configuring`/`Removing` NLB backends, NLB-only old backend after desired decrease but delayed ESS removal, unexpected removal without decrease, foreign backend, missing ECS address for any backend, changed pagination, retained target lifetime, and feed UUID/sequence. Assert exact schema-2 fields and no address in published evidence.
 - [ ] **Step 2: Run** `python3 -m unittest discover -s test-assets/traffic -p test_provider_feed.py -q`; confirm expected failures in the new cases.
 - [ ] **Step 3: Implement** the interfaces above. Keep `healthyRegistered` equal to current ESS IDs with Available/positive-weight/Normal NLB health. Reject unknown states and unverified foreign backends; do not renew observedAt from stale data. Keep fixed-category error output from PR #295.
 - [ ] **Step 4: Run** the provider test file and the metrics inventory tests; confirm both green and `git diff --check` clean.
-- [ ] **Step 5: Commit** only the three Task 1 files with a focused message.
+- [ ] **Step 5: Commit** only the Task 1 files listed above with a focused message.
 
 ### Task 2: Retain and assess schema-2 frames
 
