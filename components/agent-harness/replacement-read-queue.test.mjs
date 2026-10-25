@@ -7,7 +7,7 @@ import {loadPiRuntime} from './pi-adapter.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
 
-async function runScenario(failFirst=false){
+async function runScenario(failureKind){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'replacement-read-queue-')));
  try{
   const state=path.join(root,'state'),skills=path.join(root,'skills');
@@ -21,7 +21,7 @@ async function runScenario(failFirst=false){
   const scope={envCode:'dev',proxyCode:'proxy',groupId:'group',serverGroupId:'backend',targetDbCode:'db',application:{envCode:'dev',appCode:'client',clusterId:'cluster',namespace:'test',name:'traffic',uid:'uid'}};
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
   const {runtime}=await loadPiRuntime({stateRoot:state});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
-  let round=0,active=0,maximum=0,serviceCalls=0;
+  let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;
   runtime.streamSimple=(model)=>{
    round++;
    const calls=round===1?[
@@ -45,20 +45,23 @@ async function runScenario(failFirst=false){
     active++;maximum=Math.max(maximum,active);
     await new Promise(resolve=>setTimeout(resolve,30));
     active--;
-    if(failFirst&&serviceCalls===1)return new Response('Unavailable',{status:503});
+    if(failureKind==='http'&&serviceCalls===1)return new Response('Unavailable',{status:503});
+    if(failureKind==='malformed'&&serviceCalls===1)return new Response('{bad json',{headers:{'Content-Type':'application/json'}});
     const data=server==='raptor'?{requestId:b.requestId,definition:{envCode:b.envCode,object:{kind:b.objectKind,code:b.objectCode},operations:[{name:b.operation,parameters:{mode:'replacement'}}]}}:{envCode:b.envCode,accountMatches:true,evidenceMode:'live',observedAt:new Date().toISOString()};
     result={structuredContent:{data},content:[{type:'text',text:JSON.stringify({data})}]};
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
-  const read=async()=>{active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;return {observedAt:new Date().toISOString()};};
+  const read=async()=>{observerCalls++;active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');return {observedAt:new Date().toISOString()};};
   const observer={cloudRead:read,metricsRead:read,deploymentRead:read,dbConnectionProbe:read};
   const out=await runLiveReplacement({stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:skills},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,observer});
-  if(failFirst){assert.equal(out.error,'ToolFailed',JSON.stringify(out));assert.equal(serviceCalls,1,'a failed read must stop queued service calls');}
+  if(failureKind){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(failureKind==='observer'){assert.equal(observerCalls,1,'an observation failure must stop queued observations');assert.ok(serviceCalls<=1,'an observation failure must stop queued service calls');}else assert.equal(serviceCalls,1,'a failed MCP read must stop queued service calls');}
   else assert.equal(out.paused?.kind,'resource',JSON.stringify(out));
   assert.equal(maximum,1,'first-turn reads must never overlap at their service boundary');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 }
 
 test('replacement queues simultaneous first reads across MCP and observation tools',()=>runScenario());
-test('replacement stops queued reads after the first service failure',()=>runScenario(true));
+test('replacement stops queued reads after an HTTP failure',()=>runScenario('http'));
+test('replacement stops queued reads after a malformed MCP response',()=>runScenario('malformed'));
+test('replacement stops queued reads after an observation failure',()=>runScenario('observer'));
