@@ -191,12 +191,27 @@ class TransitionIntegrationTests(unittest.TestCase):
 
     def test_corrupted_provider_metrics_client_or_final_evidence_is_inconclusive(self):
         # Each mutation removes one acceptance condition from the same full run.
-        cases = ('new backend no scrape', 'draining backend no scrape', 'old node before zero',
-                 'other pool busy', 'incomplete triplet', 'stale provider', 'stale scrape',
-                 'stale metrics observation', 'stale raw zero', 'feed restart', 'sequence skip',
-                 'unknown backend', 'missing member state', 'unhealthy backends',
-                 'missing client', 'missing event', 'missing final', 'first skipped')
-        for case in cases:
+        cases = {
+            'new backend no scrape': 'missing metrics coverage',
+            'draining backend no scrape': 'missing metrics coverage',
+            'old node before zero': 'missing metrics coverage',
+            'other pool busy': 'missing metrics coverage',
+            'incomplete triplet': 'missing expected raw triplets',
+            'stale provider': 'stale provider inventory',
+            'stale scrape': 'stale metrics',
+            'stale metrics observation': 'stale metrics',
+            'stale raw zero': 'stale raw observation',
+            'feed restart': 'provider feed discontinuity',
+            'sequence skip': 'provider feed discontinuity',
+            'unknown backend': 'unexpected provider membership',
+            'missing member state': 'incomplete provider inventory',
+            'unhealthy backends': 'no healthy registered backends',
+            'missing client': 'incomplete client roster',
+            'missing event': 'event ring lost or duplicate events',
+            'missing final': 'missing client final marker',
+            'first skipped': 'scheduled work skipped',
+        }
+        for case, reason in cases.items():
             def corrupt(t, f):
                 if case == 'new backend no scrape' and t == 4: omit_metrics(f, 'c')
                 if case == 'draining backend no scrape' and t == 10: omit_metrics(f, 'a')
@@ -205,7 +220,7 @@ class TransitionIntegrationTests(unittest.TestCase):
                     for row in f['metrics']['raw']:
                         if row['node'] == 'a' and row['pool'] == 'other': row['value'] = 1
                 if case == 'incomplete triplet' and t == 4: f['metrics']['raw'].pop()
-                if case == 'stale provider' and t == 4: f['inventory']['observedAt'] = -100
+                if case == 'stale provider' and t in (0, 1): f['inventory']['observedAt'] = -31
                 if case == 'stale scrape' and t == 4: f['metrics']['sourceAt'] = -100
                 if case == 'stale metrics observation' and t == 4: f['metrics']['observedAt'] = -100
                 if case == 'stale raw zero' and t in (12, 13):
@@ -213,9 +228,12 @@ class TransitionIntegrationTests(unittest.TestCase):
                         if row['node'] == 'a': row['sourceAt'] = -100
                 if case == 'feed restart' and t >= 4: f['inventory']['feedSession'] = '00000000-0000-4000-8000-000000000002'
                 if case == 'sequence skip' and t >= 4: f['inventory']['sequence'] += 1
-                if case == 'unknown backend' and t == 4: f['inventory']['backendStates'][0]['id'] = 'foreign'
-                if case == 'missing member state' and t == 4: f['inventory']['memberStates'].pop()
-                if case == 'unhealthy backends' and t == 4:
+                if case == 'unknown backend' and t in (4, 5):
+                    f['inventory']['backendStates'][0]['id'] = 'foreign'
+                    f['inventory']['backendStates'].sort(key=lambda row: row['id'])
+                    f['inventory']['healthyRegistered'].remove('a')
+                if case == 'missing member state' and t == 24: f['inventory']['memberStates'].pop()
+                if case == 'unhealthy backends' and t in (4, 5):
                     f['inventory']['healthyRegistered'] = []
                     for row in f['inventory']['backendStates']: row['listenerHealth'] = 'Unhealthy'
                 if case == 'missing client' and t == 4: f['pods'].pop()
@@ -228,8 +246,17 @@ class TransitionIntegrationTests(unittest.TestCase):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
                 directory = Path(tmp)
                 frames, _ = capture_fixture(directory, corrupt)
+                # Fault injection must preserve repeated publication identity;
+                # otherwise continuity rejection could mask the intended gate.
+                for t in range(0, 24, 2):
+                    self.assertEqual(frames[t]['inventory'], frames[t + 1]['inventory'])
                 _, result = retain_fixture(directory, frames)
                 self.assertEqual(result['status'], 'INCONCLUSIVE', result)
+                self.assertIn(reason, result['reasons'])
+                if case not in ('feed restart', 'sequence skip'):
+                    self.assertNotIn('provider feed discontinuity', result['reasons'])
+                if case != 'missing member state':
+                    self.assertNotIn('incomplete provider inventory', result['reasons'])
 
     def test_zero_requires_later_fresh_backend_absence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -261,7 +288,7 @@ class TransitionIntegrationTests(unittest.TestCase):
 
     def test_observed_sql_failure_overrides_missing_provider_and_segment(self):
         def corrupt(t, f):
-            if t == 4: f['inventory'].pop('backendStates')
+            if t in (4, 5): f['inventory'].pop('backendStates')
             if t >= 18:
                 snapshot = f['pods'][0]['snapshot']
                 snapshot['sample']['Success'] -= 1

@@ -476,8 +476,9 @@ readback. No obsolete old-node target may remain. On a fault, reconcile only to
 the verified actual fleet; do not assume the intended two-node result or remove
 a still-registered backend. Record unresolved scope or readback as incomplete
 cleanup and block overall PASS until reviewed recovery; preserve any observed
-SQL FAIL. Keep the sanitized final node IDs, observation time and target verification outcome in
-the private settlement receipt; never retain target addresses.
+SQL FAIL. Record the sanitized authoritative final node IDs, ConfigMap target
+IDs, readback time and exact-match outcome in `cleanup.targetReconciliation`
+in the private settlement receipt; never retain target addresses.
 
 Retain only allowlisted evidence, completion,
 hashes and sanitized receipt in the **existing** private encrypted OSS evidence
@@ -515,15 +516,33 @@ private addresses or kubeconfig content. Review before public sharing.
 | fleet snapshot | `observedAt: timestamp|null`, `desired: integer|null`, `members: array<{instanceId:string,protected:boolean|null,healthy:boolean|null,registered:boolean|null}>` |
 | each capture | `kind: disabled-path|full-window`, `manifestRelativePath: string`, `manifestSha256`, `segments: array<{relativePath:string,sha256}>`, `pathProof: complete|incomplete|unknown`, `observedProcesses: array<{podUid:string,processId:string,finalObserved:boolean}>`, `status: PASS|FAIL|INCONCLUSIVE`, `reasonCodes: array<string>` |
 | assessment | `status: PASS|FAIL|INCONCLUSIVE|NOT_RUN`, `controlEvidenceComplete: boolean`, `clientFinalization: blocked|complete|incomplete|not_run`, `reasonCodes: array<string>` |
-| cleanup | `flagFalseVerified`, `checkpointSettled`, `sandboxAbsent`, `keysAbsent`, `accessRevoked`, `clientsRestored`, `localKubeconfigAbsent`, `workerKubeconfigAbsent`, `runFilesRemoved`: true|false|null; `verifiedAt: timestamp|null` |
+| cleanup | `flagFalseVerified`, `checkpointSettled`, `sandboxAbsent`, `keysAbsent`, `accessRevoked`, `clientsRestored`, `localKubeconfigAbsent`, `workerKubeconfigAbsent`, `runFilesRemoved`: true|false|null; `verifiedAt: timestamp|null`; `targetReconciliation` |
+| cleanup.targetReconciliation | `observedAt: timestamp|null`, `finalInstanceIds: array<string>|null`, `targetInstanceIds: array<string>|null`, `exactMatchVerified: true|false|null` |
 | retention | `encryptedVerified: boolean|null`, `hashesVerified: boolean|null`, `expiresAt: timestamp|null`, `privateReference: string|null` |
+
+`cleanup.targetReconciliation` is required even when verification is unresolved.
+`finalInstanceIds` is the complete fresh authoritative final ESS/NLB union;
+`targetInstanceIds` is the ConfigMap readback's exact target ID set. Each observed
+array must be sorted, unique and contain at most four nonsecret instance IDs;
+missing observations remain `null`, not an empty successful result.
+`observedAt` records the final target readback time after capture closure and
+feed/collector stop. `exactMatchVerified` is true only after the resourceVersion-
+bound reconciliation and exact readback described above. Unknown, stale or
+mismatched observations cannot set it true. This records IDs and an outcome,
+never addresses, raw ConfigMap data or credentials.
 
 For a real full run require two approvals with distinct action/approval IDs and
 ordered (4,3),(3,2) transitions, matching request/definition; no pending/unknown
 approval counts as permission. Bind hashes to actual artifacts. Overall PASS
 requires full capture PASS, control evidence complete, finalization complete,
-verified retention and all applicable cleanup checks true. A disabled-path capture
-can never establish replacement acceptance. A blocked or unexecuted run records
+verified retention and all applicable cleanup checks true, including
+`cleanup.targetReconciliation.exactMatchVerified: true`, a non-null post-window
+`observedAt`, and equal non-null `finalInstanceIds`/`targetInstanceIds` matching
+the two new members in `fleetAfter` with both originals absent. An omitted or
+unresolved target reconciliation blocks overall PASS; preserve SQL FAIL
+precedence. Historical receipts without this evidence do not satisfy the new
+release gate. A disabled-path capture can never establish replacement acceptance.
+A blocked or unexecuted run records
 NOT_RUN, not PASS. This schema's `processId` is the collector's process identity,
 not a guessed Pod name; `null` cleanup checks remain unresolved.
 
