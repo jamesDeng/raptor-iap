@@ -6,4 +6,5 @@ module "sandbox" {
   account_id           = var.account_id
   vpc_id               = var.vpc_id
   kubernetes_version   = "1.36.2-aliyun.1"
+  deletion_protection  = false # Owner-authorized retirement; no shared resources in this state.
 }

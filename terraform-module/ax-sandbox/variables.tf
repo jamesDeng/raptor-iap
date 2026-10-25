@@ -1,5 +1,9 @@
 variable "account_id" { type = string }
 variable "vpc_id" { type = string }
+variable "deletion_protection" {
+  type    = bool
+  default = true
+}
 variable "kubernetes_version" {
   type = string
   validation {

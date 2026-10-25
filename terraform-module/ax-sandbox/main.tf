@@ -33,7 +33,7 @@ resource "alicloud_cs_managed_kubernetes" "cluster" {
   slb_internet_enabled           = false
   pod_cidr                       = "10.74.0.0/16"
   service_cidr                   = "10.75.0.0/16"
-  deletion_protection            = true
+  deletion_protection            = var.deletion_protection
   skip_set_certificate_authority = true
   tags                           = local.tags
   addons { name = "flannel" }
@@ -54,4 +54,5 @@ resource "alicloud_eip_association" "api" {
   allocation_id = alicloud_eip_address.api[0].id
   instance_id   = var.api_load_balancer_id
   instance_type = "SlbInstance"
+  depends_on    = [alicloud_cs_managed_kubernetes.cluster]
 }
