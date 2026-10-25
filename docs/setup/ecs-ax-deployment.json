@@ -16,7 +16,7 @@
   },
   "ax_installed_verified": true,
   "migration_complete": true,
-  "retained_ack": "c7de05cd5a9b84512925b1fc7a24e1bc9",
+  "retained_ack": null,
   "certificate_projection_verified": true,
   "certificate_chain_verified": true,
   "counter_suspend_resume_verified": true,
@@ -65,5 +65,11 @@
   "post_restart_attempt": "04730314-a8e6-4ec0-918c-9b9db752d14e",
   "post_restart_checkpoint_bytes": 20698,
   "gitops_finalization": "Merge and main reconciliation are recorded in the task finalization receipt",
-  "controller_session_renewal": "Existing private bootstrap helper; one-hour STS; bootstrap key inactive"
+  "controller_session_renewal": "Existing private bootstrap helper; one-hour STS; bootstrap key inactive",
+  "retired_ack": {
+    "cluster_id": "c7de05cd5a9b84512925b1fc7a24e1bc9",
+    "date": "2026-10-25",
+    "terraform_removal_pr": "https://github.com/jamesDeng/raptor-iap/pull/290",
+    "shared_vpc_and_ecs_ax_preserved": true
+  }
 }
