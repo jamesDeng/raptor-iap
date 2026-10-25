@@ -18,6 +18,19 @@ test('replacement MCP accepts proxy identity and preserves unknown acknowledgeme
  await assert.rejects(()=>call({...args,groupId:'foreign'}),/ScopeMismatch/);assert.equal(calls,0);
  await call(args);assert.equal(calls,1);assert.equal(rows[0].state.outcome,'unknown');
 });
+test('provider accepted receipts become submitted evidence and retained action results',async()=>{
+ for(const [tool,args,data] of [
+  ['db_proxy_node_protection_set',{requestId:'request',envCode:'rdev.ali',proxyCode:'proxy',groupId:'group',instanceIds:['old-a','old-b'],protected:true},{outcome:'accepted',instanceIds:['old-a','old-b'],evidenceMode:'live'}],
+  ['db_proxy_scale',{requestId:'request',envCode:'rdev.ali',proxyCode:'proxy',groupId:'group',actionId:'expand',desiredCapacity:4},{outcome:'accepted',groupId:'group',previousDesiredCapacity:2,desiredCapacity:4,evidenceMode:'live'}],
+  ['db_proxy_nodes_deregister',{requestId:'request',envCode:'rdev.ali',proxyCode:'proxy',groupId:'group',serverGroupId:'backend',instanceIds:['old-a']},{outcome:'accepted',instanceIds:['old-a'],evidenceMode:'live'}]
+ ]){
+  const rows=[];let retained;
+  const guarded=createGuardedFetch({server:'infra',url:'https://infra.example/mcp',binding:b,replacementScope:scope,onEvidence:x=>rows.push(...x),onToolResult:(_server,_tool,_args,result)=>{retained=result;},fetch:async()=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{structuredContent:{data},content:[]}}),{headers:{'Content-Type':'application/json'}})});
+  await guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:tool,arguments:args}})});
+  assert.equal(rows[0].state.outcome,'submitted',tool);
+  assert.equal(retained.outcome,'submitted',tool);
+ }
+});
 test('proxy discovery binds resource ID and target database without Kubernetes UID fiction',async()=>{
  const rows=[];
  const data=[{resourceId:'group',kind:'db-proxy',envCode:'rdev.ali',objectCode:'proxy',name:'proxy',state:'active','target-db-code':'db',evidenceMode:'live',observedAt:new Date().toISOString()}];
