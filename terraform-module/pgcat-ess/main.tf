@@ -71,7 +71,9 @@ resource "alicloud_ess_scaling_group" "proxy" {
   tags                      = local.tags
   group_deletion_protection = true
   depends_on                = [terraform_data.account_guard]
-  lifecycle { ignore_changes = [desired_capacity] }
+  # The runtime replacement API owns capacity and per-instance protection.
+  # Configuration updates must not clear protection on retained fleet members.
+  lifecycle { ignore_changes = [desired_capacity, protected_instances] }
 }
 resource "alicloud_ess_server_group_attachment" "proxy" {
   scaling_group_id = alicloud_ess_scaling_group.proxy.id
