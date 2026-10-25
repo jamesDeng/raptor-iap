@@ -202,7 +202,7 @@ func TestLiveDriverLeaseLostConnectionCannotReacquire(t *testing.T) {
 	}
 }
 func TestLiveTerminalHarnessFailureCodesFinalize(t *testing.T) {
-	for _, code := range []string{"McpUnavailable", "ToolFailed", "TurnLimit", "MissingEvidence", "UnexpectedToolCatalog", "InvalidProgress", "InvalidEvidence", "RunnerFailed"} {
+	for _, code := range []string{"McpUnavailable", "ToolFailed", "TurnLimit", "MissingEvidence", "UnexpectedToolCatalog", "InvalidProgress", "InvalidEvidence", "RunnerFailed", "MutationAlreadySubmitted", "CredentialRefreshUnconfirmed", "InvalidJob", "InvalidApprovalPause", "InvalidSessionReference", "InvalidSkillsRelease", "ObservationCleanupFailed"} {
 		t.Run(code, func(t *testing.T) {
 			s, _, b := liveAttempt(t)
 			if e := s.FinalizeLive(context.Background(), b.AttemptID, "owner", LiveOutcome{Status: "failed", FailureCode: code, SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}); e != nil {
