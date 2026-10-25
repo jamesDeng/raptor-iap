@@ -156,3 +156,28 @@ class SamePodProcessHistory(unittest.TestCase):
             self.assertEqual(result['status'],'INCONCLUSIVE')
             markers=json.loads((path/'completion.json').read_text())['clientFinalMarkers']
             self.assertEqual(markers,[{'uid':'pod','processId':'process','final':True},{'uid':'pod','processId':'replacement','final':True}])
+
+
+class TransitionSegments(unittest.TestCase):
+    def test_transition_obligations_cross_segments(self):
+        from test_capture_window import transition_window
+        for missing in (False,True):
+            with self.subTest(missing=missing),tempfile.TemporaryDirectory() as d:
+                w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=2)
+                fs=transition_window()
+                if missing:
+                    for row in fs[2]['metrics']['raw']:
+                        if row['node']=='a':row['value']=1
+                    fs[3]['metrics']['nodes'].remove('a');fs[3]['metrics']['raw']=[r for r in fs[3]['metrics']['raw'] if r['node']!='a']
+                for f in fs:w.append(f)
+                self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'INCONCLUSIVE' if missing else 'PASS')
+    def test_first_frame_failure_survives_retention_and_missing_provider(self):
+        from test_capture_window import transition_frame
+        with tempfile.TemporaryDirectory() as d:
+            w=SegmentedCapture(Path(d)/'capture',max_segment_seconds=1)
+            for t in range(2):
+                f=transition_frame(t);s=f['pods'][0]['snapshot']['sample'];s.update(Failure=1,Attempts=t+1,Scheduled=t+1)
+                if t==0:del f['inventory']['backendStates']
+                else:f['phase']='settling';f['pods'][0]['snapshot'].update(final=True,connected=0)
+                w.append(f)
+            self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'FAIL')

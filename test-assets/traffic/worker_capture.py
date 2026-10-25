@@ -3,7 +3,7 @@ import argparse, concurrent.futures, datetime, json, math, os, subprocess, sys, 
 from pathlib import Path
 from typing import Optional
 from segmented_capture import SegmentedCapture
-from capture_window import seconds as evidence_seconds
+from capture_window import seconds as evidence_seconds, clean_inventory
 
 def utc():return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def get(url):
@@ -74,10 +74,10 @@ def capture_frame(inventory_path,final_snapshots=None):
         deployment=kubectl('get','deployment','rdev-test-client-client','-o','json')
         if all(row is not None for row in observations):expected=deployment['spec']['replicas']
     except unavailable:pass
-    inventory={'observedAt':stamp,'desired':0,'members':[],'healthyRegistered':[]}
+    inventory=clean_inventory({'schemaVersion':2})
     try:
         source=json.loads(Path(inventory_path).read_text())
-        inventory={k:source[k] for k in inventory}
+        inventory=clean_inventory(source)
     except unavailable:pass
     metrics={'observedAt':utc(),'sourceAt':stamp,'nodes':[],'available':False,'raw':[]}
     try:
