@@ -90,7 +90,7 @@ class WorkerPython36Tests(unittest.TestCase):
                 with self.assertRaises(PermissionError):
                     finish_clients.atomic_json(Path(directory) / 'receipt.json', {})
 
-    def test_remote_targets_read_and_patch_with_python36_subprocess_signature(self):
+    def test_remote_targets_patch_and_verify_with_python36_subprocess_signature(self):
         body = {'metadata': {'name': 'pgcat-provider-inventory', 'namespace': 'raptor-test', 'resourceVersion': '42'}, 'data': {'targets.json': '[]'}}
         calls = []
 
@@ -102,6 +102,8 @@ class WorkerPython36Tests(unittest.TestCase):
             self.assertGreater(timeout, 0)
             self.assertLessEqual(timeout, 8)
             calls.append(argv)
+            if argv[5] == 'patch':
+                body['data'].update(json.loads(argv[-1])['data'])
             return SimpleNamespace(stdout=json.dumps(body) if argv[5] == 'get' else '')
 
         with tempfile.TemporaryDirectory() as directory:
@@ -111,7 +113,7 @@ class WorkerPython36Tests(unittest.TestCase):
             targets = [{'targets': ['10.0.0.1:9930'], 'labels': {'ecs_instance_id': 'i-fixture'}}]
             with patch.object(provider_feed.subprocess, 'run', run_python36), patch.object(sys, 'argv', ['remote', str(path), json.dumps(targets)]):
                 exec(provider_feed._TARGET_SCRIPT, {'_remote_deadline': time.monotonic() + 10})
-            self.assertEqual([argv[5] for argv in calls], ['get', 'patch'])
+            self.assertEqual([argv[5] for argv in calls], ['get', 'patch', 'get'])
             self.assertEqual(json.loads(calls[1][-1]), {'metadata': {'resourceVersion': '42'}, 'data': {'targets.json': json.dumps(targets)}})
 
     def test_scaling_group_query_emits_indexed_exact_filter(self):

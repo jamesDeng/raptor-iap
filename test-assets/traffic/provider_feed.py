@@ -1,6 +1,5 @@
 """Bounded, fail-closed provider evidence. No cloud provisioning operations."""
 import argparse
-import importlib.util
 import ipaddress
 import json
 import math
@@ -20,7 +19,10 @@ SERVER_GROUP_ID = 'sgp-xs5s42tihtl6ja2a67'
 VPC_ID = 'vpc-t4n4fi6r1a7bi6n93ftq3'
 WORKER_ID = 'i-t4nj1bitmcz7cuoch82h'
 LISTENER_ID = 'lsn-7kuvcqkaz5o3z2w376@6432'
-FIELDS = ('observedAt', 'desired', 'members', 'healthyRegistered')
+FIELDS = ('schemaVersion', 'feedSession', 'sequence', 'observedAt', 'desired',
+          'members', 'memberStates', 'backendStates', 'healthyRegistered')
+LIFECYCLES = frozenset(('InService', 'Pending', 'Pending:Wait', 'Protected',
+                        'Standby', 'Stopped', 'Removing', 'Removing:Wait'))
 RETRYABLE_READS = frozenset({
     ('ess', 'DescribeScalingGroups'),
     ('ess', 'DescribeScalingInstances'),
@@ -43,14 +45,38 @@ class FeedStop(ValueError):
         self.stage = stage if stage in FAILURE_STAGES else 'loop'
         super().__init__('Provider feed stopped at '+self.stage+'; evidence is no longer refreshed')
 
-_spec = importlib.util.spec_from_file_location('provider_inventory', Path(__file__).parents[1] / 'metrics/provider_inventory.py')
-_inventory = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_inventory)
 
 
 def require(condition):
     if not condition:
         raise ValueError('Provider evidence rejected')
+
+
+def collect_transition_members(fetch, group_id):
+    """Read every ESS page without discarding pending or draining identities."""
+    rows, seen, total = [], set(), None
+    for page in range(1, 5):
+        body = fetch(page)
+        count = body.get('TotalCount')
+        require(type(count) is int and 2 <= count <= 4)
+        require(type(body.get('PageNumber')) is int and body['PageNumber'] == page)
+        if total is None:
+            total = count
+        require(total == count)
+        batch = body.get('ScalingInstances', {}).get('ScalingInstance')
+        require(isinstance(batch, list) and batch)
+        for row in batch:
+            node = row.get('InstanceId')
+            require(isinstance(node, str) and node and node not in seen)
+            require(row.get('ScalingGroupId') == group_id)
+            if row.get('LifecycleState') not in LIFECYCLES or row.get('HealthStatus') not in ('Healthy', 'Unhealthy'):
+                raise FeedStop('ess-transition')
+            seen.add(node)
+            rows.append(row)
+        require(len(rows) <= total)
+        if len(rows) == total:
+            return rows
+    raise ValueError('Provider evidence rejected')
 
 
 def collect_backends(fetch, server_group_id):
@@ -59,7 +85,7 @@ def collect_backends(fetch, server_group_id):
     for _ in range(100):
         body = fetch(token)
         count = body.get('TotalCount')
-        require(type(count) is int and 0 <= count <= 5000)
+        require(type(count) is int and 0 <= count <= 4)
         if total is None:
             total = count
         require(total == count and isinstance(body.get('Servers'), list))
@@ -69,7 +95,7 @@ def collect_backends(fetch, server_group_id):
             require(isinstance(node, str) and node and node not in seen)
             require(row.get('ServerGroupId') == server_group_id and row.get('ServerType') == 'Ecs')
             require(row.get('Port') == 6432 and isinstance(row.get('Status'), str))
-            if row['Status'] != 'Available':
+            if row['Status'] not in ('Adding', 'Available', 'Configuring', 'Removing'):
                 raise FeedStop('nlb-backend-state')
             require(type(row.get('Weight')) is int and 0 <= row['Weight'] <= 100)
             seen.add(node)
@@ -85,7 +111,8 @@ def collect_backends(fetch, server_group_id):
     raise ValueError('Provider evidence rejected')
 
 
-def snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_group_id, now):
+def snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_group_id, now,
+             known_ids=(), allowed_departures=0, required_address_ids=()):
     """Read adapters return raw, complete scoped provider observations.
 
     fetch_nlb returns Servers (fully paginated), Listener and Health. Addresses
@@ -97,27 +124,41 @@ def snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_g
         require(group.get('ScalingGroupId') == group_id and group.get('VpcId') == VPC_ID)
         desired = group.get('DesiredCapacity')
         require(type(desired) is int and 2 <= desired <= 4)
-        rows = _inventory.collect_members(fetch_ess, group_id)
+        rows = collect_transition_members(fetch_ess, group_id)
         ids = sorted(row['InstanceId'] for row in rows)
         require(2 <= len(ids) <= 4)
-        addresses = {}
-        for row in fetch_ecs(ids):
+        known = set(known_ids)
+        require(all(isinstance(node, str) and node for node in known))
+        require(type(allowed_departures) is int and 0 <= allowed_departures <= 2)
+        require(len(known | set(ids)) <= 4 and len(known - set(ids)) <= allowed_departures)
+        nlb = fetch_nlb()
+        # Validate the injected adapter's complete list using the same validator.
+        backends = collect_backends(lambda token: {'TotalCount':len(nlb['Servers']), 'Servers':nlb['Servers']}, server_group_id)
+        registered = {row['ServerId']:row for row in backends}
+        require(set(registered) <= set(ids) | known)
+        required_ids = set(ids) | set(registered)
+        optional = {row['InstanceId'] for row in rows
+                    if row['LifecycleState'] in ('Pending', 'Pending:Wait')
+                    and row['InstanceId'] not in registered and row['InstanceId'] not in required_address_ids}
+        addresses, seen_ecs = {}, set()
+        ecs_rows = fetch_ecs(sorted(required_ids))
+        require(isinstance(ecs_rows, list))
+        for row in ecs_rows:
             node = row.get('InstanceId')
-            require(node in ids and node not in addresses)
+            require(node in required_ids and node not in seen_ecs)
+            seen_ecs.add(node)
             vpc = row.get('VpcAttributes', {})
             require(vpc.get('VpcId') == VPC_ID)
             ips = vpc.get('PrivateIpAddress', {}).get('IpAddress', [])
-            require(isinstance(ips, list) and len(ips) == 1)
+            require(isinstance(ips, list))
+            if not ips and node in optional:
+                continue
+            require(len(ips) == 1)
             address = ipaddress.ip_address(ips[0])
             require(address.version == 4 and address.is_private and not address.is_loopback and not address.is_link_local and not address.is_unspecified)
             require(str(address) not in addresses.values())
             addresses[node] = str(address)
-        require(set(addresses) == set(ids))
-        nlb = fetch_nlb()
-        # Validate the injected adapter's complete list using the same validator.
-        backends = collect_backends(lambda token: {'TotalCount':len(nlb['Servers']), 'Servers':nlb['Servers']}, server_group_id)
-        registered = {row['ServerId']:row['Weight'] > 0 for row in backends}
-        require(set(registered) <= set(ids))
+        require(required_ids - set(addresses) <= optional)
         listener = nlb['Listener']
         require(isinstance(listener.get('ListenerId'), str) and listener['ListenerId'])
         require(listener.get('ServerGroupId') == server_group_id and listener.get('ListenerPort') == 6432 and listener.get('ListenerStatus') == 'Running')
@@ -128,19 +169,25 @@ def snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_g
         require(len(observed['ServerGroupInfos']) == 1)
         info = observed['ServerGroupInfos'][0]
         require(info.get('ServerGroupId') == server_group_id and info.get('HeathCheckEnabled') is True and isinstance(info.get('NonNormalServers'), list))
-        bad = set()
+        bad = {}
         for row in info['NonNormalServers']:
             node = row.get('ServerId')
             require(node in registered and node not in bad and row.get('Port') == 6432 and row.get('Status') in ('Initial','Unhealthy','Unavailable'))
-            bad.add(node)
-        return {'observedAt':now.timestamp(), 'desired':desired, 'members':ids,
-                'healthyRegistered':sorted(node for node in ids if registered.get(node) and node not in bad),
+            bad[node] = row['Status']
+        return {'schemaVersion':2, 'observedAt':now.timestamp(), 'desired':desired, 'members':ids,
+                'memberStates':[{'id':row['InstanceId'], 'lifecycle':row['LifecycleState'],
+                                 'health':row['HealthStatus'], 'addressKnown':row['InstanceId'] in addresses}
+                                for row in sorted(rows, key=lambda row:row['InstanceId'])],
+                'backendStates':[{'id':node, 'status':registered[node]['Status'],
+                                  'weight':registered[node]['Weight'], 'listenerHealth':bad.get(node, 'Normal')}
+                                 for node in sorted(registered)],
+                'healthyRegistered':sorted(node for node in ids if node in registered
+                                           and registered[node]['Status'] == 'Available'
+                                           and registered[node]['Weight'] > 0 and node not in bad),
                 'privateAddresses':addresses}
     except FeedStop:
         raise
-    except ValueError as error:
-        if str(error) == 'Transitional provider inventory':
-            raise FeedStop('ess-transition') from None
+    except ValueError:
         raise ValueError('Provider refresh failed') from None
     except Exception:
         raise ValueError('Provider refresh failed') from None
@@ -158,10 +205,16 @@ class Deadline:
         return remaining
 
 
-def publish(snapshot, previous_targets, atomic_worker_write, update_targets, *, deadline=None):
+def publish(snapshot, previous_targets, atomic_worker_write, update_targets, *, deadline=None, retain_targets=()):
     if deadline is not None:
         deadline.remaining()
-    targets = tuple(sorted(snapshot['privateAddresses'].items()))
+    addresses = dict(retain_targets)
+    require(len(addresses) == len(retain_targets))
+    for node, address in snapshot['privateAddresses'].items():
+        require(node not in addresses or addresses[node] == address)
+        addresses[node] = address
+    require(len(set(addresses.values())) == len(addresses))
+    targets = tuple(sorted(addresses.items()))
     if targets != previous_targets:
         update_targets(targets)
     if deadline is not None:
@@ -219,6 +272,14 @@ class Operator:
     def __init__(self, args):
         self.args = args
         self.previous = ()
+        self.retained_targets = ()
+        self.known_ids = set()
+        self.backend_ids = set()
+        self.required_address_ids = set()
+        self.previous_desired = None
+        self.allowed_departures = 0
+        self.feedSession = str(uuid.uuid4())
+        self.sequence = 0
         self.deadline = None
         self.stage = 'startup'
 
@@ -258,8 +319,10 @@ class Operator:
     def fetch_ecs(self, ids):
         self.stage = 'ecs-instances'
         body = self.aliyun('ecs', 'DescribeInstances', InstanceIds=json.dumps(ids), VpcId=VPC_ID, PageNumber=1, PageSize=100)
-        require(body.get('TotalCount') == len(ids) and body.get('PageNumber') == 1)
-        return body['Instances']['Instance']
+        rows = body['Instances']['Instance']
+        require(isinstance(rows, list) and type(body.get('TotalCount')) is int)
+        require(body['TotalCount'] == len(rows) <= len(ids) and body.get('PageNumber') == 1)
+        return rows
 
     def fetch_nlb(self):
         self.stage = 'nlb-servers'
@@ -276,11 +339,25 @@ class Operator:
         self.stage = 'read'
         # Timestamp at start, never after a slow provider read.
         try:
-            return snapshot(self.fetch_ess,self.fetch_group,self.fetch_ecs,self.fetch_nlb,group_id=GROUP_ID,server_group_id=SERVER_GROUP_ID,now=datetime.now(timezone.utc))
+            # Capture the desired decrease before checking a possibly delayed ESS departure.
+            now = datetime.now(timezone.utc)
+            group = self.fetch_group()
+            allowance = self.departures_for(group.get('DesiredCapacity'))
+            return snapshot(self.fetch_ess,lambda:group,self.fetch_ecs,self.fetch_nlb,
+                            group_id=GROUP_ID,server_group_id=SERVER_GROUP_ID,now=now,
+                            known_ids=self.known_ids,allowed_departures=allowance,
+                            required_address_ids=self.required_address_ids)
         except FeedStop:
             raise
         except Exception:
             raise FeedStop(self.stage) from None
+
+    def departures_for(self, desired):
+        # Count each sequential decrease once; later equal-desired ticks retain it.
+        expected = ((4, 3), (3, 2))
+        if self.allowed_departures < 2 and (self.previous_desired, desired) == expected[self.allowed_departures]:
+            return self.allowed_departures + 1
+        return self.allowed_departures
 
     def workbench(self, script, *arguments):
         command = shlex.join(['python3','-c',script,*arguments])
@@ -341,7 +418,19 @@ class Operator:
         self.deadline = deadline
         self.stage = 'publish'
         try:
-            self.previous = publish(value,self.previous,self.atomic_worker_write,self.update_targets,deadline=deadline)
+            candidate = dict(value, feedSession=self.feedSession, sequence=self.sequence + 1)
+            targets = publish(candidate,self.previous,self.atomic_worker_write,self.update_targets,
+                              deadline=deadline,retain_targets=self.retained_targets)
+            self.previous = self.retained_targets = targets
+            self.known_ids.update(value['members'])
+            self.backend_ids.update(row['id'] for row in value['backendStates'])
+            self.required_address_ids.update(value['privateAddresses'])
+            self.required_address_ids.update(self.backend_ids)
+            self.required_address_ids.update(row['id'] for row in value['memberStates']
+                                             if row['lifecycle'] not in ('Pending', 'Pending:Wait'))
+            self.allowed_departures = self.departures_for(value['desired'])
+            self.previous_desired = value['desired']
+            self.sequence += 1
         except Exception:
             raise FeedStop(self.stage) from None
 
@@ -368,6 +457,9 @@ if len(sys.argv)==2:
  print(body['data']['targets.json']); sys.exit(0)
 patch={'metadata':{'resourceVersion':body['metadata']['resourceVersion']},'data':{'targets.json':sys.argv[2]}}
 run(['patch','configmap','pgcat-provider-inventory','--type=merge','-p',json.dumps(patch)])
+verified=json.loads(run(['get','configmap','pgcat-provider-inventory','-o','json']))
+assert verified['metadata']['name']=='pgcat-provider-inventory' and verified['metadata']['namespace']=='raptor-test'
+assert json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])
 '''
 
 
