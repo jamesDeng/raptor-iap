@@ -79,9 +79,11 @@ schema-1 archive. Keep `replacementEnabled=false` while preparing this release;
 a current readback is required before any later live action. Local synthetic
 traffic PASS does not establish overall replacement acceptance.
 
-Tasks 1 and 2 were independently reviewed at source commit
-`51d9f7144e5a94af5214e649a3baae14770bf265`. The following SHA-256 values bind
-that reviewed provider/collector source and the unchanged worker helpers.
+The reviewed provider/collector source, including the independently approved
+partial multi-Pod evidence fix, is bound to commit
+`8094452784cfa4969c1cb2648e484369389b277c`. The following SHA-256 values bind
+that source and the unchanged worker helpers; this is local source verification,
+not a live installation or traffic proof.
 Before release, require whole-branch independent review, passing CI and merge;
 record the final resolved release commit and confirm these files match its tree.
 If any source bytes change, repeat review and verification and replace the
@@ -91,8 +93,8 @@ binding before use. A hash match alone does not prove worker installation.
 |---|---|
 | `provider_feed.py` (local operator) | `69d580fd71ebadf7936bff92a1a981e48996755839abb47a324e8e02938ad9cb` |
 | `worker_capture.py` | `167a07649e6756bfd914e7d01f8507c686ced712937873813d43282aa394e3dd` |
-| `capture_window.py` | `28710e1d915ca438aea7854d0ff73f59ce9e41705d9b6031800c6334183cf960` |
-| `segmented_capture.py` | `7f16a911269264007e3cad3c378ccec9b4b202f72bd2b053e77503dfef3efde3` |
+| `capture_window.py` | `ffc30e6d37ee37f83da3a44bbbbc2ead5556891924ffdbc23e51f2a07a4961b7` |
+| `segmented_capture.py` | `2ad61819b59ff8ef10e1de3873029eecd349a920b734c8b480e8dcfbae5f7411` |
 | `finish_clients.py` | `c048e7fb18a8685ce03547487652e0adfd86d51ba2211730b4ff25755d66ac1e` |
 | `worker_control.py` | `9e9018d4d1072607adbaef0fd00a730582548b14f8a4a3034e1b21d2fcd5ce9e` |
 
