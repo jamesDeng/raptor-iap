@@ -41,6 +41,76 @@ class FeedTests(unittest.TestCase):
     def test_unhealthy_backend_excluded(self):
         f=self.fixture();f[3]['Health']['ListenerHealthStatus'][0]['ServerGroupInfos'][0]['NonNormalServers']=[{'ServerId':'i-0','Port':6432,'Status':'Unhealthy'}]
         self.assertEqual(self.take(f)['healthyRegistered'],['i-1'])
+
+    def test_group_read_failure_reports_only_fixed_stage(self):
+        from types import SimpleNamespace
+        op=feed.Operator(SimpleNamespace())
+        def fail(*args, **kwargs):
+            raise RuntimeError('private provider response must stay private')
+        op.aliyun=fail
+        with self.assertRaises(ValueError) as caught:
+            op.read()
+        self.assertEqual(getattr(caught.exception,'stage',None),'ess-group')
+        self.assertEqual(str(caught.exception),'Provider feed stopped at ess-group; evidence is no longer refreshed')
+        self.assertNotIn('private provider',str(caught.exception))
+
+    def test_nlb_read_failure_reports_exact_fixed_stage(self):
+        from types import SimpleNamespace
+        pages,group,ecs,_=self.fixture()
+        group['ScalingGroupId']=feed.GROUP_ID
+        for page in pages:
+            page['ScalingInstances']['ScalingInstance'][0]['ScalingGroupId']=feed.GROUP_ID
+        op=feed.Operator(SimpleNamespace(listener_id=feed.LISTENER_ID))
+        op.fetch_group=lambda:group
+        op.fetch_ess=lambda page:pages[page-1]
+        op.fetch_ecs=lambda ids:[ecs[node] for node in ids]
+        def fail(*args, **kwargs):
+            raise RuntimeError('private NLB response must stay private')
+        op.aliyun=fail
+        with self.assertRaises(ValueError) as caught:
+            op.read()
+        self.assertEqual(getattr(caught.exception,'stage',None),'nlb-servers')
+        self.assertNotIn('private NLB',str(caught.exception))
+
+    def test_target_publication_failure_reports_only_fixed_stage(self):
+        from types import SimpleNamespace
+        op=feed.Operator(SimpleNamespace(kubeconfig='/private/kubeconfig',worker_inventory='/private/inventory'))
+        def fail(*args, **kwargs):
+            raise RuntimeError('private Workbench output must stay private')
+        op.remote=fail
+        with self.assertRaises(ValueError) as caught:
+            op.write(self.take(self.fixture()))
+        self.assertEqual(getattr(caught.exception,'stage',None),'targets-update')
+        self.assertNotIn('private Workbench',str(caught.exception))
+
+    def test_transitional_ess_member_has_distinct_sanitized_category(self):
+        fixture=self.fixture()
+        fixture[0][0]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']='Pending'
+        with self.assertRaises(ValueError) as caught:
+            self.take(fixture)
+        self.assertEqual(getattr(caught.exception,'stage',None),'ess-transition')
+
+    def test_transitional_nlb_backend_has_distinct_sanitized_category(self):
+        fixture=self.fixture()
+        fixture[3]['Servers'][0]['Status']='Unavailable'
+        with self.assertRaises(ValueError) as caught:
+            self.take(fixture)
+        self.assertEqual(getattr(caught.exception,'stage',None),'nlb-backend-state')
+
+    def test_invalid_loop_limit_is_not_reported_as_target_read(self):
+        import contextlib
+        import io
+        import sys
+        from unittest.mock import patch
+        output=io.StringIO()
+        argv=['provider_feed.py','--interval','16','--workbench','/private/workbench',
+              '--worker-inventory','/private/inventory','--kubeconfig','/private/kubeconfig']
+        with patch.object(sys,'argv',argv), patch.object(feed.Operator,'existing_targets',return_value=()), \
+                contextlib.redirect_stderr(output), self.assertRaises(SystemExit):
+            feed.main()
+        self.assertIn('stopped at loop',output.getvalue())
+        self.assertNotIn('targets-read',output.getvalue())
+
     def test_publish_allowlist_and_changed_targets(self):
         writes=[];updates=[];s=self.take(self.fixture())
         previous=feed.publish(s,(),writes.append,updates.append)
