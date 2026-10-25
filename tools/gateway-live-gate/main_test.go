@@ -204,13 +204,31 @@ func rolloutFixture() *rolloutRunner {
 	return f
 }
 func TestVerifyAndRollout(t *testing.T) {
-	for _, name := range []string{"ready", "old-pod", "unready", "stale-secret", "old-generation", "foreign-owner", "wrong-effective", "pod-replaced", "rollout", "rollout-busy", "rollout-stale", "rollout-concurrent-secret"} {
+	for _, name := range []string{"ready", "same-second-pod", "premature-fractional-pod", "premature-comma-fractional-pod", "stale-restart", "stale-same-second-restart", "equal-same-second-restart", "old-pod", "unready", "stale-secret", "old-generation", "foreign-owner", "wrong-effective", "pod-replaced", "rollout", "rollout-busy", "rollout-stale", "rollout-concurrent-secret"} {
 		t.Run(name, func(t *testing.T) {
 			f := rolloutFixture()
 			pod := obj(f.pods["items"].([]any)[0])
 			rv := "10"
 			mode := "verify"
 			switch name {
+			case "same-second-pod":
+				obj(pod["status"])["startTime"] = "2026-10-16T01:00:00Z"
+				obj(obj(obj(pod["status"])["containerStatuses"].([]any)[0])["state"])["running"] = map[string]any{"startedAt": "2026-10-16T01:00:00Z"}
+				obj(obj(obj(f.deployment["spec"])["template"])["metadata"])["annotations"] = map[string]any{"kubectl.kubernetes.io/restartedAt": "2026-10-16T01:00:00.546Z"}
+			case "premature-fractional-pod":
+				obj(pod["status"])["startTime"] = "2026-10-16T01:00:00.200Z"
+				obj(obj(obj(pod["status"])["containerStatuses"].([]any)[0])["state"])["running"] = map[string]any{"startedAt": "2026-10-16T01:00:00.200Z"}
+				obj(obj(obj(f.deployment["spec"])["template"])["metadata"])["annotations"] = map[string]any{"kubectl.kubernetes.io/restartedAt": "2026-10-16T01:00:00.546Z"}
+			case "premature-comma-fractional-pod":
+				obj(pod["status"])["startTime"] = "2026-10-16T01:00:00,200Z"
+				obj(obj(obj(pod["status"])["containerStatuses"].([]any)[0])["state"])["running"] = map[string]any{"startedAt": "2026-10-16T01:00:00,200Z"}
+				obj(obj(obj(f.deployment["spec"])["template"])["metadata"])["annotations"] = map[string]any{"kubectl.kubernetes.io/restartedAt": "2026-10-16T01:00:00.546Z"}
+			case "stale-restart":
+				obj(obj(obj(f.deployment["spec"])["template"])["metadata"])["annotations"] = map[string]any{"kubectl.kubernetes.io/restartedAt": "2026-10-16T00:59:59Z"}
+			case "stale-same-second-restart":
+				obj(obj(obj(f.deployment["spec"])["template"])["metadata"])["annotations"] = map[string]any{"kubectl.kubernetes.io/restartedAt": "2026-10-16T01:00:00.040Z"}
+			case "equal-same-second-restart":
+				obj(obj(obj(f.deployment["spec"])["template"])["metadata"])["annotations"] = map[string]any{"kubectl.kubernetes.io/restartedAt": "2026-10-16T01:00:00.080Z"}
 			case "old-pod":
 				obj(pod["status"])["startTime"] = "2026-10-16T00:00:00Z"
 			case "unready":
@@ -234,8 +252,12 @@ func TestVerifyAndRollout(t *testing.T) {
 				mode = "rollout"
 			}
 			var out bytes.Buffer
-			e := run(context.Background(), []string{mode, "--expected", "false", "--resource-version", rv, "--changed-after", "2026-10-16T01:00:00Z"}, f, &out)
-			success := name == "ready" || name == "rollout"
+			changedAfter := "2026-10-16T01:00:00Z"
+			if name == "same-second-pod" || name == "premature-fractional-pod" || name == "premature-comma-fractional-pod" || name == "stale-same-second-restart" || name == "equal-same-second-restart" {
+				changedAfter = "2026-10-16T01:00:00.080Z"
+			}
+			e := run(context.Background(), []string{mode, "--expected", "false", "--resource-version", rv, "--changed-after", changedAfter}, f, &out)
+			success := name == "ready" || name == "same-second-pod" || name == "rollout"
 			if (e == nil) != success {
 				t.Fatalf("unexpected success=%v", e == nil)
 			}
@@ -277,7 +299,7 @@ func livePodSpec() map[string]any {
 }
 func attachRuntime(f *rolloutRunner) {
 	spec := livePodSpec()
-	obj(f.deployment["spec"])["template"] = map[string]any{"spec": spec}
+	obj(f.deployment["spec"])["template"] = map[string]any{"metadata": map[string]any{"annotations": map[string]any{"kubectl.kubernetes.io/restartedAt": "2026-10-16T01:00:30Z"}}, "spec": spec}
 	pod := obj(f.pods["items"].([]any)[0])
 	pod["spec"] = livePodSpec()
 	status := obj(pod["status"])
