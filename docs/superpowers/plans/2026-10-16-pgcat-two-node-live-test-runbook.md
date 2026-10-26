@@ -1,14 +1,20 @@
 # PgCat two-node live-test operator runbook
 
-Status: sustained disabled-mode finish/restoration proof **PASS** on 2026-10-18:
-62 measurement frames, 384 successful operations, zero missed polls, exact
-two-client finals and 2/2 restoration. The first detached attempt was
-INCONCLUSIVE after its cap elapsed before finish; both attempts were retained.
-The provider feed exited cleanly, the evidence archive readback hash matched,
-and both copies of the temporary kubeconfig were removed. **Full execution remains BLOCKED**
-pending fresh preflight, explicit direction to change the currently false
-replacement flag, and its separate action-time gates. Disabled-mode PASS does
-not establish replacement acceptance.
+Status as of 2026-10-26: request `570533ed-e417-4bc5-beba-ad4db3db8d20`
+ended **failed/ToolFailed** before approval or scale-in. Its retained full
+capture is **INCONCLUSIVE** (`missing metrics coverage`), not replacement PASS.
+Reviewed staged recovery returned to desired two, exactly the two protected
+healthy originals, with Gateway `replacementEnabled=false` and idle; recovery
+observed SQL timeouts and skipped schedules around deregistration and restart.
+The 2026-10-18 disabled finish/restoration PASS (62 frames, 384 successful
+operations) remains a historical proof of that window only. **A new full
+request is BLOCKED** until the scale-out readiness changes are reviewed,
+applied and verified, a new disabled capture and bounded 2→3 rehearsal pass,
+and all separate action-time gates are met. Local source changes do not
+establish live installation or rehearsal success.
+Historical status source: project-root
+`working/handoffs/2026-10-26-pgcat-live.md`, “Full two-node run in progress”
+and “Staged recovery settled, 14:26 Shanghai”.
 This document authorizes no credential transfer, Secret change, rollout or replacement.
 Use the approved [design](../specs/2026-10-16-pgcat-two-node-live-test-design.md),
 existing `agent-skills/pgcat-replacement/SKILL.md` two-node strategy, and
@@ -21,7 +27,9 @@ ESS `asg-t4necb4dfmu6o3z2rn0g`, NLB group `sgp-xs5s42tihtl6ja2a67`,
 ACK `c92787e953503492ea141a744c81498f1`, worker `i-t4nj1bitmcz7cuoch82h`.
 Rediscover exact scope and Deployment UID; mismatches require review, not editing a guard constant.
 Expected originals at design time: `i-t4n5kisq7u820wbx8nri`, `i-t4n5kisq7u820wbx8nrj`.
-Verify both actual baseline originals before creating the immutable request.
+The 2026-10-26 recovery ended on originals `i-t4n8ofwrovy3mv198ela` and
+`i-t4n8ofwrovy3mv198elb`; rediscover and verify both actual baseline originals
+before any action. Historical IDs are not a substitute for current provider reads.
 
 Check Alibaba billing and available balance once per calendar day before that
 day's first live action. Present the day's cost/balance observation and forecast,
@@ -113,6 +121,108 @@ calendar day needs its own daily observation. The CNY 1,800 net whole-POC ceilin
 binding. Defer even before 21:30 if approvals, full capture, reconciliation,
 retention and credential deletion cannot finish by 22:30. This local release
 preparation authorizes no paid attempt, flag change or credential work.
+
+## Disabled scale-out readiness rehearsal after reviewed hook apply
+
+Follow the committed
+[scale-out readiness design](../specs/2026-10-26-pgcat-scaleout-readiness-design.md),
+“Runtime contract” and “Verification and rollout”, for this additional gate.
+This is a separate, bounded **2→3→2** plumbing and timing proof, not the native
+2→4→3→2 replacement request. First require the sanitized Terraform PR plan
+comment, reviewed apply and authoritative readback of exactly one PgCat-owned ESS
+`SCALE_OUT` lifecycle hook on group `asg-t4necb4dfmu6o3z2rn0g`, with
+`heartbeat_timeout=420` seconds and `default_result=CONTINUE`. Record its actual
+provider hook ID and configuration. Verify existing ESS/NLB addresses, state
+ownership and two-node baseline are unchanged. The operator neither acquires nor
+completes a lifecycle token. A disabled capture without scale-out checks feed,
+collector and client plumbing only; it does **not** prove Pending target timing.
+
+Obtain separate action-time authorization for this exact one-node rehearsal and
+its separately reviewed recovery. At its start, require one operator; Gateway
+`replacementEnabled=false`, a Ready rollout, `idle=true` and no AX actor; exact
+two rediscovered Protected/Healthy originals and desired two/min two/max four;
+both NLB backends Available/Normal with weight 100; client Deployment 2/2 Ready
+with two distinct clean SQL processes and zero Failure/Timeout/Ambiguous/Skipped;
+metrics Deployment 1/1 Ready, fresh successful scrapes and complete raw
+active/idle/waiting triplets for both originals; and no unresolved request,
+approval, provider activity, capture or target reconciliation. Use the day's
+existing billing observation (the 2026-10-26 09:50 Shanghai observation if
+acting that day), including delayed charges and remaining headroom under the
+**CNY 1,800 net whole-POC cap**. Do not query billing a second time that day.
+Do not start a paid action after **21:30 Asia/Shanghai**; defer sooner unless
+observation, staged recovery, evidence retention and credential deletion can
+finish by the **22:30 handoff**. Record an absolute rehearsal stop deadline
+within those limits and the 5,400-second capture cap before starting.
+
+Use the reviewed local Alibaba CLI profile `infra-ops-poc`, region
+`ap-southeast-1`, account/ESS group/NLB group and ACK worker scope above.
+Read project-root `working/skills/ack-workbench-cli/SKILL.md` before any
+Workbench call; use only exact `-P infra-ops-poc -r ap-southeast-1
+-i i-t4nj1bitmcz7cuoch82h`. Verify the current CLI argument shape with a
+no-network dry run and retain a sanitized action record. With a fresh private
+run directory, approved temporary private kubeconfig and checked source/worker
+hashes, start **one** provider feed and **one** detached continuous collector
+before any scale action. Require first fresh schema-2 provider publication,
+exact two target ConfigMap readback and clean client/metric frames. Preserve
+one feed session, sequence and capture throughout; never splice or restart an
+uncertain process. Keep the Gateway flag false throughout.
+
+Submit **one non-retried** ESS `ModifyScalingGroup` desired-capacity-three
+action for the exact group, with the reviewed CLI profile and scope. Preserve
+the exact provider request/activity acknowledgement separately from observed
+convergence. If its acknowledgement is missing or uncertain, stop mutations;
+read authoritative provider state and obtain separately reviewed recovery.
+Never issue the action again under a new or reused identifier. During the
+420-second startup hold, retain timestamps and evidence for the new exact ESS
+instance ID and private ECS IP in `Pending`/`Pending:Wait`, ConfigMap target
+publication with resourceVersion and exact target readback, then Prometheus
+`up=1` plus **fresh complete raw active/idle/waiting triplets** for that node
+before its first NLB backend registration. Compare provider, target, scrape and
+NLB observations on the same clocked capture timeline. After registration,
+require Available/Normal NLB health and complete fresh metrics for **every**
+backend throughout the retained window; transitional Adding/Unhealthy backends
+do not get a metric exception. Continue checking two clean SQL clients, fresh
+source ages, sequence and every-backend coverage under the existing assessor.
+The hook's automatic `CONTINUE` after 420 seconds is not a readiness signal.
+
+If the hold expires before fresh scrape/triplet readiness, a Pending node enters
+NLB without complete metrics, NLB health fails, a source or action becomes
+uncertain, or the deadline is reached, stop new actions and label the observed
+window **INCONCLUSIVE** or **FAIL** under the strict assessor. Preserve evidence,
+use separately reviewed recovery, and block the full request. Do not extend the
+hold, relax the collector, repeat an unknown mutation or treat a later healthy
+sample as repair of the gap.
+
+After the new node has been observed healthy and the rehearsal evidence is
+durable, restore **the exact two protected originals** under the separately
+reviewed staged pattern. Freshly prove the new ID is the sole unprotected ESS
+member and that the originals will remain two healthy registered backends,
+which is a strict majority of three. Deregister only that new ID from NLB once;
+retain its provider request/job acknowledgement and verify it is absent while
+both originals remain healthy. Restart **only** the bound two-client Deployment
+once using its fresh UID and resourceVersion; verify the updated generation,
+exactly two Ready new client process identities, advancing successful SQL and
+zero new adverse counters. Require **two distinct fresh complete zero-client
+metric samples** (active, idle and waiting for every reported pool/user) on
+the deregistered new node, with fresh ESS/NLB scope, before one non-retried ESS
+desired-capacity-two action. Preserve its exact acknowledgement and wait for
+authoritative desired two, exact protected original ESS membership, two healthy
+original NLB backends and new-node absence. Unknown deregistration, restart or
+scale result is never replayed; stop at reviewed recovery.
+
+Close and finalize the single capture, retain the ordered manifest, completion,
+client process history, provider acknowledgements, hook configuration and
+target/metric timing privately, then assess it without suppressing any SQL
+Failure/Timeout/Ambiguous/Skipped. Such faults prevent zero-loss PASS even if
+later replacement processes are clean. The 2026-10-26 staged recovery recorded
+timeouts and skips around deregistration/restart; those historical faults remain
+visible and are not evidence that this rehearsal has passed. After feed and
+collector closure, reconcile `raptor-test/pgcat-provider-inventory` from the
+verified final fleet using the current ConfigMap resourceVersion; read back
+exactly the two original target IDs and fresh complete metrics. Verify Gateway
+false/idle, no active actor, clean client readiness, private evidence readback
+and temporary kubeconfig deletion on worker and Mac. A failed or incomplete
+rehearsal, recovery or cleanup blocks any new full request.
 
 ## Worker preparation and disabled 60-second measurement proof
 
