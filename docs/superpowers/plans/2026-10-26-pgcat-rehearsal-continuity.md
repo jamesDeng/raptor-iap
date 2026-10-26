@@ -4,7 +4,7 @@
 
 **Goal:** Make one new disabled 2→3→2 rehearsal capable of retaining strict, continuous evidence without a disruptive client restart or Workbench status polling.
 
-**Architecture:** Keep the existing provider and collector. Retire metrics for a formerly registered node only after fresh complete zero and a later provider observation of NLB absence; keep every current backend mandatory. Add an optional private local publication receipt to the Mac-side provider feed so final reconciliation can be observed without another Workbench call. The runbook skips client restart only when exact zero/identity/traffic gates pass and stops the feed just before final finish.
+**Architecture:** Keep the existing provider and collector. Retire metrics for a formerly registered node only after fresh complete zero and a later provider observation of NLB absence; keep every current backend mandatory. Add an optional private local publication receipt to the Mac-side provider feed so final reconciliation can be observed without another Workbench call. The runbook skips client restart only when exact zero/identity/traffic gates pass. After a later local receipt, it stops and verifies feed exit, then uses one bounded Workbench call to validate exact targets, a matching later retained frame and the live roster before final finish within provider freshness.
 
 **Tech Stack:** Python 3.6-compatible traffic modules, Python unittest, existing Workbench CLI and Alibaba provider feed.
 
@@ -24,7 +24,7 @@
 - A later nonzero raw count after retirement must restore its obligation: Task 1 test.
 - A zero sample from only one pool/user or an expired sample must not retire: Task 1 test.
 - A local feed receipt must not advance after an uncertain worker write or contain an address/credential: Task 2 test.
-- Reconciliation and finalization must not rely on a local receipt alone: Task 3 runbook check against the live spec.
+- Reconciliation and finalization must not rely on a local receipt alone: Task 3 runbook check against the binding spec. After confirmed feed exit, one bounded Workbench call must independently validate exact ConfigMap contents, a matching complete later collector frame and the live bound client roster before finish. Its exact command needs review and a no-scale timing proof before paid use.
 
 ---
 
@@ -55,10 +55,10 @@
 
 **Files:** Modify `docs/superpowers/plans/2026-10-16-pgcat-two-node-live-test-runbook.md` and the spec's reference if needed; test the complete traffic suite.
 
-**Interfaces:** No runtime code interface. The procedure requires the two fresh zero samples and unchanged client processes, one exact 3→2 action, final ConfigMap readback, later receipt plus collector frame, intentional feed stop, then exact finish within 30 seconds of the last provider observation.
+**Interfaces:** No new runtime code interface. The procedure requires two distinct fresh zero samples and unchanged client processes, one exact 3→2 action, resourceVersion-bound final ConfigMap reconciliation/readback and a later local receipt. Intentionally stop and verify feed exit; then one bounded Workbench call reads the exact ConfigMap, a complete later collector JSONL frame matching the final receipt and the live bound client roster before exact finish. Validation, both client finals and settling must complete while the last provider observation is under 30 seconds old. The exact action-time validator command still needs review and no-scale timing proof.
 
 - [ ] Replace the unconditional in-window client restart with the zero-confirmed no-restart path and a fail-closed outside-window recovery branch for nonzero/changed clients.
-- [ ] Document the local receipt as liveness only, with no Workbench status polling after final reconciliation; require a worker frame and ConfigMap readback before feed stop.
+- [ ] Document the local receipt as liveness only, with no Workbench status polling after final reconciliation while the feed is active. After confirmed feed exit, require one bounded Workbench validation of exact ConfigMap contents, a complete later collector frame and unchanged clean live clients before finish; fail closed if any check or the remaining 30-second budget is uncertain.
 - [ ] Run `PYTHONPATH=test-assets/traffic python3 -m unittest discover -s test-assets/traffic -p 'test_*.py' -v` and `git diff --check`; confirm no failures, then commit.
 
 ### Task 4: Review, merge and proof gates
@@ -66,5 +66,6 @@
 **Files:** No additional source edits unless review finds a concrete issue.
 
 - [ ] Obtain independent per-task and whole-change review. Verify the source diff excludes unrelated iCloud duplicates; push a draft PR against current `main`, wait for required checks, then merge under the owner's existing authorization.
-- [ ] Run a fresh replacement-disabled no-scale long feed/collector check using the optional local status file, exact client finish, independent archive assessment and cleanup. No cloud scale action in this check.
+- [ ] Prepare and independently review the exact bounded post-stop validator command/script using existing interfaces; this task adds no runtime helper. It must verify exact ConfigMap contents, a matching complete later collector JSONL frame, fresh two-node metrics, unchanged clean live client identities and adequate provider freshness before the exact finish in the same Workbench call.
+- [ ] Demonstrate that reviewed command in a fresh replacement-disabled no-scale long feed/collector check using the local status file: final reconciliation, later receipt, intentional feed stop with verified exit, the single post-stop validation/finish call, both finals and settling under the remaining 30-second provider budget, independent archive assessment, restoration and cleanup. No overlapping Workbench status calls while the feed is active, and no cloud scale action in this check. Failure or uncertain timing blocks paid rehearsal.
 - [ ] Only if the long check passes and current one-operator/cost/time gates allow, perform one new disabled 2→3→2 rehearsal with no in-window restart when exact zero conditions hold; assess/retain and restore exact two. Only a new rehearsal PASS unlocks a new full request.

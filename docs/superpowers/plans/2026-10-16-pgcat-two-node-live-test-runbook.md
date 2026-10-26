@@ -19,6 +19,13 @@ This document authorizes no credential transfer, Secret change, rollout or repla
 Use the approved [design](../specs/2026-10-16-pgcat-two-node-live-test-design.md),
 existing `agent-skills/pgcat-replacement/SKILL.md` two-node strategy, and
 `test-assets/traffic/README.md` interfaces. Historical receipts are not current preflight.
+The first 2026-10-26 disabled 2→3→2 rehearsal also remains **INCONCLUSIVE**: its
+private `traffic-evidence/pgcat-scaleout-20261026-1627/rehearsal-inconclusive-evidence.tgz`
+contains 1,189 frames and 7,134 successful SQL operations with no observed
+Failure/Timeout/Ambiguous/Skipped, but strict metric, roster, poll and provider
+freshness gaps. It did not unlock a full request. Follow the reviewed
+[continuity design](../specs/2026-10-26-pgcat-rehearsal-continuity-design.md) for a
+new capture; never relabel or splice the historical window.
 
 ## Hard gates and action-time authorization
 
@@ -89,7 +96,7 @@ traffic PASS does not establish overall replacement acceptance.
 
 Historical provider/collector review covered the partial multi-Pod evidence fix
 at `8094452784cfa4969c1cb2648e484369389b277c`. The updated hashes below bind the
-current disabled-rehearsal mode implementation and unchanged worker helpers;
+current disabled-rehearsal continuity implementation and unchanged worker helpers;
 the old commit no longer binds these changed bytes. This is local source verification,
 not a live installation or traffic proof.
 Before release, require whole-branch independent review, passing CI and merge;
@@ -99,9 +106,9 @@ binding before use. A hash match alone does not prove worker installation.
 
 | Source under `test-assets/traffic/` | SHA-256 |
 |---|---|
-| `provider_feed.py` (local operator) | `94c3fb069043cbc83da903a5925b23d50a5cce80464ff2f5578ebdf1c04e369c` |
+| `provider_feed.py` (local operator) | `2570a869330d4e1267f1e89b76f93801084a18c1af6a6e70e8799a3cd6ccac28` |
 | `worker_capture.py` | `167a07649e6756bfd914e7d01f8507c686ced712937873813d43282aa394e3dd` |
-| `capture_window.py` | `65aafec95347a4f1e4769e856a5d1d76653f9f088270a995f1738ffe4029c910` |
+| `capture_window.py` | `99a61e55a561972164f0216a0b2fb351b0deda9bca68aad0a0115a0af3f3e988` |
 | `segmented_capture.py` | `2ad61819b59ff8ef10e1de3873029eecd349a920b734c8b480e8dcfbae5f7411` |
 | `finish_clients.py` | `c048e7fb18a8685ce03547487652e0adfd86d51ba2211730b4ff25755d66ac1e` |
 | `worker_control.py` | `9e9018d4d1072607adbaef0fd00a730582548b14f8a4a3034e1b21d2fcd5ce9e` |
@@ -127,6 +134,14 @@ preparation authorizes no paid attempt, flag change or credential work.
 Follow the committed
 [scale-out readiness design](../specs/2026-10-26-pgcat-scaleout-readiness-design.md),
 “Runtime contract” and “Verification and rollout”, for this additional gate.
+Before another paid rehearsal, require review, CI, merge and a fresh
+replacement-disabled **no-scale long feed/collector check** with the local
+publication receipt, no overlapping Workbench status calls, exact client finish,
+independent retained-archive assessment, verified 2/2 restoration and cleanup.
+That check must verify the bounded post-feed worker validation/finish sequence
+described below; local fixtures alone cannot qualify its timing. Recheck the one-operator, exact baseline,
+cost and time gates before any subsequent paid action.
+
 This is a separate, bounded **2→3→2** plumbing and timing proof, not the native
 2→4→3→2 replacement request. First require the sanitized Terraform PR plan
 comment, reviewed apply and authoritative readback of exactly one PgCat-owned ESS
@@ -162,8 +177,14 @@ Workbench call; use only exact `-P infra-ops-poc -r ap-southeast-1
 no-network dry run and retain a sanitized action record. With a fresh private
 run directory, approved temporary private kubeconfig and checked source/worker
 hashes, start **one** provider feed and **one** detached continuous collector
-before any scale action. Start the provider with **`--mode disabled-rehearsal`**;
-keep its adjacent `capture_window.py` dependency at the reviewed hash. This
+before any scale action. Start the provider with **`--mode disabled-rehearsal`** and
+`--status-file /absolute/private-run/provider-status.json`; the Mac-side status
+path must be initially absent in an existing owner-only mode-0700 directory.
+The feed writes the receipt atomically as mode 0600 only after a successful
+worker publication, within the same absolute 15-second refresh deadline. Its
+only fields are `feedSession`, `sequence`, `mode`, `desired` and `observedAt`;
+it is address-free operational liveness, never retained acceptance evidence.
+Keep its adjacent `capture_window.py` dependency at the reviewed hash. This
 schema-2 mode binds the initial two original IDs and exact 2→3→2 path for the
 whole feed session, capture segments and private archive reassessment. An absent
 mode retains historical full-replacement semantics and cannot qualify this
@@ -205,34 +226,120 @@ reviewed staged pattern. Freshly prove the new ID is the sole unprotected ESS
 member and that the originals will remain two healthy registered backends,
 which is a strict majority of three. Deregister only that new ID from NLB once;
 retain its provider request/job acknowledgement and verify it is absent while
-both originals remain healthy. Restart **only** the bound two-client Deployment
-once using its fresh UID and resourceVersion; verify the updated generation,
-exactly two Ready new client process identities, advancing successful SQL and
-zero new adverse counters. Require **two distinct fresh complete zero-client
-metric samples** (active, idle and waiting for every reported pool/user) on
-the deregistered new node, with fresh ESS/NLB scope, before one non-retried ESS
-desired-capacity-two action. Preserve its exact acknowledgement and wait for
-authoritative desired two, exact protected original ESS membership, two healthy
-original NLB backends and new-node absence in a later fresh provider publication.
-Unknown deregistration, restart or scale result is never replayed; stop at
-reviewed recovery.
+both originals remain healthy.
 
-While the same provider feed and collector are still running, reconcile
-`raptor-test/pgcat-provider-inventory` from that verified final two-node fleet
-using the current ConfigMap resourceVersion. Read back exactly the two original
-target IDs, then retain a subsequent fresh feed publication, exact target
-readback, and collector frame with complete fresh `up=1`/raw triplets for both
-originals inside the continuous window. The feed keeps its learned target
-history and skips unchanged target updates; do not restart it or clear that
-history during the explicit final reconciliation. The assessor requires the
-observed one-node expansion and return to exactly both healthy originals; mode
-changes, new/changed IDs, original departure, or skipped transitions invalidate
-the rehearsal. If a feed publication, target
-patch/readback or metric observation is uncertain, stop new mutations, preserve
-the capture and enter reviewed recovery; do not claim a clean closeout. Only
-after this in-window proof, stop the feed, close/finalize the single collector,
-and retain its ordered manifest, completion, client process history, provider
-acknowledgements, hook configuration and target/metric timing privately.
+Use the **no-restart path** only after all of these operator gates are verified
+inside the same continuous capture:
+
+- Exactly the same two client Pod UIDs, container IDs and process identities as
+  the bound starting roster remain running, with advancing successful SQL from
+  both and zero Failure/Timeout/Ambiguous/Skipped throughout. Preserve the
+  unchanged Deployment UID and generation; never restart or roll out clients
+  during this assessed rehearsal.
+- For the deregistered new node, observe **two distinct fresh complete zero
+  samples**, with distinct advancing scrape/raw source timestamps, for active,
+  idle and waiting in **every** reported pool/user, including `test`/`poc_app`.
+  Each sample needs fresh `up=1`, complete coverage and raw/scrape age no more
+  than 45 seconds. Repeated collector frames of one scrape are one sample.
+- Retain a later fresh provider publication in the same session with a higher
+  sequence and observation time than the second zero sample, showing that exact
+  new node absent from **all** NLB backend states while both originals remain
+  healthy. Same-publication absence cannot qualify. Every current backend,
+  including Adding/Removing/Unhealthy or zero weight, always needs fresh
+  complete metrics. Three-second poll and 30-second provider limits still apply.
+
+These two-sample and unchanged-identity gates require action-time operator
+verification; the assessor's narrower metric-retirement rule and support for
+legitimate finalized client handoffs do not enforce the whole no-restart gate.
+If any connection remains, a client identity or process changes, a sample is
+stale/incomplete, SQL stops advancing, an adverse counter appears, or an action
+is uncertain, stop new mutations and close the assessed window with its actual
+strict result. Record the failed operator gate; an assessor PASS alone cannot
+qualify that interrupted rehearsal. Preserve evidence, block the full request
+and use separately reviewed recovery **outside** that window. A recovery client restart, if separately
+authorized, cannot manufacture a rehearsal PASS; never splice recovery frames
+or restart a feed into this capture.
+
+Only after all no-restart gates pass, submit **one non-retried** ESS
+`ModifyScalingGroup` desired-capacity-two action for the exact group. Preserve
+its exact acknowledgement and wait for authoritative desired two, exact
+protected original ESS membership, two healthy original NLB backends and new-node
+absence in a later fresh provider publication. An unknown deregistration or
+scale result is never replayed; stop at reviewed recovery. The assessor may
+retire the new node's metrics after complete fresh zero plus later NLB absence
+even while ESS still lists it InService/Removing, but a reappearing backend or
+later nonzero raw count restores its metric obligation immediately.
+
+While the same provider feed and collector are still running, patch only the
+existing `raptor-test/pgcat-provider-inventory` ConfigMap using its live
+resourceVersion and the verified final two-node fleet. Read back the exact
+ConfigMap name/namespace, resourceVersion and `targets.json`: exactly both
+original instance IDs, each verified private address with port 9930 and the
+`rdev.ali`/`DP00001`/`D00002` labels, with no new-node or extra target. A patch
+acknowledgement or local receipt alone is insufficient. Keep this readback
+private. The feed retains its learned target history and skips unchanged target
+updates; do not restart it or clear that history during explicit reconciliation.
+
+Record the feed sequence at reconciliation. Then observe a **later** local
+success receipt with the same `feedSession`, `mode=disabled-rehearsal`, desired
+two, higher sequence and later fresh `observedAt`. The receipt proves only
+successful worker publication; it does not prove ConfigMap contents, collector
+health or traffic acceptance. Do **not** issue Workbench status polling after
+final reconciliation while the feed is active.
+
+Intentionally stop this one local feed and verify that it has exited before
+any new worker access. Read its final local receipt after exit; bind its exact
+session, sequence and observation time for the next check. Treat an uncertain
+in-flight publication, failed stop or changed session as INCONCLUSIVE. Never
+restart this feed into the capture. The collector continues on its original
+clock and files.
+
+With no concurrent feed, use **one bounded Workbench exec** to perform the
+following checks in order, then finish in that same worker call:
+
+1. Read the exact existing ConfigMap again and verify its name/namespace,
+   resourceVersion and complete two-original `targets.json`, including exact
+   private addresses, port 9930 and scope labels. Keep the readback private.
+2. Read a complete, newline-terminated collector JSONL frame recorded **after**
+   final reconciliation, from the existing ordered `segment-NNNN.jsonl` files.
+   Require the final receipt's exact `feedSession`, `sequence` and `observedAt`,
+   `mode=disabled-rehearsal`, desired two, exact original ESS/NLB roster and
+   both originals healthy. Require fresh complete `up=1` and every pool/user
+   active/idle/waiting triplet for both originals, an unbroken three-second
+   poll limit, the same two Pod/process identities with advancing clean SQL and
+   zero Failure/Timeout/Ambiguous/Skipped. Compare live Pod/container/process
+   identities and Deployment UID/generation with the bound starting roster as
+   well; retained sanitized frames alone do not include container IDs. A partial
+   last JSONL line, heartbeat, control status or local receipt is no substitute
+   for this complete frame. A frame snapshot is provisional until final archive
+   hashes, completion and full-window assessment are verified.
+3. Only if every check passes and sufficient provider freshness headroom
+   remains, invoke **one exact** `finish_clients.py` boundary using this run's
+   bound private boundary directory and `--expected-replicas 2`. Complete the
+   request, both original-process final markers and bounded collector settling
+   while the last successful provider `observedAt` is **under 30 seconds old**.
+   Preserve the existing five-second settling bound. An uncertain finish is
+   never replayed.
+
+Prepare and review that bounded validation/finish command before live use; no
+new automatic validator is supplied by this source-only change. Existing
+`worker_control.py` heartbeat/status files contain control liveness or action
+acknowledgements, not collector frames. The existing collector fsyncs each
+JSONL frame on the worker. Reading those files after confirmed feed exit avoids
+concurrent Workbench feed/status access, but the one call's reads and finish
+still consume the remaining **30-second** provider budget. The replacement-
+disabled no-scale long check must verify this exact order and timing before
+another paid rehearsal; do not assume the worst-case command duration fits.
+
+A stale/missing frame, target discrepancy, client change, uncertain read/action
+or insufficient time means no finish claim or qualified rehearsal PASS. Close
+INCONCLUSIVE, retain any observed SQL FAIL, and use separately reviewed recovery.
+Do not restart the feed, widen freshness, or retry under another action ID.
+Retain the single collector's ordered manifest, completion, client process
+history, provider acknowledgements, hook configuration and target/metric timing
+privately. The assessor still requires the observed one-node expansion and
+return to exactly both healthy originals; mode changes, new/changed IDs,
+original departure or skipped transitions invalidate the rehearsal.
 Assess without suppressing any SQL Failure/Timeout/Ambiguous/Skipped. Such
 faults prevent zero-loss PASS even if later replacement processes are clean.
 The 2026-10-26 staged recovery recorded timeouts and skips around
@@ -299,8 +406,10 @@ require `collector.exit` mode 0600 with code 0, `completion.json`, ordered
 manifest, hashes and assessed summary. Missing, malformed or nonzero status,
 an early exit, or a Workbench timeout is INCONCLUSIVE pending inspection;
 retain private logs and evidence. Do not launch a second collector over an
-uncertain first one. Use the reviewed one-use worker control for finish while
-the feed is active; check the feed's latest successful publication afterward.
+uncertain first one. For the no-scale proof and full replacement, use the
+reviewed one-use worker control for finish while the feed is active and check its latest successful
+publication afterward. The disabled 2→3→2 rehearsal follows the explicit
+feed-stop-then-finish sequence above.
 Start the provider feed on the Mac from this repository (placeholders must be
 resolved and authorized, not pasted literally):
 

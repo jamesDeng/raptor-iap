@@ -2,9 +2,13 @@
 import copy
 import json
 import pathlib
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import provider_feed as feed
 from capture_window import assess
@@ -56,6 +60,47 @@ def lingering_drained_member_frames():
     return frames
 
 
+def no_restart_rehearsal_frames():
+    """Two unchanged clients, two distinct zero scrapes, then one 3→2 return."""
+    frames = lingering_drained_member_frames()
+    for f in frames:
+        if f['at'] in (4, 5):
+            f['inventory']['desired'] = 3
+        if f['at'] == 4:
+            f['inventory']['backendStates'].pop()
+            f['inventory']['healthyRegistered'].remove('c')
+        other = copy.deepcopy(f['pods'][0])
+        other['uid'] = 'second-pod'
+        other['snapshot']['sample']['processId'] = 'second-process'
+        for event in other['snapshot']['events']:
+            event['processId'] = 'second-process'
+        f['pods'].append(other)
+        f['expectedReplicas'] = 2
+    return frames
+
+
+def configmap_remote(body, calls, corrupt_readback=False):
+    """Execute the real target script against an in-memory kubectl boundary."""
+    def remote(script, *arguments):
+        def kubectl(argv, **kwargs):
+            calls.append(argv)
+            if argv[5] == 'patch':
+                value = json.loads(argv[-1])
+                assert value['metadata']['resourceVersion'] == body['metadata']['resourceVersion']
+                body['data'].update(value['data'])
+                body['metadata']['resourceVersion'] = str(int(body['metadata']['resourceVersion']) + 1)
+                return SimpleNamespace(stdout='')
+            value = copy.deepcopy(body)
+            if corrupt_readback and len(calls) > 1 and calls[-2][5] == 'patch':
+                rows = json.loads(value['data']['targets.json'])
+                value['data']['targets.json'] = json.dumps(rows[:1])
+            return SimpleNamespace(stdout=json.dumps(value))
+        with patch.object(sys, 'argv', ['target-script'] + list(arguments)), \
+                patch.object(subprocess, 'run', side_effect=kubectl):
+            exec(script, {'_remote_deadline': time.monotonic() + 15})
+    return remote
+
+
 class RehearsalModeTests(unittest.TestCase):
     def test_complete_rehearsal_survives_segmentation_and_archive_reassessment(self):
         with tempfile.TemporaryDirectory() as d:
@@ -67,6 +112,40 @@ class RehearsalModeTests(unittest.TestCase):
             self.assertEqual(assess_manifest(path)['status'], 'PASS')
             retained = [json.loads(line) for p in path.glob('segment-*.jsonl') for line in p.read_text().splitlines()]
             self.assertEqual({f['inventory'].get('mode') for f in retained}, {MODE})
+
+    def test_two_client_no_restart_window_preserves_continuous_success(self):
+        fs = no_restart_rehearsal_frames()
+        identities = {(p['uid'], p['snapshot']['sample']['processId']) for p in fs[0]['pods']}
+        self.assertEqual(len(identities), 2)
+        for f in fs:
+            self.assertEqual({(p['uid'], p['snapshot']['sample']['processId']) for p in f['pods']}, identities)
+            self.assertEqual(f['expectedReplicas'], 2)
+        self.assertEqual({r['sourceAt'] for f in fs[4:6] for r in f['metrics']['raw'] if r['node'] == 'c'}, {4, 5})
+        result = assess(fs, completed=True)
+        self.assertEqual(result['status'], 'PASS', result)
+        self.assertEqual(result['success'], 16)
+
+    def test_no_restart_window_rejects_lost_client_and_unproved_drain(self):
+        # These are real assessor failures, not a new operator-gate API. The
+        # operator must additionally reject even a fully finalized client swap.
+        for case in ('changed client', 'nonzero drain', 'stale drain'):
+            fs = no_restart_rehearsal_frames()
+            if case == 'changed client':
+                for f in fs[6:]:
+                    snap = f['pods'][1]['snapshot']
+                    snap['sample']['processId'] = 'changed-process'
+                    for event in snap['events']: event['processId'] = 'changed-process'
+            else:
+                for f in fs[4:6]:
+                    for row in f['metrics']['raw']:
+                        if row['node'] == 'c':
+                            if case == 'nonzero drain': row['value'] = 1
+                            else: row['sourceAt'] = -100
+            with self.subTest(case=case):
+                result = assess(fs, completed=True)
+                self.assertEqual(result['status'], 'INCONCLUSIVE', result)
+                self.assertIn('old process lost without final counters' if case == 'changed client'
+                              else 'missing metrics coverage', result['reasons'])
 
     def test_zero_then_later_absence_retires_lingering_ess_member_metrics(self):
         result = assess(lingering_drained_member_frames(), completed=True)
@@ -212,10 +291,17 @@ class RehearsalModeTests(unittest.TestCase):
 
     def test_provider_feed_and_capture_continue_through_final_target_readback(self):
         with tempfile.TemporaryDirectory() as d:
-            root = pathlib.Path(d); inv_path = root / 'inventory.json'; target_state = []
-            op = self.operator()
+            root = pathlib.Path(d); inv_path = root / 'inventory.json'
+            kube = root / 'kubeconfig'; kube.write_text('synthetic'); kube.chmod(0o600)
+            status = root / 'status.json'
+            op = feed.Operator(SimpleNamespace(mode=MODE, kubeconfig=str(kube), status_file=str(status)))
             op.atomic_worker_write = lambda value: feed.atomic_write(inv_path, value)
-            op.update_targets = lambda targets: target_state.__setitem__(slice(None), targets)
+            body = {'metadata': {'name': 'pgcat-provider-inventory', 'namespace': 'raptor-test', 'resourceVersion': '17'},
+                    'data': {'targets.json': '[]'}}
+            calls = []
+            op.remote = configmap_remote(body, calls)
+            def target_ids():
+                return [r['labels']['ecs_instance_id'] for r in json.loads(body['data']['targets.json'])]
             capture = SegmentedCapture(root / 'capture', max_segment_seconds=2)
             for t, count in enumerate((2, 3, 3, 2, 2, 2)):
                 fixture = test_provider_feed.FeedTests().fixture(count)
@@ -233,18 +319,45 @@ class RehearsalModeTests(unittest.TestCase):
                 except feed.FeedStop as error:
                     self.fail('Valid 2→3→2 feed stopped at tick {}: {}'.format(t, error))
                 if t == 4:
-                    # Explicit reviewed cleanup uses the real publication routine;
-                    # target sink/readback stands in for the external ConfigMap.
+                    # Execute the real resourceVersion patch/readback before the
+                    # explicit final two-target worker publication.
                     feed.publish(dict(value, **json.loads(inv_path.read_text())), op.previous,
                                  op.atomic_worker_write, op.update_targets)
-                    self.assertEqual(target_state, [('i-0','10.0.0.1'), ('i-1','10.0.0.2')])
+                    self.assertEqual(target_ids(), ['i-0', 'i-1'])
                 metrics = ('i-0','i-1','i-2') if t in (1,2,3) else ('i-0','i-1')
                 frame = transition_frame(t, ('i-0','i-1'), metrics=metrics)
                 frame['inventory'] = json.loads(inv_path.read_text())
                 if t == 5:
-                    self.assertEqual(target_state, [('i-0','10.0.0.1'), ('i-1','10.0.0.2')])
+                    self.assertEqual(target_ids(), ['i-0', 'i-1'])
+                    receipt = json.loads(status.read_text())
+                    self.assertEqual(receipt['feedSession'], frame['inventory']['feedSession'])
+                    self.assertEqual(receipt['sequence'], frame['inventory']['sequence'])
+                    self.assertGreater(receipt['sequence'], 5)
+                    self.assertEqual(receipt['observedAt'], t)
                     frame['phase'] = 'settling'; frame['pods'][0]['snapshot'].update(final=True, connected=0)
                 capture.append(frame)
             self.assertEqual(capture.finish(completed=True, cancelled=False, errors=[])['status'], 'PASS')
             self.assertEqual(assess_manifest(root / 'capture')['status'], 'PASS')
             self.assertEqual(op.sequence, 6)
+
+    def test_incomplete_final_target_readback_cannot_publish_closeout(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d); status = root / 'status.json'
+            kube = root / 'kubeconfig'; kube.write_text('synthetic'); kube.chmod(0o600)
+            op = feed.Operator(SimpleNamespace(mode=MODE, kubeconfig=str(kube), status_file=str(status)))
+            writes = []; op.atomic_worker_write = writes.append
+            body = {'metadata': {'name': 'pgcat-provider-inventory', 'namespace': 'raptor-test', 'resourceVersion': '17'},
+                    'data': {'targets.json': '[]'}}
+            calls = []; op.remote = configmap_remote(body, calls)
+            for count in (2, 3, 2): op.write(self.value(count))
+            # Feed target history deliberately retains the third node. Explicit
+            # final reconciliation must verify exactly two, independently of
+            # the local success receipt and desired-two worker inventory.
+            self.assertEqual(len(json.loads(body['data']['targets.json'])), 3)
+            before = status.read_bytes(); published = len(writes)
+            op.remote = configmap_remote(body, calls, corrupt_readback=True)
+            with self.assertRaises(AssertionError):
+                feed.publish(dict(writes[-1], privateAddresses=self.value(2)['privateAddresses']),
+                             op.previous, op.atomic_worker_write, op.update_targets)
+            self.assertEqual(len(writes), published)
+            self.assertEqual(status.read_bytes(), before)
