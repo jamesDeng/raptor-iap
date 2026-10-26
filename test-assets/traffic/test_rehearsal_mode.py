@@ -1,4 +1,5 @@
 """Offline 2→3→2 feed, capture and private archive regressions."""
+import copy
 import json
 import pathlib
 import tempfile
@@ -29,6 +30,32 @@ def rehearsal_frames():
     return frames
 
 
+def lingering_drained_member_frames():
+    """Exporter disappears after zero/absence proof, before ESS departure."""
+    frames = [transition_frame(0),
+              transition_frame(1, desired=3),
+              transition_frame(2, ('a','b','c'), ('a','b'), ('c',)),
+              transition_frame(3, ('a','b','c')),
+              transition_frame(4, ('a','b','c'), desired=2),
+              transition_frame(5, ('a','b','c'), ('a','b'), metrics=('a','b','c'), desired=2),
+              transition_frame(6, ('a','b','c'), ('a','b'), metrics=('a','b'), desired=2),
+              transition_frame(7), transition_frame(8)]
+    for f in frames:
+        f['inventory']['mode'] = MODE
+        for row in f['metrics']['raw']:
+            if row['node'] == 'c' and f['at'] == 3:
+                row['value'] = 1
+        if f['at'] in (4, 5):
+            f['metrics']['raw'] += [dict(node='c', pool='other', user='other', kind=k,
+                                         value=0, sourceAt=f['at'])
+                                    for k in ('active','idle','waiting')]
+        if f['at'] in (5, 6):
+            f['inventory']['memberStates'][2]['lifecycle'] = 'Removing'
+    frames[-1]['phase'] = 'settling'
+    frames[-1]['pods'][0]['snapshot'].update(final=True, connected=0)
+    return frames
+
+
 class RehearsalModeTests(unittest.TestCase):
     def test_complete_rehearsal_survives_segmentation_and_archive_reassessment(self):
         with tempfile.TemporaryDirectory() as d:
@@ -40,6 +67,55 @@ class RehearsalModeTests(unittest.TestCase):
             self.assertEqual(assess_manifest(path)['status'], 'PASS')
             retained = [json.loads(line) for p in path.glob('segment-*.jsonl') for line in p.read_text().splitlines()]
             self.assertEqual({f['inventory'].get('mode') for f in retained}, {MODE})
+
+    def test_zero_then_later_absence_retires_lingering_ess_member_metrics(self):
+        result = assess(lingering_drained_member_frames(), completed=True)
+        self.assertEqual(result['status'], 'PASS', result)
+
+    def test_lingering_member_requires_complete_fresh_zero_then_later_absence(self):
+        for case in ('incomplete zero', 'stale zero', 'stale scrape', 'no zero',
+                     'missing zero', 'same provider', 'still registered',
+                     'later nonzero', 're-registration'):
+            fs = lingering_drained_member_frames()
+            if case in ('incomplete zero', 'stale zero', 'stale scrape', 'no zero', 'missing zero'):
+                for f in fs[4:6]:
+                    if case == 'incomplete zero':
+                        f['metrics']['raw'] = [r for r in f['metrics']['raw']
+                                               if not (r['node'] == 'c' and r['pool'] == 'other' and r['kind'] == 'idle')]
+                    if case == 'stale zero':
+                        for row in f['metrics']['raw']:
+                            if row['node'] == 'c': row['sourceAt'] = -100
+                    if case == 'stale scrape': f['metrics']['sourceAt'] = -100
+                    if case == 'no zero':
+                        for row in f['metrics']['raw']:
+                            if row['node'] == 'c': row['value'] = 1
+                    if case == 'missing zero':
+                        f['metrics']['nodes'].remove('c')
+                        f['metrics']['raw'] = [r for r in f['metrics']['raw'] if r['node'] != 'c']
+            if case == 'same provider':
+                fs[4]['inventory']['backendStates'].pop()
+                fs[4]['inventory']['healthyRegistered'].remove('c')
+                for f in fs[5:7]: f['inventory'] = copy.deepcopy(fs[4]['inventory'])
+                fs[7]['inventory']['sequence'] = 6
+                fs[8]['inventory']['sequence'] = 7
+            if case in ('still registered', 're-registration'):
+                for f in fs[5:7] if case == 'still registered' else fs[6:7]:
+                    f['inventory']['backendStates'].append(dict(id='c', status='Removing', weight=0, listenerHealth='Unhealthy'))
+            if case == 'later nonzero':
+                for row in fs[5]['metrics']['raw']:
+                    if row['node'] == 'c': row['value'] = 1
+            with self.subTest(case=case):
+                result = assess(fs, completed=True)
+                self.assertEqual(result['status'], 'INCONCLUSIVE', result)
+                self.assertIn('missing metrics coverage', result['reasons'])
+
+    def test_retirement_does_not_hide_sql_failure_or_missing_completion(self):
+        for case in ('SQL failure', 'missing completion'):
+            fs = lingering_drained_member_frames()
+            if case == 'SQL failure': fs[6]['pods'][0]['snapshot']['sample']['Failure'] = 1
+            with self.subTest(case=case):
+                self.assertEqual(assess(fs, completed=case != 'missing completion')['status'],
+                                 'FAIL' if case == 'SQL failure' else 'INCONCLUSIVE')
 
     def test_no_scale_capture_cannot_be_rehearsal_pass(self):
         fs = rehearsal_frames()[:1] + [transition_frame(1)]

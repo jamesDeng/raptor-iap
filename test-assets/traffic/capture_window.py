@@ -107,7 +107,7 @@ class InventoryMode:
 class TransitionEvidence:
     """History belongs to the full stream, never to an individual segment."""
     def __init__(self):
-        self.previous=None;self.seen=set();self.address_required=set();self.ever_serving=set();self.obligations={};self.departures=0;self.mode=InventoryMode()
+        self.previous=None;self.seen=set();self.address_required=set();self.ever_serving=set();self.obligations={};self.retired=set();self.departures=0;self.mode=InventoryMode()
 
     def assess(self,inv,met,now,issue):
         if inv['sequence'] is None:
@@ -141,6 +141,9 @@ class TransitionEvidence:
         for node,zero_at in list(self.obligations.items()):
             if node not in backends and zero_at is not None and seconds(inv['observedAt'])>zero_at and -1<=now-seconds(inv['observedAt'])<=30:
                 del self.obligations[node]
+                self.retired.add(node)
+        # Re-registration restores coverage, regardless of backend status/health.
+        self.retired.difference_update(backends)
         for node in backends:self.obligations.setdefault(node,None)
         nodes=met['nodes'];allowed=self.seen
         fresh=(-1<=now-seconds(met['observedAt'])<=3 and -1<=now-seconds(met['sourceAt'])<=45)
@@ -167,8 +170,13 @@ class TransitionEvidence:
             if (node,'test','poc_app') not in triplets:node_valid[node]=False;issue('missing expected raw triplets')
         # A later nonzero sample restores even a previously retired obligation.
         for node in nonzero:
-            if node in allowed:self.obligations[node]=None
-        required=set(self.obligations)|nonpending|(members & self.ever_serving)
+            if node in allowed:
+                self.retired.discard(node)
+                self.obligations[node]=None
+        # ESS can retain a drained member after NLB absence and exporter exit.
+        required=set(self.obligations)|((nonpending|(members & self.ever_serving))-self.retired)
+        # Previously ready members that regress to Pending still need coverage.
+        required.update((members-nonpending) & self.ever_serving)
         if not required.issubset(nodes) or any(not node_valid.get(n,False) for n in required):issue('missing metrics coverage')
         for node in self.obligations:
             if node in nonzero:self.obligations[node]=None
