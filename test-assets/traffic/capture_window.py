@@ -138,8 +138,10 @@ class TransitionEvidence:
             if row['addressKnown'] or node in backends or node in nonpending:self.address_required.add(node)
         self.ever_serving.update(nonpending|backends)
         # Only a subsequent fresh publication can close a prior zero observation.
-        for node,zero_at in list(self.obligations.items()):
-            if node not in backends and zero_at is not None and seconds(inv['observedAt'])>zero_at and -1<=now-seconds(inv['observedAt'])<=30:
+        for node,zero in list(self.obligations.items()):
+            if (node not in backends and zero is not None and
+                inv['feedSession']==zero[1] and inv['sequence']>zero[2] and
+                seconds(inv['observedAt'])>zero[0] and -1<=now-seconds(inv['observedAt'])<=30):
                 del self.obligations[node]
                 self.retired.add(node)
         # Re-registration restores coverage, regardless of backend status/health.
@@ -182,7 +184,9 @@ class TransitionEvidence:
             if node in nonzero:self.obligations[node]=None
             elif valid and fresh and node_valid.get(node,False):
                 # Do not move an existing proof forward on repeated zero samples.
-                if self.obligations[node] is None:self.obligations[node]=max(now,seconds(met['observedAt']))
+                if self.obligations[node] is None:
+                    # Clock skew cannot turn this same publication into later proof.
+                    self.obligations[node]=(max(now,seconds(met['observedAt'])),inv['feedSession'],inv['sequence'])
 
 
 def clean_client_pods(rows):

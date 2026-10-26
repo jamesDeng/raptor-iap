@@ -109,6 +109,27 @@ class RehearsalModeTests(unittest.TestCase):
                 self.assertEqual(result['status'], 'INCONCLUSIVE', result)
                 self.assertIn('missing metrics coverage', result['reasons'])
 
+    def test_clock_skew_cannot_make_same_publication_retire_member(self):
+        fs = lingering_drained_member_frames()
+        inv = fs[4]['inventory']
+        inv['backendStates'].pop()
+        inv['healthyRegistered'].remove('c')
+        # One-second provider clock lead is permitted freshness skew. This is
+        # still the publication already present when the zero was observed.
+        inv['observedAt'] = 5
+        for f in fs[5:7]: f['inventory'] = copy.deepcopy(inv)
+        fs[7]['inventory']['sequence'] = 6
+        fs[8]['inventory']['sequence'] = 7
+        result = assess(fs, completed=True)
+        self.assertEqual(result['status'], 'INCONCLUSIVE', result)
+        self.assertEqual(result['reasons'], ['missing metrics coverage'])
+
+    def test_later_publication_can_retire_member_despite_provider_clock_lead(self):
+        fs = lingering_drained_member_frames()
+        for f in fs[4:]: f['inventory']['observedAt'] = f['at'] + 1
+        result = assess(fs, completed=True)
+        self.assertEqual(result['status'], 'PASS', result)
+
     def test_retirement_does_not_hide_sql_failure_or_missing_completion(self):
         for case in ('SQL failure', 'missing completion'):
             fs = lingering_drained_member_frames()
