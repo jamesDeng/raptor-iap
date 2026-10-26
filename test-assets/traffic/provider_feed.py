@@ -329,7 +329,12 @@ class Operator:
     def command(self, argv):
         try:
             timeout = min(10, self.deadline.remaining()) if self.deadline is not None else 10
-            result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=timeout).stdout
+            environment = dict(os.environ)
+            if self.deadline is not None:
+                # Python <3.10 on macOS has a process-relative monotonic().
+                environment['PGCAT_LANE_DEADLINE_MONOTONIC'] = str(
+                    time.clock_gettime(time.CLOCK_MONOTONIC) + self.deadline.remaining())
+            result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=timeout, env=environment).stdout
             if self.deadline is not None:
                 self.deadline.remaining()
             return result
