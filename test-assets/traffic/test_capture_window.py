@@ -236,6 +236,25 @@ class TransitionWindowTests(unittest.TestCase):
 
 
 class TransitionCoverageEdges(unittest.TestCase):
+    def test_full_replacement_retires_zero_verified_nlb_absent_lingering_member(self):
+        fs=transition_window()
+        for t in (3,4):
+            fs[t]['inventory']['members'].insert(0,'a')
+            fs[t]['inventory']['memberStates'].insert(0,dict(id='a',lifecycle='Removing',health='Healthy',addressKnown=True))
+        result=assess(fs)
+        self.assertEqual(result['status'],'PASS',result)
+
+    def test_reappearing_backend_restores_metrics_for_every_status(self):
+        for status in ('Adding','Available','Configuring','Removing'):
+            for listener_health in ('Normal','Unhealthy'):
+                fs=transition_window()
+                # Node a was zero-verified then retired at frame 3.
+                fs[4]['inventory']['backendStates'].insert(0,dict(id='a',status=status,weight=0,listenerHealth=listener_health))
+                with self.subTest(status=status,listener_health=listener_health):
+                    result=assess(fs)
+                    self.assertEqual(result['status'],'INCONCLUSIVE',result)
+                    self.assertIn('missing metrics coverage',result['reasons'])
+
     def test_malformed_early_metrics_do_not_hide_later_failure(self):
         for field in ('metrics','raw key','inventory'):
             fs=[transition_frame(0),transition_frame(1)]

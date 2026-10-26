@@ -20,6 +20,150 @@ class FeedTests(unittest.TestCase):
     def take(self, f, **kwargs):
         pages,group,ecs,nlb=f
         return feed.snapshot(lambda p:pages[p-1],lambda:group,lambda ids:[ecs[n] for n in ids if n in ecs],lambda:nlb,group_id='asg',server_group_id='sgp',now=datetime(2026,10,16,tzinfo=timezone.utc),**kwargs)
+    def receipt_operator(self, path, mode='disabled-rehearsal'):
+        from types import SimpleNamespace
+        op=feed.Operator(SimpleNamespace(status_file=str(path),mode=mode))
+        writes=[]
+        op.atomic_worker_write=lambda value:writes.append(value)
+        op.update_targets=lambda value:None
+        return op,writes
+
+    def test_status_receipt_after_worker_success_is_private_and_address_free(self):
+        import json
+        for mode in ('full-replacement','disabled-rehearsal'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as directory:
+                path=pathlib.Path(directory)/'status.json'
+                op,writes=self.receipt_operator(path,mode)
+                self.assertFalse(path.exists())
+                def worker(value):
+                    if writes:
+                        self.assertEqual(json.loads(path.read_text())['sequence'],len(writes))
+                    else:
+                        self.assertFalse(path.exists())
+                    writes.append(value)
+                op.atomic_worker_write=worker
+                for sequence in (1,2):
+                    value=self.take(self.fixture())
+                    value['credential']='synthetic-secret-must-not-escape'
+                    op.write(value)
+                    self.assertEqual(len(writes),sequence)
+                    self.assertTrue(path.exists(), 'successful worker publication needs a receipt')
+                    self.assertEqual(json.loads(path.read_text()),{
+                        'feedSession':op.feedSession,'sequence':sequence,'mode':mode,
+                        'desired':2,'observedAt':1792108800.0})
+                    self.assertEqual(path.stat().st_mode & 0o777,0o600)
+                    for private in (b'10.0.0.',b'synthetic-secret',b'privateAddresses',b'i-0'):
+                        self.assertNotIn(private,path.read_bytes())
+                self.assertEqual(path.parent.stat().st_mode & 0o777,0o700)
+                self.assertEqual(list(path.parent.iterdir()),[path])
+
+    def test_status_path_requires_absent_absolute_path_and_existing_private_directory(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            parent=pathlib.Path(directory)
+            existing=parent/'existing';existing.write_text('keep')
+            dangling=parent/'dangling';dangling.symlink_to(parent/'absent')
+            public=parent/'public';public.mkdir(mode=0o755)
+            paths=('relative.json',existing,dangling,parent,parent/'missing'/'status',public/'status')
+            for path in paths:
+                with self.subTest(path=str(path)),self.assertRaises(ValueError):
+                    feed.Operator(SimpleNamespace(status_file=str(path)))
+            self.assertEqual(existing.read_text(),'keep')
+
+    def test_failed_worker_publication_never_creates_or_advances_receipt(self):
+        for prior in (False,True):
+            with self.subTest(prior=prior),tempfile.TemporaryDirectory() as directory:
+                path=pathlib.Path(directory)/'status.json'
+                op,writes=self.receipt_operator(path)
+                if prior:
+                    op.write(self.take(self.fixture()))
+                    self.assertTrue(path.exists(), 'successful worker publication needs a receipt')
+                before=path.read_bytes() if prior else None
+                attempts=[]
+                def uncertain(value):
+                    attempts.append(value)
+                    raise RuntimeError('sensitive uncertain worker write')
+                op.atomic_worker_write=uncertain
+                with self.assertRaises(feed.FeedStop):op.write(self.take(self.fixture()))
+                self.assertEqual(path.read_bytes() if path.exists() else None,before)
+                with self.assertRaises(feed.FeedStop):op.write(self.take(self.fixture()))
+                self.assertEqual(len(attempts),1)
+
+    def test_local_receipt_failure_stops_without_advancing_or_retrying_worker(self):
+        from unittest.mock import patch
+        for prior in (False,True):
+            with self.subTest(prior=prior),tempfile.TemporaryDirectory() as directory:
+                path=pathlib.Path(directory)/'status.json'
+                op,writes=self.receipt_operator(path)
+                if prior:
+                    op.write(self.take(self.fixture()))
+                    self.assertTrue(path.exists(), 'successful worker publication needs a receipt')
+                before=path.read_bytes() if prior else None
+                with patch.object(feed.os,'replace',side_effect=OSError('private failure')):
+                    with self.assertRaises(feed.FeedStop) as caught:
+                        op.write(self.take(self.fixture()))
+                self.assertEqual(caught.exception.stage,'status-write')
+                self.assertEqual(path.read_bytes() if path.exists() else None,before)
+                self.assertEqual(list(path.parent.iterdir()),[path] if prior else [])
+                with self.assertRaises(feed.FeedStop):op.write(self.take(self.fixture()))
+                self.assertEqual(len(writes),2 if prior else 1)
+
+    def test_status_receipt_cannot_cross_absolute_publication_deadline(self):
+        from unittest.mock import patch
+        for delay in ('worker','fsync'):
+            with self.subTest(delay=delay),tempfile.TemporaryDirectory() as directory:
+                path=pathlib.Path(directory)/'status.json'
+                op,writes=self.receipt_operator(path)
+                clock=[0.0]
+                def worker(value):
+                    writes.append(value)
+                    if delay=='worker':clock[0]=15.0
+                def fsync(fd):clock[0]=15.0
+                op.atomic_worker_write=worker
+                with patch.object(feed.os,'fsync',side_effect=fsync):
+                    with self.assertRaises(feed.FeedStop):
+                        op.write(self.take(self.fixture()),deadline=feed.Deadline(15,monotonic=lambda:clock[0]))
+                self.assertEqual(len(writes),1)
+                self.assertFalse(path.exists())
+                self.assertEqual(list(path.parent.iterdir()),[])
+
+    def test_status_receipt_rejects_changed_session_before_worker_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'status.json'
+            op,writes=self.receipt_operator(path)
+            op.write(self.take(self.fixture()))
+            self.assertTrue(path.exists(), 'successful worker publication needs a receipt')
+            before=path.read_bytes()
+            value=dict(self.take(self.fixture()),feedSession='12345678-1234-4234-8234-123456789abc')
+            with self.assertRaises(feed.FeedStop):op.write(value)
+            self.assertEqual(path.read_bytes(),before)
+            self.assertEqual(len(writes),1)
+
+    def test_new_feed_cannot_reuse_previous_session_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'status.json'
+            op,writes=self.receipt_operator(path)
+            op.write(self.take(self.fixture()))
+            self.assertTrue(path.exists(), 'successful worker publication needs a receipt')
+            before=path.read_bytes()
+            with self.assertRaises(ValueError):self.receipt_operator(path)
+            self.assertEqual(path.read_bytes(),before)
+
+    def test_cli_status_file_publishes_receipt(self):
+        import sys
+        import json
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            path=pathlib.Path(directory)/'status.json'
+            argv=['provider_feed.py','--status-file',str(path),'--workbench','offline',
+                  '--worker-inventory','/private/inventory','--kubeconfig','/private/kubeconfig']
+            def once(read,write,**kwargs):write(self.take(self.fixture()))
+            with patch.object(sys,'argv',argv),patch.object(feed.Operator,'existing_targets',return_value=()), \
+                    patch.object(feed.Operator,'update_targets'),patch.object(feed.Operator,'atomic_worker_write'), \
+                    patch.object(feed,'run_loop',side_effect=once):
+                feed.main()
+            self.assertEqual(json.loads(path.read_text())['sequence'],1)
+
     def test_complete_two_three_four(self):
         for count in (2,3,4):
             s=self.take(self.fixture(count));self.assertEqual(len(s['members']),count);self.assertEqual(s['members'],s['healthyRegistered'])
