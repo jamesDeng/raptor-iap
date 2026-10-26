@@ -34,6 +34,10 @@ run "private_tagged_capacity" {
     error_message = "Bounded baseline/surge required."
   }
   assert {
+    condition     = alicloud_ess_lifecycle_hook.proxy.scaling_group_id == alicloud_ess_scaling_group.proxy.id && alicloud_ess_lifecycle_hook.proxy.lifecycle_transition == "SCALE_OUT" && alicloud_ess_lifecycle_hook.proxy.heartbeat_timeout == 420 && alicloud_ess_lifecycle_hook.proxy.default_result == "CONTINUE"
+    error_message = "Scale-out must hold registration for 420 seconds before continuing by default."
+  }
+  assert {
     condition     = alicloud_ess_scaling_group.proxy.tags["env"] == "fixture.env" && alicloud_ess_scaling_group.proxy.tags["db-proxy-code"] == "proxy-fixture" && alicloud_ess_scaling_group.proxy.tags["target-db-code"] == "db-fixture"
     error_message = "Proxy association tags required."
   }

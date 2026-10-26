@@ -75,6 +75,12 @@ resource "alicloud_ess_scaling_group" "proxy" {
   # Configuration updates must not clear protection on retained fleet members.
   lifecycle { ignore_changes = [desired_capacity, protected_instances] }
 }
+resource "alicloud_ess_lifecycle_hook" "proxy" {
+  scaling_group_id     = alicloud_ess_scaling_group.proxy.id
+  lifecycle_transition = "SCALE_OUT"
+  heartbeat_timeout    = 420
+  default_result       = "CONTINUE"
+}
 resource "alicloud_ess_server_group_attachment" "proxy" {
   scaling_group_id = alicloud_ess_scaling_group.proxy.id
   server_group_id  = alicloud_nlb_server_group.proxy.id
