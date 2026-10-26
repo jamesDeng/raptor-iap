@@ -406,10 +406,11 @@ require `collector.exit` mode 0600 with code 0, `completion.json`, ordered
 manifest, hashes and assessed summary. Missing, malformed or nonzero status,
 an early exit, or a Workbench timeout is INCONCLUSIVE pending inspection;
 retain private logs and evidence. Do not launch a second collector over an
-uncertain first one. For the no-scale proof and full replacement, use the
-reviewed one-use worker control for finish while the feed is active and check its latest successful
-publication afterward. The disabled 2→3→2 rehearsal follows the explicit
-feed-stop-then-finish sequence above.
+uncertain first one. For the legacy 60-second no-scale proof and full
+replacement, use the reviewed one-use worker control for finish while the feed
+is active and check its latest successful publication afterward. The continuity
+no-scale long check and disabled 2→3→2 rehearsal follow the explicit post-stop
+validation-then-finish sequence above.
 Start the provider feed on the Mac from this repository (placeholders must be
 resolved and authorized, not pasted literally):
 
