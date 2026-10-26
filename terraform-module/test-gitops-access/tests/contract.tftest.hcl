@@ -68,3 +68,34 @@ run "catalog_untag_absent_by_default" {
     error_message = "No catalog migration grant should exist without explicit target configuration."
   }
 }
+
+run "pgcat_hook_create_exact_group_apply_only" {
+  command = plan
+  variables {
+    pgcat_scaling_group_id = "asg-test"
+  }
+  assert {
+    condition = slice(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement, 5, length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement)) == [
+      { Effect = "Allow", Action = ["ess:CreateLifecycleHook"], Resource = ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"] }
+    ]
+    error_message = "Lifecycle hook creation must be limited to the exact PgCat scaling group."
+  }
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.fleet_read.policy_document).Statement : s if contains(s.Action, "ess:CreateLifecycleHook")]) == 0
+    error_message = "The read-only plan policy must not create lifecycle hooks."
+  }
+  assert {
+    condition = slice(jsondecode(alicloud_ram_policy.fleet_read.policy_document).Statement, 2, length(jsondecode(alicloud_ram_policy.fleet_read.policy_document).Statement)) == [
+      { Effect = "Allow", Action = ["ess:DescribeLifecycleHooks"], Resource = ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"] }
+    ]
+    error_message = "Plan and apply roles must read lifecycle hooks only in the exact PgCat group."
+  }
+  assert {
+    condition     = alicloud_ram_policy.fleet_apply.rotate_strategy == "DeleteOldestNonDefaultVersionWhenLimitExceeded"
+    error_message = "The apply policy needs Terraform-managed version rotation at its five-version limit."
+  }
+  assert {
+    condition     = alicloud_ram_role_policy_attachment.fleet_apply.role_name == "test-apply"
+    error_message = "Lifecycle hook creation must attach only to the apply role."
+  }
+}
