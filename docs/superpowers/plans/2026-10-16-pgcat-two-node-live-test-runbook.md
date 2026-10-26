@@ -207,22 +207,29 @@ metric samples** (active, idle and waiting for every reported pool/user) on
 the deregistered new node, with fresh ESS/NLB scope, before one non-retried ESS
 desired-capacity-two action. Preserve its exact acknowledgement and wait for
 authoritative desired two, exact protected original ESS membership, two healthy
-original NLB backends and new-node absence. Unknown deregistration, restart or
-scale result is never replayed; stop at reviewed recovery.
+original NLB backends and new-node absence in a later fresh provider publication.
+Unknown deregistration, restart or scale result is never replayed; stop at
+reviewed recovery.
 
-Close and finalize the single capture, retain the ordered manifest, completion,
-client process history, provider acknowledgements, hook configuration and
-target/metric timing privately, then assess it without suppressing any SQL
-Failure/Timeout/Ambiguous/Skipped. Such faults prevent zero-loss PASS even if
-later replacement processes are clean. The 2026-10-26 staged recovery recorded
-timeouts and skips around deregistration/restart; those historical faults remain
-visible and are not evidence that this rehearsal has passed. After feed and
-collector closure, reconcile `raptor-test/pgcat-provider-inventory` from the
-verified final fleet using the current ConfigMap resourceVersion; read back
-exactly the two original target IDs and fresh complete metrics. Verify Gateway
-false/idle, no active actor, clean client readiness, private evidence readback
-and temporary kubeconfig deletion on worker and Mac. A failed or incomplete
-rehearsal, recovery or cleanup blocks any new full request.
+While the same provider feed and collector are still running, reconcile
+`raptor-test/pgcat-provider-inventory` from that verified final two-node fleet
+using the current ConfigMap resourceVersion. Read back exactly the two original
+target IDs, then retain a subsequent fresh feed publication, exact target
+readback, and collector frame with complete fresh `up=1`/raw triplets for both
+originals inside the continuous window. If a feed publication, target
+patch/readback or metric observation is uncertain, stop new mutations, preserve
+the capture and enter reviewed recovery; do not claim a clean closeout. Only
+after this in-window proof, stop the feed, close/finalize the single collector,
+and retain its ordered manifest, completion, client process history, provider
+acknowledgements, hook configuration and target/metric timing privately.
+Assess without suppressing any SQL Failure/Timeout/Ambiguous/Skipped. Such
+faults prevent zero-loss PASS even if later replacement processes are clean.
+The 2026-10-26 staged recovery recorded timeouts and skips around
+deregistration/restart; those historical faults remain visible and are not
+evidence that this rehearsal has passed. Verify Gateway false/idle, no active
+actor, clean client readiness, private evidence readback and temporary
+kubeconfig deletion on worker and Mac. A failed or incomplete rehearsal,
+recovery or cleanup blocks any new full request.
 
 ## Worker preparation and disabled 60-second measurement proof
 
@@ -578,8 +585,10 @@ rollout needs reconciliation; never claim disable succeeded from an attempted co
 Confirm checkpoint status, absence of attempt sandbox and owned keys, revoked
 attempt access and final client/fleet state. No blind retry or automatic fleet repair.
 
-After closing the assessed window, stop the owned feed and collector before
-final target reconciliation so a retained-target feed cannot undo cleanup.
+For the full replacement path, after closing the assessed window, stop the
+owned feed and collector before final target reconciliation so a retained-target
+feed cannot undo cleanup. The disabled 2→3→2 rehearsal uses its earlier
+in-window target reconciliation and readback gate instead.
 Under the authorized one-operator scope, read the complete fresh final ESS/NLB
 fleet; on successful replacement this must be exactly the two new nodes.
 Reconcile `raptor-test/pgcat-provider-inventory` to the exact authoritative final
