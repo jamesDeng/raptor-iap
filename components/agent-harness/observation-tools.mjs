@@ -40,9 +40,21 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
     if([...backendIds].some(instanceId=>!fleetIds.has(instanceId)))throw invalid();
     const pendingInstanceIds=fleet.instances.filter(n=>['Pending','Pending:Wait'].includes(n.lifecycleState)&&!backendIds.has(n.instanceId)).map(n=>n.instanceId).sort();
     const pending=new Set(pendingInstanceIds),nodeIds=fleet.instances.map(n=>n.instanceId).filter(n=>!pending.has(n));
+    const validatePendingRows=(rows,promql)=>{
+     const source=promql.startsWith('timestamp('),up=promql.startsWith('up{')||promql.startsWith('timestamp(up{'),seen=new Set(),now=Date.now()/1000;
+     for(const row of rows){
+      const metric=row.metric;
+      if(!pending.has(metric?.ecs_instance_id))continue;
+      const timestamp=Number(row.value?.[0]),raw=row.value?.[1],value=Number(raw);
+      if(metric.job!=='pgcat'||metric.env!==replacementScope?.envCode||metric.db_proxy_code!==replacementScope?.proxyCode||metric.target_db_code!==replacementScope?.targetDbCode||!Number.isFinite(timestamp)||Math.abs(now-timestamp)>30||(typeof raw!=='string'&&typeof raw!=='number')||raw===''||!Number.isFinite(value))throw invalid();
+      if(source?(Math.abs(now-value)>15):up?![0,1].includes(value):(!metric.pool||!metric.user||!Number.isSafeInteger(value)||value<0))throw invalid();
+      const key=up?metric.ecs_instance_id:JSON.stringify([metric.ecs_instance_id,metric.pool,metric.user]);
+      if(seen.has(key))throw invalid();seen.add(key);
+     }
+    };
     const metrics=await readPgcatClients({scope:replacementScope,nodeIds,pool:config.private?.sql?.database,user:config.private?.sql?.user,query:async promql=>{
      const url=new URL('/api/v1/query',config.prometheusURL);url.searchParams.set('query',promql);
-     try{const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);if(data.status!=='success'||data.data?.resultType!=='vector'||!Array.isArray(data.data.result))throw invalid();return data.data.result.filter(row=>!pending.has(row.metric?.ecs_instance_id));}catch{throw invalid();}
+     try{const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);if(data.status!=='success'||data.data?.resultType!=='vector'||!Array.isArray(data.data.result))throw invalid();validatePendingRows(data.data.result,promql);return data.data.result.filter(row=>!pending.has(row.metric?.ecs_instance_id));}catch{throw invalid();}
     }});
     return {...metrics,pendingInstanceIds};
    }

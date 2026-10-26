@@ -104,6 +104,22 @@ test('partial early scrape from unregistered Pending member does not invalidate 
  const c=config();c.listenerId='listener';const base=pgcatFetch(['i-one']);const fetch=async url=>{const response=await base(url),data=await response.json(),q=new URL(url).searchParams.get('query');if(q.startsWith('up{')||q.startsWith('timestamp(up'))data.data.result.push({metric:{...data.data.result[0].metric,ecs_instance_id:'i-pending'},value:[Date.now()/1000,q.startsWith('timestamp(')?String(Date.now()/1000):'1']});return {ok:true,json:async()=>data};};
  const tools=createObservationTools({binding,config:c,replacementScope:metricScope,exec:async(_command,args)=>transitionFixture(c,{pending:true,registered:false})(args),fetch});const out=await tools.metricsRead({kind:'pgcatClients'});assert.deepEqual(out.pendingInstanceIds,['i-pending']);assert.deepEqual(out.nodes.map(n=>n.instanceId),['i-one']);
 });
+const pendingSampleFailures=[
+  ['up-stale','up{',row=>{row.value[0]=0;}],
+  ['up-malformed','up{',row=>{row.value[1]='bad';}],
+  ['pool-stale','pgcat_pools_cl_active',row=>{row.value[0]=0;}],
+  ['pool-malformed','pgcat_pools_cl_active',row=>{delete row.metric.pool;}],
+  ['source-stale','timestamp(pgcat_pools_cl_active',row=>{row.value[1]='0';}],
+  ['source-malformed','timestamp(up',row=>{row.value[1]='bad';}],
+ ];
+for(const [name,target,damage] of pendingSampleFailures){
+ test(`present ${name} Pending sample fails closed before optional coverage is omitted`,async()=>{
+  const c=config();c.listenerId='listener';const base=pgcatFetch(['i-one']);
+  const fetch=async url=>{const response=await base(url),data=await response.json(),q=new URL(url).searchParams.get('query');if(q.startsWith(target)){const row={metric:{...data.data.result[0].metric,ecs_instance_id:'i-pending'},value:[...data.data.result[0].value]};damage(row);data.data.result.push(row);}return {ok:true,json:async()=>data};};
+  const tools=createObservationTools({binding,config:c,replacementScope:metricScope,exec:async(_command,args)=>transitionFixture(c,{pending:true,registered:false})(args),fetch});
+  await assert.rejects(tools.metricsRead({kind:'pgcatClients'}),/InvalidObservation/);
+ });
+}
 test('registered Pending member and InService member cannot lack metrics',async()=>{
  for(const options of [{pending:true,registered:true},{pending:false,registered:true}]){const c=config();c.listenerId='listener';const fixture=transitionFixture(c,options);const exec=async(_command,args)=>{const value=fixture(args);if(!options.pending&&args.includes('DescribeScalingInstances'))return {TotalCount:2,ScalingInstances:[...value.ScalingInstances,{InstanceId:'i-two',ScalingGroupId:'group',LifecycleState:'InService',HealthStatus:'Healthy'}]};return value;};const tools=createObservationTools({binding,config:c,replacementScope:metricScope,exec,fetch:pgcatFetch(['i-one'])});await assert.rejects(tools.metricsRead({kind:'pgcatClients'}),/InvalidObservation/);}
 });
