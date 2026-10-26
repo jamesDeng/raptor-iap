@@ -1,5 +1,7 @@
 """Bounded, fail-closed provider evidence. No cloud provisioning operations."""
 import argparse
+import copy
+from capture_window import InventoryMode
 import ipaddress
 import json
 import math
@@ -219,7 +221,9 @@ def publish(snapshot, previous_targets, atomic_worker_write, update_targets, *, 
         update_targets(targets)
     if deadline is not None:
         deadline.remaining()
-    atomic_worker_write({key:snapshot[key] for key in FIELDS})
+    inventory={key:snapshot[key] for key in FIELDS}
+    if 'mode' in snapshot:inventory['mode']=snapshot['mode']
+    atomic_worker_write(inventory)
     return targets
 
 
@@ -271,6 +275,9 @@ class Operator:
     """CLI adapters use argv locally; remote code is fixed and arguments quoted."""
     def __init__(self, args):
         self.args = args
+        self.mode = getattr(args, 'mode', 'full-replacement')
+        require(self.mode in ('full-replacement', 'disabled-rehearsal'))
+        self.inventory_mode = InventoryMode()
         self.previous = ()
         self.retained_targets = ()
         self.known_ids = set()
@@ -354,8 +361,8 @@ class Operator:
 
     def departures_for(self, desired):
         # Count each sequential decrease once; later equal-desired ticks retain it.
-        expected = ((4, 3), (3, 2))
-        if self.allowed_departures < 2 and (self.previous_desired, desired) == expected[self.allowed_departures]:
+        expected = ((3, 2),) if self.mode == 'disabled-rehearsal' else ((4, 3), (3, 2))
+        if self.allowed_departures < len(expected) and (self.previous_desired, desired) == expected[self.allowed_departures]:
             return self.allowed_departures + 1
         return self.allowed_departures
 
@@ -418,9 +425,14 @@ class Operator:
         self.deadline = deadline
         self.stage = 'publish'
         try:
+            require(value.get('mode', self.mode) == self.mode)
             candidate = dict(value, feedSession=self.feedSession, sequence=self.sequence + 1)
+            if self.mode == 'disabled-rehearsal':candidate['mode'] = self.mode
+            mode_state = copy.deepcopy(self.inventory_mode)
+            mode_state.observe(candidate)
             targets = publish(candidate,self.previous,self.atomic_worker_write,self.update_targets,
                               deadline=deadline,retain_targets=self.retained_targets)
+            self.inventory_mode = mode_state
             self.previous = self.retained_targets = targets
             self.known_ids.update(value['members'])
             self.backend_ids.update(row['id'] for row in value['backendStates'])
@@ -465,6 +477,8 @@ assert json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--mode',choices=('full-replacement','disabled-rehearsal'),default='full-replacement',
+                        help='bind this feed to the full replacement or disabled 2-to-3-to-2 rehearsal')
     parser.add_argument('--interval',type=int,default=15)
     parser.add_argument('--max-seconds',type=int,default=5400)
     parser.add_argument('--listener-id',default=LISTENER_ID)

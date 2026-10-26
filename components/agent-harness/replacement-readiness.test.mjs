@@ -11,7 +11,7 @@ function evidence(stamp=new Date().toISOString()){
   fleet:{groupId:'group',observedAt:stamp,instances:ids.map(instanceId=>({instanceId,lifecycleState:'Protected',healthStatus:'Healthy'}))},
   backend:{serverGroupId:'backend',observedAt:stamp,nodes:ids.map(instanceId=>({instanceId,status:'Available',registered:true,healthy:true}))},
   capacity:{groupId:'group',observedAt:stamp,desiredCapacity:4,minSize:2,maxSize:4},
-  metrics:{observedAt:stamp,pendingInstanceIds:[],nodes:ids.map(instanceId=>({instanceId,connectedClients:3,pools:[{instanceId,pool:'db',user:'client',active:1,idle:2,waiting:0}]}))},
+  metrics:{observedAt:stamp,responseAt:stamp,sourceAt:stamp,latestResponseAt:stamp,latestSourceAt:stamp,pendingInstanceIds:[],nodes:ids.map(instanceId=>({instanceId,connectedClients:3,pools:[{instanceId,pool:'db',user:'client',active:1,idle:2,waiting:0}]}))},
   probes:ids.slice(2).map(instanceId=>({instanceId,connected:true}))
  };
 }
@@ -69,6 +69,9 @@ for(const [name,change] of [
  ['old-node SQL',e=>e.probes[1].instanceId='old-a'],
  ['foreign SQL',e=>e.probes[1].instanceId='foreign'],
  ['stale cloud',e=>e.backend.observedAt=new Date(Date.now()-31000).toISOString()],
+ ['missing metric source age',e=>delete e.metrics.sourceAt],
+ ['stale metric source age',e=>e.metrics.sourceAt=new Date(Date.now()-31000).toISOString()],
+ ['stale metric response age',e=>e.metrics.responseAt=new Date(Date.now()-31000).toISOString()],
  ['stale metrics',e=>e.metrics.observedAt=new Date(Date.now()-31000).toISOString()],
  ['malformed SQL timestamp',e=>e.probes[1].observedAt=null],
  ['stale SQL',e=>e.probes[1].observedAt=new Date(Date.now()-31000).toISOString()],
@@ -92,6 +95,8 @@ test('reopen rejects duplicate, malformed, foreign, stale-at-creation and orphan
   (_s,r)=>r.data.identity.scope.targetDbCode='foreign',
   (_s,r)=>r.data.expansionKey='a'.repeat(64),
   (_s,r)=>r.data.evidence.metrics.nodes.pop(),
+  (_s,r)=>r.data.evidence.metrics.sourceAt=new Date(Date.parse(r.data.observedAt)-31000).toISOString(),
+  (_s,r)=>r.data.evidence.metrics.responseAt=new Date(Date.parse(r.data.observedAt)-31000).toISOString(),
   (_s,r)=>r.data.evidence.fleet.instances={},
   (_s,r)=>r.data.identity.definitionSha256='c'.repeat(64),
   (_s,r)=>r.data.evidence.fleet.observedAt=new Date(Date.parse(r.data.observedAt)-31000).toISOString(),
@@ -120,4 +125,29 @@ test('readiness witness retains sanitized observation fields only',()=>{
  assert.equal(gate.ready(),true);
  const row=session.entries.find(e=>e.customType==='raptor-replacement-readiness-v1');
  assert.ok(!JSON.stringify(row).includes('10.0.0.1'));assert.ok(!JSON.stringify(row).includes('do-not-store'));
+});
+
+test('successful original-node probe does not displace the two exact new-node probes',()=>{
+ const {session,gate}=setup();
+ gate.observe('sql',{instanceId:'old-a',connected:true},{instanceId:'old-a'});
+ observe(gate);assert.equal(gate.ready(),true);
+ const row=session.entries.find(e=>e.customType==='raptor-replacement-readiness-v1');
+ assert.deepEqual(row.data.evidence.probes.map(p=>p.instanceId).sort(),['new-a','new-b']);
+});
+test('source evidence ages at witness creation even when metric completion remains fresh',t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ const {gate}=setup(),e=evidence();
+ t.mock.timers.tick(14000);e.metrics.observedAt=new Date().toISOString();
+ t.mock.timers.tick(17000);
+ for(const kind of ['fleet','backend','capacity'])e[kind].observedAt=new Date().toISOString();
+ observe(gate,e);assert.equal(gate.ready(),false);assert.equal(gate.blocked(),true);
+});
+
+test('witness alignment includes the newest metric timestamps, not only oldest ages',t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ const {gate}=setup();t.mock.timers.tick(20000);const e=evidence();
+ e.fleet.observedAt=new Date(Date.now()-20000).toISOString();
+ e.metrics.latestResponseAt=new Date(Date.now()+15000).toISOString();
+ e.metrics.latestSourceAt=e.metrics.latestResponseAt;
+ observe(gate,e);assert.equal(gate.ready(),false);assert.equal(gate.blocked(),true);
 });

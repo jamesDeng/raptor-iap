@@ -87,10 +87,10 @@ schema-1 archive. Keep `replacementEnabled=false` while preparing this release;
 a current readback is required before any later live action. Local synthetic
 traffic PASS does not establish overall replacement acceptance.
 
-The reviewed provider/collector source, including the independently approved
-partial multi-Pod evidence fix, is bound to commit
-`8094452784cfa4969c1cb2648e484369389b277c`. The following SHA-256 values bind
-that source and the unchanged worker helpers; this is local source verification,
+Historical provider/collector review covered the partial multi-Pod evidence fix
+at `8094452784cfa4969c1cb2648e484369389b277c`. The updated hashes below bind the
+current disabled-rehearsal mode implementation and unchanged worker helpers;
+the old commit no longer binds these changed bytes. This is local source verification,
 not a live installation or traffic proof.
 Before release, require whole-branch independent review, passing CI and merge;
 record the final resolved release commit and confirm these files match its tree.
@@ -99,9 +99,9 @@ binding before use. A hash match alone does not prove worker installation.
 
 | Source under `test-assets/traffic/` | SHA-256 |
 |---|---|
-| `provider_feed.py` (local operator) | `69d580fd71ebadf7936bff92a1a981e48996755839abb47a324e8e02938ad9cb` |
+| `provider_feed.py` (local operator) | `94c3fb069043cbc83da903a5925b23d50a5cce80464ff2f5578ebdf1c04e369c` |
 | `worker_capture.py` | `167a07649e6756bfd914e7d01f8507c686ced712937873813d43282aa394e3dd` |
-| `capture_window.py` | `ffc30e6d37ee37f83da3a44bbbbc2ead5556891924ffdbc23e51f2a07a4961b7` |
+| `capture_window.py` | `65aafec95347a4f1e4769e856a5d1d76653f9f088270a995f1738ffe4029c910` |
 | `segmented_capture.py` | `2ad61819b59ff8ef10e1de3873029eecd349a920b734c8b480e8dcfbae5f7411` |
 | `finish_clients.py` | `c048e7fb18a8685ce03547487652e0adfd86d51ba2211730b4ff25755d66ac1e` |
 | `worker_control.py` | `9e9018d4d1072607adbaef0fd00a730582548b14f8a4a3034e1b21d2fcd5ce9e` |
@@ -162,9 +162,15 @@ Workbench call; use only exact `-P infra-ops-poc -r ap-southeast-1
 no-network dry run and retain a sanitized action record. With a fresh private
 run directory, approved temporary private kubeconfig and checked source/worker
 hashes, start **one** provider feed and **one** detached continuous collector
-before any scale action. Require first fresh schema-2 provider publication,
+before any scale action. Start the provider with **`--mode disabled-rehearsal`**;
+keep its adjacent `capture_window.py` dependency at the reviewed hash. This
+schema-2 mode binds the initial two original IDs and exact 2→3→2 path for the
+whole feed session, capture segments and private archive reassessment. An absent
+mode retains historical full-replacement semantics and cannot qualify this
+rehearsal. A no-scale capture uses the default mode and is not a rehearsal PASS.
+Require first fresh schema-2 provider publication with this mode,
 exact two target ConfigMap readback and clean client/metric frames. Preserve
-one feed session, sequence and capture throughout; never splice or restart an
+one mode, feed session, sequence and capture throughout; never splice or restart an
 uncertain process. Keep the Gateway flag false throughout.
 
 Submit **one non-retried** ESS `ModifyScalingGroup` desired-capacity-three
@@ -216,7 +222,12 @@ While the same provider feed and collector are still running, reconcile
 using the current ConfigMap resourceVersion. Read back exactly the two original
 target IDs, then retain a subsequent fresh feed publication, exact target
 readback, and collector frame with complete fresh `up=1`/raw triplets for both
-originals inside the continuous window. If a feed publication, target
+originals inside the continuous window. The feed keeps its learned target
+history and skips unchanged target updates; do not restart it or clear that
+history during the explicit final reconciliation. The assessor requires the
+observed one-node expansion and return to exactly both healthy originals; mode
+changes, new/changed IDs, original departure, or skipped transitions invalidate
+the rehearsal. If a feed publication, target
 patch/readback or metric observation is uncertain, stop new mutations, preserve
 the capture and enter reviewed recovery; do not claim a clean closeout. Only
 after this in-window proof, stop the feed, close/finalize the single collector,

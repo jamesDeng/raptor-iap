@@ -14,7 +14,7 @@ function sanitize(kind,data){
  if(kind==='fleet')return {...out,...pick(data,['groupId']),instances:Array.isArray(data.instances)?data.instances.map(n=>pick(n,['instanceId','lifecycleState','healthStatus'])):null};
  if(kind==='backend')return {...out,...pick(data,['serverGroupId']),nodes:Array.isArray(data.nodes)?data.nodes.map(n=>pick(n,['instanceId','status','registered','healthy'])):null};
  if(kind==='capacity')return {...out,...pick(data,['groupId','desiredCapacity','minSize','maxSize'])};
- if(kind==='metrics')return {...out,...pick(data,['pendingInstanceIds']),nodes:Array.isArray(data.nodes)?data.nodes.map(n=>({...pick(n,['instanceId','connectedClients']),pools:Array.isArray(n?.pools)?n.pools.map(p=>pick(p,['instanceId','pool','user','active','idle','waiting'])):null})):null};
+ if(kind==='metrics')return {...out,...pick(data,['pendingInstanceIds','sourceAt','responseAt','latestSourceAt','latestResponseAt']),nodes:Array.isArray(data.nodes)?data.nodes.map(n=>({...pick(n,['instanceId','connectedClients']),pools:Array.isArray(n?.pools)?n.pools.map(p=>pick(p,['instanceId','pool','user','active','idle','waiting'])):null})):null};
  if(kind==='sql')return {...out,...pick(data,['instanceId','connected','readiness'])};
 }
 function validEvidence(e,trace,expansion,at){
@@ -39,6 +39,9 @@ function validEvidence(e,trace,expansion,at){
  }
  if(!exactIds(probes,added)||probes.some(p=>p.connected!==true||Object.hasOwn(p,'readiness')))return false;
  const times=[fleet,backend,capacity,metrics,...probes].map(r=>timestamp(r.observedAt));
+ const sources=[timestamp(metrics.sourceAt),timestamp(metrics.latestSourceAt)],responses=[timestamp(metrics.responseAt),timestamp(metrics.latestResponseAt)],completed=timestamp(metrics.observedAt);
+ if(sources.some(t=>!Number.isFinite(t)||Math.abs(completed-t)>15000)||responses.some(t=>!Number.isFinite(t)||Math.abs(completed-t)>30000)||sources[0]>sources[1]||responses[0]>responses[1])return false;
+ times.push(...sources,...responses);
  const submittedAt=timestamp(expansion.intent.observedAt);
  return times.every(t=>Number.isFinite(t)&&Math.abs(at-t)<=30000&&t>=submittedAt)&&Math.max(...times)-Math.min(...times)<=30000;
 }
@@ -77,7 +80,9 @@ export class ReplacementReadiness {
    this.probes.delete(args.instanceId);
    if(clean?.instanceId===args.instanceId)this.probes.set(args.instanceId,{...clean,observedAt:Object.hasOwn(clean,'observedAt')?clean.observedAt:new Date().toISOString()});
   }else this.observations[kind]=clean;
-  const evidence={...this.observations,probes:[...this.probes.values()]},expansion=this.expansion(),observedAt=new Date().toISOString();
+  const original=this.trace.baseline()?.instanceIds??[],fleetIds=this.observations.fleet?.instances?.map(n=>n.instanceId)??[];
+  const added=fleetIds.filter(instanceId=>!original.includes(instanceId));
+  const evidence={...this.observations,probes:[...this.probes.values()].filter(p=>added.includes(p.instanceId))},expansion=this.expansion(),observedAt=new Date().toISOString();
   if(!validEvidence(evidence,this.trace,expansion,Date.parse(observedAt)))return;
   const row={version:1,identity:structuredClone(this.trace.identity),kind:'readyFour',expansionKey:expansion.intent.key,evidence:structuredClone(evidence),observedAt};
   if(Buffer.byteLength(canonical(row))>32768)throw invalid();

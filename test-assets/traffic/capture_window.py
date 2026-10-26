@@ -33,6 +33,9 @@ def clean_inventory(source):
             return {k:source[k] for k in INVENTORY_FIELDS}
         if type(source['schemaVersion']) is not int or source['schemaVersion']!=2:raise ValueError('schema')
         inv={k:source[k] for k in TRANSITION_FIELDS}
+        if 'mode' in source:
+            if source['mode'] not in ('full-replacement','disabled-rehearsal'):raise ValueError('mode')
+            inv['mode']=source['mode']
         if not isinstance(inv['feedSession'],str) or str(uuid.UUID(inv['feedSession']))!=inv['feedSession']:raise ValueError('session')
         if type(inv['sequence']) is not int or inv['sequence']<1:raise ValueError('sequence')
         seconds(inv['observedAt'])
@@ -60,21 +63,64 @@ def clean_inventory(source):
         return unavailable
 
 
+class InventoryMode:
+    """Bind a rehearsal to its initial two IDs; legacy streams keep full rules."""
+    def __init__(self):
+        self.mode=None;self.originals=set();self.added=set();self.phase=0;self.departed=False
+
+    def observe(self,inv):
+        mode=inv.get('mode','full-replacement')
+        if mode not in ('full-replacement','disabled-rehearsal') or self.mode not in (None,mode):
+            raise ValueError('changed inventory mode')
+        first=self.mode is None
+        self.mode=mode
+        if mode=='full-replacement':return
+        members=set(inv['members']);desired=inv['desired']
+        if first:
+            if desired!=2 or len(members)!=2:raise ValueError('rehearsal baseline')
+            self.originals=members.copy()
+        if type(desired) is not int or desired not in (2,3) or not self.originals.issubset(members):
+            raise ValueError('rehearsal scope')
+        added=self.added | (members-self.originals)
+        if len(added)>1:raise ValueError('rehearsal extra identity')
+        if desired==3:
+            if self.phase==2:raise ValueError('rehearsal repeated expansion')
+            self.phase=1
+        elif self.phase==1:
+            if not self.added:raise ValueError('rehearsal skipped expansion')
+            self.phase=2
+        if (added and self.phase==0 or
+            self.phase==1 and self.added-members or
+            self.departed and added & members):raise ValueError('rehearsal membership order')
+        if added-self.added and self.phase!=1:raise ValueError('rehearsal late identity')
+        self.added=added
+        if self.phase==2 and not (added & members):self.departed=True
+
+    def complete(self,inv):
+        return (self.mode!='disabled-rehearsal' or
+                self.phase==2 and self.departed and inv['desired']==2 and
+                set(inv['members'])==self.originals and
+                {r['id'] for r in inv['backendStates']}==self.originals and
+                set(inv['healthyRegistered'])==self.originals)
+
+
 class TransitionEvidence:
     """History belongs to the full stream, never to an individual segment."""
     def __init__(self):
-        self.previous=None;self.seen=set();self.address_required=set();self.ever_serving=set();self.obligations={};self.departures=0
+        self.previous=None;self.seen=set();self.address_required=set();self.ever_serving=set();self.obligations={};self.departures=0;self.mode=InventoryMode()
 
     def assess(self,inv,met,now,issue):
         if inv['sequence'] is None:
             issue('incomplete provider inventory');return
+        try:self.mode.observe(inv)
+        except ValueError:issue('unexpected rehearsal mode or membership')
         previous=self.previous
         if previous is not None and inv!=previous:
             if (inv['feedSession']!=previous['feedSession'] or inv['sequence']!=previous['sequence']+1 or
                 seconds(inv['observedAt'])<=seconds(previous['observedAt'])):
                 issue('provider feed discontinuity')
-            expected=((4,3),(3,2))
-            if self.departures<2 and (previous['desired'],inv['desired'])==expected[self.departures]:self.departures+=1
+            expected=((3,2),) if self.mode.mode=='disabled-rehearsal' else ((4,3),(3,2))
+            if self.departures<len(expected) and (previous['desired'],inv['desired'])==expected[self.departures]:self.departures+=1
         self.previous=inv
         members=set(inv['members']);backends={r['id'] for r in inv['backendStates']}
         self.seen.update(members)
@@ -369,6 +415,7 @@ def assess(frames,cancelled=False,completed=False,max_gap=3):
             if not roster or type(frame['expectedReplicas'])!=int or frame['expectedReplicas']<1 or len(roster)<frame['expectedReplicas']:issue('incomplete client roster')
             for (uid,pid),s in processes.items():
                 if (uid not in roster or seen_pods.get(uid)!=pid) and not s['final']:issue('old process lost without final counters')
+        if schema==2 and not transitions.mode.complete(transitions.previous):issue('incomplete rehearsal transition')
         for s in processes.values():
             if s['pending'] or s['baselinePending'] or s['last']['Scheduled']!=s['last']['Attempts']+s['last']['Skipped']:issue('operations in flight at boundary')
         if first_poll is None or first_poll==last_poll or success==0:issue('no covered successful traffic')

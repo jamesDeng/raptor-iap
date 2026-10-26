@@ -72,7 +72,7 @@ async function runScenario(failureKind,baselineCase,expansionCase){
    if(args.kind==='fleet')return {groupId:scope.groupId,observedAt,instances:ids.map(instanceId=>({instanceId,lifecycleState:'Protected',healthStatus:'Healthy'}))};
    if(args.kind==='backend')return {serverGroupId:scope.serverGroupId,observedAt,nodes:ids.map(instanceId=>({instanceId,status:'Available',healthy:true,registered:true,privateIp:'10.0.0.1'}))};
    if(args.kind==='capacity')return {groupId:scope.groupId,observedAt,desiredCapacity:4,minSize:2,maxSize:4};
-   if(args.kind==='pgcatClients')return {observedAt,pendingInstanceIds:[],nodes:ids.map(instanceId=>({instanceId,connectedClients:3,pools:[{instanceId,pool:'db',user:'client',active:1,idle:2,waiting:0}]}))};
+   if(args.kind==='pgcatClients')return {observedAt,responseAt:observedAt,sourceAt:observedAt,latestSourceAt:observedAt,latestResponseAt:observedAt,pendingInstanceIds:[],nodes:ids.map(instanceId=>({instanceId,connectedClients:3,pools:[{instanceId,pool:'db',user:'client',active:1,idle:2,waiting:0}]}))};
    if(args.instanceId)return {instanceId:args.instanceId,connected:true};
   }if(args?.kind==='fleet')return {groupId:scope.groupId,observedAt:new Date().toISOString(),instances:(baselineCase==='valid'?['i-one','i-two']:['i-one']).map(instanceId=>({instanceId,lifecycleState:'Protected',healthStatus:'Healthy'}))};return {observedAt:new Date().toISOString()};};
   const observer={cloudRead:read,metricsRead:read,deploymentRead:read,dbConnectionProbe:read};
