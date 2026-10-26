@@ -21,8 +21,11 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
  const tools = {
   async dbConnectionProbe(input){
    if(!input||Object.keys(input).join(',')!=='instanceId'||!id(input.instanceId))throw invalid();
+   const fleet=await tools.cloudRead({kind:'fleet'});
+   if(!fleet.instances.some(n=>n.instanceId===input.instanceId))throw invalid();
    const backend=await tools.cloudRead({kind:'backend'});
-   const node=backend.nodes.find(n=>n.instanceId===input.instanceId&&n.healthy);
+   const node=backend.nodes.find(n=>n.instanceId===input.instanceId);
+   if(!node?.healthy)return {instanceId:input.instanceId,connected:false,readiness:'pending'};
    const host=node?.privateIp,sql=config.private?.sql;
    if(!host||!privateEndpoint('http://'+host)||!sql||!id(sql.user)||!id(sql.database)||!['disable','verify-full'].includes(sql.sslmode))throw invalid();
    const result=await execute('psql',['--no-psqlrc','--no-password','--tuples-only','--no-align','--command','SELECT 1'],{PGHOST:host,PGPORT:'6432',PGUSER:sql.user,PGPASSWORD:sql.password,PGDATABASE:sql.database,PGSSLMODE:sql.sslmode,PGCONNECT_TIMEOUT:'5',PGOPTIONS:'-c default_transaction_read_only=on -c statement_timeout=5000'});
@@ -32,10 +35,16 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
    fresh();if(!input||Object.keys(input).some(k=>k!=="kind"))throw invalid();
    if(input.kind==='pgcatClients'){
     const fleet=await tools.cloudRead({kind:'fleet'});
-    return readPgcatClients({scope:replacementScope,nodeIds:fleet.instances.map(n=>n.instanceId),pool:config.private?.sql?.database,user:config.private?.sql?.user,query:async promql=>{
+    const backend=await tools.cloudRead({kind:'backend'}),backendIds=new Set(backend.nodes.map(n=>n.instanceId));
+    const fleetIds=new Set(fleet.instances.map(n=>n.instanceId));
+    if([...backendIds].some(instanceId=>!fleetIds.has(instanceId)))throw invalid();
+    const pendingInstanceIds=fleet.instances.filter(n=>['Pending','Pending:Wait'].includes(n.lifecycleState)&&!backendIds.has(n.instanceId)).map(n=>n.instanceId).sort();
+    const pending=new Set(pendingInstanceIds),nodeIds=fleet.instances.map(n=>n.instanceId).filter(n=>!pending.has(n));
+    const metrics=await readPgcatClients({scope:replacementScope,nodeIds,pool:config.private?.sql?.database,user:config.private?.sql?.user,query:async promql=>{
      const url=new URL('/api/v1/query',config.prometheusURL);url.searchParams.set('query',promql);
-     try{const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);if(data.status!=='success'||data.data?.resultType!=='vector')throw invalid();return data.data.result;}catch{throw invalid();}
+     try{const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);if(data.status!=='success'||data.data?.resultType!=='vector'||!Array.isArray(data.data.result))throw invalid();return data.data.result.filter(row=>!pending.has(row.metric?.ecs_instance_id));}catch{throw invalid();}
     }});
+    return {...metrics,pendingInstanceIds};
    }
    const targets=await discoverClientTargets(config.application,async(kind,selector)=>execute('kubectl',['--kubeconfig',config.private?.kubeconfig,'--namespace',config.application.namespace,'get',kind,...(kind==='deployment'?[config.application.name]:['--selector',selector]),'--output','json'],{}));
    const selector=`job="test-client"`;
@@ -85,7 +94,7 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
     const group=listeners[0].ServerGroupInfos[0];if(group.ServerGroupId!==config.serverGroupId||group.HeathCheckEnabled!==true||!Array.isArray(group.NonNormalServers)||group.NonNormalServers.length>50)throw invalid();
     const seen=new Set(),bad=new Set(group.NonNormalServers.map(node=>{if(!id(node.ServerId)||node.Port!==6432||!['Initial','Unhealthy','Unavailable'].includes(node.Status))throw invalid();return node.ServerId;}));
     if(bad.size!==group.NonNormalServers.length)throw invalid();
-    const nodes=servers.Servers.map(node=>{if(!id(node.ServerId)||!members.has(node.ServerId)||!privateEndpoint('http://'+node.ServerIp)||seen.has(node.ServerId)||node.ServerGroupId!==config.serverGroupId||node.ServerType!=='Ecs'||node.Port!==6432||node.Status!=='Available'||!Number.isInteger(node.Weight)||node.Weight<0||node.Weight>100)throw invalid();seen.add(node.ServerId);return {instanceId:node.ServerId,privateIp:node.ServerIp,registered:node.Weight>0,healthy:node.Weight>0&&!bad.has(node.ServerId)&&eligible.has(node.ServerId)};});
+    const nodes=servers.Servers.map(node=>{if(!id(node.ServerId)||!members.has(node.ServerId)||!privateEndpoint('http://'+node.ServerIp)||seen.has(node.ServerId)||node.ServerGroupId!==config.serverGroupId||node.ServerType!=='Ecs'||node.Port!==6432||!['Available','Adding','Configuring','Removing'].includes(node.Status)||!Number.isInteger(node.Weight)||node.Weight<0||node.Weight>100)throw invalid();seen.add(node.ServerId);return {instanceId:node.ServerId,privateIp:node.ServerIp,status:node.Status,registered:node.Weight>0,healthy:node.Status==='Available'&&node.Weight>0&&!bad.has(node.ServerId)&&eligible.has(node.ServerId)};});
     if([...bad].some(value=>!seen.has(value)))throw invalid();return {serverGroupId:config.serverGroupId,listenerId:config.listenerId,observedAt:new Date().toISOString(),nodes};
    }
    const result=await execute('aliyun',['ess','DescribeScalingInstances','--RegionId',config.region,'--ScalingGroupId',config.groupId,'--PageSize','50'],config.private?.aliyunEnv);

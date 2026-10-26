@@ -78,6 +78,43 @@ function observerCloudFixture(c,args){
  return {ListenerHealthStatus:[{ListenerId:c.listenerId,ListenerPort:6432,ServerGroupInfos:[{ServerGroupId:'backend',HeathCheckEnabled:true,NonNormalServers:[]}]}]};
 }
 
+function transitionFixture(c,{status='Available',pending=false,registered=true,foreign=false}={}){
+ const fleet=[{InstanceId:'i-one',ScalingGroupId:'group',LifecycleState:'InService',HealthStatus:'Healthy'},...(pending?[{InstanceId:'i-pending',ScalingGroupId:'group',LifecycleState:'Pending:Wait',HealthStatus:'Healthy'}]:[])];
+ return args=>{
+  if(args.includes('GetCallerIdentity'))return {AccountId:c.accountId,Arn:`acs:ram::${c.accountId}:assumed-role/raptor-rdev-agent-observer/session`};
+  if(args.includes('DescribeScalingInstances'))return {TotalCount:fleet.length,ScalingInstances:fleet};
+  if(args.includes('ListServerGroupServers')){const servers=[{ServerId:foreign?'i-foreign':'i-one',ServerIp:'10.70.1.30',ServerGroupId:'backend',ServerType:'Ecs',Port:6432,Status:status,Weight:100}];if(pending&&registered)servers.push({ServerId:'i-pending',ServerIp:'10.70.1.31',ServerGroupId:'backend',ServerType:'Ecs',Port:6432,Status:'Adding',Weight:100});return {TotalCount:servers.length,Servers:servers};}
+  if(args.includes('GetListenerAttribute'))return {ListenerId:c.listenerId,ServerGroupId:'backend',ListenerPort:6432,ListenerStatus:'Running'};
+  return {ListenerHealthStatus:[{ListenerId:c.listenerId,ListenerPort:6432,ServerGroupInfos:[{ServerGroupId:'backend',HeathCheckEnabled:true,NonNormalServers:[]}]}]};
+ };
+}
+function pgcatFetch(ids){return async url=>{const q=new URL(url).searchParams.get('query'),now=Date.now()/1000;const result=ids.map(ecs_instance_id=>({metric:{job:'pgcat',env:'rdev.ali',db_proxy_code:'proxy',target_db_code:'db',ecs_instance_id,pool:'test',user:'fixtureuser'},value:[now,q.startsWith('timestamp(')?String(now):q.startsWith('up{')?'1':'0']}));return {ok:true,json:async()=>({status:'success',data:{resultType:'vector',result}})};};}
+const metricScope={envCode:'rdev.ali',proxyCode:'proxy',targetDbCode:'db',groupId:'group',serverGroupId:'backend',application:{clusterId:'cluster',namespace:'raptor-test',name:'client',uid:'uid'}};
+
+test('documented NLB transitions remain visible but unhealthy',async()=>{
+ for(const status of ['Adding','Configuring','Removing']){const c=config();c.listenerId='listener';const tools=createObservationTools({binding,config:c,exec:async(_command,args)=>transitionFixture(c,{status})(args)});const node=(await tools.cloudRead({kind:'backend'})).nodes[0];assert.equal(node.status,status);assert.equal(node.healthy,false);}
+});
+test('unknown NLB status and foreign backend still fail closed',async()=>{
+ for(const options of [{status:'Surprise'},{foreign:true}]){const c=config();c.listenerId='listener';const tools=createObservationTools({binding,config:c,exec:async(_command,args)=>transitionFixture(c,options)(args)});await assert.rejects(tools.cloudRead({kind:'backend'}),/InvalidObservation/);}
+});
+test('unregistered Pending member can lack metrics and is returned explicitly',async()=>{
+ const c=config();c.listenerId='listener';const tools=createObservationTools({binding,config:c,replacementScope:metricScope,exec:async(_command,args)=>transitionFixture(c,{pending:true,registered:false})(args),fetch:pgcatFetch(['i-one'])});const out=await tools.metricsRead({kind:'pgcatClients'});assert.deepEqual(out.nodes.map(n=>n.instanceId),['i-one']);assert.deepEqual(out.pendingInstanceIds,['i-pending']);
+});
+test('partial early scrape from unregistered Pending member does not invalidate current backend metrics',async()=>{
+ const c=config();c.listenerId='listener';const base=pgcatFetch(['i-one']);const fetch=async url=>{const response=await base(url),data=await response.json(),q=new URL(url).searchParams.get('query');if(q.startsWith('up{')||q.startsWith('timestamp(up'))data.data.result.push({metric:{...data.data.result[0].metric,ecs_instance_id:'i-pending'},value:[Date.now()/1000,q.startsWith('timestamp(')?String(Date.now()/1000):'1']});return {ok:true,json:async()=>data};};
+ const tools=createObservationTools({binding,config:c,replacementScope:metricScope,exec:async(_command,args)=>transitionFixture(c,{pending:true,registered:false})(args),fetch});const out=await tools.metricsRead({kind:'pgcatClients'});assert.deepEqual(out.pendingInstanceIds,['i-pending']);assert.deepEqual(out.nodes.map(n=>n.instanceId),['i-one']);
+});
+test('registered Pending member and InService member cannot lack metrics',async()=>{
+ for(const options of [{pending:true,registered:true},{pending:false,registered:true}]){const c=config();c.listenerId='listener';const fixture=transitionFixture(c,options);const exec=async(_command,args)=>{const value=fixture(args);if(!options.pending&&args.includes('DescribeScalingInstances'))return {TotalCount:2,ScalingInstances:[...value.ScalingInstances,{InstanceId:'i-two',ScalingGroupId:'group',LifecycleState:'InService',HealthStatus:'Healthy'}]};return value;};const tools=createObservationTools({binding,config:c,replacementScope:metricScope,exec,fetch:pgcatFetch(['i-one'])});await assert.rejects(tools.metricsRead({kind:'pgcatClients'}),/InvalidObservation/);}
+});
+test('backend appearing between fleet reads cannot be omitted from required metrics',async()=>{
+ const c=config();c.listenerId='listener';let fleetReads=0;const fixture=transitionFixture(c,{pending:true,registered:true});const exec=async(_command,args)=>{const value=fixture(args);if(args.includes('DescribeScalingInstances')&&++fleetReads===1)return {TotalCount:1,ScalingInstances:value.ScalingInstances.slice(0,1)};return value;};
+ const tools=createObservationTools({binding,config:c,replacementScope:metricScope,exec,fetch:pgcatFetch(['i-one'])});await assert.rejects(tools.metricsRead({kind:'pgcatClients'}),/InvalidObservation/);
+});
+test('known unready SQL target skips credentials, healthy SQL failure stays invalid',async()=>{
+ const c=config();c.listenerId='listener';let sqlCalls=0;const tools=createObservationTools({binding,config:c,exec:async(command,args)=>{if(command==='psql'){sqlCalls++;throw new Error('SQL failed');}return transitionFixture(c,{pending:true,registered:false})(args);}});assert.deepEqual(await tools.dbConnectionProbe({instanceId:'i-pending'}),{instanceId:'i-pending',connected:false,readiness:'pending'});assert.equal(sqlCalls,0);await assert.rejects(tools.dbConnectionProbe({instanceId:'i-one'}),/InvalidObservation/);assert.equal(sqlCalls,1);await assert.rejects(tools.dbConnectionProbe({instanceId:'i-foreign'}),/InvalidObservation/);
+});
+
 test('fleet reads provider protection from LifecycleState, never a fabricated response field',async()=>{
  const tools=createObservationTools({binding,config:config(),exec:async(_command,args)=>args.includes('GetCallerIdentity')?{AccountId:'1360282071200743',Arn:'acs:ram::1360282071200743:assumed-role/raptor-rdev-agent-observer/session'}:{TotalCount:2,ScalingInstances:[{InstanceId:'i-one',ScalingGroupId:'group',LifecycleState:'Protected',HealthStatus:'Healthy'},{InstanceId:'i-two',ScalingGroupId:'group',LifecycleState:'InService',HealthStatus:'Healthy'}]}});
  const fleet=await tools.cloudRead({kind:'fleet'});assert.equal(fleet.instances[0].protectedFromScaleIn,true);assert.equal(fleet.instances[1].protectedFromScaleIn,false);
