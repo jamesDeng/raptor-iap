@@ -25,6 +25,7 @@
 - A zero sample from only one pool/user or an expired sample must not retire: Task 1 test.
 - A local feed receipt must not advance after an uncertain worker write or contain an address/credential: Task 2 test.
 - Reconciliation and finalization must not rely on a local receipt alone: Task 3 runbook check against the binding spec. After confirmed feed exit, one bounded Workbench call must independently validate exact ConfigMap contents, a matching complete later collector frame and the live bound client roster before finish. Its exact command needs review and a no-scale timing proof before paid use.
+- An external original-roster precheck does not bind `finish()`'s first read. Task 4's source prerequisite must reject replacements before request publication; the post-stop caller must supply the bound originals to the new explicit input, never rediscover its expected roster from live state.
 
 ---
 
@@ -63,9 +64,16 @@
 
 ### Task 4: Review, merge and proof gates
 
-**Files:** No additional source edits unless review finds a concrete issue.
+**Concrete prerequisite found during validator preparation:** the old `finish()` selected its roster from a new live read, so stable replacement clients could be selected after the caller's original-roster precheck. The private blocked report/reproducer records this offline finding; no live substitution or validator success is claimed.
+
+**Files:** Modify `test-assets/traffic/finish_clients.py`, test `test-assets/traffic/test_finish_clients.py`, and update this plan, the binding spec and active runbook. No validator implementation or cloud action in this prerequisite.
+
+**Interface:** Optional Python 3.6-compatible `expected_roster` on `finish()` and optional CLI `--expected-roster-file` (private regular nonsymlink mode-0600 JSON). Omission preserves legacy behavior; an explicitly supplied invalid roster, including null, refuses. The new post-stop caller must always supply the validated original roster from its private contract. Require exactly two four-field identities, canonicalize and snapshot them, compare the first live roster before `request.json`, retain the second pre-action check and exact in-Pod UID/process arguments, and never retry uncertainty.
+
+- [x] Write and observe failing in-repository tests for first-read replacement before request, second-read mismatch before dispatch, malformed/duplicate binding, unchanged originals and private CLI file validation.
+- [x] Implement the smallest bound-roster extension; preserve legacy callers and no-retry/unknown-response behavior. Verify focused/full traffic tests, Python 3.6 grammar and diff checks before committing the prerequisite.
 
 - [ ] Obtain independent per-task and whole-change review. Verify the source diff excludes unrelated iCloud duplicates; push a draft PR against current `main`, wait for required checks, then merge under the owner's existing authorization.
-- [ ] Prepare and independently review the exact bounded post-stop validator command/script using existing interfaces; this task adds no runtime helper. It must verify exact ConfigMap contents, a matching complete later collector JSONL frame, fresh two-node metrics, unchanged clean live client identities and adequate provider freshness before the exact finish in the same Workbench call.
+- [ ] Prepare and independently review the exact bounded post-stop validator command/script using existing interfaces; this task adds no runtime helper. It must verify exact ConfigMap contents, a matching complete later collector JSONL frame, fresh two-node metrics, unchanged clean live client identities and adequate provider freshness before the exact finish in the same Workbench call. Pass the validated contract's original roster directly to `finish(..., expected_roster=original_roster)`, or its private mode-0600 file through `--expected-roster-file`; an unbound call or a roster inferred anew from live state is prohibited.
 - [ ] Demonstrate that reviewed command in a fresh replacement-disabled no-scale long feed/collector check using the local status file: final reconciliation, later receipt, intentional feed stop with verified exit, the single post-stop validation/finish call, both finals and settling under the remaining 30-second provider budget, independent archive assessment, restoration and cleanup. No overlapping Workbench status calls while the feed is active, and no cloud scale action in this check. Failure or uncertain timing blocks paid rehearsal.
 - [ ] Only if the long check passes and current one-operator/cost/time gates allow, perform one new disabled 2→3→2 rehearsal with no in-window restart when exact zero conditions hold; assess/retain and restore exact two. Only a new rehearsal PASS unlocks a new full request.

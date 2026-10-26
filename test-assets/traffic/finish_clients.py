@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from worker_capture import kubectl, read_pod
 
+_UNBOUND_ROSTER=object()
+
 
 def atomic_json(path, value):
     temporary=path.with_name('.'+path.name+'.'+uuid.uuid4().hex)
@@ -36,15 +38,21 @@ def read_json(path):
     if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) or stat.S_IMODE(path.stat().st_mode)!=0o600:raise ValueError('private boundary file required')
     with path.open() as stream:raw=stream.read(65537)
     if len(raw)>65536:raise ValueError('boundary bound exceeded')
-    return json.loads(raw)
+    def unique_fields(pairs):
+        value={}
+        for key,item in pairs:
+            if key in value:raise ValueError('duplicate boundary field')
+            value[key]=item
+        return value
+    return json.loads(raw,object_pairs_hook=unique_fields)
 
 
 def validate_roster(rows, expected=2):
     fields={'name','uid','containerId','processId'}
     if not isinstance(rows,list) or len(rows)!=expected or expected!=2:raise ValueError('exact two-client roster required')
-    if any(set(r)!=fields or any(not isinstance(r[k],str) or not r[k] or len(r[k])>256 for k in fields) for r in rows):raise ValueError('invalid client identity')
+    if any(not isinstance(r,dict) or set(r)!=fields or any(not isinstance(r[k],str) or not r[k] or len(r[k])>256 for k in fields) for r in rows):raise ValueError('invalid client identity')
     if any(len({r[k] for r in rows})!=expected for k in fields):raise ValueError('duplicate client identity')
-    return sorted(rows,key=lambda r:r['uid'])
+    return sorted((dict(r) for r in rows),key=lambda r:r['uid'])
 
 
 def live_roster():
@@ -73,9 +81,14 @@ def exec_finish(row):
     return 'acknowledged'
 
 
-def finish(boundary_dir: Path, expected_replicas: int = 2) -> dict:
+def finish(boundary_dir: Path, expected_replicas: int = 2, expected_roster=_UNBOUND_ROSTER) -> dict:
+    # Legacy callers may omit the binding; post-stop callers must supply originals.
+    bound=validate_roster(expected_roster,expected_replicas) if expected_roster is not _UNBOUND_ROSTER else None
     directory=Path(boundary_dir);private_directory(directory)
     roster=validate_roster(live_roster(),expected_replicas)
+    if bound is not None:
+        if roster!=bound:raise ValueError('client roster changed')
+        roster=bound
     request={'requestId':uuid.uuid4().hex,'roster':roster}
     atomic_json(directory/'request.json',request);wait_ack(directory,request)
     if validate_roster(live_roster(),expected_replicas)!=roster:raise ValueError('client roster changed')
@@ -95,7 +108,9 @@ def finish(boundary_dir: Path, expected_replicas: int = 2) -> dict:
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--boundary-dir',required=True);parser.add_argument('--expected-replicas',type=int,default=2);args=parser.parse_args()
-    try:print(json.dumps(finish(Path(args.boundary_dir),args.expected_replicas)))
+    parser=argparse.ArgumentParser();parser.add_argument('--boundary-dir',required=True);parser.add_argument('--expected-replicas',type=int,default=2);parser.add_argument('--expected-roster-file');args=parser.parse_args()
+    try:
+        bound=read_json(Path(args.expected_roster_file)) if args.expected_roster_file is not None else _UNBOUND_ROSTER
+        print(json.dumps(finish(Path(args.boundary_dir),args.expected_replicas,expected_roster=bound)))
     except Exception:raise SystemExit('finish refused; preserve evidence and reconcile exact identities')
 if __name__=='__main__':main()

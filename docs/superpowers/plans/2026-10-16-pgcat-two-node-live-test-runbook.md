@@ -96,7 +96,8 @@ traffic PASS does not establish overall replacement acceptance.
 
 Historical provider/collector review covered the partial multi-Pod evidence fix
 at `8094452784cfa4969c1cb2648e484369389b277c`. The updated hashes below bind the
-current disabled-rehearsal continuity implementation and unchanged worker helpers;
+current disabled-rehearsal continuity implementation, bound-roster finish
+extension and other worker helpers;
 the old commit no longer binds these changed bytes. This is local source verification,
 not a live installation or traffic proof.
 Before release, require whole-branch independent review, passing CI and merge;
@@ -110,7 +111,7 @@ binding before use. A hash match alone does not prove worker installation.
 | `worker_capture.py` | `167a07649e6756bfd914e7d01f8507c686ced712937873813d43282aa394e3dd` |
 | `capture_window.py` | `99a61e55a561972164f0216a0b2fb351b0deda9bca68aad0a0115a0af3f3e988` |
 | `segmented_capture.py` | `2ad61819b59ff8ef10e1de3873029eecd349a920b734c8b480e8dcfbae5f7411` |
-| `finish_clients.py` | `c048e7fb18a8685ce03547487652e0adfd86d51ba2211730b4ff25755d66ac1e` |
+| `finish_clients.py` | `19b10c4d237d5a3767c4d59075c51f0e5e3057e141d35d88a1eee6723475ec96` |
 | `worker_control.py` | `9e9018d4d1072607adbaef0fd00a730582548b14f8a4a3034e1b21d2fcd5ce9e` |
 
 Verify local provider bytes and read back every staged worker module's SHA-256
@@ -315,14 +316,27 @@ following checks in order, then finish in that same worker call:
    hashes, completion and full-window assessment are verified.
 3. Only if every check passes and sufficient provider freshness headroom
    remains, invoke **one exact** `finish_clients.py` boundary using this run's
-   bound private boundary directory and `--expected-replicas 2`. Complete the
-   request, both original-process final markers and bounded collector settling
+   bound private boundary directory and `--expected-replicas 2`. The new post-stop
+   caller **must** pass the original private-contract roster directly as
+   `finish(boundary_dir, expected_replicas=2, expected_roster=original_roster)`;
+   a CLI caller must supply `--expected-roster-file` pointing to that same roster
+   in a private regular nonsymlink mode-0600 JSON file. The JSON is exactly two
+   objects with only `name`, `uid`, `containerId`, `processId` (nonempty bounded
+   strings, each field unique across the pair); duplicate JSON keys refuse.
+   Never derive the expected roster anew from live state. `finish()` validates
+   and snapshots the binding, refuses a first-live-read mismatch before writing
+   `request.json`, and rechecks the same originals after acknowledgement before
+   dispatch. A precheck followed by the legacy unbound call is insufficient.
+   Complete the request, both original-process final markers and bounded collector
+   settling
    while the last successful provider `observedAt` is **under 30 seconds old**.
    Preserve the existing five-second settling bound. An uncertain finish is
    never replayed.
 
 Prepare and review that bounded validation/finish command before live use; no
-new automatic validator is supplied by this source-only change. Existing
+new automatic validator is supplied by this source-only change. The bound-roster
+finish extension is a prerequisite, not that validator or a timing proof; legacy
+unbound helper calls remain available only for historical callers. Existing
 `worker_control.py` heartbeat/status files contain control liveness or action
 acknowledgements, not collector frames. The existing collector fsyncs each
 JSONL frame on the worker. Reading those files after confirmed feed exit avoids
