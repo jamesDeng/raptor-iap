@@ -45,10 +45,12 @@ resource "alicloud_ram_policy" "fleet_read" {
   force       = false
   policy_document = jsonencode({
     Version = "1"
-    Statement = [
+    Statement = concat([
       { Effect = "Allow", Action = ["ess:DescribeScalingGroups", "ess:DescribeScalingConfigurations", "ess:DescribeScalingInstances", "ess:DescribeScalingActivities", "ess:ListTagResources", "nlb:ListLoadBalancers", "nlb:GetLoadBalancerAttribute", "nlb:ListServerGroups", "nlb:GetServerGroupAttribute", "nlb:ListServerGroupServers", "nlb:ListListeners", "nlb:GetListenerAttribute", "nlb:ListTagResources", "ram:ListTagResources"], Resource = ["*"] },
       { Effect = "Allow", Action = ["ram:GetPolicy", "ram:GetPolicyVersion"], Resource = ["acs:ram:*:${var.account_id}:policy/raptor-iap-rdev-pgcat-config-read"] }
-    ]
+      ], var.pgcat_scaling_group_id == null ? [] : [
+      { Effect = "Allow", Action = ["ess:DescribeLifecycleHooks"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/${var.pgcat_scaling_group_id}"] }
+    ])
   })
   depends_on = [terraform_data.account_guard]
 }
@@ -63,6 +65,9 @@ resource "alicloud_ram_role_policy_attachment" "fleet_read" {
 resource "alicloud_ram_policy" "fleet_apply" {
   policy_name = "raptor-iap-test-gitops-fleet-apply"
   force       = false
+  # This existing policy has five versions; let Terraform retire only its
+  # oldest inactive version when publishing the reviewed grant.
+  rotate_strategy = "DeleteOldestNonDefaultVersionWhenLimitExceeded"
   policy_document = jsonencode({
     Version = "1"
     Statement = concat([
@@ -77,6 +82,8 @@ resource "alicloud_ram_policy" "fleet_apply" {
       # Live RAM DecodeDiagnosticMessage requires serverGroup (API documentation uses servergroup).
       { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:loadbalancer/${var.catalog_untag_targets.load_balancer_id}", "acs:nlb:ap-southeast-1:${var.account_id}:serverGroup/${var.catalog_untag_targets.server_group_id}"] },
       { Effect = "Allow", Action = ["rds:UntagResources"], Resource = ["acs:rds:ap-southeast-1:${var.account_id}:dbinstance/${var.catalog_untag_targets.db_instance_id}"] }
+      ], var.pgcat_scaling_group_id == null ? [] : [
+      { Effect = "Allow", Action = ["ess:CreateLifecycleHook"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/${var.pgcat_scaling_group_id}"] }
     ])
   })
   depends_on = [terraform_data.account_guard]
@@ -107,5 +114,16 @@ variable "catalog_untag_targets" {
       can(regex("^pgm-[a-zA-Z0-9]+$", var.catalog_untag_targets.db_instance_id))
     ])
     error_message = "Catalog untag targets must be exact resource IDs, without wildcards."
+  }
+}
+
+# Exact PgCat group for the reviewed GitOps lifecycle hook. This is a shared
+# deployment-role prerequisite; PgCat runtime IAM remains in the PgCat module.
+variable "pgcat_scaling_group_id" {
+  type    = string
+  default = null
+  validation {
+    condition     = var.pgcat_scaling_group_id == null ? true : can(regex("^asg-[a-zA-Z0-9]+$", var.pgcat_scaling_group_id))
+    error_message = "PgCat scaling group must be one exact ID, without wildcards."
   }
 }
