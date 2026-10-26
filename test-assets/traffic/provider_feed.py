@@ -510,22 +510,22 @@ print(json.dumps({'monotonic':time.monotonic(),'boot':boot}))
 '''
 _TARGET_SCRIPT = '''import json,os,stat,subprocess,sys,time
 path=sys.argv[1]
-assert stat.S_ISREG(os.stat(path).st_mode) and stat.S_IMODE(os.stat(path).st_mode)==0o600
+if not (stat.S_ISREG(os.stat(path).st_mode) and stat.S_IMODE(os.stat(path).st_mode)==0o600): raise ValueError('Invalid kubeconfig mode')
 args=['kubectl','--kubeconfig',path,'-n','raptor-test']
 def run(extra):
  remaining=_remote_deadline-time.monotonic()
  if remaining<=0: raise ValueError('Remote deadline exceeded')
  return subprocess.run(args+extra,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=min(8,remaining)).stdout
 body=json.loads(run(['get','configmap','pgcat-provider-inventory','-o','json']))
-assert body['metadata']['name']=='pgcat-provider-inventory' and body['metadata']['namespace']=='raptor-test'
-assert 'targets.json' in body['data']
+if not (body['metadata']['name']=='pgcat-provider-inventory' and body['metadata']['namespace']=='raptor-test'): raise ValueError('Unexpected ConfigMap identity')
+if not ('targets.json' in body['data']): raise ValueError('Missing targets key')
 if len(sys.argv)==2:
  print(body['data']['targets.json']); sys.exit(0)
 patch={'metadata':{'resourceVersion':body['metadata']['resourceVersion']},'data':{'targets.json':sys.argv[2]}}
 run(['patch','configmap','pgcat-provider-inventory','--type=merge','-p',json.dumps(patch)])
 verified=json.loads(run(['get','configmap','pgcat-provider-inventory','-o','json']))
-assert verified['metadata']['name']=='pgcat-provider-inventory' and verified['metadata']['namespace']=='raptor-test'
-assert json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])
+if not (verified['metadata']['name']=='pgcat-provider-inventory' and verified['metadata']['namespace']=='raptor-test'): raise ValueError('Unexpected readback identity')
+if not (json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])): raise ValueError('Target readback mismatch')
 '''
 
 

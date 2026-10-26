@@ -86,7 +86,8 @@ def configmap_remote(body, calls, corrupt_readback=False):
             calls.append(argv)
             if argv[5] == 'patch':
                 value = json.loads(argv[-1])
-                assert value['metadata']['resourceVersion'] == body['metadata']['resourceVersion']
+                if value['metadata']['resourceVersion'] != body['metadata']['resourceVersion']:
+                    raise ValueError('ResourceVersion mismatch')
                 body['data'].update(value['data'])
                 body['metadata']['resourceVersion'] = str(int(body['metadata']['resourceVersion']) + 1)
                 return SimpleNamespace(stdout='')
@@ -102,6 +103,83 @@ def configmap_remote(body, calls, corrupt_readback=False):
 
 
 class RehearsalModeTests(unittest.TestCase):
+    def test_target_script_guards_survive_optimized_python(self):
+        targets = [{'targets': ['10.0.0.1:9930'], 'labels': {'ecs_instance_id': 'i-0'}},
+                   {'targets': ['10.0.0.2:9930'], 'labels': {'ecs_instance_id': 'i-1'}}]
+        original = {'metadata': {'name': 'pgcat-provider-inventory', 'namespace': 'raptor-test',
+                                 'resourceVersion': '17'}, 'data': {'targets.json': '[]'}}
+        final = copy.deepcopy(original)
+        final['data']['targets.json'] = json.dumps(targets)
+        mismatched = copy.deepcopy(targets)
+        mismatched[1]['targets'] = ['10.0.0.9:9930']
+        cases = [('valid read', None, None, None, None, 1),
+                 ('valid write', None, None, None, None, 3),
+                 ('kubeconfig mode', None, None, None, 'Invalid kubeconfig mode', 0),
+                 ('initial name', 'metadata', 'name', 'other', 'Unexpected ConfigMap identity', 1),
+                 ('initial namespace', 'metadata', 'namespace', 'other', 'Unexpected ConfigMap identity', 1),
+                 ('missing targets', 'data', 'targets.json', None, 'Missing targets key', 1),
+                 ('readback name', 'metadata', 'name', 'other', 'Unexpected readback identity', 3),
+                 ('readback namespace', 'metadata', 'namespace', 'other', 'Unexpected readback identity', 3),
+                 ('incomplete readback', 'data', 'targets.json', json.dumps(targets[:1]), 'Target readback mismatch', 3),
+                 ('mismatched readback', 'data', 'targets.json', json.dumps(mismatched), 'Target readback mismatch', 3)]
+        for optimized in (False, True):
+            for case, section, key, value, category, expected_calls in cases:
+                with self.subTest(optimized=optimized, case=case), tempfile.TemporaryDirectory() as d:
+                    root = pathlib.Path(d)
+                    kube = root / 'kubeconfig'; kube.write_text('synthetic')
+                    kube.chmod(0o644 if case == 'kubeconfig mode' else 0o600)
+                    initial, readback = copy.deepcopy(original), copy.deepcopy(final)
+                    if section:
+                        body = readback if 'readback' in case else initial
+                        if value is None:
+                            del body[section][key]
+                        else:
+                            body[section][key] = value
+                    calls = root / 'calls.json'
+                    # Only kubectl is replaced; compile/execute the actual worker
+                    # source under each interpreter's optimization setting.
+                    preamble = '''import json,subprocess,time,sys
+_calls=[]
+def kubectl(argv,**kwargs):
+ _calls.append(argv[5])
+ with open(CALLS_FILE,'w') as output: json.dump(_calls,output)
+ if argv[5]=='patch':
+  patch=json.loads(argv[-1])
+  if patch['metadata']['resourceVersion']!='17': raise ValueError('ResourceVersion mismatch')
+  return type('Result',(),{'stdout':''})()
+ body=INITIAL if len(_calls)==1 else READBACK
+ return type('Result',(),{'stdout':json.dumps(body)})()
+subprocess.run=kubectl
+_remote_deadline=time.monotonic()+15
+source=SOURCE
+try:
+ exec(compile(source,'target-script','exec'))
+except ValueError as error:
+ print(str(error))
+ sys.exit(42)
+'''.replace('INITIAL', repr(initial)).replace('READBACK', repr(readback)).replace('SOURCE', repr(feed._TARGET_SCRIPT)).replace('CALLS_FILE', repr(str(calls)))
+                    command = [sys.executable] + (['-O'] if optimized else [])
+                    arguments = [str(kube)] + ([] if case == 'valid read' else [json.dumps(targets)])
+                    result = subprocess.run(command + ['-c', preamble] + arguments,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 42 if category else 0, result.stderr)
+                    self.assertEqual(result.stdout, category + '\n' if category else '[]\n' if case == 'valid read' else '')
+                    self.assertEqual(json.loads(calls.read_text()) if calls.exists() else [],
+                                     ['get', 'patch', 'get'][:expected_calls])
+
+    def test_configmap_boundary_refuses_stale_resource_version(self):
+        body = {'metadata': {'resourceVersion': '17'}, 'data': {'targets.json': '[]'}}
+        before = copy.deepcopy(body)
+        remote = configmap_remote(body, [])
+        script = '''import subprocess,json
+patch={'metadata':{'resourceVersion':'16'},'data':{'targets.json':'changed'}}
+subprocess.run(['kubectl','--kubeconfig','synthetic','-n','raptor-test','patch',
+                'configmap','pgcat-provider-inventory','--type=merge','-p',json.dumps(patch)])
+'''
+        with self.assertRaisesRegex(ValueError, '^ResourceVersion mismatch$'):
+            remote(script)
+        self.assertEqual(body, before)
+
     def test_complete_rehearsal_survives_segmentation_and_archive_reassessment(self):
         with tempfile.TemporaryDirectory() as d:
             path = pathlib.Path(d) / 'capture'
@@ -356,7 +434,7 @@ class RehearsalModeTests(unittest.TestCase):
             self.assertEqual(len(json.loads(body['data']['targets.json'])), 3)
             before = status.read_bytes(); published = len(writes)
             op.remote = configmap_remote(body, calls, corrupt_readback=True)
-            with self.assertRaises(AssertionError):
+            with self.assertRaisesRegex(ValueError, '^Target readback mismatch$'):
                 feed.publish(dict(writes[-1], privateAddresses=self.value(2)['privateAddresses']),
                              op.previous, op.atomic_worker_write, op.update_targets)
             self.assertEqual(len(writes), published)
