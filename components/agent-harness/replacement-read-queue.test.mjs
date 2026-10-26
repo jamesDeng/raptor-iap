@@ -7,7 +7,7 @@ import {loadPiRuntime} from './pi-adapter.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
 
-async function runScenario(failureKind){
+async function runScenario(failureKind,baselineCase){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'replacement-read-queue-')));
  try{
   const state=path.join(root,'state'),skills=path.join(root,'skills');
@@ -20,11 +20,13 @@ async function runScenario(failureKind){
   const b={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',definitionSha256:'a'.repeat(64),skillsCommit:'b'.repeat(40),operation:'db-proxy.replace-nodes',executionMode:'replacement',objectKind:'db-proxy',objectCode:'proxy',envCode:'dev',clusterId:'cluster',model:'gpt-5.6-luna'};
   const scope={envCode:'dev',proxyCode:'proxy',groupId:'group',serverGroupId:'backend',targetDbCode:'db',application:{envCode:'dev',appCode:'client',clusterId:'cluster',namespace:'test',name:'traffic',uid:'uid'}};
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
+ const {getCurrentTools}=await import('@earendil-works/pi-ai');
   const {runtime}=await loadPiRuntime({stateRoot:state});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
-  let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;
-  runtime.streamSimple=(model)=>{
+ let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[];
+ runtime.streamSimple=(model,context)=>{
    round++;
-   const calls=round===1?[
+  visibleTools.push(getCurrentTools(context.messages).map(tool=>tool.name));
+  const calls=baselineCase?(round===1?[{name:'cloud_read',arguments:{kind:'fleet'}}]:[{name:'resource_wait',arguments:{seconds:60}}]):round===1?[
     {name:'mcp__raptor__request_get',arguments:{requestId:b.requestId}},
     {name:'cloud_read',arguments:{kind:'backend'}},
     {name:'metrics_read',arguments:{kind:'trafficFailures'}},
@@ -52,12 +54,16 @@ async function runScenario(failureKind){
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
-  const read=async()=>{observerCalls++;active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');return {observedAt:new Date().toISOString()};};
+  const read=async args=>{observerCalls++;active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');if(args?.kind==='fleet')return {groupId:scope.groupId,observedAt:new Date().toISOString(),instances:(baselineCase==='valid'?['i-one','i-two']:['i-one']).map(instanceId=>({instanceId,lifecycleState:'Protected',healthStatus:'Healthy'}))};return {observedAt:new Date().toISOString()};};
   const observer={cloudRead:read,metricsRead:read,deploymentRead:read,dbConnectionProbe:read};
   const out=await runLiveReplacement({stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:skills},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,observer});
   if(failureKind){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(failureKind==='observer'){assert.equal(observerCalls,1,'an observation failure must stop queued observations');assert.ok(serviceCalls<=1,'an observation failure must stop queued service calls');}else assert.equal(serviceCalls,1,'a failed MCP read must stop queued service calls');}
   else assert.equal(out.paused?.kind,'resource',JSON.stringify(out));
   assert.equal(maximum,1,'first-turn reads must never overlap at their service boundary');
+  assert.ok(visibleTools[0].includes('mcp__raptor__request_get'),'initial reads must remain available');
+  assert.ok(!visibleTools[0].includes('mcp__infra__db_proxy_node_protection_set'),'a fresh session must not advertise protection before a fleet baseline');
+  assert.ok(!visibleTools[0].includes('mcp__raptor__approval_request'),'a fresh session must not advertise approval writes before a fleet baseline');
+  if(baselineCase)assert.equal(visibleTools[1].includes('mcp__infra__db_proxy_node_protection_set'),baselineCase==='valid','only a persisted valid two-node baseline unlocks replacement writes on the next turn');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 }
 
@@ -65,3 +71,5 @@ test('replacement queues simultaneous first reads across MCP and observation too
 test('replacement stops queued reads after an HTTP failure',()=>runScenario('http'));
 test('replacement stops queued reads after a malformed MCP response',()=>runScenario('malformed'));
 test('replacement stops queued reads after an observation failure',()=>runScenario('observer'));
+test('replacement exposes mutations on the next turn after a valid fleet baseline',()=>runScenario(undefined,'valid'));
+test('replacement keeps mutations unavailable after an invalid fleet baseline',()=>runScenario(undefined,'invalid'));
