@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import shlex
+import stat
 import subprocess
 import tempfile
 import time
@@ -37,7 +38,7 @@ FAILURE_STAGES = frozenset({
     'startup', 'ess-group', 'ess-members', 'ecs-instances', 'nlb-servers',
     'nlb-listener', 'nlb-health', 'targets-read', 'targets-update',
     'inventory-write', 'read', 'publish', 'loop', 'ess-transition',
-    'nlb-backend-state',
+    'nlb-backend-state', 'status-write',
 })
 
 
@@ -250,6 +251,32 @@ def atomic_write(path, value, *, deadline=None, clock=time.monotonic):
             os.unlink(temporary)
 
 
+def write_status_receipt(path, value, *, deadline=None):
+    """Commit an operational receipt with no fallible durability step afterward.
+
+    Unlike worker inventory, this local liveness hint needs no crash-durability
+    guarantee. All flushes and deadline checks precede the atomic replacement,
+    so a failed local write leaves the last successful receipt unchanged.
+    """
+    if deadline is not None:
+        deadline.remaining()
+    fd, temporary = tempfile.mkstemp(prefix='.'+path.name+'.', dir=path.parent)
+    committed = False
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(value, stream, separators=(',', ':'))
+            stream.flush()
+            os.fsync(stream.fileno())
+        if deadline is not None:
+            deadline.remaining()
+        os.replace(temporary, path)
+        committed = True
+    finally:
+        if not committed:
+            os.unlink(temporary)
+
+
 def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monotonic, sleep=time.sleep):
     require(type(interval) is int and 1 <= interval <= 15 and type(max_seconds) is int and 1 <= max_seconds <= 5400)
     started = monotonic()
@@ -289,6 +316,15 @@ class Operator:
         self.sequence = 0
         self.deadline = None
         self.stage = 'startup'
+        self.stopped = False
+        status_file = getattr(args, 'status_file', None)
+        self.status_file = Path(status_file) if status_file is not None else None
+        if self.status_file is not None:
+            require(self.status_file.is_absolute() and not os.path.lexists(self.status_file))
+            require(self.status_file.parent.is_dir())
+            parent = self.status_file.parent.lstat()
+            require(stat.S_ISDIR(parent.st_mode) and stat.S_IMODE(parent.st_mode) == 0o700
+                    and parent.st_uid == os.getuid())
 
     def command(self, argv):
         try:
@@ -422,10 +458,13 @@ class Operator:
         self.remote(_TARGET_SCRIPT,self.args.kubeconfig,json.dumps(values,separators=(',',':')))
 
     def write(self, value, *, deadline=None):
+        if self.stopped:
+            raise FeedStop(self.stage)
         self.deadline = deadline
         self.stage = 'publish'
         try:
             require(value.get('mode', self.mode) == self.mode)
+            require(value.get('feedSession', self.feedSession) == self.feedSession)
             candidate = dict(value, feedSession=self.feedSession, sequence=self.sequence + 1)
             if self.mode == 'disabled-rehearsal':candidate['mode'] = self.mode
             mode_state = copy.deepcopy(self.inventory_mode)
@@ -443,7 +482,16 @@ class Operator:
             self.allowed_departures = self.departures_for(value['desired'])
             self.previous_desired = value['desired']
             self.sequence += 1
+            if self.status_file is not None:
+                self.stage = 'status-write'
+                receipt = {'feedSession':self.feedSession, 'sequence':self.sequence,
+                           'mode':self.mode, 'desired':candidate['desired'],
+                           'observedAt':candidate['observedAt']}
+                write_status_receipt(self.status_file, receipt, deadline=deadline)
         except Exception:
+            # Neither uncertain worker writes nor a later local failure may
+            # replay publication through this operator.
+            self.stopped = True
             raise FeedStop(self.stage) from None
 
 
@@ -484,6 +532,8 @@ def main():
     parser.add_argument('--listener-id',default=LISTENER_ID)
     parser.add_argument('--workbench',required=True)
     parser.add_argument('--worker-inventory',required=True)
+    parser.add_argument('--status-file',metavar='ABSOLUTE_PATH',
+                        help='optional initially absent local receipt in an existing mode-0700 directory')
     parser.add_argument('--kubeconfig',required=True,help='already authorized private worker path; never transferred by this tool')
     args = parser.parse_args()
     try:
