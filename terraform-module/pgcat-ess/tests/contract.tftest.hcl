@@ -3,6 +3,11 @@ mock_provider "alicloud" {
     defaults = { id = "1234567890123456" }
   }
 }
+override_resource {
+  target          = alicloud_ess_scaling_group.proxy
+  values          = { id = "asg-fixture" }
+  override_during = plan
+}
 variables {
   account_id          = "1234567890123456"
   env_code            = "fixture.env"
