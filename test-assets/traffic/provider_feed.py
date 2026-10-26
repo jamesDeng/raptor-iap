@@ -330,10 +330,11 @@ class Operator:
         try:
             timeout = min(10, self.deadline.remaining()) if self.deadline is not None else 10
             environment = dict(os.environ)
-            if self.deadline is not None:
-                # Python <3.10 on macOS has a process-relative monotonic().
-                environment['PGCAT_LANE_DEADLINE_MONOTONIC'] = str(
-                    time.clock_gettime(time.CLOCK_MONOTONIC) + self.deadline.remaining())
+            # Python <3.10 on macOS has a process-relative monotonic().
+            # Startup reads precede the first tick and retain their 10s timeout.
+            environment['PGCAT_LANE_DEADLINE_MONOTONIC'] = str(
+                time.clock_gettime(time.CLOCK_MONOTONIC) +
+                (self.deadline.remaining() if self.deadline is not None else timeout))
             result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=timeout, env=environment).stdout
             if self.deadline is not None:
                 self.deadline.remaining()

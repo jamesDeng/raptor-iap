@@ -28,7 +28,7 @@ import json, os, sys, time
 from pathlib import Path
 p = Path(os.environ['FAKE_EVENTS'])
 with p.open('a') as stream:
-    stream.write(json.dumps({'event':'start','pid':os.getpid(),'at':time.clock_gettime(time.CLOCK_MONOTONIC),'argv':sys.argv[1:]})+'\\n')
+    stream.write(json.dumps({'event':'start','pid':os.getpid(),'at':time.clock_gettime(time.CLOCK_MONOTONIC),'argv':sys.argv[1:],'deadline':os.environ.get('PGCAT_LANE_DEADLINE_MONOTONIC')})+'\\n')
 print('ALLOWLISTED', flush=True)
 time.sleep(float(os.environ.get('FAKE_SLEEP','0')))
 with p.open('a') as stream:
@@ -129,6 +129,22 @@ with p.open('a') as stream:
         self.assertLess(time.clock_gettime(time.CLOCK_MONOTONIC)-started, .4)
         self.assertIsNone(first.poll())
         self.assertEqual(len(self.rows()), 1)
+
+    def test_provider_startup_command_supplies_deadline(self):
+        from provider_feed import Operator
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        op = Operator(SimpleNamespace())
+        environment = self.environment()
+        environment.pop('PGCAT_LANE_DEADLINE_MONOTONIC')
+        started = time.clock_gettime(time.CLOCK_MONOTONIC)
+        with patch.dict(os.environ, environment, clear=True):
+            result = op.command([sys.executable, str(WRAPPER)] + ARGV)
+        self.assertEqual(result, 'ALLOWLISTED\n')
+        deadline = float(self.rows()[0]['deadline'])
+        self.assertGreaterEqual(deadline, started + 9.5)
+        self.assertLessEqual(deadline, started + 10.1)
+        self.assertIsNone(op.deadline, 'startup must not create a publication tick')
 
     def test_provider_command_passes_the_same_absolute_deadline_to_subprocess(self):
         from provider_feed import Deadline, Operator
