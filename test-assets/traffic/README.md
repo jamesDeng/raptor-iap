@@ -89,15 +89,17 @@ and every non-pending member. A Pending/Pending:Wait member absent NLB may remai
 addressless across fresh ticks only while it has never had an address, appeared
 in NLB, or reached a non-pending lifecycle in this process. Its state explicitly
 records `addressKnown=false`. No previously required address may silently vanish.
-The process remembers exact earlier ESS IDs and sequential desired decreases
+The default `--mode full-replacement` preserves historical schema-2 behavior:
+the process remembers exact earlier ESS IDs and sequential desired decreases
 4→3 and 3→2, each once. Earlier ESS IDs absent now must fit that departure count;
 only those exact earlier IDs may remain NLB backends after leaving ESS. Approval
 receipts remain a separate final acceptance gate.
 
 The worker file is atomically replaced in its own directory, fsynced and mode
-0600. Schema 2 contains exactly `schemaVersion`, `feedSession`, `sequence`,
+0600. Schema 2 contains `schemaVersion`, `feedSession`, `sequence`,
 `observedAt`, `desired`, sorted `members`, sorted `memberStates`, sorted
-`backendStates`, and sorted `healthyRegistered`. A member row contains `id`,
+`backendStates`, and sorted `healthyRegistered`, plus optional `mode`. An absent
+mode means `full-replacement` for historical evidence. A member row contains `id`,
 `lifecycle`, `health`, and `addressKnown`; a backend row contains `id`, `status`,
 `weight`, and `listenerHealth`. `feedSession` is one random non-secret UUID for
 the process lifetime. `sequence` starts at one and advances only after successful
@@ -112,10 +114,33 @@ observable. A changed target list is patched with its current resourceVersion an
 read back exactly in the same remote script before matching worker publication.
 Unchanged exact lists skip the update; the single-operator gate and fresh metrics
 assessment cover external drift. It never creates the ConfigMap or cloud resources.
-Targets use existing PgCat port 9930 and DP00001/D00002 catalog labels. After the
-assessed window closes, explicitly reconcile to the exact fresh final ESS/NLB
+Targets use existing PgCat port 9930 and DP00001/D00002 catalog labels. For a full
+replacement, after the assessed window closes, explicitly reconcile to the exact fresh final ESS/NLB
 fleet and verify targets during authorized cleanup; restarting this feed does not
 repair or preserve the evidence continuity of the earlier window.
+
+For the separately authorized disabled **2→3→2** rehearsal, add
+`--mode disabled-rehearsal` at feed startup. The local provider requires the
+adjacent `capture_window.py` module; worker packaging is unchanged. This mode
+is retained in every inventory and capture segment, then revalidated during
+private archive assessment. The same feed session must begin at desired two
+with exactly the two originals, observe desired three and exactly one new ID,
+and observe desired two before that new ID departs. Originals cannot depart,
+IDs cannot change or reappear after departure, and mode/session/sequence cannot
+change. Desired four, a skipped expansion, or a second expansion is rejected.
+The final inventory must contain exactly the original healthy two backends and
+members. A no-scale capture cannot pass as a rehearsal; use the default mode
+for the separate no-scale plumbing check. All metric, SQL, freshness, sequence
+and completion requirements remain unchanged.
+
+Keep this same feed and capture live through the later new-backend absence
+publication, explicit resourceVersion-bound reconciliation/readback to the two
+original targets, and a subsequent feed publication/readback plus complete fresh
+two-node metrics. The feed retains its learned target history; do not restart it
+or alter that history to reconcile. An unchanged target list skips rewriting the
+ConfigMap, so the explicit final cleanup remains in place on subsequent ticks.
+Stop mutations on uncertain readback, then preserve evidence for reviewed
+recovery. Finalize the capture only after that in-window closeout proof.
 
 The loop starts a read at most every 15 seconds and lasts at most 5,400 seconds.
 Each refresh carries one absolute deadline capped by the interval and remaining

@@ -3,6 +3,11 @@ mock_provider "alicloud" {
     defaults = { id = "1234567890123456" }
   }
 }
+override_resource {
+  target          = alicloud_ess_scaling_group.proxy
+  values          = { id = "asg-fixture" }
+  override_during = plan
+}
 variables {
   account_id          = "1234567890123456"
   env_code            = "fixture.env"
@@ -32,6 +37,10 @@ run "private_tagged_capacity" {
   assert {
     condition     = alicloud_ess_scaling_group.proxy.desired_capacity == 2 && alicloud_ess_scaling_group.proxy.max_size == 4 && alicloud_ess_scaling_group.proxy.min_size == 2
     error_message = "Bounded baseline/surge required."
+  }
+  assert {
+    condition     = alicloud_ess_lifecycle_hook.proxy.scaling_group_id == alicloud_ess_scaling_group.proxy.id && alicloud_ess_lifecycle_hook.proxy.lifecycle_transition == "SCALE_OUT" && alicloud_ess_lifecycle_hook.proxy.heartbeat_timeout == 420 && alicloud_ess_lifecycle_hook.proxy.default_result == "CONTINUE"
+    error_message = "Scale-out must hold registration for 420 seconds before continuing by default."
   }
   assert {
     condition     = alicloud_ess_scaling_group.proxy.tags["env"] == "fixture.env" && alicloud_ess_scaling_group.proxy.tags["db-proxy-code"] == "proxy-fixture" && alicloud_ess_scaling_group.proxy.tags["target-db-code"] == "db-fixture"

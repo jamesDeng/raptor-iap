@@ -7,7 +7,7 @@ import {loadPiRuntime} from './pi-adapter.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
 
-async function runScenario(failureKind,baselineCase){
+async function runScenario(failureKind,baselineCase,expansionCase){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'replacement-read-queue-')));
  try{
   const state=path.join(root,'state'),skills=path.join(root,'skills');
@@ -22,11 +22,22 @@ async function runScenario(failureKind,baselineCase){
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
  const {getCurrentTools}=await import('@earendil-works/pi-ai');
   const {runtime}=await loadPiRuntime({stateRoot:state});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
- let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[];
+ let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[],writes=[];
+ const target={requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode,groupId:scope.groupId};
+ const expand={name:'mcp__infra__db_proxy_scale',arguments:{...target,actionId:'expand',desiredCapacity:4}};
+ const postWrites={
+ restart:{name:'mcp__infra__deployment_restart',arguments:{requestId:b.requestId,envCode:b.envCode,...scope.application}},
+ protection:{name:'mcp__infra__db_proxy_node_protection_set',arguments:{...target,instanceIds:['new-a','new-b'],protected:true}},
+ deregister:{name:'mcp__infra__db_proxy_nodes_deregister',arguments:{...target,serverGroupId:scope.serverGroupId,instanceIds:['i-one']}},
+ scale:{name:'mcp__infra__db_proxy_scale',arguments:{...target,actionId:'shrink',desiredCapacity:3}},
+ approval:{name:'mcp__raptor__approval_request',arguments:{requestId:b.requestId,envCode:b.envCode,actionId:'shrink',interface:'ess.scale-in',target:{proxyCode:scope.proxyCode,groupId:scope.groupId},parameters:{desiredCapacity:3}}}
+ };
  runtime.streamSimple=(model,context)=>{
    round++;
   visibleTools.push(getCurrentTools(context.messages).map(tool=>tool.name));
-  const calls=baselineCase?(round===1?[{name:'cloud_read',arguments:{kind:'fleet'}}]:[{name:'resource_wait',arguments:{seconds:60}}]):round===1?[
+  const readyCase=['ready','ready-unknown','ready-batch','ready-scale-batch'].includes(expansionCase);
+  const readinessCalls=[...['fleet','backend','capacity'].map(kind=>({name:'cloud_read',arguments:{kind}})),{name:'metrics_read',arguments:{kind:'pgcatClients'}},...['new-a','new-b'].map(instanceId=>({name:'db_connection_probe',arguments:{instanceId}}))];
+  const calls=expansionCase?(round===1?[{name:'cloud_read',arguments:{kind:'fleet'}}]:round===2?[expand,...(expansionCase==='ready-scale-batch'?[...readinessCalls,postWrites.protection]:postWrites[expansionCase]?[postWrites[expansionCase]]:[])]:readyCase&&round===3?[...readinessCalls,...(expansionCase==='ready-batch'?[postWrites.protection]:[])]:readyCase&&round===4?[postWrites.protection]:[{name:'resource_wait',arguments:{seconds:60}}]):baselineCase?(round===1?[{name:'cloud_read',arguments:{kind:'fleet'}}]:[{name:'resource_wait',arguments:{seconds:60}}]):round===1?[
     {name:'mcp__raptor__request_get',arguments:{requestId:b.requestId}},
     {name:'cloud_read',arguments:{kind:'backend'}},
     {name:'metrics_read',arguments:{kind:'trafficFailures'}},
@@ -44,25 +55,50 @@ async function runScenario(failureKind,baselineCase){
    else if(rpc.method==='tools/list')result={tools:operationCapabilities(b,scope)[server].map(name=>({name,description:'Scoped operation',inputSchema:operationToolSchema(server,name)}))};
    else if(rpc.method==='tools/call'){
     serviceCalls++;
+    if(['db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart','approval_request'].includes(rpc.params.name))writes.push(rpc.params.name);
     active++;maximum=Math.max(maximum,active);
     await new Promise(resolve=>setTimeout(resolve,30));
     active--;
     if(failureKind==='http'&&serviceCalls===1)return new Response('Unavailable',{status:503});
     if(failureKind==='malformed'&&serviceCalls===1)return new Response('{bad json',{headers:{'Content-Type':'application/json'}});
-    const data=server==='raptor'?{requestId:b.requestId,definition:{envCode:b.envCode,object:{kind:b.objectKind,code:b.objectCode},operations:[{name:b.operation,parameters:{mode:'replacement'}}]}}:{envCode:b.envCode,accountMatches:true,evidenceMode:'live',observedAt:new Date().toISOString()};
+    const args=rpc.params.arguments;
+    const data=rpc.params.name==='deployment_restart'?{evidenceMode:'live',accepted:true,generation:2,target:args}:rpc.params.name==='db_proxy_scale'?{evidenceMode:'live',groupId:scope.groupId,previousDesiredCapacity:args.desiredCapacity===4?2:4,desiredCapacity:args.desiredCapacity,outcome:['unknown','ready-unknown'].includes(expansionCase)?'unknown':'accepted'}:rpc.params.name==='db_proxy_node_protection_set'||rpc.params.name==='db_proxy_nodes_deregister'?{evidenceMode:'live',instanceIds:args.instanceIds,outcome:'submitted'}:rpc.params.name==='approval_request'?{requestId:b.requestId,approvalId:'approval',actionId:args.actionId,binding:args,state:'pending'}:server==='raptor'?{requestId:b.requestId,definition:{envCode:b.envCode,object:{kind:b.objectKind,code:b.objectCode},operations:[{name:b.operation,parameters:{mode:'replacement'}}]}}:{envCode:b.envCode,accountMatches:true,evidenceMode:'live',observedAt:new Date().toISOString()};
     result={structuredContent:{data},content:[{type:'text',text:JSON.stringify({data})}]};
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
-  const read=async args=>{observerCalls++;active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');if(args?.kind==='fleet')return {groupId:scope.groupId,observedAt:new Date().toISOString(),instances:(baselineCase==='valid'?['i-one','i-two']:['i-one']).map(instanceId=>({instanceId,lifecycleState:'Protected',healthStatus:'Healthy'}))};return {observedAt:new Date().toISOString()};};
+  const read=async args=>{observerCalls++;active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
+   const ids=['i-one','i-two','new-a','new-b'],observedAt=new Date().toISOString();
+   if(args.kind==='fleet')return {groupId:scope.groupId,observedAt,instances:ids.map(instanceId=>({instanceId,lifecycleState:'Protected',healthStatus:'Healthy'}))};
+   if(args.kind==='backend')return {serverGroupId:scope.serverGroupId,observedAt,nodes:ids.map(instanceId=>({instanceId,status:'Available',healthy:true,registered:true,privateIp:'10.0.0.1'}))};
+   if(args.kind==='capacity')return {groupId:scope.groupId,observedAt,desiredCapacity:4,minSize:2,maxSize:4};
+   if(args.kind==='pgcatClients')return {observedAt,responseAt:observedAt,sourceAt:observedAt,latestSourceAt:observedAt,latestResponseAt:observedAt,pendingInstanceIds:[],nodes:ids.map(instanceId=>({instanceId,connectedClients:3,pools:[{instanceId,pool:'db',user:'client',active:1,idle:2,waiting:0}]}))};
+   if(args.instanceId)return {instanceId:args.instanceId,connected:true};
+  }if(args?.kind==='fleet')return {groupId:scope.groupId,observedAt:new Date().toISOString(),instances:(baselineCase==='valid'?['i-one','i-two']:['i-one']).map(instanceId=>({instanceId,lifecycleState:'Protected',healthStatus:'Healthy'}))};return {observedAt:new Date().toISOString()};};
   const observer={cloudRead:read,metricsRead:read,deploymentRead:read,dbConnectionProbe:read};
-  const out=await runLiveReplacement({stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:skills},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,observer});
-  if(failureKind){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(failureKind==='observer'){assert.equal(observerCalls,1,'an observation failure must stop queued observations');assert.ok(serviceCalls<=1,'an observation failure must stop queued service calls');}else assert.equal(serviceCalls,1,'a failed MCP read must stop queued service calls');}
+  const options={stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:skills},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,observer};
+  const out=await runLiveReplacement(options);
+  if(postWrites[expansionCase]||['ready-batch','ready-scale-batch'].includes(expansionCase)){assert.equal(out.error,'ToolFailed',JSON.stringify(out));assert.deepEqual(writes,['db_proxy_scale'],'early post-expansion writes must never reach MCP');}
+  else if(failureKind){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(failureKind==='observer'){assert.equal(observerCalls,1,'an observation failure must stop queued observations');assert.ok(serviceCalls<=1,'an observation failure must stop queued service calls');}else assert.equal(serviceCalls,1,'a failed MCP read must stop queued service calls');}
   else assert.equal(out.paused?.kind,'resource',JSON.stringify(out));
   assert.equal(maximum,1,'first-turn reads must never overlap at their service boundary');
   assert.ok(visibleTools[0].includes('mcp__raptor__request_get'),'initial reads must remain available');
   assert.ok(!visibleTools[0].includes('mcp__infra__db_proxy_node_protection_set'),'a fresh session must not advertise protection before a fleet baseline');
   assert.ok(!visibleTools[0].includes('mcp__raptor__approval_request'),'a fresh session must not advertise approval writes before a fleet baseline');
+  if(expansionCase&&!postWrites[expansionCase]&&expansionCase!=='ready-scale-batch'){for(const name of ['mcp__infra__db_proxy_scale','mcp__infra__db_proxy_node_protection_set','mcp__infra__db_proxy_nodes_deregister','mcp__infra__deployment_restart','mcp__raptor__approval_request'])assert.ok(!visibleTools[2].includes(name),'pending readiness must hide '+name);assert.ok(visibleTools[2].includes('resource_wait'));}
+  if(['ready','ready-unknown'].includes(expansionCase)){
+   assert.ok(visibleTools[3].includes('mcp__infra__db_proxy_node_protection_set'));
+   assert.deepEqual(writes,['db_proxy_scale','db_proxy_node_protection_set']);
+   const saved=fs.readFileSync(path.join(state,'sessions',out.sessionReference.file),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+   const witness=saved.find(e=>e.customType==='raptor-replacement-readiness-v1');assert.ok(witness);assert.ok(!JSON.stringify(witness).includes('10.0.0.1'));
+   const resumed=await runLiveReplacement({...options,sessionReference:out.sessionReference,decisionContext:{decision:'resume'}});
+   assert.equal(resumed.paused?.kind,'resource',JSON.stringify(resumed));assert.ok(visibleTools.at(-1).includes('mcp__raptor__approval_request'));
+   assert.deepEqual(writes,['db_proxy_scale','db_proxy_node_protection_set'],'resume must not replay expansion');
+  }
+  if(['accepted','unknown'].includes(expansionCase)){
+   const resumed=await runLiveReplacement({...options,sessionReference:out.sessionReference,decisionContext:{decision:'resume'}});
+   assert.equal(resumed.paused?.kind,'resource',JSON.stringify(resumed));assert.ok(!visibleTools.at(-1).includes('mcp__raptor__approval_request'));
+  }
   if(baselineCase)assert.equal(visibleTools[1].includes('mcp__infra__db_proxy_node_protection_set'),baselineCase==='valid','only a persisted valid two-node baseline unlocks replacement writes on the next turn');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 }
@@ -73,3 +109,11 @@ test('replacement stops queued reads after a malformed MCP response',()=>runScen
 test('replacement stops queued reads after an observation failure',()=>runScenario('observer'));
 test('replacement exposes mutations on the next turn after a valid fleet baseline',()=>runScenario(undefined,'valid'));
 test('replacement keeps mutations unavailable after an invalid fleet baseline',()=>runScenario(undefined,'invalid'));
+
+for(const name of ['protection','deregister','scale','restart','approval'])test('replacement blocks same-round post-expansion '+name+' before MCP',()=>runScenario(undefined,'valid',name));
+for(const name of ['accepted','unknown'])test('replacement hides writes after '+name+' expansion',()=>runScenario(undefined,'valid',name));
+
+for(const name of ['ready','ready-unknown'])test('replacement unlocks fresh exact readiness on the next turn and retains it on resume: '+name,()=>runScenario(undefined,'valid',name));
+test('replacement cannot use a newly collected witness for a write in the same read round',()=>runScenario(undefined,'valid','ready-batch'));
+
+test('replacement cannot expand, gather readiness and write in the same formerly unlocked round',()=>runScenario(undefined,'valid','ready-scale-batch'));

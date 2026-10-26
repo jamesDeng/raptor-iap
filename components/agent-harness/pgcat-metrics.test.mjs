@@ -12,3 +12,17 @@ test('missing pool metrics stale source foreign node duplicate or down scrape re
   await assert.rejects(()=>readPgcatClients({scope,nodeIds:['node-a','node-b'],pool:'test',user:'poc_app',query}),/InvalidObservation/);
  }
 });
+
+test('slow sequential queries cannot refresh old scrape or response ages at completion',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ await assert.rejects(()=>readPgcatClients({scope,nodeIds:['node-a','node-b'],pool:'test',user:'poc_app',query:async q=>{t.mock.timers.tick(6000);return rows(q);}}),/InvalidObservation/);
+});
+test('fast collection retains oldest response and scrape timestamps',async t=>{
+ const start=Date.now();t.mock.timers.enable({apis:['Date'],now:start});
+ const out=await readPgcatClients({scope,nodeIds:['node-a','node-b'],pool:'test',user:'poc_app',query:async q=>{t.mock.timers.tick(1000);const result=rows(q);if(q.startsWith('timestamp('))for(const r of result)r.value[1]=String((Date.now()-3000)/1000);return result;}});
+ assert.equal(out.responseAt,new Date(start+1000).toISOString());
+ assert.equal(out.sourceAt,new Date(start-1000).toISOString());
+ assert.equal(out.observedAt,new Date(start+8000).toISOString());
+ assert.equal(out.latestResponseAt,new Date(start+8000).toISOString());
+ assert.equal(out.latestSourceAt,new Date(start+5000).toISOString());
+});

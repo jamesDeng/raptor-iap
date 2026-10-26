@@ -68,6 +68,23 @@ class FeedTests(unittest.TestCase):
                     self.assertEqual(result['healthyRegistered'],['i-0','i-1'])
                     self.assertNotIn('i-2',result['privateAddresses'])
 
+    def test_pending_private_target_is_published_before_nlb_registration(self):
+        for lifecycle in ('Pending', 'Pending:Wait'):
+            with self.subTest(lifecycle=lifecycle):
+                fixture=self.fixture(3)
+                fixture[0][2]['ScalingInstances']['ScalingInstance'][0]['LifecycleState']=lifecycle
+                fixture[3]['Servers'].pop()
+                events=[]
+                snapshot=dict(self.take(fixture,known_ids=('i-0','i-1')),
+                              feedSession='12345678-1234-4234-8234-123456789abc',sequence=1)
+                self.assertEqual([row['id'] for row in snapshot['backendStates']],['i-0','i-1'])
+                self.assertEqual(snapshot['privateAddresses']['i-2'],'10.0.0.3')
+                feed.publish(snapshot,(),lambda value:events.append(('inventory',value)),
+                             lambda targets:events.append(('targets',targets)))
+                self.assertEqual([event[0] for event in events],['targets','inventory'])
+                self.assertIn(('i-2','10.0.0.3'),events[0][1])
+                self.assertEqual(events[1][1]['healthyRegistered'],['i-0','i-1'])
+
     def test_every_documented_transition_state_is_preserved(self):
         for lifecycle in ('InService','Pending','Pending:Wait','Protected','Standby','Stopped','Removing','Removing:Wait'):
             for health in ('Healthy','Unhealthy'):
