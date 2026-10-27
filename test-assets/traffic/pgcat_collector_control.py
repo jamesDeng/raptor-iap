@@ -32,6 +32,7 @@ except BaseException as e:
 '''
 SOURCES = {
     'collectorControl': 'pgcat_collector_control.py',
+    'laneTimingAssessor': 'pgcat_lane_timing_assessor.py',
     'rehearsalWorker': 'pgcat_rehearsal_worker.py',
     'rehearsalContract': 'pgcat_rehearsal_contract.py',
     'pendingProofWorker': 'pgcat_pending_proof_worker.py',
@@ -282,11 +283,11 @@ def main():
         args=sys.argv[1:]
         check(len(args)>=5)
         verb,contract,run_id,kubeconfig,hashes=args[:5];expected=decode(hashes.encode('ascii'))
-        check(verb in ('launch','status','_run','_capture'))
-        if verb=='_capture':
+        check(verb in ('launch','status','_run','_capture','verdict'))
+        if verb in ('_capture','verdict'):
             run,fd,verified=context(contract,run_id,expected,Path(__file__));os.close(fd)
             kube_binding(contract,kubeconfig)
-            check(args[5:]==capture_arguments(run))
+            check(args[5:]==capture_arguments(run) if verb=='_capture' else len(args)==7)
             # Bootstrap the import guard itself from verified source, then ensure
             # every transitive local import executes the same reviewed bytes.
             namespace={'__name__':'_verified_worker','__file__':str(run/'pgcat_rehearsal_worker.py')}
@@ -294,8 +295,14 @@ def main():
             check(not any(name in sys.modules for name in verified))
             finder=namespace['_VerifiedSourceFinder'](run,verified);sys.meta_path.insert(0,finder)
             try:
-                module=importlib.import_module('worker_capture');sys.argv=['worker_capture.py']+args[5:]
-                module.main()
+                if verb=='_capture':
+                    module=importlib.import_module('worker_capture');sys.argv=['worker_capture.py']+args[5:]
+                    module.main()
+                else:
+                    module=importlib.import_module('pgcat_lane_timing_assessor')
+                    result=module.seal_verdict(run,run_id,decode(args[5].encode('ascii')),
+                        decode(args[6].encode('ascii')),expected)
+                    print(json.dumps(result,sort_keys=True,separators=(',',':')))
             finally:
                 sys.meta_path.remove(finder)
             return 0

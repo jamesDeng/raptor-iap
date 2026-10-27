@@ -345,7 +345,7 @@ def observed_sql_failure(frame,start):
     return False
 
 
-def assess(frames,cancelled=False,completed=False,max_gap=3):
+def assess(frames,cancelled=False,completed=False,max_gap=3,require_transition=True):
     reasons=[];failure=False;success=0;processes={};seen_pods={};last_poll=None;first_poll=None;process_pods={};settling_start=None
     transitions=TransitionEvidence();schema=None
     def issue(reason):
@@ -456,7 +456,7 @@ def assess(frames,cancelled=False,completed=False,max_gap=3):
             if not roster or type(frame['expectedReplicas'])!=int or frame['expectedReplicas']<1 or len(roster)<frame['expectedReplicas']:issue('incomplete client roster')
             for (uid,pid),s in processes.items():
                 if (uid not in roster or seen_pods.get(uid)!=pid) and not s['final']:issue('old process lost without final counters')
-        if schema==2 and not transitions.mode.complete(transitions.previous):issue('incomplete rehearsal transition')
+        if require_transition and schema==2 and not transitions.mode.complete(transitions.previous):issue('incomplete rehearsal transition')
         for s in processes.values():
             if s['pending'] or s['baselinePending'] or s['last']['Scheduled']!=s['last']['Attempts']+s['last']['Skipped']:issue('operations in flight at boundary')
         if first_poll is None or first_poll==last_poll or success==0:issue('no covered successful traffic')

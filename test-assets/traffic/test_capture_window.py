@@ -172,6 +172,15 @@ def transition_window():
 
 
 class TransitionWindowTests(unittest.TestCase):
+    def test_lane_opt_out_skips_only_transition_completion(self):
+        fs=[transition_frame(t) for t in range(3)]
+        for f in fs:f['inventory']['mode']='disabled-rehearsal'
+        self.assertEqual(raw_assess(fs,completed=True)['status'],'INCONCLUSIVE')
+        self.assertEqual(raw_assess(fs,completed=True,require_transition=False)['status'],'PASS')
+        self.assertEqual(raw_assess(fs,completed=True,cancelled=True,require_transition=False)['status'],'INCONCLUSIVE')
+        fs[-1]['at']=9
+        self.assertEqual(raw_assess(fs,completed=True,require_transition=False)['status'],'INCONCLUSIVE')
+
     def test_complete_transition_and_pending_addressless_members(self):
         self.assertEqual(assess(transition_window())['status'],'PASS')
     def test_schema_two_retained_allowlist(self):

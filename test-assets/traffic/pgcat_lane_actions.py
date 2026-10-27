@@ -21,7 +21,7 @@ BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerF
     'workerKubeconfig', 'scaleoutIntentPath', 'scaleinIntentPath',
     'nlbIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
 SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions',
-                          'pendingProofWorker','preDrainProofWorker','zeroProofWorker','collectorControl')) | frozenset(WORKER_SOURCES)
+                          'pendingProofWorker','preDrainProofWorker','zeroProofWorker','collectorControl','laneTimingAssessor')) | frozenset(WORKER_SOURCES)
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'
 REGION = 'ap-southeast-1'
@@ -64,7 +64,7 @@ def unique(pairs):
 
 class ActionCatalog:
     @staticmethod
-    def command(action, bindings, run_id=None, pending_binding=None):
+    def command(action, bindings, run_id=None, pending_binding=None, run_context=None):
         require(type(action) is str and action in ACTIONS)
         validate_bindings(bindings)
         # No ambient credentials, shell startup files or arbitrary environment.
@@ -137,15 +137,24 @@ class ActionCatalog:
                    json.dumps(hashes,sort_keys=True,separators=(',',':')),
                    encode(bindings['target']).decode('ascii')]
             command=' '.join(q(part) for part in parts)
-        elif action.startswith('collector-'):
+        elif action.startswith('collector-') or action=='lane-verdict':
             identifier(run_id)
             hashes={key:bindings['sourceHashes'][key] for key in
-                    set(WORKER_SOURCES) | {'collectorControl'}}
+                    set(WORKER_SOURCES) | {'collectorControl','laneTimingAssessor'}}
             parts=['python3','-I','-S','-c',BOOTSTRAP,
                    str(Path(bindings['remoteRun'])/'pgcat_collector_control.py'),
-                   hashes['collectorControl'],action.split('-')[1],bindings['contractDir'],
+                   hashes['collectorControl'],'verdict' if action=='lane-verdict' else action.split('-')[1],bindings['contractDir'],
                    run_id,bindings['workerKubeconfig'],
                    json.dumps(hashes,sort_keys=True,separators=(',',':'))]
+            if action=='lane-verdict':
+                require(type(run_context) is dict and set(run_context)==
+                        {'runId','feedSession','collectorIdentity','completionSha256'} and
+                        run_context['runId']==run_id,'source')
+                identifier(run_context['feedSession'])
+                require(sha(run_context['completionSha256']),'source')
+                validate_result(dict(state='complete',category='ok',payload=
+                    dict(status='ALIVE',identity=run_context['collectorIdentity'])))
+                parts += [encode(bindings['target']).decode('ascii'),encode(run_context).decode('ascii')]
             command=' '.join(q(part) for part in parts)
         else:
             # Task 6D must install a reviewed fixed reconciliation producer.
@@ -267,6 +276,10 @@ class ActionCatalog:
                     require(value.get('feedSession') == request['feedSession'] and type(value.get('sequence')) is int
                             and 0 < value['sequence'] <= receipt['sequence'],'parse')
                 require(set(value) == keys,'parse')
+            elif action=='lane-verdict':
+                require(set(value)=={'status','category','verdictSha256'} and
+                        value['status'] in ('PASS','FAIL','INCONCLUSIVE') and
+                        value['category']=='lane-timing' and sha(value['verdictSha256']),'parse')
             elif action == 'collector-launch':
                 require(value == {'status':'LAUNCHED'},'parse')
             elif action == 'collector-status':

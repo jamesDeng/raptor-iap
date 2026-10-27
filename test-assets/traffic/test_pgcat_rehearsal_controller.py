@@ -52,7 +52,8 @@ class ControllerTests(unittest.TestCase):
             rehearsalContract='pgcat_rehearsal_contract.py',
             captureWindow='capture_window.py', finishClients='finish_clients.py',
             workerCapture='worker_capture.py', segmentedCapture='segmented_capture.py',
-            collectorControl='pgcat_collector_control.py')
+            collectorControl='pgcat_collector_control.py',
+            laneTimingAssessor='pgcat_lane_timing_assessor.py')
         lane['sourceHashes'] = {k:hashlib.sha256((here/v).read_bytes()).hexdigest() for k,v in names.items()}
         self.binding = dict(laneBindings=lane, laneRoot=str(self.capture/'lane'), captureRoot=str(self.capture),
             workerInventory='/fresh-worker/run/provider-inventory.json', workerKubeconfig='/fresh-worker/kubeconfig',

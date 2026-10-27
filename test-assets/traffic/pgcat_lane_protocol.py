@@ -14,11 +14,11 @@ from contextlib import contextmanager
 MAX_REQUEST = 16384
 ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'pre-scale-status', 'zero-gate-start', 'zero-gate-status', 'pending-start',
-    'pending-status', 'pending-proof', 'collector-launch', 'collector-status', 'reconcile-close',
+    'pending-status', 'pending-proof', 'collector-launch', 'collector-status', 'lane-verdict', 'reconcile-close',
     'scaleout-two-to-three', 'pre-drain-proof', 'deregister-new-node',
     'zero-proof', 'scaling-activity-check', 'scalein-three-to-two'))
 NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status',
-    'collector-launch','collector-status'))
+    'collector-launch','collector-status','lane-verdict'))
 REQUEST_KEYS = frozenset(('requestId', 'runId', 'supervisorId', 'action',
     'feedSession', 'minimumSequence', 'receiptIdentity', 'target', 'bundleSha256',
     'nonce', 'deadlineMonotonic'))
@@ -264,7 +264,7 @@ def validate_result(result):
     require(set(payload) <= {'status','stage','phase','feedSession','sequence','resourceVersion','requestId','jobId','identity',
                             'runId','newId','originalInstanceIds','observedAt','clientRosterSha256',
                             'evidenceSha256','sourceSha256','pendingBindingSha256',
-                            'preDrainBindingSha256','exit'})
+                            'preDrainBindingSha256','exit','category','verdictSha256'})
     for key, value in payload.items():
         if key == 'exit':
             require(type(value) is dict and set(value)=={'category','exitCode','completionSha256'})
@@ -282,6 +282,10 @@ def validate_result(result):
                     and value[0] != value[1])
         elif key == 'observedAt':
             require(type(value) in (int,float) and math.isfinite(value))
+        elif key=='category':
+            require(value=='lane-timing')
+        elif key=='verdictSha256':
+            require(sha(value))
         elif key in ('clientRosterSha256','evidenceSha256','sourceSha256','pendingBindingSha256'):
             require(sha(value))
         else:
@@ -381,6 +385,8 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS finish_receipts (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                 feed_exit TEXT NOT NULL, assessment TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS lane_verdict (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS pending_binding (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                 proof TEXT NOT NULL);
@@ -467,6 +473,12 @@ class Journal:
             require(run['supervisor'] in (None, request['supervisorId']))
             require(run['session'] in (None, request['feedSession']))
             require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None)
+            if request['action']=='lane-verdict':
+                require(run['mode']=='no-scale','configuration')
+                prior=self._collector_exit_in_tx(db)
+                require(prior['runId']==request['runId'] and prior['feedSession']==request['feedSession'] and
+                        prior['sequence']<request['minimumSequence'],'incomplete')
+                require(db.execute("SELECT 1 FROM requests WHERE json_extract(request,'$.action')='lane-verdict'").fetchone() is None,'incomplete')
             if request['action'] == 'pending-proof':
                 require(run['mode'] == 'disabled-rehearsal')
                 require(db.execute('SELECT 1 FROM pending_binding').fetchone() is None, 'incomplete')
@@ -596,7 +608,8 @@ class Journal:
                 db.execute('INSERT INTO mutation_keys VALUES (?,?)',(request['runId'],request['action']))
 
     def seal(self, request_id: str, result: dict, pending_source_sha=None,
-             pre_drain_source_sha=None, zero_source_sha=None) -> None:
+             pre_drain_source_sha=None, zero_source_sha=None,
+             lane_verdict_source_sha=None, lane_verdict_result=None) -> None:
         identifier(request_id)
         validate_result(result)
         with self._transaction() as db:
@@ -605,7 +618,39 @@ class Journal:
             run = db.execute('SELECT state FROM run').fetchone()
             require(result['state'] != 'complete' or run['state'] == 'active')
             request = json.loads(row['request'])
-            if result['state'] == 'complete' and request['action'] == 'pending-proof':
+            require(request['action']=='lane-verdict' or
+                    lane_verdict_source_sha is None and lane_verdict_result is None,'source')
+            if result['state']=='complete' and request['action']=='lane-verdict':
+                require(pending_source_sha is None and pre_drain_source_sha is None and zero_source_sha is None,'source')
+                payload=result['payload']
+                require(type(payload) is dict and set(payload)=={'status','category','verdictSha256'} and
+                        payload['status'] in ('PASS','FAIL','INCONCLUSIVE') and payload['category']=='lane-timing' and
+                        sha(payload['verdictSha256']) and payload==lane_verdict_result,'source')
+                current=db.execute('SELECT * FROM run').fetchone()
+                require(current['mode']=='no-scale' and sha(lane_verdict_source_sha) and
+                        json.loads(current['hashes']).get('laneTimingAssessor')==lane_verdict_source_sha,'source')
+                prior=self._collector_exit_in_tx(db)
+                require(prior['runId']==request['runId'] and prior['feedSession']==request['feedSession'] and
+                        prior['sequence']<request['minimumSequence'],'incomplete')
+                proof=dict(payload=payload,requestId=request_id,runId=request['runId'],feedSession=request['feedSession'],
+                    sequence=request['minimumSequence'],sourceSha256=lane_verdict_source_sha,collectorExit=prior)
+                require(db.execute('SELECT 1 FROM lane_verdict').fetchone() is None,'incomplete')
+                db.execute('INSERT INTO lane_verdict VALUES (1,?)',(encode(proof).decode(),))
+            elif result['state']=='complete' and request['action']=='collector-status':
+                require(pending_source_sha is None and pre_drain_source_sha is None and
+                        zero_source_sha is None,'source')
+                payload=result['payload'];status=payload.get('status')
+                require(status in ('ALIVE','EXITED') and set(payload)==
+                        ({'status','identity'} if status=='ALIVE' else {'status','identity','exit'}),'source')
+                alive=False
+                for previous in db.execute("SELECT request,result FROM requests WHERE state='complete' ORDER BY rowid"):
+                    req=json.loads(previous['request']);out=json.loads(previous['result'])['payload']
+                    if req['action']=='collector-status':
+                        require(out['identity']==payload['identity'] and req['feedSession']==request['feedSession'],'source')
+                        if out['status']=='ALIVE':alive=True
+                        if out['status']=='EXITED':require(payload==out,'source')
+                if status=='EXITED':require(alive,'incomplete')
+            elif result['state'] == 'complete' and request['action'] == 'pending-proof':
                 self._bind_pending_in_tx(db, request, result['payload'], pending_source_sha)
             elif result['state'] == 'complete' and request['action'] == 'pre-drain-proof':
                 require(pending_source_sha is None and zero_source_sha is None, 'source')
@@ -633,6 +678,23 @@ class Journal:
                        (result['state'], encode(result).decode(), request_id))
             if result['state'] == 'uncertain':
                 db.execute("UPDATE run SET state='uncertain' WHERE state='active'")
+
+    def _collector_exit_in_tx(self,db):
+        for row in db.execute("SELECT request,result FROM requests WHERE state='complete' ORDER BY rowid DESC"):
+            req=json.loads(row['request']);out=json.loads(row['result'])['payload']
+            if req['action']=='collector-status' and out.get('status')=='EXITED':
+                return dict(runId=req['runId'],feedSession=req['feedSession'],sequence=req['minimumSequence'],
+                            requestId=req['requestId'],payload=out)
+        raise Refused('incomplete')
+
+    def collector_exit(self):
+        with self._connection() as db:return self._collector_exit_in_tx(db)
+
+    def lane_verdict(self):
+        with self._connection() as db:
+            row=db.execute('SELECT proof FROM lane_verdict').fetchone()
+            require(row is not None,'incomplete')
+            return json.loads(row['proof'])
 
     def record_prepared(self, request_id: str) -> dict:
         """Commit a second marker strictly after the PREPARED result commit."""

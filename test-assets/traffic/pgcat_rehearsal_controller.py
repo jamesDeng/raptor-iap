@@ -100,7 +100,8 @@ def load_bindings(path):
             captureWindow=here/'capture_window.py',finishClients=here/'finish_clients.py',
             workerCapture=here/'worker_capture.py',
             segmentedCapture=here/'segmented_capture.py',
-            collectorControl=here/'pgcat_collector_control.py'))
+            collectorControl=here/'pgcat_collector_control.py',
+            laneTimingAssessor=here/'pgcat_lane_timing_assessor.py'))
         _hashes(value['sourceHashes'],dict(controller=here/'pgcat_rehearsal_controller.py',
             client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py'))
         return value
@@ -235,7 +236,8 @@ class Controller:
             finishClients=here/'finish_clients.py',
             workerCapture=here/'worker_capture.py',
             segmentedCapture=here/'segmented_capture.py',
-            collectorControl=here/'pgcat_collector_control.py'))
+            collectorControl=here/'pgcat_collector_control.py',
+            laneTimingAssessor=here/'pgcat_lane_timing_assessor.py'))
         _hashes(value['sourceHashes'],dict(controller=here/'pgcat_rehearsal_controller.py',
             client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py'))
         env={'PATH':_feed_path(b),

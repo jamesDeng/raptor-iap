@@ -117,7 +117,8 @@ class LaneSupervisor:
             captureWindow=here/'capture_window.py',finishClients=here/'finish_clients.py',
             workerCapture=here/'worker_capture.py',
             segmentedCapture=here/'segmented_capture.py',
-            collectorControl=here/'pgcat_collector_control.py')
+            collectorControl=here/'pgcat_collector_control.py',
+            laneTimingAssessor=here/'pgcat_lane_timing_assessor.py')
         for name,path in paths.items():
             require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == b['sourceHashes'][name],'source')
         self.bundle=hashlib.sha256(encode(b['sourceHashes'])).hexdigest()
@@ -300,8 +301,15 @@ class LaneSupervisor:
                 binding=(self.journal.pending_binding() if req['action'] in
                     ('pre-drain-proof','deregister-new-node') else
                     self.journal.pre_drain_binding() if req['action']=='zero-proof' else None)
+                verdict_context=None
+                if req['action']=='lane-verdict':
+                    collector=self.journal.collector_exit()
+                    require(collector['runId']==self.run_id and collector['feedSession']==req['feedSession'],'source')
+                    verdict_context=dict(runId=self.run_id,feedSession=req['feedSession'],
+                        collectorIdentity=collector['payload']['identity'],
+                        completionSha256=collector['payload']['exit']['completionSha256'])
                 argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
-                    self.run_id,binding)
+                    self.run_id,binding,run_context=verdict_context)
                 deadline=req['deadlineMonotonic']
                 require(0 < deadline-monotonic() <= budget,'timeout')
                 if req['action'] == 'scaleout-two-to-three': self._ess(req,receipt)
@@ -362,6 +370,10 @@ class LaneSupervisor:
                     elif req['action'] == 'pre-drain-proof':
                         self.journal.seal(request_id,result,
                             pre_drain_source_sha=self.bindings['sourceHashes']['preDrainProofWorker'])
+                    elif req['action']=='lane-verdict':
+                        self.journal.seal(request_id,result,
+                            lane_verdict_source_sha=self.bindings['sourceHashes']['laneTimingAssessor'],
+                            lane_verdict_result=payload)
                     elif req['action'] == 'zero-proof':
                         self.journal.seal(request_id,result,
                             zero_source_sha=self.bindings['sourceHashes']['zeroProofWorker'])

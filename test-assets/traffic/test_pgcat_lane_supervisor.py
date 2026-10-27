@@ -85,7 +85,8 @@ class SupervisorTests(unittest.TestCase):
                        finishClients=here/'finish_clients.py',
                        workerCapture=here/'worker_capture.py',
                        segmentedCapture=here/'segmented_capture.py',
-                       collectorControl=here/'pgcat_collector_control.py')
+                       collectorControl=here/'pgcat_collector_control.py',
+                       laneTimingAssessor=here/'pgcat_lane_timing_assessor.py')
         self.hashes = {key:hashlib.sha256(path.read_bytes()).hexdigest() for key,path in sources.items()}
         self.bindings['sourceHashes'] = self.hashes
         self.bundle = hashlib.sha256(encode(self.hashes)).hexdigest()
