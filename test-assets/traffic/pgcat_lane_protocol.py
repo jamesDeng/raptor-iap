@@ -264,7 +264,7 @@ def validate_result(result):
     require(set(payload) <= {'status','stage','phase','feedSession','sequence','resourceVersion','requestId','jobId','identity',
                             'runId','newId','originalInstanceIds','observedAt','clientRosterSha256',
                             'evidenceSha256','sourceSha256','pendingBindingSha256',
-                            'preDrainBindingSha256','exit','category','verdictSha256'})
+                            'preDrainBindingSha256','exit','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'})
     for key, value in payload.items():
         if key == 'exit':
             require(type(value) is dict and set(value)=={'category','exitCode','completionSha256'})
@@ -284,7 +284,7 @@ def validate_result(result):
             require(type(value) in (int,float) and math.isfinite(value))
         elif key=='category':
             require(value=='lane-timing')
-        elif key=='verdictSha256':
+        elif key in ('verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'):
             require(sha(value))
         elif key in ('clientRosterSha256','evidenceSha256','sourceSha256','pendingBindingSha256'):
             require(sha(value))
@@ -315,6 +315,83 @@ def no_scale_stop_ack(intent, receipt):
         minimumSequence=intent['minimumSequence'],verdictSha256=intent['verdictSha256'],
         intentSha256=hashlib.sha256(encode(intent)).hexdigest(),
         finalReceiptSha256=hashlib.sha256(encode(receipt)).hexdigest(),sequence=receipt['sequence'])
+
+
+NO_SCALE_PROOF = 'no-scale-proof.json'
+
+
+def digest(value):
+    return hashlib.sha256(encode(value)).hexdigest()
+
+
+def private_json(path):
+    path=Path(path);private(path.parent,True)
+    fd=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        raw=read_private(fd,path.name,MAX_REQUEST)
+        def unique(rows):
+            value={}
+            for key,item in rows:
+                require(key not in value,'parse');value[key]=item
+            return value
+        return json.loads(raw.decode('ascii'),object_pairs_hook=unique),raw
+    finally:os.close(fd)
+
+
+def no_scale_assessment(record, run, worker, feed_exit, now=None):
+    """Recompute the only admissible final status from sealed inputs."""
+    require(type(record) is dict and set(record)=={'schemaVersion','day','runId','feedSession',
+        'targetSha256','sourceSha256','sourceHashes','clientIdentitySha256','bindingSha256',
+        'workerVerdict','stop','localCredentialCleanup'},'source')
+    require(type(record['schemaVersion']) is int and record['schemaVersion']==1,'source')
+    require(record['runId']==run['runId'] and record['feedSession']==feed_exit['feedSession'] and
+            record['targetSha256']==digest(run['target']) and sha(record['bindingSha256']),'source')
+    hashes=record['sourceHashes']
+    require(type(hashes) is dict and set(hashes)=={'lane','local'} and
+            dict(hashes['lane'],bundleSha256=digest(hashes['lane']))==run['hashes'] and
+            record['sourceSha256']==digest(hashes),'source')
+    require(type(hashes['local']) is dict and set(hashes['local'])=={'controller','client','runner'} and
+            all(sha(v) for v in hashes['local'].values()),'source')
+    require(encode(record['workerVerdict'])==encode(worker),'source')
+    status='INCONCLUSIVE'
+    if worker is not None:
+        require(type(worker['sequence']) is int and worker['sequence']>0 and
+                worker['runId']==run['runId'] and worker['feedSession']==feed_exit['feedSession'] and
+                worker['sourceSha256']==hashes['lane']['laneTimingAssessor'],'source')
+        payload=worker['payload'];validate_result(dict(state='complete',category='ok',payload=payload))
+        require(set(payload)=={'status','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'} and
+                payload['category']=='lane-timing' and payload['status'] in ('PASS','FAIL','INCONCLUSIVE'),'source')
+        require(record['clientIdentitySha256']==payload['clientIdentitySha256'],'source')
+        collector=worker['collectorExit']
+        require(collector['runId']==run['runId'] and collector['feedSession']==feed_exit['feedSession'] and
+                type(collector['sequence']) is int and collector['sequence']<worker['sequence'],'source')
+        out=collector['payload'];validate_result(dict(state='complete',category='ok',payload=out))
+        require(out['status']=='EXITED' and out['exit']['category']=='completed' and
+                type(out['exit']['exitCode']) is int and out['exit']['exitCode']==0,'child')
+        status=payload['status']
+    else:require(record['clientIdentitySha256'] is None,'source')
+    stop=record['stop'];complete=False
+    if stop is not None:
+        require(worker is not None and type(stop) is dict and set(stop)=={'intent','ack','receipt','feedExit'},'receipt')
+        intent=stop['intent'];receipt=stop['receipt'];validate_no_scale_stop(intent)
+        require(intent['runId']==run['runId'] and intent['feedSession']==feed_exit['feedSession'] and
+                intent['verdictSha256']==worker['payload']['verdictSha256'] and
+                worker['sequence']<intent['minimumSequence'],'receipt')
+        require(encode(stop['ack'])==encode(no_scale_stop_ack(intent,receipt)) and
+                encode(stop['feedExit'])==encode(feed_exit),'receipt')
+        require(set(receipt)=={'feedSession','sequence','desired','mode','observedAt','rosterSha256'} and
+                receipt['mode']=='disabled-rehearsal' and type(receipt['desired']) is int and receipt['desired']==2 and
+                receipt['rosterSha256']==roster_sha(original_roster(run['target']['originalInstanceIds'])) and
+                receipt['sequence']==feed_exit['sequence'],'receipt')
+        require(type(receipt['observedAt']) in (int,float) and math.isfinite(receipt['observedAt']),'receipt')
+        if now is not None:require(0<=now-receipt['observedAt']<30,'receipt')
+        complete=type(feed_exit['exitCode']) is int and feed_exit['exitCode']==0 and feed_exit['category']=='ok'
+    require(type(record['localCredentialCleanup']) is bool,'source')
+    if status!='FAIL' and not (complete and record['localCredentialCleanup']):status='INCONCLUSIVE'
+    assessment=dict(status=status,mode='no-scale',feedSession=feed_exit['feedSession'],
+                    endSequence=feed_exit['sequence'],evidenceSha256=digest(record))
+    validate_finish_receipts(feed_exit,assessment,'no-scale')
+    return assessment
 
 
 def validate_finish_receipts(feed_exit, assessment, mode):
@@ -648,9 +725,9 @@ class Journal:
             if result['state']=='complete' and request['action']=='lane-verdict':
                 require(pending_source_sha is None and pre_drain_source_sha is None and zero_source_sha is None,'source')
                 payload=result['payload']
-                require(type(payload) is dict and set(payload)=={'status','category','verdictSha256'} and
+                require(type(payload) is dict and set(payload)=={'status','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'} and
                         payload['status'] in ('PASS','FAIL','INCONCLUSIVE') and payload['category']=='lane-timing' and
-                        sha(payload['verdictSha256']) and payload==lane_verdict_result,'source')
+                        all(sha(payload[k]) for k in ('verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256')) and payload==lane_verdict_result,'source')
                 current=db.execute('SELECT * FROM run').fetchone()
                 require(current['mode']=='no-scale' and sha(lane_verdict_source_sha) and
                         json.loads(current['hashes']).get('laneTimingAssessor')==lane_verdict_source_sha,'source')
@@ -869,7 +946,8 @@ class Journal:
             finish = db.execute('SELECT * FROM finish_receipts').fetchone()
             return dict(runId=run['run_id'], runState=run['state'], mode=run['mode'],
                         target=json.loads(run['target']), hashes=json.loads(run['hashes']),
-                        assessment=json.loads(finish['assessment']) if finish else None)
+                        assessment=json.loads(finish['assessment']) if finish else None,
+                        feedExit=json.loads(finish['feed_exit']) if finish else None)
 
     def finish(self, before_commit=None):
         run_id, feed_exit, assessment = read_finish(self.root)
@@ -878,6 +956,14 @@ class Journal:
             require(run is not None and run['state'] == 'active' and run['run_id'] == run_id)
             validate_finish_receipts(feed_exit, assessment, run['mode'])
             require(run['session'] in (None, feed_exit['feedSession']))
+            if run['mode']=='no-scale':
+                record,raw=private_json(self.root/NO_SCALE_PROOF)
+                worker_row=db.execute('SELECT proof FROM lane_verdict').fetchone()
+                worker=json.loads(worker_row['proof']) if worker_row else None
+                bound=dict(runId=run['run_id'],target=json.loads(run['target']),hashes=json.loads(run['hashes']))
+                derived=no_scale_assessment(record,bound,worker,feed_exit,now=time.time())
+                require(raw==encode(record) and encode(assessment)==encode(derived),'source')
+
             rows = db.execute('SELECT * FROM requests').fetchall()
             require(all(row['state'] == 'complete' for row in rows), 'incomplete')
             require(all(json.loads(row['request'])['minimumSequence'] <= feed_exit['sequence'] for row in rows))

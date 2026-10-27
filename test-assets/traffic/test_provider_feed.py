@@ -980,6 +980,25 @@ class NoScaleFeedTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.operator(pathlib.Path(d),**change)
 
+    def test_successor_after_worker_credential_deletion_uses_only_inventory(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=pathlib.Path(d);op,_=self.operator(root,kubeconfig=str(root/'kubeconfig'))
+            self.assertFalse(pathlib.Path(op.args.kubeconfig).exists())
+            # Exercise the production publication command builder. Its remote
+            # stdlib writer gets inventory/context arguments, never kubeconfig.
+            op.args.worker_inventory=str(root/'provider-inventory.json')
+            calls=[]
+            op.atomic_worker_write=feed.Operator.atomic_worker_write.__get__(op)
+            op.remote=lambda script,*args:calls.append((script,args))
+            op.update_targets=lambda *args:self.fail('no-scale target update')
+            value=self.take(self.fixture());op.write(value)
+            self.assertEqual(op.sequence,1);self.assertEqual(len(calls),1)
+            self.assertNotIn(op.args.kubeconfig,calls[0][1])
+            self.assertNotIn('kubectl',calls[0][0])
+            value['privateAddresses']['i-0']='10.0.0.99'
+            with self.assertRaises(ValueError):op.write(value)
+            self.assertEqual(len(calls),1)
+
     def test_exact_two_every_publication(self):
         for mutation in ('desired','third','protection','health','weight','backend','roster'):
             with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as d:

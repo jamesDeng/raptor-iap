@@ -190,7 +190,7 @@ class VerdictBindingTests(unittest.TestCase):
         bound=self.journal.collector_exit()
         self.assertEqual(bound['payload']['identity'],IDENTITY)
         self.assertEqual(bound['payload']['exit']['completionSha256'],'d'*64)
-        payload=dict(status='PASS',category='lane-timing',verdictSha256='e'*64)
+        payload=dict(status='PASS',category='lane-timing',verdictSha256='e'*64,clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64)
         result=dict(state='complete',category='ok',payload=payload)
         with self.assertRaises(Refused):self.journal.seal(req['requestId'],result)
         with self.assertRaises(Refused):self.journal.seal(req['requestId'],result,
@@ -234,7 +234,7 @@ class VerdictActionTests(unittest.TestCase):
         import shlex
         words=shlex.split(argv[-1]);self.assertEqual(words[:4],['python3','-I','-S','-c'])
         self.assertEqual(words[7],'verdict');self.assertEqual(json.loads(words[-1]),context)
-        good=dict(status='PASS',category='lane-timing',verdictSha256='e'*64)
+        good=dict(status='PASS',category='lane-timing',verdictSha256='e'*64,clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64)
         self.assertEqual(ActionCatalog.parse('lane-verdict',json.dumps(good).encode(),{}),good)
         for value in (dict(good,privateAddress='hidden'),dict(good,verdictSha256='invalid'),dict(good,category='ok')):
             with self.assertRaises(Refused):ActionCatalog.parse('lane-verdict',json.dumps(value).encode(),{})
@@ -279,15 +279,16 @@ class VerdictExecutionTests(unittest.TestCase):
         import subprocess
         import sys
         case=self.fixture();path=case.run/'pgcat_lane_timing_assessor.py'
-        case._stale(path,'def seal_verdict(*args): return {"status":"OLD"}\n',
-                         'def seal_verdict(*args): return {"status":"NEW"}\n')
+        case._stale(path,'def seal_verdict(*args): open("reviewed-marker","w").write("OLD"); return {"status":"OLD"}\n',
+                         'def seal_verdict(*args): open("reviewed-marker","w").write("NEW"); return {"status":"NEW"}\n')
         hashes=case.rehash()
         args=control.entry_command(case.worker,hashes['collectorControl'],['verdict',str(case.contract),
             case.run_id,str(case.kubeconfig),json.dumps(hashes),'{}','{}'])
         result=subprocess.run(args,cwd=str(case.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,
             env=dict(os.environ,PYTHONPYCACHEPREFIX=str(case.root/'pycache')),timeout=5)
-        self.assertEqual(result.returncode,0,result.stderr.decode())
-        self.assertEqual(json.loads(result.stdout),{'status':'NEW'})
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual((case.run/'reviewed-marker').read_text(),'NEW')
+        self.assertTrue(case.kubeconfig.exists())
         path.write_text('raise SystemExit(9)\n')
         result=subprocess.run(args,cwd=str(case.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
         self.assertNotEqual(result.returncode,0)
@@ -309,7 +310,12 @@ class VerdictExecutionTests(unittest.TestCase):
         result=subprocess.run(args,cwd=str(case.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
         self.assertEqual(result.returncode,0,result.stderr.decode())
         response=json.loads(result.stdout);self.assertEqual(response['status'],'PASS',result.stdout)
-        self.assertEqual(set(response),{'status','category','verdictSha256'})
+        self.assertEqual(set(response),{'status','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'})
+        self.assertFalse(case.kubeconfig.exists())
+        cleanup=json.loads((job/'credential-cleanup.json').read_text())
+        self.assertEqual(cleanup,dict(runId=case.run_id,verdictSha256=response['verdictSha256'],workerKubeconfigAbsent=True))
+        self.assertEqual(response['workerCredentialCleanupSha256'],hashlib.sha256((job/'credential-cleanup.json').read_bytes()).hexdigest())
+        self.assertEqual(response['clientIdentitySha256'],json.loads((job/'lane-verdict.json').read_text())['clientIdentitySha256'])
         self.assertEqual(response['verdictSha256'],hashlib.sha256((job/'lane-verdict.json').read_bytes()).hexdigest())
         result=subprocess.run(args,cwd=str(case.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
         self.assertNotEqual(result.returncode,0)
@@ -328,7 +334,7 @@ class SupervisorVerdictTests(unittest.TestCase):
             fixture.receipt(sequence);req=fixture.request(action='collector-status')
             fixture.journal.admit(req)
             fixture.journal.seal(req['requestId'],dict(state='complete',category='ok',payload=payload))
-        payload=dict(status='PASS',category='lane-timing',verdictSha256='e'*64)
+        payload=dict(status='PASS',category='lane-timing',verdictSha256='e'*64,clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64)
         marker=fixture.base/'remote-command'
         fixture.cli.write_text('#!'+sys.executable+'\nimport sys\nfrom pathlib import Path\n'
             +'Path('+repr(str(marker))+').write_text(sys.argv[-1])\nprint('+repr(json.dumps(payload))+')\n')

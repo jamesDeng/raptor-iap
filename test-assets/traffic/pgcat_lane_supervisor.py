@@ -20,7 +20,8 @@ import uuid
 
 from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
     read_private, read_request, write_all, monotonic, NO_SCALE_ACTIONS,
-    roster_sha, expected_roster)
+    roster_sha, expected_roster, private_json, NO_SCALE_PROOF,
+    NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK)
 from pgcat_lane_actions import ActionCatalog, validate_bindings, unique
 import pgcat_workbench_lane as lane
 
@@ -405,11 +406,29 @@ class LaneSupervisor:
         with self._masked():
             try:
                 self._alive()
+                with self.journal._connection() as db:
+                    mode=db.execute('SELECT mode FROM run').fetchone()['mode']
+                if mode=='no-scale':
+                    record,_=private_json(self.root/NO_SCALE_PROOF)
+                    require(record['day']==datetime.now(timezone(timedelta(hours=8))).date().isoformat(),'timeout')
+                    paths=dict(controller='pgcat_rehearsal_controller.py',client='pgcat_lane_client.py',runner='pgcat_lane_runner.py')
+                    here=Path(__file__).resolve().parent
+                    require(set(record['sourceHashes']['local'])==set(paths),'source')
+                    for key,name in paths.items():
+                        require(hashlib.sha256((here/name).read_bytes()).hexdigest()==record['sourceHashes']['local'][key],'source')
+                    if record['localCredentialCleanup']:
+                        require(not os.path.lexists(self.root.parent.parent/'kubeconfig'),'incomplete')
+                    stop=record['stop']
+                    if stop is not None:
+                        require(encode(read_json(self.root.parent/NO_SCALE_STOP_INTENT))==encode(stop['intent']) and
+                                encode(read_json(self.root.parent/NO_SCALE_STOP_ACK))==encode(stop['ack']) and
+                                encode(read_json(self.bindings['receiptPath']))==encode(stop['receipt']),'receipt')
                 return self.journal.finish(before_commit=before_commit)
-            except Refused as error:
+            except (Refused,OSError,ValueError,KeyError,TypeError) as error:
                 # The finish transaction has rolled back before cancellation.
-                self.cancel(error.category)
-                raise
+                category=error.category if isinstance(error,Refused) else 'incomplete'
+                self.cancel(category)
+                raise Refused(category) from None
 
     def serve(self, liveness_fd):
         require(self.owner_fd is not None,'incomplete')

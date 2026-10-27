@@ -68,9 +68,17 @@ class ProtocolTest(unittest.TestCase):
         self.assertLessEqual(child, after)
 
     def finish_receipts(self):
+        from pgcat_lane_protocol import digest,no_scale_assessment,encode
+        from pgcat_lane_supervisor import save_once
         feed = dict(pid=123, exitCode=0, category='ok', feedSession=self.session, sequence=1)
-        assessment = dict(status='INCONCLUSIVE', mode='no-scale', feedSession=self.session,
-                          endSequence=1, evidenceSha256='e'*64)
+        hashes=dict(lane={},local=dict(controller='a'*64,client='b'*64,runner='c'*64))
+        with self.journal._transaction() as db:
+            db.execute('UPDATE run SET hashes=?',(encode(dict(bundleSha256=digest({}))).decode(),))
+        record=dict(schemaVersion=1,day='2026-10-27',runId=self.run,feedSession=self.session,
+            targetSha256=digest(self.target),sourceSha256=digest(hashes),sourceHashes=hashes,
+            clientIdentitySha256=None,bindingSha256='d'*64,workerVerdict=None,stop=None,localCredentialCleanup=False)
+        save_once(self.root,'no-scale-proof.json',record)
+        assessment=no_scale_assessment(record,self.journal.run_snapshot(),None,feed)
         publish_finish(self.root, self.run, feed, assessment)
 
     def test_finish_is_monotonic_with_valid_marker(self):

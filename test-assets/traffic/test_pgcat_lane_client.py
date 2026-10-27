@@ -241,6 +241,63 @@ class ClientTests(unittest.TestCase):
             with self.assertRaises(Refused): self.call()
         self.assertEqual(self.client.journal.run_snapshot()['runState'], 'cancelled')
 
+    def test_finish_reconciles_stale_active_snapshot_after_durable_exit(self):
+        receipts=self.receipts('FAIL')
+        original=self.client.journal.run_snapshot
+        stale=[None]
+        publish=client_module.publish_finish
+        def publish_then_mark(*args):
+            stale[0]=original();publish(*args)
+        def delayed_snapshot():
+            state=stale[0] if stale[0] is not None else original()
+            if stale[0] is not None:
+                stale[0]=None
+                self.assertEqual(state['runState'],'active')
+                self.client.process.wait(timeout=3)
+                self.assertEqual(original()['runState'],'finished')
+            return state
+        with patch.object(client_module,'publish_finish',publish_then_mark), \
+                patch.object(self.client.journal,'run_snapshot',delayed_snapshot):
+            result=self.client.finish(*receipts)
+        self.assertEqual(result['assessment'],receipts[2])
+        self.assertEqual(result['assessment']['status'],'FAIL')
+
+    def test_finish_reconciliation_rejects_changed_sealed_receipt(self):
+        receipts=self.receipts()
+        original=self.client.journal.run_snapshot
+        stale=[None]
+        publish=client_module.publish_finish
+        def publish_then_mark(*args):stale[0]=original();publish(*args)
+        def changed_snapshot():
+            state=stale[0] if stale[0] is not None else original()
+            if stale[0] is not None:
+                stale[0]=None
+                self.assertEqual(state['runState'],'active')
+                self.client.process.wait(timeout=3)
+                path=self.client.root/'assessment.json'
+                value=json.loads(path.read_text());value['status']='FAIL'
+                path.write_text(json.dumps(value))
+            return state
+        with patch.object(client_module,'publish_finish',publish_then_mark), \
+                patch.object(self.client.journal,'run_snapshot',changed_snapshot):
+            with self.assertRaises(Refused):self.client.finish(*receipts)
+        self.assertIsNone(self.client.liveness_fd)
+
+    def test_finish_stale_snapshot_exit_without_seal_refused(self):
+        receipts=self.receipts()
+        original=self.client.journal.run_snapshot
+        published=[False]
+        def unsealed_publish(*args):published[0]=True
+        def delayed_snapshot():
+            state=original()
+            if published[0] and state['runState']=='active':
+                self.client.process.kill();self.client.process.wait(timeout=3)
+            return state
+        with patch.object(client_module,'publish_finish',unsealed_publish), \
+                patch.object(self.client.journal,'run_snapshot',delayed_snapshot):
+            with self.assertRaises(Refused):self.client.finish(*receipts)
+        self.assertNotEqual(original()['runState'],'finished')
+
     def test_global_record_blocks_a_new_run_after_finish(self):
         self.client.finish(*self.receipts())
         self.client.process.wait(timeout=3)

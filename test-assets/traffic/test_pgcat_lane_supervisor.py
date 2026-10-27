@@ -282,6 +282,62 @@ class SupervisorTests(unittest.TestCase):
         with self.journal._connection() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM mutation_keys WHERE action='scalein-three-to-two'").fetchone()[0],1)
 
+    def publish_no_scale_finish(self, status='PASS', forged=None):
+        from datetime import datetime,timezone,timedelta
+        from pgcat_lane_protocol import (digest,no_scale_stop_ack,no_scale_assessment,
+            publish_finish,roster_sha,original_roster)
+        here=Path(__file__).resolve().parent
+        hashes=dict(lane=self.hashes,local={k:hashlib.sha256((here/v).read_bytes()).hexdigest()
+            for k,v in dict(controller='pgcat_rehearsal_controller.py',client='pgcat_lane_client.py',runner='pgcat_lane_runner.py').items()})
+        worker=dict(runId=self.run,feedSession=self.session,sequence=2,sourceSha256=self.hashes['laneTimingAssessor'],
+            payload=dict(status=status,category='lane-timing',verdictSha256='d'*64,
+                clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64),
+            collectorExit=dict(runId=self.run,feedSession=self.session,sequence=1,payload=dict(status='EXITED',
+                identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64),
+                exit=dict(category='completed',exitCode=0,completionSha256='c'*64))))
+        intent=dict(schemaVersion=1,runId=self.run,feedSession=self.session,minimumSequence=3,verdictSha256='d'*64)
+        receipt=dict(feedSession=self.session,sequence=3,mode='disabled-rehearsal',desired=2,observedAt=time.time(),
+            rosterSha256=roster_sha(original_roster(self.target['originalInstanceIds'])))
+        feed_exit=dict(pid=123,exitCode=0,category='ok',feedSession=self.session,sequence=3)
+        record=dict(schemaVersion=1,day=datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
+            runId=self.run,feedSession=self.session,targetSha256=digest(self.target),sourceSha256=digest(hashes),
+            sourceHashes=hashes,clientIdentitySha256='a'*64,bindingSha256='f'*64,workerVerdict=worker,
+            localCredentialCleanup=True,stop=dict(intent=intent,ack=no_scale_stop_ack(intent,receipt),receipt=receipt,feedExit=feed_exit))
+        with self.journal._transaction() as db:
+            db.execute("UPDATE run SET mode='no-scale'")
+            db.execute('INSERT INTO lane_verdict VALUES (1,?)',(encode(worker).decode(),))
+        self.private_json(self.root/'no-scale-proof.json',record)
+        self.private_json(self.root.parent/'no-scale-stop.intent',intent)
+        self.private_json(self.root.parent/'no-scale-stop.ack',record['stop']['ack'])
+        self.private_json(Path(self.bindings['receiptPath']),receipt)
+        assessment=no_scale_assessment(record,self.journal.run_snapshot(),worker,feed_exit)
+        if forged:assessment['status']=forged
+        publish_finish(self.root,self.run,feed_exit,assessment)
+        return record,assessment
+
+    def test_no_scale_finish_recomputes_exact_journaled_proof(self):
+        record,assessment=self.publish_no_scale_finish()
+        result=self.owner.finish()
+        self.assertEqual(result['assessment'],assessment)
+        self.assertEqual(result['assessment']['status'],'PASS')
+
+    def test_no_scale_finish_cannot_upgrade_journaled_sql_failure(self):
+        self.publish_no_scale_finish('FAIL',forged='PASS')
+        with self.assertRaises(Refused):self.owner.finish()
+        self.assertNotEqual(self.journal.run_snapshot()['runState'],'finished')
+
+    def test_no_scale_finish_refuses_changed_worker_digest(self):
+        self.publish_no_scale_finish()
+        path=self.root/'no-scale-proof.json';record=json.loads(path.read_text())
+        record['workerVerdict']['payload']['verdictSha256']='e'*64
+        self.private_json(path,record)
+        with self.assertRaises(Refused):self.owner.finish()
+
+    def test_no_scale_finish_refuses_changed_actual_receipt(self):
+        self.publish_no_scale_finish()
+        self.receipt(4)
+        with self.assertRaises(Refused):self.owner.finish()
+
     def publish_normal_finish(self):
         from pgcat_lane_protocol import publish_finish
         publish_finish(self.root, self.run,

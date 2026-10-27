@@ -50,6 +50,49 @@ class CollectorTests(unittest.TestCase):
         return {k:hashlib.sha256((self.run/v).read_bytes()).hexdigest()
                 for k,v in control.SOURCES.items()}
 
+    def cleanup_fixture(self,status='PASS',complete=True):
+        job=self.run/'collector-job';job.mkdir(mode=0o700)
+        verdict=dict(status=status,category='lane-timing')
+        if complete:verdict.update(runId=self.run_id,clientIdentitySha256='a'*64)
+        fd=control.directory(job)
+        try:control.write(fd,'lane-verdict.json',verdict)
+        finally:os.close(fd)
+        result=dict(status=status,category='lane-timing',
+            verdictSha256=hashlib.sha256((job/'lane-verdict.json').read_bytes()).hexdigest())
+        return job,result
+
+    def test_worker_cleanup_is_exact_one_use_and_keeps_evidence(self):
+        job,result=self.cleanup_fixture('FAIL')
+        response=control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        self.assertEqual(response['status'],'FAIL');self.assertFalse(self.kubeconfig.exists())
+        self.assertTrue((job/'lane-verdict.json').exists())
+        self.assertEqual(response['workerCredentialCleanupSha256'],
+            hashlib.sha256((job/'credential-cleanup.json').read_bytes()).hexdigest())
+        with self.assertRaises((ValueError,OSError)):
+            control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+
+    def test_incomplete_worker_verdict_still_removes_bound_credential_but_refuses_pass(self):
+        job,result=self.cleanup_fixture('INCONCLUSIVE',complete=False)
+        with self.assertRaises(ValueError):control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        self.assertFalse(self.kubeconfig.exists());self.assertTrue((job/'credential-cleanup.json').exists())
+
+    def test_worker_cleanup_never_follows_symlink_or_unrelated_path(self):
+        job,result=self.cleanup_fixture()
+        other=self.root/'other';other.write_text('fixture');other.chmod(0o600)
+        with self.assertRaises(ValueError):control.close_verdict(self.contract,self.run_id,str(other),result)
+        self.assertTrue(other.exists())
+        self.kubeconfig.unlink();self.kubeconfig.symlink_to(other)
+        with self.assertRaises(ValueError):control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        self.assertTrue(self.kubeconfig.is_symlink());self.assertTrue(other.exists())
+        self.assertFalse((job/'credential-cleanup.json').exists())
+
+    def test_worker_cleanup_failure_never_emits_cleanup_receipt(self):
+        from unittest.mock import patch
+        job,result=self.cleanup_fixture()
+        with patch.object(control.os,'unlink',side_effect=OSError('fixture')):
+            with self.assertRaises(OSError):control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        self.assertTrue(self.kubeconfig.exists());self.assertFalse((job/'credential-cleanup.json').exists())
+
     def launch(self, spawn=None):
         def fake(*args, **kwargs):
             self.calls.append((args, kwargs))

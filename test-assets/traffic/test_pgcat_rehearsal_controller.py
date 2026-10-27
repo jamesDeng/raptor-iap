@@ -22,7 +22,7 @@ class ControllerTests(unittest.TestCase):
         except ImportError:
             self.fail('missing tracked Controller/load_bindings interface')
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name); self.base.chmod(0o700)
+        self.base = Path(os.path.realpath(self.tmp.name)); self.base.chmod(0o700)
         self.capture = self.base/'capture'; here = Path(__file__).resolve().parent
         self.manifest = self.base/'binding.json'
         self.cli = self.base/'aliyun'; self.cli.write_text('not executable by tests'); self.cli.chmod(0o700)
@@ -59,10 +59,12 @@ class ControllerTests(unittest.TestCase):
             workerInventory='/fresh-worker/run/provider-inventory.json', workerKubeconfig='/fresh-worker/kubeconfig',
             sourceHashes={k:hashlib.sha256((here/v).read_bytes()).hexdigest() for k,v in
                 dict(controller='pgcat_rehearsal_controller.py',client='pgcat_lane_client.py',runner='pgcat_lane_runner.py').items()})
+        self.binding['localKubeconfig']=str(self.base/'kubeconfig')
+        (self.base/'kubeconfig').write_text('fixture');(self.base/'kubeconfig').chmod(0o600)
         self.write_binding()
         self.session = str(uuid.uuid4()); self.seq = 0; self.clock = 1000.; self.events = []
         self.feed = Mock(spec=subprocess.Popen); self.feed.pid = 123; self.feed.poll.return_value = None
-        self.client = Mock(); self.client.call.side_effect = self.call
+        self.client = Mock(); self.client.run_id=str(uuid.uuid4()); self.client.call.side_effect = self.call
         self.client.finish.side_effect = lambda *args: dict(runState='finished',assessment=copy.deepcopy(args[2]))
         self.auto_publish = True; self.die_on_call = False; self.result_override = None
         self.pending_publish = False; self.wall = time.time()
@@ -100,6 +102,7 @@ class ControllerTests(unittest.TestCase):
 
     def start_client(self, bindings, mode, root):
         self.events.append(('client', mode)); self.assertEqual(mode, 'no-scale')
+        root.mkdir(mode=0o700)
         self.assertEqual(bindings,self.binding['laneBindings']); return self.client
 
     def start_feed(self, args, **kwargs):
@@ -137,6 +140,9 @@ class ControllerTests(unittest.TestCase):
                     self.assertEqual(self.spawn.call_count,before)
 
     def ready_stop(self):
+        self.result_override=None
+        if not (self.base/'kubeconfig').exists():
+            (self.base/'kubeconfig').write_text('fixture');(self.base/'kubeconfig').chmod(0o600)
         from pgcat_lane_protocol import original_roster
         c=self.controller();c.start_no_scale();self.client.run_id=str(uuid.uuid4())
         identity=copy.deepcopy(c.collector_identity)
@@ -145,11 +151,13 @@ class ControllerTests(unittest.TestCase):
         self.result_override=dict(state='complete',category='ok',payload=exited)
         before=c.receipt['sequence'];c.call_no_scale('collector-status')
         self.assertGreater(c.receipt['sequence'],before)
-        verdict=dict(status='PASS',category='lane-timing',verdictSha256='d'*64)
+        verdict=dict(status='PASS',category='lane-timing',verdictSha256='d'*64,clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64)
         self.result_override=dict(state='complete',category='ok',payload=verdict)
         # The fixture journal is deliberately exact; mismatched variants must fail.
         proof=dict(payload=verdict,runId=self.client.run_id,feedSession=self.session,
-            sequence=c.receipt['sequence'],collectorExit=dict(payload=exited))
+            sourceSha256=self.binding['laneBindings']['sourceHashes']['laneTimingAssessor'],
+            sequence=c.receipt['sequence'],collectorExit=dict(payload=exited,runId=self.client.run_id,
+                feedSession=self.session,sequence=c.receipt['sequence']-1))
         self.journal=Mock();self.journal.lane_verdict.return_value=proof
         patch.object(self.module,'Journal',return_value=self.journal).start()
         before=c.receipt['sequence'];result=c.call_no_scale('lane-verdict')
@@ -211,7 +219,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_stop_refuses_forged_verdict_or_missing_exit_before_intent(self):
         c=self.controller();c.start_no_scale()
-        with self.assertRaises(Refused):c.stop_no_scale(dict(status='PASS',category='lane-timing',verdictSha256='d'*64))
+        with self.assertRaises(Refused):c.stop_no_scale(dict(status='PASS',category='lane-timing',verdictSha256='d'*64,clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64))
         self.assertFalse((self.capture/'no-scale-stop.intent').exists())
 
     def test_exit_and_verdict_each_require_strict_post_call_publication(self):
@@ -672,6 +680,67 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.state,'uncertain')
         self.assertTrue(self.client.close.called)
 
+    def test_deterministic_proof_refuses_forged_caller_pass(self):
+        c,result=self.ready_stop()
+        self.feed.wait.side_effect=lambda timeout:self.acknowledge_stop(c)
+        exit_=c.stop_no_scale(result)
+        with self.assertRaises(Refused):c.finish_no_scale(exit_,self.finish_receipts(c,'PASS')[1])
+        self.assertFalse(self.client.finish.called)
+
+    def test_deterministic_proof_binds_worker_stop_cleanup_and_date(self):
+        c,result=self.ready_stop()
+        self.feed.wait.side_effect=lambda timeout:self.acknowledge_stop(c)
+        exit_=c.stop_no_scale(result)
+        assessment=c.finish_no_scale(exit_)
+        self.assertEqual(assessment['status'],'PASS')
+        proof=Path(c.bindings['laneRoot'])/'no-scale-proof.json'
+        self.assertEqual(proof.stat().st_mode & 0o777,0o600)
+        raw=proof.read_bytes();record=json.loads(raw)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),assessment['evidenceSha256'])
+        self.assertEqual(record['stop']['receipt']['sequence'],assessment['endSequence'])
+        self.assertEqual(record['workerVerdict'],c.verdict_proof)
+        self.assertFalse((self.base/'kubeconfig').exists())
+        self.assertEqual(record['clientIdentitySha256'],result['clientIdentitySha256'])
+        self.assertEqual(record['bindingSha256'],hashlib.sha256(self.manifest.read_bytes()).hexdigest())
+
+    def test_missing_exact_local_cleanup_cannot_pass_or_delete_replacement(self):
+        c,result=self.ready_stop();self.feed.wait.side_effect=lambda timeout:self.acknowledge_stop(c)
+        exit_=c.stop_no_scale(result)
+        local=self.base/'kubeconfig';local.unlink();local.symlink_to(self.manifest)
+        assessment=c.finish_no_scale(exit_)
+        self.assertEqual(assessment['status'],'INCONCLUSIVE')
+        self.assertTrue(local.is_symlink());self.assertTrue(self.manifest.exists())
+
+    def test_observed_sql_fail_precedes_missing_stop_and_cleanup(self):
+        c,result=self.ready_stop();result['status']='FAIL'
+        c.verdict_proof['payload']['status']='FAIL';c.verdict_result=result
+        self.journal.lane_verdict.return_value=c.verdict_proof
+        self.feed.poll.return_value=0
+        (self.base/'kubeconfig').unlink()
+        exit_,_=self.finish_receipts(c,'PASS')
+        self.assertEqual(c.finish_no_scale(exit_)['status'],'FAIL')
+
+    def test_wrong_worker_run_session_collector_and_source_refused(self):
+        for field in ('runId','feedSession','sourceSha256','collector'):
+            with self.subTest(field=field):
+                if self.capture.exists():
+                    import shutil
+                    shutil.rmtree(self.capture)
+                (self.base/'kubeconfig').write_text('fixture');(self.base/'kubeconfig').chmod(0o600)
+                self.feed.poll.return_value=None
+                c,result=self.ready_stop();self.feed.wait.side_effect=lambda timeout:self.acknowledge_stop(c)
+                exit_=c.stop_no_scale(result)
+                if field=='collector':c.verdict_proof['collectorExit']['payload']['identity']['pid']+=1
+                else:c.verdict_proof[field]='0'*64 if field=='sourceSha256' else str(uuid.uuid4())
+                with self.assertRaises(Refused):c.finish_no_scale(exit_)
+
+    def test_changed_stop_or_actual_receipt_refuses_final_pass(self):
+        c,result=self.ready_stop();self.feed.wait.side_effect=lambda timeout:self.acknowledge_stop(c)
+        exit_=c.stop_no_scale(result)
+        path=self.capture/'no-scale-stop.ack';value=json.loads(path.read_text());value['sequence']+=1
+        path.write_text(json.dumps(value))
+        with self.assertRaises(Refused):c.finish_no_scale(exit_)
+
     def finish_receipts(self, controller, status):
         seq=controller.receipt['sequence']
         return (dict(pid=self.feed.pid,exitCode=0,category='ok',feedSession=self.session,sequence=seq),
@@ -683,11 +752,19 @@ class ControllerTests(unittest.TestCase):
                 if self.capture.exists():
                     import shutil
                     shutil.rmtree(self.capture)
+                (self.base/'kubeconfig').write_text('fixture');(self.base/'kubeconfig').chmod(0o600)
                 self.feed.poll.return_value=None
-                controller=self.controller(); controller.start_no_scale(); self.feed.poll.return_value=0
-                receipts=self.finish_receipts(controller,status)
-                self.assertEqual(controller.finish_no_scale(*receipts),receipts[1])
-                with self.assertRaises(Refused): controller.finish_no_scale(*receipts)
+                controller,result=self.ready_stop()
+                result['status']=status
+                controller.verdict_proof['payload']['status']=status
+                self.journal.lane_verdict.return_value=controller.verdict_proof
+                controller.verdict_result=result
+                self.feed.wait.side_effect=lambda timeout:self.acknowledge_stop(controller)
+                exit_=controller.stop_no_scale(result)
+                assessment=controller.finish_no_scale(exit_)
+                self.assertEqual(assessment['status'],status)
+                self.assertFalse((self.base/'kubeconfig').exists())
+                with self.assertRaises(Refused): controller.finish_no_scale(exit_)
 
     def test_finish_rejects_wrong_process_session_sequence_and_live_feed(self):
         controller=self.controller(); controller.start_no_scale(); exit_,assessment=self.finish_receipts(controller,'PASS')
@@ -704,7 +781,9 @@ class ControllerTests(unittest.TestCase):
         controller=self.controller(); controller.start_no_scale(); self.feed.poll.return_value=0
         self.publish(); exit_,assessment=self.finish_receipts(controller,'INCONCLUSIVE')
         exit_['sequence']=self.seq; assessment['endSequence']=self.seq
-        self.assertEqual(controller.finish_no_scale(exit_,assessment),assessment)
+        result=controller.finish_no_scale(exit_)
+        self.assertEqual(result['status'],'INCONCLUSIVE')
+        self.assertEqual(result['endSequence'],self.seq)
 
     def test_finish_refuses_stale_final_publication(self):
         controller=self.controller(); controller.start_no_scale(); self.feed.poll.return_value=0
@@ -784,9 +863,78 @@ class PaidStartTests(unittest.TestCase):
                 'collector-status':dict(status='ALIVE',identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64))}[action]
         return self.result_override or dict(state='complete',category='ok',payload=payload)
 
+    def prior_proof(self):
+        from pgcat_lane_protocol import (Journal,digest,no_scale_assessment,publish_finish,
+            no_scale_stop_ack,original_roster)
+        from pgcat_lane_supervisor import save_once
+        root=self.base/('prior-'+str(uuid.uuid4()));root.mkdir(mode=0o700)
+        hashes=dict(lane=self.binding['laneBindings']['sourceHashes'],local=self.binding['sourceHashes'])
+        run_id=str(uuid.uuid4());session=str(uuid.uuid4())
+        target=self.binding['laneBindings']['target']
+        journal=Journal(root);journal.create_run(run_id,'no-scale',target,dict(hashes['lane'],bundleSha256=digest(hashes['lane'])))
+        collector=dict(runId=run_id,feedSession=session,sequence=5,payload=dict(status='EXITED',
+            identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64),
+            exit=dict(category='completed',exitCode=0,completionSha256='c'*64)))
+        worker=dict(runId=run_id,feedSession=session,sequence=6,collectorExit=collector,
+            sourceSha256=hashes['lane']['laneTimingAssessor'],payload=dict(status='PASS',category='lane-timing',
+                verdictSha256='d'*64,clientIdentitySha256='a'*64,workerCredentialCleanupSha256='e'*64))
+        intent=dict(schemaVersion=1,runId=run_id,feedSession=session,minimumSequence=7,verdictSha256='d'*64)
+        receipt=dict(feedSession=session,sequence=7,desired=2,mode='disabled-rehearsal',observedAt=self.wall,
+            rosterSha256=roster_sha(original_roster(target['originalInstanceIds'])))
+        exit_=dict(pid=123,exitCode=0,category='ok',feedSession=session,sequence=7)
+        record=dict(schemaVersion=1,day='2026-10-27',runId=run_id,feedSession=session,
+            targetSha256=digest(target),sourceSha256=digest(hashes),sourceHashes=hashes,clientIdentitySha256='a'*64,
+            bindingSha256='f'*64,workerVerdict=worker,
+            stop=dict(intent=intent,ack=no_scale_stop_ack(intent,receipt),receipt=receipt,feedExit=exit_),
+            localCredentialCleanup=True)
+        self.prior=root/'no-scale-proof.json';save_once(root,self.prior.name,record)
+        assessment=no_scale_assessment(record,journal.run_snapshot(),worker,exit_)
+        with journal._transaction() as db:db.execute('INSERT INTO lane_verdict VALUES (1,?)',(encode(worker).decode(),))
+        publish_finish(root,run_id,exit_,assessment);journal.finish()
+        return dict(status='PASS',evidenceSha256=digest(record),proofPath=str(self.prior))
+
+    def test_paid_proof_rejects_changed_private_bytes(self):
+        controller=self.prepare()
+        record=json.loads(self.prior.read_text());record['bindingSha256']='0'*64
+        self.prior.write_text(json.dumps(record))
+        with self.assertRaises(Refused):controller._paid_evidence(self.preflight)
+
+    def test_paid_proof_rejects_stale_day_changed_client_target_source_and_binding(self):
+        controller=self.prepare()
+        for key in ('day','clientIdentitySha256','targetSha256','sourceSha256','runId','feedSession'):
+            original=self.prior.read_bytes();record=json.loads(original)
+            record[key]='2026-10-26' if key=='day' else str(uuid.uuid4()) if key in ('runId','feedSession') else '0'*64
+            self.prior.write_bytes(encode(record))
+            reference=copy.deepcopy(self.evidence['noScaleProof'])
+            self.evidence['noScaleProof']['evidenceSha256']=hashlib.sha256(encode(record)).hexdigest();self.write_evidence()
+            with self.subTest(key=key),self.assertRaises(Refused):controller._paid_evidence(self.preflight)
+            self.prior.write_bytes(original);self.evidence['noScaleProof']=reference;self.write_evidence()
+        self.manifest.write_text(self.manifest.read_text()+' ')
+        with self.assertRaises(Refused):controller._paid_evidence(self.preflight)
+
+    def test_paid_proof_requires_exact_private_path_and_finished_journal(self):
+        controller=self.prepare();reference=copy.deepcopy(self.evidence['noScaleProof'])
+        for mode in (0o644,0o400):
+            self.prior.chmod(mode)
+            with self.subTest(mode=mode),self.assertRaises(Refused):controller._paid_evidence(self.preflight)
+        self.prior.chmod(0o600)
+        link=self.base/'linked-proof';link.symlink_to(self.prior)
+        self.evidence['noScaleProof']['proofPath']=str(link);self.write_evidence()
+        with self.assertRaises(Refused):controller._paid_evidence(self.preflight)
+        self.evidence['noScaleProof']=reference;self.write_evidence()
+        self.assertEqual(controller._paid_evidence(self.preflight),self.evidence)
+        self.assertNotEqual(json.loads(self.prior.read_text())['bindingSha256'],self.evidence['bindingSha256'])
+        self.evidence['clients']['identitySha256']='0'*64;self.write_evidence()
+        with self.assertRaises(Refused):controller._paid_evidence(self.preflight)
+        self.evidence['clients']['identitySha256']='a'*64;self.write_evidence()
+        from pgcat_lane_protocol import Journal
+        with Journal(self.prior.parent)._transaction() as db:db.execute("UPDATE run SET state='active'")
+        with self.assertRaises(Refused):controller._paid_evidence(self.preflight)
+
     def prepare(self):
         from datetime import datetime, timezone
         self.assertTrue(hasattr(self.module.Controller, 'start_rehearsal'), 'missing guarded paid start')
+        self.binding.pop('localKubeconfig',None);self.write_binding()
         self.wall = datetime(2026,10,27,12,0,tzinfo=timezone.utc).timestamp()
         iso = lambda t: datetime.fromtimestamp(t,timezone.utc).isoformat()
         self.preflight = self.base/'preflight.json'
@@ -795,7 +943,7 @@ class PaidStartTests(unittest.TestCase):
             gateway=dict(replacementEnabled=False,idle=True),
             clients=dict(ready=2,sqlFailures=0,identitySha256='a'*64),
             metrics=dict(fresh=True,complete=True),singleOperator=True,
-            noScaleProof=dict(status='PASS',evidenceSha256='b'*64),
+            noScaleProof=self.prior_proof(),
             cost=dict(day='2026-10-27',net=100,reserve=100,allowance=100,ceiling=1800),
             bindingSha256=hashlib.sha256(self.manifest.read_bytes()).hexdigest())
         self.write_evidence()

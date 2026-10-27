@@ -21,7 +21,8 @@ from pgcat_lane_client import LaneClient
 from pgcat_lane_protocol import (Refused, require, private, read_private, identifier,
     sha, token, monotonic, validate_result, validate_finish_receipts,
     encode, roster_sha, expected_roster, removing_roster_shas, original_roster, Journal,
-    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK)
+    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK, NO_SCALE_PROOF,
+    no_scale_assessment, private_json, digest, read_finish)
 from pgcat_lane_supervisor import read_json, save_once
 import provider_feed as provider
 import pgcat_workbench_lane as lane
@@ -68,7 +69,7 @@ def load_bindings(path):
         try:
             value=json.loads(read_private(folder,path.name,8192).decode('ascii'),object_pairs_hook=unique)
         finally: os.close(folder)
-        require(type(value) is dict and set(value) == BINDING_KEYS)
+        require(type(value) is dict and set(value) in (BINDING_KEYS,BINDING_KEYS | {'localKubeconfig'}))
         b=value['laneBindings']; validate_bindings(b)
         # provider_feed resolves this executable by its fixed name on PATH.
         _feed_path(b)
@@ -114,6 +115,7 @@ class Controller:
     def __init__(self, binding_path):
         self.binding_path=Path(binding_path)
         self.bindings=load_bindings(self.binding_path)
+        self.binding_sha=hashlib.sha256(self.binding_path.read_bytes()).hexdigest()
         self.client=None; self.feed=None; self.receipt=None
         self.state='new'; self.collector_identity=None; self.mode=None
         self.pending_proof=None; self.pre_drain_proof=None; self.zero_proof=None
@@ -127,6 +129,8 @@ class Controller:
         numeric PIDs, clear its global record, retry, or claim remote cleanup.
         """
         if self.state != 'finished': self.state='uncertain'
+        if self.mode=='no-scale' and isinstance(self.feed,Popen) and type(self.feed.poll()) is int:
+            self._local_cleanup()
         if self.client is not None: self.client.close()
 
     def _live(self):
@@ -305,6 +309,10 @@ class Controller:
         try:
             require(self.state == 'new')
             require(load_bindings(self.binding_path) == self.bindings,'source')
+            local=_absolute(self.bindings.get('localKubeconfig'))
+            require(local == Path(self.bindings['captureRoot']).parent/'kubeconfig','configuration')
+            for parent in local.parents:require(not parent.is_symlink(),'configuration')
+            private(local); self.local_credential_identity=os.lstat(local)
             self._no_scale_admission()
             self._start('no-scale',180)
             self._baseline_collector()
@@ -398,12 +406,34 @@ class Controller:
                 c['sqlFailures'] == 0 and sha(c['identitySha256']))
         require(type(m) is dict and set(m) == {'fresh','complete'} and m['fresh'] is True and m['complete'] is True)
         require(value['singleOperator'] is True)
-        require(type(n) is dict and set(n) == {'status','evidenceSha256'} and n['status'] == 'PASS' and sha(n['evidenceSha256']))
+        require(type(n) is dict and set(n) == {'status','evidenceSha256','proofPath'} and n['status'] == 'PASS' and sha(n['evidenceSha256']))
+        self._verify_prior_proof(n,c['identitySha256'])
         require(type(cost) is dict and set(cost) == {'day','net','reserve','allowance','ceiling'})
         require(all(lane.finite_number(cost[k]) and cost[k] >= 0 for k in ('net','reserve','allowance','ceiling')))
         require(cost['ceiling'] == 1800 and cost['net']+cost['reserve']+cost['allowance'] <= 1800)
         require(cost['day'] == self._china_now().date().isoformat())
         return value
+
+    def _verify_prior_proof(self, reference, client_sha):
+        path=_absolute(reference['proofPath']);capture=_absolute(self.bindings['captureRoot'])
+        require(path.name==NO_SCALE_PROOF and capture not in path.parents and path.parent!=capture,'source')
+        # Reject symlinked ancestors as well as the exact private file.
+        for parent in path.parents:require(not parent.is_symlink(),'source')
+        record,raw=private_json(path)
+        require(raw==encode(record) and hashlib.sha256(raw).hexdigest()==reference['evidenceSha256'],'source')
+        require(record['day']==self._china_now().date().isoformat(),'timeout')
+        hashes=dict(lane=self.bindings['laneBindings']['sourceHashes'],local=self.bindings['sourceHashes'])
+        require(record['targetSha256']==digest(self.bindings['laneBindings']['target']) and
+                record['sourceSha256']==digest(hashes) and record['clientIdentitySha256']==client_sha,'source')
+        private(path.parent/'journal.sqlite3')
+        journal=Journal(path.parent);run=journal.run_snapshot()
+        require(run['runState']=='finished' and run['mode']=='no-scale','incomplete')
+        worker=journal.lane_verdict()
+        derived=no_scale_assessment(record,run,worker,run['feedExit'])
+        sealed_run,sealed_exit,sealed_assessment=read_finish(path.parent)
+        require(sealed_run==run['runId'] and encode(sealed_exit)==encode(run['feedExit']) and
+                encode(sealed_assessment)==encode(derived)==encode(run['assessment']) and
+                derived['status']=='PASS' and derived['evidenceSha256']==reference['evidenceSha256'],'source')
 
     @staticmethod
     def _china_now():
@@ -465,6 +495,7 @@ class Controller:
         try:
             require(self.state == 'new')
             require(load_bindings(self.binding_path) == self.bindings,'source')
+            require('localKubeconfig' not in self.bindings,'configuration')
             preflight_path=_absolute(str(preflight_path)); private(preflight_path.parent,True)
             evidence=self._paid_evidence(preflight_path)
             now=self._china_now()
@@ -733,31 +764,64 @@ class Controller:
         self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=3)
         return status
 
-    def finish_no_scale(self, feed_exit, assessment):
-        """Close once, preserving assessor FAIL/INCONCLUSIVE as well as PASS."""
+    def _local_cleanup(self):
+        """Never follow or delete a replacement for the credential seen at start."""
         try:
-            require(self.state == 'active' and self.collector_identity is not None,'incomplete')
+            path=_absolute(self.bindings['localKubeconfig'])
+            require(path==Path(self.bindings['captureRoot']).parent/'kubeconfig')
+            private(path.parent,True);private(path)
+            before=self.local_credential_identity;current=os.lstat(path)
+            fields=lambda st:(st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+            require(fields(before)==fields(current),'source')
+            fd=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:
+                require(fields(os.stat(path.name,dir_fd=fd,follow_symlinks=False))==fields(before),'source')
+                os.unlink(path.name,dir_fd=fd);os.fsync(fd)
+                require(not os.path.lexists(path),'incomplete')
+            finally:os.close(fd)
+            return True
+        except (Refused,OSError,KeyError,AttributeError):return False
+
+    def finish_no_scale(self, feed_exit, assessment=None):
+        """Derive final proof; caller text cannot supply or upgrade its verdict."""
+        try:
+            require(self.mode=='no-scale' and self.state=='active' and self.collector_identity is not None,'incomplete')
             require(isinstance(self.feed,Popen),'child')
-            code=self.feed.poll(); require(type(code) is int,'child')
-            validate_finish_receipts(feed_exit,assessment,'no-scale')
-            require(feed_exit['pid'] == self.feed.pid and feed_exit['exitCode'] == code,'child')
+            code=self.feed.poll();require(type(code) is int,'child')
+            cleanup=self._local_cleanup()
+            require(feed_exit['pid']==self.feed.pid and feed_exit['exitCode']==code,'child')
+            require(hashlib.sha256(self.binding_path.read_bytes()).hexdigest()==self.binding_sha,'source')
             final=read_json(self.bindings['laneBindings']['receiptPath'])
-            require(type(final) is dict and set(final) == lane.RECEIPT_FIELDS,'receipt')
-            require(final['feedSession'] == self.receipt['feedSession'] and
-                    final['mode'] == 'disabled-rehearsal' and type(final['desired']) is int
-                    and final['desired'] == 2,'receipt')
-            require(type(final['sequence']) is int and final['sequence'] >= self.receipt['sequence'],'receipt')
-            require(lane.finite_number(final['observedAt']) and
-                    0 <= time.time()-final['observedAt'] < 30,'receipt')
-            require(feed_exit['feedSession'] == final['feedSession'] and
-                    feed_exit['sequence'] == final['sequence'],'receipt')
-            require(assessment['status'] != 'PASS' or self.no_scale_stop is not None and
-                    self.no_scale_stop['feedExit'] == feed_exit and self.no_scale_stop['receipt'] == final,'incomplete')
-            require(code == 0 or assessment['status'] != 'PASS','child')
-            require(feed_exit['category'] == 'ok' or assessment['status'] != 'PASS','child')
-            snapshot=self.client.finish(self.feed,copy.deepcopy(feed_exit),copy.deepcopy(assessment))
-            require(snapshot['runState'] == 'finished' and snapshot['assessment'] == assessment,'incomplete')
+            require(final['feedSession']==self.receipt['feedSession'] and
+                    final['sequence']==feed_exit['sequence'] and
+                    type(final['observedAt']) in (int,float) and 0<=time.time()-final['observedAt']<30,'receipt')
+            journal=Journal(Path(self.bindings['laneRoot']))
+            try:worker=journal.lane_verdict()
+            except Refused:worker=None
+            require(worker==self.verdict_proof,'source')
+            if worker is not None:
+                require(worker['collectorExit']['payload']==self.collector_exit and
+                        worker['collectorExit']['payload']['identity']==self.collector_identity,'child')
+            stop=copy.deepcopy(self.no_scale_stop)
+            if stop is not None:
+                require(encode(stop['receipt'])==encode(final),'receipt')
+                root=Path(self.bindings['captureRoot'])
+                require(encode(read_json(root/NO_SCALE_STOP_INTENT))==encode(stop['intent']) and
+                        encode(read_json(root/NO_SCALE_STOP_ACK))==encode(stop['ack']),'receipt')
+            hashes=dict(lane=self.bindings['laneBindings']['sourceHashes'],local=self.bindings['sourceHashes'])
+            record=dict(schemaVersion=1,day=self._china_now().date().isoformat(),runId=self.client.run_id,
+                feedSession=feed_exit['feedSession'],targetSha256=digest(self.bindings['laneBindings']['target']),
+                sourceSha256=digest(hashes),sourceHashes=hashes,
+                clientIdentitySha256=worker['payload']['clientIdentitySha256'] if worker else None,
+                bindingSha256=self.binding_sha,workerVerdict=worker,stop=stop,localCredentialCleanup=cleanup)
+            bound=dict(runId=self.client.run_id,target=self.bindings['laneBindings']['target'],
+                hashes=dict(hashes['lane'],bundleSha256=digest(hashes['lane'])))
+            derived=no_scale_assessment(record,bound,worker,feed_exit,now=time.time())
+            require(assessment is None or encode(assessment)==encode(derived),'source')
+            save_once(Path(self.bindings['laneRoot']),NO_SCALE_PROOF,record,atomic=True)
+            snapshot=self.client.finish(self.feed,copy.deepcopy(feed_exit),derived)
+            require(snapshot['runState']=='finished' and encode(snapshot['assessment'])==encode(derived),'incomplete')
             self.state='finished'
-            return copy.deepcopy(assessment)
+            return copy.deepcopy(derived)
         except BaseException:
-            self.close(); raise
+            self.close();raise

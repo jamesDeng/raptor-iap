@@ -10,7 +10,7 @@ import uuid
 
 from pgcat_lane_actions import validate_bindings
 from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
-    monotonic, identifier, publish_request, publish_finish, validate_finish_receipts)
+    monotonic, identifier, publish_request, publish_finish, read_finish, validate_finish_receipts)
 from pgcat_lane_supervisor import read_json, save_once, receipt_identity
 import pgcat_workbench_lane as lane
 
@@ -144,14 +144,29 @@ class LaneClient:
         try:
             publish_finish(self.root, self.run_id, feed_exit, assessment)
             deadline = monotonic()+5.
+            def sealed_final(state):
+                require(state['runState'] == 'finished' and state['runId'] == self.run_id)
+                require(state['mode'] == self.mode and state['target'] == self.bindings['target'])
+                require(state['hashes'] == dict(self.bindings['sourceHashes'], bundleSha256=self.bundle), 'source')
+                require(encode(state['assessment']) == encode(assessment) and
+                        encode(state['feedExit']) == encode(feed_exit), 'source')
+                run_id, sealed_exit, sealed_assessment = read_finish(self.root)
+                require(run_id == self.run_id and encode(sealed_exit) == encode(feed_exit) and
+                        encode(sealed_assessment) == encode(assessment), 'source')
+                self.close()
+                return state
             while True:
                 state = self.journal.run_snapshot()
                 require(state['runId'] == self.run_id)
                 if state['runState'] == 'finished':
-                    require(state['assessment'] == assessment)
-                    self.close()
-                    return state
-                self._active(); require(monotonic() < deadline, 'timeout'); time.sleep(.01)
+                    return sealed_final(state)
+                try:
+                    self._active()
+                except Refused:
+                    # The owner may have committed and exited since our active
+                    # snapshot. Only exact durable receipts can close this race.
+                    return sealed_final(self.journal.run_snapshot())
+                require(monotonic() < deadline, 'timeout'); time.sleep(.01)
         except (Refused, OSError, ValueError) as error:
             category = error.category if isinstance(error, Refused) else 'incomplete'
             self._cancel_and_close(category)

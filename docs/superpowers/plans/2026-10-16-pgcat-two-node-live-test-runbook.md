@@ -881,12 +881,17 @@ this documentation update.
 
 Supply a new owner-only mode-0600 JSON manifest in a mode-0700 directory. Its
 exact keys are `laneBindings`, `laneRoot`, `captureRoot`, `workerInventory`,
-`workerKubeconfig`, and `sourceHashes`; unknown/missing keys refuse launch.
+`workerKubeconfig`, and `sourceHashes`; no-scale also requires `localKubeconfig`.
+The paid binding omits `localKubeconfig`. Unknown/missing keys refuse launch.
+The no-scale local credential must be the regular mode-0600 `kubeconfig` in
+`captureRoot`'s private mode-0700 parent, with no symlinked path. Its identity is
+retained at startup, and only that exact file may be removed after feed exit.
 `laneBindings` follows the exact schema in `pgcat_lane_actions.py`, including
 reviewed account, region, worker, scaling group, NLB group, two protected original
-IDs and its five source hashes. The outer `sourceHashes` has exactly
+IDs and the complete current source-hash set, including collector control and
+lane-timing assessor. The outer `sourceHashes` has exactly
 `controller`, `client`, and `runner`, each a lowercase SHA-256 of the current
-local source bytes. All eight hashes are checked before either process starts.
+local source bytes. All declared hashes are checked before either process starts.
 The feed executable binding must be a regular executable named `aliyun`; its
 directory leads the minimal feed PATH and exact resolution is checked before
 spawn. Scaling-group and NLB bindings must match the fixed provider targets.
@@ -910,33 +915,61 @@ receipt publication is unacknowledged and does not clear Pending proof. The
 Pending consumer and retired producer still need their separate source review;
 this local change supplies no live clearance.
 
-`start_no_scale()` starts one `LaneClient` in immutable `no-scale` mode before
-one detached provider feed (`disabled-rehearsal`, 15-second interval, 75-second
-loop cap). The fixed sequence is baseline start, baseline status until PREPARED,
-collector launch, then collector status with exact retained process identity.
-Each worker call has a five-second absolute deadline from the shared protocol
-clock, additionally bounded by `observedAt + 12 seconds`. Each call must be
-followed by a strictly newer successful same-session desired-two publication.
-The existing receipt freshness and one-use intent gates remain in force.
-Failure to obtain a successor within 45 seconds, feed exit during a call,
-changed session, uncertain result, changed collector identity or interruption
-stops the run without retry. No-scale callers cannot submit pending, pre-drain,
-NLB deregistration, zero-gate, reconciliation or ESS actions. An unavailable collector launch is a refusal,
-not permission to skip capture. Additional baseline polling may exhaust the
-bounded feed window; do not extend its cap to force success.
+The reviewed no-scale timing correction replaces the previous 75-second blocked
+path with a **180-second maximum** feed loop at the unchanged 15-second interval.
+Admission closes at **22:24 Shanghai**, reserving 120 seconds startup, 180 seconds
+feed and 60 seconds cleanup before 22:30. No second feed or automatic extension
+is permitted. This is a local implementation contract, not a live PASS receipt.
 
-Retain the exact feed `Popen` handle and independently assess retained capture
-evidence with the existing continuity, client, provider and cleanup rules. A
-collector ALIVE marker alone does not establish continuity. After verified
-feed exit, `finish_no_scale(feed_exit, assessment)` requires the private final
-status file to have the same session, desired two, a sequence at least as new
-as the last post-call successor and `observedAt` age under 30 seconds. The
-assessment and exact `{pid, exitCode, category, feedSession, sequence}` exit
-receipt must match that final sequence; assessment fields are exactly
-`{status, mode, feedSession, endSequence, evidenceSha256}` with mode `no-scale`.
-The API returns the independent PASS/FAIL/INCONCLUSIVE unchanged. It does not
-run or replace the assessor, finish clients, fabricate evidence, or convert
-normal local closure into PASS. A nonzero/error feed exit cannot accompany PASS.
+`start_no_scale()` starts one `LaneClient` in immutable `no-scale` mode before
+one detached provider feed (`disabled-rehearsal`, 15-second interval, 180-second
+maximum). The feed validates its exact-two target against sealed run context on
+every publication. The fixed sequence is baseline start/status until PREPARED,
+one finite **65-second collector** launch, exact ALIVE status, exact completed
+EXITED status, then the source-pinned worker `lane-verdict`. The lane-timing
+assessor requires at least 60 seconds of authenticated coverage and stable
+clients, sources and protected original fleet. Ordinary transition assessment
+remains separate and cannot PASS from this capture alone.
+
+Each worker call has a five-second absolute deadline from the shared protocol
+clock, additionally bounded by `observedAt + 12 seconds`, and requires a strictly
+later successful same-session desired-two publication. Existing receipt
+freshness and one-use intent gates remain. Changed identity, missing evidence,
+uncertain exit, failure to receive a successor or feed exit during a call stops
+the run. No-scale admits no Pending, pre-drain, NLB, ESS, Gateway, client finish
+or ConfigMap mutation.
+
+After the verdict's successor, `stop_no_scale(verdict_result)` writes one private
+fsynced stop intent, waits on its exact retained feed `Popen`, and checks the
+matching acknowledgement and actual final receipt. At most one additional
+publication is allowed during an in-progress tick. Natural timeout is not a PASS
+path. The actual final receipt must be under 30 seconds old, and its sequence
+is the final assessment's `endSequence`; no inventory timestamp is synthesized.
+The fixed worker `lane-verdict` action seals its read-only assessment, then
+removes only the bound worker `kubeconfig` under the contract's private parent,
+fsyncs that directory, verifies absence, and seals a separate cleanup receipt.
+The sanitized result contains status/category plus verdict, client-identity and
+worker-credential-cleanup SHA-256 values. The required successor publication
+uses the private inventory writer and does not need kubeconfig; any target drift
+is refused before a ConfigMap update. A missing cleanup response is uncertainty,
+not permission to retry the one-use action.
+
+`finish_no_scale(feed_exit, assessment=None)` computes the final assessment from
+the journaled worker result, exact stop intent/acknowledgement, actual final
+receipt and feed exit. If an assessment is supplied, every field must equal the
+derived result. It attempts exact local credential removal after feed exit on
+all verdicts, preserves evidence, and never removes a replacement file. Cleanup
+uncertainty prevents PASS. The private mode-0600 `lane/no-scale-proof.json`
+records the Shanghai date, run/feed IDs, stable target/source/client hashes,
+original binding-file hash, worker result, stop evidence and cleanup outcome.
+Its exact canonical bytes determine `evidenceSha256`. The supervisor independently
+compares the journaled worker result and current sealed final records before
+committing finish. Retain the proof, journal and sealed finish receipts together.
+
+A worker FAIL remains FAIL even when another check is incomplete. A `finished`
+journal state never turns FAIL or INCONCLUSIVE into PASS. The client reconciles
+a supervisor exit only against the exact durable journal and sealed final
+receipts; process exit alone proves nothing about the assessment.
 
 `close()` disconnects the supervisor on cancellation; it does not claim remote
 command cancellation or kill a numeric PID. Controller death can leave the
@@ -965,12 +998,24 @@ and must be generated at action time from actual observations in Task 7:
 - `gateway`: exactly `{replacementEnabled:false,idle:true}`.
 - `clients`: exactly `{ready:2,sqlFailures:0,identitySha256:<SHA-256>}`.
 - `metrics`: exactly `{fresh:true,complete:true}`; `singleOperator`: `true`.
-- `noScaleProof`: exactly `{status:"PASS",evidenceSha256:<SHA-256>}`.
+- `noScaleProof`: exactly `{status:"PASS",evidenceSha256:<SHA-256>,proofPath:<absolute path>}`.
+  Open the prior run's exact mode-0600, non-symlink `no-scale-proof.json` under its
+  mode-0700 directory, outside the new paid capture root. Match its exact bytes,
+  same-day date, stable target/source/client hashes and authenticated finished
+  journal/receipts. The paid run uses a fresh binding-file hash, checked separately;
+  its paths need not match the prior binding's provenance hash.
 - `cost`: exactly `{day,net,reserve,allowance,ceiling}`. The day is today's
   Shanghai date; amounts are finite, nonnegative, ceiling is CNY 1,800 and
   `net + reserve + allowance <= ceiling`. Reuse the day's billing observation;
   this code does not query billing.
 - `bindingSha256`: SHA-256 of the exact private binding file bytes.
+
+Compute `clients.identitySha256` from current verified observations using the
+same canonical JSON/SHA-256 formula as the worker: `{roster: sorted([[podUid,
+podName,containerId,processId], ...]), deployment: {uid,generation,
+observedGeneration,desired,ready}}`. Include exactly the two Ready clients.
+A restarted process, changed Pod/container or changed Deployment invalidates the
+prior proof. A guessed or manually chosen hash does not establish live identity.
 
 This is an operator evidence receipt, not independent proof of live state.
 Preserve its underlying evidence and authorization separately; never populate
