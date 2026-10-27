@@ -120,7 +120,7 @@ def snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_g
     """Read adapters return raw, complete scoped provider observations.
 
     fetch_nlb returns Servers (fully paginated), Listener and Health. Addresses
-    are transient; publish strips them before the worker evidence write.
+    stay in the private worker sidecar; the published inventory omits them.
     """
     try:
         require(now.tzinfo is not None)
