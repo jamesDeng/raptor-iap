@@ -858,4 +858,175 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(calls,[])
         with self.assertRaises(ValueError):feed.run_loop(lambda:{},lambda x:None,interval=16,max_seconds=5401)
 
+class NoScaleFeedTests(unittest.TestCase):
+    fixture = FeedTests.fixture
+    take = FeedTests.take
+    def operator(self, root, **changes):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from pgcat_lane_protocol import encode
+        target=dict(accountId='account',regionId=feed.REGION,workerId=feed.WORKER_ID,
+            scalingGroupId=feed.GROUP_ID,nlbServerGroupId=feed.SERVER_GROUP_ID,
+            originalInstanceIds=['i-0','i-1'])
+        context=dict(runId=str(uuid.uuid4()),targetSha256=hashlib.sha256(encode(target)).hexdigest())
+        args=dict(mode='disabled-rehearsal',status_file=str(root/'status.json'),
+            run_context=str(root/'lane'/'run-context.json'),contract_dir='/fresh/contract',
+            worker_inventory='/fresh/run/provider-inventory.json',no_scale_target=json.dumps(target),
+            interval=15,max_seconds=180)
+        args.update(changes)
+        with patch.object(feed,'validate_run_context',return_value=context):
+            op=feed.Operator(SimpleNamespace(**args))
+        op.verify_run_context=lambda:None
+        op.atomic_worker_write=lambda *a:None
+        op.update_targets=lambda *a:None
+        op.previous=tuple(sorted(self.take(self.fixture())['privateAddresses'].items()))
+        return op,context
+
+    def intent(self, op, context, **changes):
+        from pgcat_lane_supervisor import save_once
+        value=dict(schemaVersion=1,runId=context['runId'],feedSession=op.feedSession,
+            minimumSequence=op.sequence,verdictSha256='b'*64)
+        value.update(changes)
+        save_once(op.status_file.parent,'no-scale-stop.intent',value,atomic=True)
+        return value
+
+    def test_stop_is_terminal_and_no_scale_targets_can_never_be_patched(self):
+        with tempfile.TemporaryDirectory() as d:
+            op,context=self.operator(pathlib.Path(d));updates=[]
+            op.update_targets=lambda *args:updates.append(args)
+            op.write(self.take(self.fixture()))
+            self.assertEqual(updates,[])
+            self.intent(op,context);self.assertTrue(op.stop_no_scale())
+            with self.assertRaises(ValueError):op.write(self.take(self.fixture()))
+        with tempfile.TemporaryDirectory() as d:
+            op,_=self.operator(pathlib.Path(d));updates=[]
+            op.update_targets=lambda *args:updates.append(args)
+            value=self.take(self.fixture());value['privateAddresses']['i-0']='10.0.1.1'
+            with self.assertRaises(ValueError):op.write(value)
+            self.assertEqual(updates,[])
+
+    def test_targets_configmap_address_drift_is_refused_before_mutation(self):
+        for mutate in ('initial-id','initial-address','later-address'):
+            with self.subTest(mutate=mutate),tempfile.TemporaryDirectory() as d:
+                op,_=self.operator(pathlib.Path(d));writes=[];updates=[]
+                op.atomic_worker_write=lambda *args:writes.append(args)
+                op.update_targets=lambda *args:updates.append(args)
+                if mutate=='later-address':op.write(self.take(self.fixture()))
+                before=len(writes)
+                if mutate=='initial-id':op.previous=(('another','10.0.0.1'),('i-1','10.0.0.2'))
+                if mutate=='initial-address':op.previous=(('i-0','10.0.1.1'),('i-1','10.0.0.2'))
+                value=self.take(self.fixture())
+                if mutate=='later-address':value['privateAddresses']['i-0']='10.0.1.1'
+                with self.assertRaises(ValueError):op.write(value)
+                self.assertEqual(len(writes),before);self.assertEqual(updates,[])
+
+    def test_well_formed_different_target_hash_is_rejected(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(feed,'validate_run_context',return_value=dict(runId=str(uuid.uuid4()),targetSha256='0'*64)):
+                # operator() has its own context patch, so build first and reuse its validated arguments.
+                op,_=self.operator(pathlib.Path(d))
+                with self.assertRaises(ValueError):feed.Operator(op.args)
+
+    def test_target_hash_and_fixed_window_refuse_before_provider_read(self):
+        for change in (dict(no_scale_target='{}'),dict(interval=14),dict(max_seconds=181),
+                       dict(mode='full-replacement')):
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(ValueError):
+                    self.operator(pathlib.Path(d),**change)
+
+    def test_exact_two_every_publication(self):
+        for mutation in ('desired','third','protection','health','weight','backend','roster'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as d:
+                op,_=self.operator(pathlib.Path(d)); writes=[]
+                op.atomic_worker_write=lambda *args:writes.append(args)
+                value=self.take(self.fixture())
+                if mutation=='desired':value['desired']=3
+                elif mutation=='third':value=self.take(self.fixture(3))
+                elif mutation=='protection':value['memberStates'][0]['lifecycle']='InService'
+                elif mutation=='health':value['memberStates'][0]['health']='Unhealthy'
+                elif mutation=='weight':value['backendStates'][0]['weight']=99
+                elif mutation=='backend':value['backendStates'][0]['status']='Removing'
+                else:value['members']=['different','i-1']
+                with self.assertRaises(ValueError):op.write(value)
+                self.assertEqual(writes,[])
+                self.assertFalse(op.status_file.exists())
+
+    def test_changed_fleet_read_stops_before_publication(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            op,_=self.operator(pathlib.Path(d));op.fetch_group=lambda:dict(DesiredCapacity=3)
+            with patch.object(feed,'snapshot',return_value=self.take(self.fixture(3))):
+                with self.assertRaises(ValueError):op.read()
+            self.assertFalse(op.status_file.exists())
+
+    def test_no_scale_cannot_reuse_stop_control_files(self):
+        for name in ('no-scale-stop.intent','no-scale-stop.ack'):
+            with self.subTest(name=name),tempfile.TemporaryDirectory() as d:
+                root=pathlib.Path(d);(root/name).write_text('{}')
+                with self.assertRaises(ValueError):self.operator(root)
+
+    def test_stop_before_read_and_in_tick_publish_at_most_once(self):
+        for in_tick in (False,True):
+            with self.subTest(in_tick=in_tick),tempfile.TemporaryDirectory() as d:
+                op,context=self.operator(pathlib.Path(d)); op.write(self.take(self.fixture()))
+                calls=[]; clock=[0.]
+                if not in_tick:self.intent(op,context)
+                def read(**kwargs):
+                    calls.append('read'); self.intent(op,context)
+                    return self.take(self.fixture())
+                feed.run_loop(read,op.write,interval=15,max_seconds=180,
+                    monotonic=lambda:clock[0],sleep=lambda n:clock.__setitem__(0,clock[0]+n),
+                    stop=op.stop_no_scale)
+                self.assertEqual(len(calls),int(in_tick))
+                self.assertEqual(op.sequence,1+int(in_tick))
+                ack=json.loads((op.status_file.parent/'no-scale-stop.ack').read_text())
+                self.assertEqual(ack['sequence'],op.sequence)
+                self.assertTrue(op.stop_no_scale())
+                changed=json.loads((op.status_file.parent/'no-scale-stop.intent').read_text())
+                changed['verdictSha256']='c'*64
+                feed.atomic_write(op.status_file.parent/'no-scale-stop.intent',changed)
+                with self.assertRaises(ValueError):op.stop_no_scale()
+
+    def test_wrong_or_unsafe_intent_cannot_acknowledge(self):
+        for mutation in ('session','run','future','mode','symlink','extra'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as d:
+                op,context=self.operator(pathlib.Path(d)); op.write(self.take(self.fixture()))
+                changes={}
+                if mutation=='session':changes['feedSession']=str(uuid.uuid4())
+                if mutation=='run':changes['runId']=str(uuid.uuid4())
+                if mutation=='future':changes['minimumSequence']=op.sequence+1
+                if mutation=='extra':changes['command']='arbitrary'
+                self.intent(op,context,**changes)
+                path=op.status_file.parent/'no-scale-stop.intent'
+                if mutation=='mode':path.chmod(0o644)
+                if mutation=='symlink':path.rename(path.with_name('other'));path.symlink_to(path.with_name('other'))
+                with self.assertRaises(ValueError):op.stop_no_scale()
+                self.assertFalse((path.parent/'no-scale-stop.ack').exists())
+
+    def test_stop_during_sleep_does_not_reuse_expired_publication_deadline(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            op,context=self.operator(pathlib.Path(d));clock=[0.];ticks=[]
+            op.verify_run_context=feed.Operator.verify_run_context.__get__(op)
+            def read(**kwargs):ticks.append(clock[0]);return self.take(self.fixture())
+            def sleep(seconds):
+                self.intent(op,context)
+                clock[0]+=seconds
+            with patch.object(feed,'validate_run_context',return_value=context):
+                feed.run_loop(read,op.write,interval=15,max_seconds=180,
+                    monotonic=lambda:clock[0],sleep=sleep,stop=op.stop_no_scale)
+            self.assertEqual(ticks,[0.])
+            self.assertTrue((op.status_file.parent/'no-scale-stop.ack').exists())
+
+    def test_natural_cap_has_no_ack_and_preserves_15_second_ticks(self):
+        with tempfile.TemporaryDirectory() as d:
+            op,_=self.operator(pathlib.Path(d));clock=[0.];ticks=[]
+            def read(**kwargs):ticks.append(clock[0]);return self.take(self.fixture())
+            feed.run_loop(read,op.write,interval=15,max_seconds=180,
+                monotonic=lambda:clock[0],sleep=lambda n:clock.__setitem__(0,clock[0]+n),
+                stop=op.stop_no_scale)
+            self.assertEqual(ticks,list(range(0,180,15)))
+            self.assertFalse((op.status_file.parent/'no-scale-stop.ack').exists())
+
 if __name__=='__main__':unittest.main()

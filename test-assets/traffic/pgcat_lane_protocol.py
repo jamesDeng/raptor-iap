@@ -292,6 +292,31 @@ def validate_result(result):
             require(token(value))
 
 
+NO_SCALE_STOP_INTENT = 'no-scale-stop.intent'
+NO_SCALE_STOP_ACK = 'no-scale-stop.ack'
+
+
+def validate_no_scale_stop(value):
+    """One address-free stop request; paths and commands are never inputs."""
+    require(type(value) is dict and set(value) == {'schemaVersion','runId','feedSession',
+            'minimumSequence','verdictSha256'}, 'receipt')
+    require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1, 'receipt')
+    identifier(value['runId']); identifier(value['feedSession'])
+    require(type(value['minimumSequence']) is int and value['minimumSequence'] > 0 and
+            sha(value['verdictSha256']), 'receipt')
+
+
+def no_scale_stop_ack(intent, receipt):
+    validate_no_scale_stop(intent)
+    require(type(receipt) is dict and receipt.get('feedSession') == intent['feedSession'] and
+            type(receipt.get('sequence')) is int and
+            intent['minimumSequence'] <= receipt['sequence'] <= intent['minimumSequence']+1, 'receipt')
+    return dict(schemaVersion=1,runId=intent['runId'],feedSession=intent['feedSession'],
+        minimumSequence=intent['minimumSequence'],verdictSha256=intent['verdictSha256'],
+        intentSha256=hashlib.sha256(encode(intent)).hexdigest(),
+        finalReceiptSha256=hashlib.sha256(encode(receipt)).hexdigest(),sequence=receipt['sequence'])
+
+
 def validate_finish_receipts(feed_exit, assessment, mode):
     require(type(feed_exit) is dict and set(feed_exit) ==
             {'pid','exitCode','category','feedSession','sequence'})

@@ -38,6 +38,24 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(publish_request(self.root, request), request['requestId'])
         self.journal.admit(request)
 
+    def test_no_scale_stop_binds_only_run_session_sequence_verdict(self):
+        from pgcat_lane_protocol import validate_no_scale_stop,no_scale_stop_ack,encode
+        import hashlib
+        intent=dict(schemaVersion=1,runId=self.run,feedSession=self.session,
+            minimumSequence=3,verdictSha256='a'*64)
+        validate_no_scale_stop(intent)
+        final=dict(feedSession=self.session,sequence=4,observedAt=123.)
+        ack=no_scale_stop_ack(intent,final)
+        self.assertEqual(ack['intentSha256'],hashlib.sha256(encode(intent)).hexdigest())
+        self.assertEqual(ack['finalReceiptSha256'],hashlib.sha256(encode(final)).hexdigest())
+        for changes in (dict(schemaVersion=True),dict(minimumSequence=True),dict(minimumSequence=0),
+                        dict(verdictSha256='wrong'),dict(command='arbitrary'),dict(runId='wrong')):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                validate_no_scale_stop(dict(intent,**changes))
+        for changes in (dict(sequence=2),dict(sequence=5),dict(sequence=True),dict(feedSession=str(uuid.uuid4()))):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                no_scale_stop_ack(intent,dict(final,**changes))
+
     def test_deadline_clock_is_shared_with_detached_process(self):
         import subprocess
         import sys

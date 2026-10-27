@@ -109,6 +109,7 @@ class ControllerTests(unittest.TestCase):
         self.events.append(('call',action,receipt['sequence'],deadline))
         if self.die_on_call: self.feed.poll.return_value = 1
         if self.auto_publish: self.pending_publish = True
+        if self.result_override is not None:return copy.deepcopy(self.result_override)
         payload = {'baseline-start':dict(status='STARTED',phase='baseline'),
             'baseline-status':dict(status='PREPARED',phase='baseline'),
             'collector-launch':dict(status='LAUNCHED'),
@@ -117,6 +118,169 @@ class ControllerTests(unittest.TestCase):
 
     def controller(self):
         return self.module.Controller(self.manifest)
+
+    def test_no_scale_cutoff_reserves_startup_feed_and_cleanup(self):
+        from datetime import datetime, timezone, timedelta
+        for minute,second,allowed in ((23,59,True),(24,0,False),(24,1,False)):
+            with self.subTest(minute=minute,second=second):
+                self.wall=datetime(2026,10,27,22,minute,second,tzinfo=timezone(timedelta(hours=8))).timestamp()
+                if allowed:
+                    c=self.controller();c.start_no_scale()
+                    args=self.spawn.call_args.args[0]
+                    self.assertEqual(json.loads(args[args.index('--no-scale-target')+1]),
+                                     self.binding['laneBindings']['target'])
+                    import shutil
+                    shutil.rmtree(self.capture)
+                else:
+                    before=self.spawn.call_count
+                    with self.assertRaises(Refused):self.controller().start_no_scale()
+                    self.assertEqual(self.spawn.call_count,before)
+
+    def ready_stop(self):
+        from pgcat_lane_protocol import original_roster
+        c=self.controller();c.start_no_scale();self.client.run_id=str(uuid.uuid4())
+        identity=copy.deepcopy(c.collector_identity)
+        exited=dict(status='EXITED',identity=identity,
+            exit=dict(category='completed',exitCode=0,completionSha256='c'*64))
+        self.result_override=dict(state='complete',category='ok',payload=exited)
+        before=c.receipt['sequence'];c.call_no_scale('collector-status')
+        self.assertGreater(c.receipt['sequence'],before)
+        verdict=dict(status='PASS',category='lane-timing',verdictSha256='d'*64)
+        self.result_override=dict(state='complete',category='ok',payload=verdict)
+        # The fixture journal is deliberately exact; mismatched variants must fail.
+        proof=dict(payload=verdict,runId=self.client.run_id,feedSession=self.session,
+            sequence=c.receipt['sequence'],collectorExit=dict(payload=exited))
+        self.journal=Mock();self.journal.lane_verdict.return_value=proof
+        patch.object(self.module,'Journal',return_value=self.journal).start()
+        before=c.receipt['sequence'];result=c.call_no_scale('lane-verdict')
+        self.assertGreater(c.receipt['sequence'],before)
+        final=json.loads(Path(self.binding['laneBindings']['receiptPath']).read_text())
+        final['rosterSha256']=roster_sha(original_roster(self.binding['laneBindings']['target']['originalInstanceIds']))
+        c.receipt=final
+        Path(self.binding['laneBindings']['receiptPath']).write_text(json.dumps(final))
+        return c,result
+
+    def acknowledge_stop(self, c, **changes):
+        from pgcat_lane_supervisor import read_json,save_once
+        root=self.capture
+        intent=read_json(root/'no-scale-stop.intent')
+        final=read_json(root/'status.json')
+        ack=dict(schemaVersion=1,runId=intent['runId'],feedSession=self.session,
+            minimumSequence=intent['minimumSequence'],verdictSha256=intent['verdictSha256'],
+            intentSha256=hashlib.sha256(encode(intent)).hexdigest(),
+            finalReceiptSha256=hashlib.sha256(encode(final)).hexdigest(),sequence=final['sequence'])
+        ack.update(changes);save_once(root,'no-scale-stop.ack',ack,atomic=True)
+        self.feed.poll.return_value=0
+        return 0
+
+    def test_exact_exit_verdict_successor_and_stop_ack(self):
+        c,result=self.ready_stop()
+        self.feed.wait.side_effect=lambda **kw:self.acknowledge_stop(c)
+        exit_=c.stop_no_scale(result)
+        self.assertEqual(exit_,dict(pid=123,exitCode=0,category='ok',feedSession=self.session,sequence=c.receipt['sequence']))
+        self.feed.wait.assert_called_once()
+        self.assertEqual((self.capture/'no-scale-stop.intent').stat().st_mode & 0o777,0o600)
+        with self.assertRaises(Refused):c.stop_no_scale(result)
+
+    def test_stop_refuses_missing_ack_natural_exit_changed_ack_stale_final(self):
+        import shutil
+        for mutation in ('no-ack','natural','changed-ack','stale','bad-exit','timeout','other-session','extra-publications','typed-ack','changed-intent'):
+            with self.subTest(mutation=mutation):
+                if self.capture.exists():shutil.rmtree(self.capture)
+                self.feed.poll.return_value=None;self.result_override=None
+                c,result=self.ready_stop()
+                def wait(**kwargs):
+                    if mutation=='timeout':raise subprocess.TimeoutExpired('feed',30)
+                    if mutation=='no-ack':self.feed.poll.return_value=0;return 0
+                    if mutation=='stale':self.wall+=30
+                    if mutation=='other-session':self.publish(session=str(uuid.uuid4()))
+                    if mutation=='extra-publications':self.publish();self.publish()
+                    changed={'verdictSha256':'e'*64} if mutation=='changed-ack' else {}
+                    if mutation=='typed-ack':changed['schemaVersion']=True
+                    code=self.acknowledge_stop(c,**changed)
+                    if mutation=='changed-intent':
+                        path=self.capture/'no-scale-stop.intent'
+                        value=json.loads(path.read_text());value['schemaVersion']=True
+                        path.write_text(json.dumps(value))
+                    if mutation=='bad-exit':self.feed.poll.return_value=1;return 1
+                    return code
+                self.feed.wait.side_effect=wait
+                if mutation=='natural':self.feed.poll.return_value=0
+                with self.assertRaises(Refused):c.stop_no_scale(result)
+                self.assertFalse(self.client.finish.called)
+
+    def test_stop_refuses_forged_verdict_or_missing_exit_before_intent(self):
+        c=self.controller();c.start_no_scale()
+        with self.assertRaises(Refused):c.stop_no_scale(dict(status='PASS',category='lane-timing',verdictSha256='d'*64))
+        self.assertFalse((self.capture/'no-scale-stop.intent').exists())
+
+    def test_exit_and_verdict_each_require_strict_post_call_publication(self):
+        import shutil
+        for action in ('collector-status','lane-verdict'):
+            with self.subTest(action=action):
+                if self.capture.exists():shutil.rmtree(self.capture)
+                self.feed.poll.return_value=None;self.result_override=None
+                c,result=self.ready_stop()
+                if action=='lane-verdict':c.verdict_result=None;c.verdict_proof=None
+                else:
+                    self.result_override=dict(state='complete',category='ok',payload=copy.deepcopy(c.collector_exit))
+                    c.collector_exit=None
+                self.auto_publish=False
+                self.pending_publish=False
+                def during_call(*args):
+                    result_=self.call(*args);self.publish();return result_
+                self.client.call.side_effect=during_call
+                with self.assertRaises(Refused):c.call_no_scale(action)
+                self.assertFalse((self.capture/'no-scale-stop.intent').exists())
+                self.assertTrue(c.state=='uncertain')
+                self.auto_publish=True
+
+    def test_stop_binds_actual_latest_receipt_not_cached_sequence(self):
+        c,result=self.ready_stop();self.publish()
+        final=json.loads(Path(self.binding['laneBindings']['receiptPath']).read_text())
+        final['rosterSha256']=c.receipt['rosterSha256']
+        Path(self.binding['laneBindings']['receiptPath']).write_text(json.dumps(final))
+        actual_sequence=self.seq
+        self.feed.wait.side_effect=lambda **kw:self.acknowledge_stop(c)
+        c.stop_no_scale(result)
+        intent=json.loads((self.capture/'no-scale-stop.intent').read_text())
+        self.assertEqual(intent['minimumSequence'],actual_sequence)
+
+    def test_stop_does_not_require_subsecond_action_receipt_mtime(self):
+        c,result=self.ready_stop();self.wall+=14
+        self.feed.wait.side_effect=lambda **kw:self.acknowledge_stop(c)
+        self.assertEqual(c.stop_no_scale(result)['sequence'],self.seq)
+
+    def test_natural_zero_exit_never_accepts_pass(self):
+        c=self.controller();c.start_no_scale();self.feed.poll.return_value=0
+        with self.assertRaises(Refused):c.finish_no_scale(*self.finish_receipts(c,'PASS'))
+        self.assertFalse(self.client.finish.called)
+
+    def test_stop_accepts_one_inflight_publication(self):
+        c,result=self.ready_stop()
+        def wait(**kwargs):
+            self.publish()
+            final=json.loads(Path(self.binding['laneBindings']['receiptPath']).read_text())
+            final['rosterSha256']=c.receipt['rosterSha256']
+            Path(self.binding['laneBindings']['receiptPath']).write_text(json.dumps(final))
+            return self.acknowledge_stop(c)
+        self.feed.wait.side_effect=wait
+        out=c.stop_no_scale(result)
+        self.assertEqual(out['sequence'],self.seq)
+        self.assertEqual(c.no_scale_stop['ack']['sequence'],self.seq)
+
+    def test_exit_cannot_replace_original_collector_identity(self):
+        c=self.controller();c.start_no_scale()
+        identity=copy.deepcopy(c.collector_identity);identity['pid']+=1
+        self.result_override=dict(state='complete',category='ok',payload=dict(status='EXITED',identity=identity,
+            exit=dict(category='completed',exitCode=0,completionSha256='c'*64)))
+        with self.assertRaises(Refused):c.call_no_scale('collector-status')
+
+    def test_verdict_without_exact_sealed_result_or_successor_cannot_stop(self):
+        c,result=self.ready_stop()
+        self.journal.lane_verdict.return_value['payload']=dict(result,verdictSha256='e'*64)
+        with self.assertRaises(Refused):c.stop_no_scale(result)
+        self.assertFalse((self.capture/'no-scale-stop.intent').exists())
 
     def test_private_fresh_binding_and_exact_keys(self):
         for mutation in ('mode','extra','missing','used','symlink'):
@@ -208,7 +372,7 @@ class ControllerTests(unittest.TestCase):
         controller=self.controller(); controller.start_no_scale()
         self.assertEqual(self.events[0],('client','no-scale'))
         args,options=self.events[1][1:]
-        for flag,want in [('--max-seconds','75'),('--interval','15'),('--mode','disabled-rehearsal')]:
+        for flag,want in [('--max-seconds','180'),('--interval','15'),('--mode','disabled-rehearsal')]:
             self.assertEqual(args[args.index(flag)+1],want)
         self.assertEqual(args[args.index('--run-context')+1],
                          str(Path(self.binding['laneRoot'])/'run-context.json'))

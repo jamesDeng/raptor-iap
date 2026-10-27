@@ -21,6 +21,13 @@ import pgcat_workbench_lane as lane
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_stop_control_json_refuses_duplicate_binding_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);root.chmod(0o700)
+            path=root/'no-scale-stop.intent'
+            path.write_text('{"runId":"one","runId":"two"}');path.chmod(0o600)
+            with self.assertRaises(Refused):supervisor.read_json(path,publication_marker=True)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

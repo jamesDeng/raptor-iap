@@ -20,7 +20,8 @@ from pgcat_lane_actions import validate_bindings, unique
 from pgcat_lane_client import LaneClient
 from pgcat_lane_protocol import (Refused, require, private, read_private, identifier,
     sha, token, monotonic, validate_result, validate_finish_receipts,
-    encode, roster_sha, expected_roster, removing_roster_shas, original_roster)
+    encode, roster_sha, expected_roster, removing_roster_shas, original_roster, Journal,
+    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK)
 from pgcat_lane_supervisor import read_json, save_once
 import provider_feed as provider
 import pgcat_workbench_lane as lane
@@ -28,7 +29,7 @@ from provider_feed import GROUP_ID, SERVER_GROUP_ID
 
 BINDING_KEYS = frozenset(('laneBindings','laneRoot','captureRoot','workerInventory',
                           'workerKubeconfig','sourceHashes'))
-NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status','collector-launch','collector-status'))
+NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status','collector-launch','collector-status','lane-verdict'))
 
 
 def _absolute(value):
@@ -116,6 +117,8 @@ class Controller:
         self.client=None; self.feed=None; self.receipt=None
         self.state='new'; self.collector_identity=None; self.mode=None
         self.pending_proof=None; self.pre_drain_proof=None; self.zero_proof=None
+        self.collector_exit=None; self.verdict_result=None; self.verdict_proof=None
+        self.no_scale_stop=None; self.stop_attempted=False
 
     def close(self):
         """Disconnect the owner on interruption; retain the bounded feed handle.
@@ -177,6 +180,9 @@ class Controller:
         try:
             require(action in NO_SCALE_ACTIONS or (self.mode == 'disabled-rehearsal'
                     and action in ('pre-scale-start','pre-scale-status')))
+            if action == 'lane-verdict':
+                require(self.mode == 'no-scale' and self.collector_exit is not None and
+                        self.verdict_result is None,'incomplete')
             self._live(); require(self.receipt is not None,'receipt')
             receipt=copy.deepcopy(self.receipt)
             # The same host-wide clock as protocol/runner; never time.monotonic.
@@ -206,12 +212,31 @@ class Controller:
                         and payload['status'] in ('RUNNING','PREPARED'),'parse')
             elif action == 'collector-launch':
                 require(payload == dict(status='LAUNCHED'),'parse')
+            elif action == 'lane-verdict':
+                require(self.mode == 'no-scale' and self.collector_exit is not None and
+                        self.verdict_result is None,'incomplete')
+                proof=Journal(Path(self.bindings['laneRoot'])).lane_verdict()
+                require(proof['payload'] == payload and proof['runId'] == self.client.run_id and
+                        proof['feedSession'] == receipt['feedSession'] and
+                        proof['sequence'] == receipt['sequence'] and
+                        proof['collectorExit']['payload'] == self.collector_exit,'source')
             else:
-                require(set(payload) == {'status','identity'} and payload['status'] == 'ALIVE','parse')
+                status=payload.get('status')
+                require(status in ('ALIVE','EXITED') and set(payload) ==
+                        ({'status','identity'} if status == 'ALIVE' else {'status','identity','exit'}),'parse')
+                require(self.mode == 'no-scale' or status == 'ALIVE','incomplete')
+                if status == 'EXITED':
+                    require(self.collector_identity is not None and payload['exit']['category'] == 'completed'
+                            and type(payload['exit']['exitCode']) is int and payload['exit']['exitCode'] == 0
+                            and sha(payload['exit']['completionSha256']),'child')
                 if self.collector_identity is not None:
                     require(payload['identity'] == self.collector_identity,'child')
                 self.collector_identity=copy.deepcopy(payload['identity'])
             self._next_receipt(receipt['sequence']+1,observed_after=completed_at)
+            if action == 'collector-status' and payload['status'] == 'EXITED':
+                self.collector_exit=copy.deepcopy(payload)
+            if action == 'lane-verdict':
+                self.verdict_result=copy.deepcopy(payload); self.verdict_proof=copy.deepcopy(proof)
             return copy.deepcopy(payload)
         except BaseException:
             self.close(); raise
@@ -255,12 +280,17 @@ class Controller:
             # is a conservative scheduling margin, not a hard child exit timer.
             require(remaining >= 120+75,'timeout')
             max_seconds=min(max_seconds,remaining-120)
-        self.feed=subprocess.Popen([sys.executable,'-u',b['providerFeedPath'],
+        if mode == 'no-scale':
+            self._no_scale_admission()
+            require(max_seconds == 180,'timeout')
+        argv=[sys.executable,'-u',b['providerFeedPath'],
             '--mode','disabled-rehearsal','--interval','15','--max-seconds',str(max_seconds),
             '--workbench',b['laneWrapper'],'--worker-inventory',value['workerInventory'],
             '--kubeconfig',value['workerKubeconfig'],'--status-file',b['receiptPath'],
             '--run-context',str(Path(value['laneRoot'])/'run-context.json'),
-            '--contract-dir',b['contractDir']],
+            '--contract-dir',b['contractDir']]
+        if mode == 'no-scale':argv += ['--no-scale-target',encode(b['target']).decode('ascii')]
+        self.feed=subprocess.Popen(argv,
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             start_new_session=True,close_fds=True,env=env)
         self.state='active'; self._next_receipt(1)
@@ -275,9 +305,69 @@ class Controller:
         try:
             require(self.state == 'new')
             require(load_bindings(self.binding_path) == self.bindings,'source')
-            self._start('no-scale',75)
+            self._no_scale_admission()
+            self._start('no-scale',180)
             self._baseline_collector()
             return copy.deepcopy(self.receipt)
+        except BaseException:
+            self.close(); raise
+
+    def _no_scale_admission(self):
+        now=self._china_now()
+        # 120s startup + 180s feed + 60s cleanup before the 22:30 stop.
+        require(now < now.replace(hour=22,minute=24,second=0,microsecond=0),'timeout')
+
+    def stop_no_scale(self, verdict_result):
+        """One sealed verdict, one durable stop, then the exact feed's clean exit."""
+        try:
+            require(self.mode == 'no-scale' and self.state == 'active' and
+                    not self.stop_attempted and self.collector_exit is not None and
+                    self.verdict_result is not None and verdict_result == self.verdict_result,'incomplete')
+            self._live(); require(isinstance(self.feed,Popen),'child')
+            proof=Journal(Path(self.bindings['laneRoot'])).lane_verdict()
+            require(proof == self.verdict_proof and proof['payload'] == verdict_result and
+                    proof['runId'] == self.client.run_id and
+                    proof['feedSession'] == self.receipt['feedSession'] and
+                    proof['sequence'] < self.receipt['sequence'] and
+                    proof['collectorExit']['payload'] == self.collector_exit,'source')
+            receipt=read_json(self.bindings['laneBindings']['receiptPath'])
+            # Stop uses the finalization freshness contract; the one-second
+            # action-admission mtime rule still applies to every lane call.
+            require(type(receipt) is dict and set(receipt) == lane.RECEIPT_FIELDS and
+                    receipt['feedSession'] == self.receipt['feedSession'] and
+                    receipt['mode'] == 'disabled-rehearsal' and
+                    type(receipt['sequence']) is int and receipt['sequence'] >= self.receipt['sequence'] and
+                    type(receipt['desired']) is int and receipt['desired'] == 2 and receipt['rosterSha256'] ==
+                    roster_sha(original_roster(self.bindings['laneBindings']['target']['originalInstanceIds'])) and
+                    lane.finite_number(receipt['observedAt']) and 0 <= time.time()-receipt['observedAt'] < 30,'receipt')
+            root=Path(self.bindings['captureRoot'])
+            require(Path(self.bindings['laneBindings']['receiptPath']).parent == root,'configuration')
+            intent=dict(schemaVersion=1,runId=self.client.run_id,feedSession=receipt['feedSession'],
+                minimumSequence=receipt['sequence'],verdictSha256=verdict_result['verdictSha256'])
+            validate_no_scale_stop(intent)
+            self.stop_attempted=True
+            save_once(root,NO_SCALE_STOP_INTENT,intent,atomic=True)
+            try: code=self.feed.wait(timeout=30.)
+            except subprocess.TimeoutExpired: raise Refused('timeout') from None
+            polled=self.feed.poll()
+            require(type(code) is int and code == 0 and type(polled) is int and polled == code,'child')
+            self.client._active()
+            require(encode(read_json(root/NO_SCALE_STOP_INTENT,publication_marker=True)) == encode(intent),'receipt')
+            final=read_json(self.bindings['laneBindings']['receiptPath'])
+            require(type(final) is dict and set(final) == lane.RECEIPT_FIELDS and
+                    final['feedSession'] == receipt['feedSession'] and
+                    final['mode'] == 'disabled-rehearsal' and type(final['desired']) is int and final['desired'] == 2 and
+                    type(final['sequence']) is int and receipt['sequence'] <= final['sequence'] <= receipt['sequence']+1 and
+                    final['rosterSha256'] == roster_sha(original_roster(self.bindings['laneBindings']['target']['originalInstanceIds'])) and
+                    lane.finite_number(final['observedAt']) and 0 <= time.time()-final['observedAt'] < 30,'receipt')
+            ack=read_json(root/NO_SCALE_STOP_ACK,publication_marker=True)
+            require(encode(ack) == encode(no_scale_stop_ack(intent,final)),'receipt')
+            exit_=dict(pid=self.feed.pid,exitCode=code,category='ok',feedSession=final['feedSession'],sequence=final['sequence'])
+            self.receipt=copy.deepcopy(final)
+            self.no_scale_stop=dict(intent=intent,ack=ack,receipt=copy.deepcopy(final),feedExit=copy.deepcopy(exit_))
+            return exit_
+        except (OSError,ValueError,KeyError,TypeError):
+            self.close(); raise Refused('receipt') from None
         except BaseException:
             self.close(); raise
 
@@ -661,6 +751,8 @@ class Controller:
                     0 <= time.time()-final['observedAt'] < 30,'receipt')
             require(feed_exit['feedSession'] == final['feedSession'] and
                     feed_exit['sequence'] == final['sequence'],'receipt')
+            require(assessment['status'] != 'PASS' or self.no_scale_stop is not None and
+                    self.no_scale_stop['feedExit'] == feed_exit and self.no_scale_stop['receipt'] == final,'incomplete')
             require(code == 0 or assessment['status'] != 'PASS','child')
             require(feed_exit['category'] == 'ok' or assessment['status'] != 'PASS','child')
             snapshot=self.client.finish(self.feed,copy.deepcopy(feed_exit),copy.deepcopy(assessment))

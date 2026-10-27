@@ -3,7 +3,8 @@ import argparse
 import copy
 import hashlib
 from capture_window import InventoryMode
-from pgcat_lane_protocol import roster_sha
+from pgcat_lane_protocol import (roster_sha, encode, target_valid, original_roster,
+    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK, Refused)
 import ipaddress
 import json
 import math
@@ -484,11 +485,13 @@ def write_private_publication(contract_dir, context, session, sequence, observed
         os.close(folder)
 
 
-def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monotonic, sleep=time.sleep):
+def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monotonic, sleep=time.sleep, stop=None):
     require(type(interval) is int and 1 <= interval <= 15 and type(max_seconds) is int and 1 <= max_seconds <= 5400)
     started = monotonic()
     runtime_end = started + max_seconds
     while monotonic() < runtime_end:
+        if stop is not None and stop():
+            return
         tick = monotonic()
         deadline = Deadline(min(tick + interval, runtime_end), monotonic=monotonic)
         try:
@@ -500,6 +503,8 @@ def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monot
             raise
         except Exception:
             raise FeedStop('loop') from None
+        if stop is not None and stop():
+            return
         delay = min(tick + interval, runtime_end) - monotonic()
         if delay > 0:
             sleep(delay)
@@ -544,6 +549,67 @@ class Operator:
                     inventory.parent.name == 'run' and
                     inventory.parent.parent == contract.parent)
             self.run_context = validate_run_context(context_path.parent, context_path)
+        self.no_scale_target = None
+        self.stop_ack = None
+        raw_target = getattr(args, 'no_scale_target', None)
+        if raw_target is not None:
+            try:
+                require(self.mode == 'disabled-rehearsal' and self.run_context is not None
+                        and self.status_file is not None)
+                require(type(args.interval) is int and args.interval == 15 and
+                        type(args.max_seconds) is int and args.max_seconds == 180)
+                target = json.loads(raw_target, object_pairs_hook=_unique_pairs)
+                target_valid(target)
+                original_roster(target['originalInstanceIds'])
+                require(target['scalingGroupId'] == GROUP_ID and target['nlbServerGroupId'] == SERVER_GROUP_ID
+                        and target['workerId'] == WORKER_ID and target['regionId'] == REGION)
+                require(hashlib.sha256(encode(target)).hexdigest() == self.run_context['targetSha256'])
+                for name in (NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK):
+                    require(not os.path.lexists(self.status_file.parent/name))
+                self.no_scale_target = target
+            except (Refused, ValueError, TypeError, KeyError):
+                raise FeedStop('startup') from None
+
+    def exact_no_scale(self, value):
+        if self.no_scale_target is not None:
+            require(type(value.get('desired')) is int and value['desired'] == 2 and
+                    {key:value.get(key) for key in original_roster(self.no_scale_target['originalInstanceIds'])}
+                    == original_roster(self.no_scale_target['originalInstanceIds']))
+
+    def stop_no_scale(self):
+        """Check at both tick boundaries, then acknowledge the actual last receipt."""
+        if self.no_scale_target is None:
+            return False
+        from pgcat_lane_supervisor import read_json, save_once
+        path = self.status_file.parent/NO_SCALE_STOP_INTENT
+        try:
+            if not os.path.lexists(path):
+                require(self.stop_ack is None)
+                return False
+            # This local stop boundary is outside a provider publication. A
+            # request arriving during sleep must not inherit the expired tick.
+            self.deadline = None
+            self.verify_run_context()
+            intent = read_json(path, publication_marker=True)
+            validate_no_scale_stop(intent)
+            require(intent['runId'] == self.run_context['runId'] and
+                    intent['feedSession'] == self.feedSession and
+                    intent['minimumSequence'] <= self.sequence <= intent['minimumSequence']+1)
+            receipt = read_json(self.status_file)
+            require(receipt['sequence'] == self.sequence and receipt['desired'] == 2 and
+                    receipt['mode'] == 'disabled-rehearsal' and
+                    receipt['rosterSha256'] == roster_sha(original_roster(self.no_scale_target['originalInstanceIds'])))
+            ack = no_scale_stop_ack(intent, receipt)
+            if self.stop_ack is None:
+                save_once(path.parent, NO_SCALE_STOP_ACK, ack, atomic=True)
+                self.stop_ack = ack
+            require(encode(self.stop_ack) == encode(ack) and
+                    encode(read_json(path.parent/NO_SCALE_STOP_ACK, publication_marker=True)) == encode(ack))
+            self.stopped = True
+            return True
+        except (Refused, OSError, ValueError, TypeError, KeyError):
+            self.stopped = True
+            raise FeedStop('loop') from None
 
     def verify_run_context(self):
         if self.run_context is not None:
@@ -618,10 +684,12 @@ class Operator:
             now = datetime.now(timezone.utc)
             group = self.fetch_group()
             allowance = self.departures_for(group.get('DesiredCapacity'))
-            return snapshot(self.fetch_ess,lambda:group,self.fetch_ecs,self.fetch_nlb,
+            value = snapshot(self.fetch_ess,lambda:group,self.fetch_ecs,self.fetch_nlb,
                             group_id=GROUP_ID,server_group_id=SERVER_GROUP_ID,now=now,
                             known_ids=self.known_ids,allowed_departures=allowance,
                             required_address_ids=self.required_address_ids)
+            self.exact_no_scale(value)
+            return value
         except FeedStop:
             raise
         except Exception:
@@ -713,6 +781,10 @@ class Operator:
             self.verify_run_context()
             require(value.get('mode', self.mode) == self.mode)
             require(value.get('feedSession', self.feedSession) == self.feedSession)
+            self.exact_no_scale(value)
+            if self.no_scale_target is not None:
+                require(tuple(sorted(value['privateAddresses'].items())) == self.previous and
+                        [node for node,_ in self.previous] == self.no_scale_target['originalInstanceIds'])
             candidate = dict(value, feedSession=self.feedSession, sequence=self.sequence + 1)
             if self.mode == 'disabled-rehearsal':candidate['mode'] = self.mode
             mode_state = copy.deepcopy(self.inventory_mode)
@@ -780,6 +852,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode',choices=('full-replacement','disabled-rehearsal'),default='full-replacement',
                         help='bind this feed to the full replacement or disabled 2-to-3-to-2 rehearsal')
+    parser.add_argument('--no-scale-target',help='fixed address-free target, only for the finite no-scale proof')
     parser.add_argument('--interval',type=int,default=15)
     parser.add_argument('--max-seconds',type=int,default=5400)
     parser.add_argument('--listener-id',default=LISTENER_ID)
@@ -797,8 +870,11 @@ def main():
         require(args.worker_inventory.startswith('/') and args.kubeconfig.startswith('/') and args.worker_inventory != args.kubeconfig)
         operator = Operator(args)
         operator.previous = operator.existing_targets()
+        if operator.no_scale_target is not None:
+            require([node for node,_ in operator.previous] == operator.no_scale_target['originalInstanceIds'])
         operator.stage = 'loop'
-        run_loop(operator.read,operator.write,interval=args.interval,max_seconds=args.max_seconds)
+        run_loop(operator.read,operator.write,interval=args.interval,max_seconds=args.max_seconds,
+                 **({'stop':operator.stop_no_scale} if operator.no_scale_target is not None else {}))
     except FeedStop as error:
         parser.exit(1,str(error)+'\n')
     except Exception:

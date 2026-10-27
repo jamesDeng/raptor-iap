@@ -21,7 +21,7 @@ import uuid
 from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
     read_private, read_request, write_all, monotonic, NO_SCALE_ACTIONS,
     roster_sha, expected_roster)
-from pgcat_lane_actions import ActionCatalog, validate_bindings
+from pgcat_lane_actions import ActionCatalog, validate_bindings, unique
 import pgcat_workbench_lane as lane
 
 GLOBAL_ROOT = Path('/private/tmp/pgcat-lane-'+str(os.getuid()))
@@ -62,7 +62,7 @@ def read_json(path, publication_marker=False):
     folder=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try:
         if publication_marker: os.fsync(folder)
-        return json.loads(read_private(folder,path.name,8192,publication_marker=publication_marker).decode('ascii'))
+        return json.loads(read_private(folder,path.name,8192,publication_marker=publication_marker).decode('ascii'),object_pairs_hook=unique)
     finally: os.close(folder)
 
 
