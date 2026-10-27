@@ -108,7 +108,7 @@ class Controller:
     def _live(self):
         require(self.state == 'active' and self.feed is not None and self.feed.poll() is None,'child')
 
-    def _next_receipt(self, minimum):
+    def _next_receipt(self, minimum, observed_after=None):
         deadline=monotonic()+45.
         b=self.bindings['laneBindings']; session=self.receipt['feedSession'] if self.receipt else None
         while monotonic() < deadline:
@@ -123,8 +123,11 @@ class Controller:
             require(current['mode'] == 'disabled-rehearsal' and type(current['desired']) is int
                     and current['desired'] == 2,'receipt')
             require(type(current['sequence']) is int and current['sequence'] > 0,'receipt')
-            # Older unchanged publications are normal while waiting for the next tick.
-            if current['sequence'] >= minimum:
+            require(lane.finite_number(current['observedAt']),'receipt')
+            # A higher sequence can have been observed during the worker call.
+            # Only a later observation establishes post-call provider progress.
+            if (current['sequence'] >= minimum and
+                    (observed_after is None or current['observedAt'] > observed_after)):
                 try:
                     _,fresh,_=lane.read_receipt(b['receiptPath'],current['feedSession'],minimum)
                 except lane.Refused:
@@ -146,6 +149,7 @@ class Controller:
             deadline=min(started+5.,started+receipt['observedAt']+12.-time.time())
             require(deadline > started,'timeout')
             result=self.client.call(action,receipt,float(deadline))
+            completed_at=time.time()
             self._live(); require(monotonic() < deadline,'timeout')
             validate_result(result)
             require(result['state'] == 'complete' and result['category'] == 'ok','incomplete')
@@ -162,7 +166,7 @@ class Controller:
                 if self.collector_identity is not None:
                     require(payload['identity'] == self.collector_identity,'child')
                 self.collector_identity=copy.deepcopy(payload['identity'])
-            self._next_receipt(receipt['sequence']+1)
+            self._next_receipt(receipt['sequence']+1,observed_after=completed_at)
             return copy.deepcopy(payload)
         except BaseException:
             self.close(); raise

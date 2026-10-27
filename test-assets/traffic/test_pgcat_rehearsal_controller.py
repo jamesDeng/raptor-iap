@@ -49,11 +49,13 @@ class ControllerTests(unittest.TestCase):
         self.client = Mock(); self.client.call.side_effect = self.call
         self.client.finish.side_effect = lambda *args: dict(runState='finished',assessment=copy.deepcopy(args[2]))
         self.auto_publish = True; self.die_on_call = False; self.result_override = None
+        self.pending_publish = False; self.wall = time.time()
         self.addCleanup(patch.stopall)
         patch.object(self.module.LaneClient, 'start', side_effect=self.start_client).start()
         self.spawn = patch.object(self.module.subprocess, 'Popen', side_effect=self.start_feed).start()
         patch.object(self.module, 'monotonic', side_effect=lambda:self.clock).start()
         patch.object(self.module.time, 'sleep', side_effect=self.sleep).start()
+        patch.object(self.module.time, 'time', side_effect=lambda:self.wall).start()
 
     def write_binding(self):
         self.manifest.write_text(json.dumps(self.binding)); self.manifest.chmod(0o600)
@@ -64,9 +66,13 @@ class ControllerTests(unittest.TestCase):
         p.write_text(json.dumps(dict(feedSession=session or self.session, sequence=self.seq,
             desired=desired, mode='disabled-rehearsal', observedAt=time.time())))
         p.chmod(0o600)
+        os.utime(p,(self.wall,self.wall))
 
     def sleep(self, seconds):
-        self.clock += seconds
+        self.clock += seconds; self.wall += seconds
+        if self.pending_publish:
+            self.pending_publish = False
+            self.publish()
 
     def start_client(self, bindings, mode, root):
         self.events.append(('client', mode)); self.assertEqual(mode, 'no-scale')
@@ -78,7 +84,7 @@ class ControllerTests(unittest.TestCase):
     def call(self, action, receipt, deadline):
         self.events.append(('call',action,receipt['sequence'],deadline))
         if self.die_on_call: self.feed.poll.return_value = 1
-        if self.auto_publish: self.publish()
+        if self.auto_publish: self.pending_publish = True
         payload = {'baseline-start':dict(status='STARTED',phase='baseline'),
             'baseline-status':dict(status='PREPARED',phase='baseline'),
             'collector-launch':dict(status='LAUNCHED'),
@@ -149,8 +155,24 @@ class ControllerTests(unittest.TestCase):
         calls=[e for e in self.events if e[0]=='call']
         self.assertEqual([e[1] for e in calls],['baseline-start','baseline-status','collector-launch','collector-status'])
         self.assertEqual([e[2] for e in calls],[1,2,3,4]); self.assertEqual(controller.receipt['sequence'],5)
-        self.assertTrue(all(1000 < e[3] <= 1005 for e in calls))
+        for index,event in enumerate(calls):
+            self.assertAlmostEqual(event[3],1005.+index*.05)
         with self.assertRaises(Refused): controller.start_no_scale()
+
+    def test_successor_must_be_observed_strictly_after_call_completion(self):
+        controller=self.controller(); controller.start_no_scale()
+        for during_call_delay in (.1,0.):
+            with self.subTest(during_call_delay=during_call_delay):
+                before=controller.receipt['sequence']
+                def publish_during_call(*args):
+                    result=self.call(*args)  # Schedules the real post-call publication.
+                    self.publish()  # Higher sequence, but before/equal to completion.
+                    self.wall += during_call_delay
+                    return result
+                self.client.call.side_effect=publish_during_call
+                controller.call_no_scale('collector-status')
+                self.assertEqual(controller.receipt['sequence'],before+2)
+                self.assertFalse(self.pending_publish)
 
     def test_no_successor_blocks_all_later_calls(self):
         self.auto_publish=False; controller=self.controller()
