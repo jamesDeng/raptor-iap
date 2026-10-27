@@ -936,3 +936,85 @@ record and private evidence for exact feed/child/process/credential cleanup;
 never clear them or start another run based only on terminal text. No-scale
 proof cannot certify the later paid 3-to-2 reconciliation. Paid rehearsal and
 full replacement remain blocked until their separate existing gates pass.
+
+### Tracked guarded paid start (2026-10-27; local implementation only)
+
+`Controller.start_rehearsal(preflight_path)` adds the paid start boundary. This
+is not permission to run it: independent source/binding review, separate
+action-time authorization, a clean no-scale timing proof, staged recovery and
+the earlier human/evidence gates remain mandatory. Keep Gateway
+`replacementEnabled=false` and both historical scratch review flags false.
+Task 5 stages nothing and provides no paid rehearsal PASS.
+
+The argument names a fresh private mode-0600 `preflight.json` in a mode-0700
+directory. The receipt has exactly these fields, rejects duplicate JSON keys,
+and must be generated at action time from actual observations in Task 7:
+
+- `target`: exactly the reviewed `laneBindings.target`.
+- `checkedAt`, `expiresAt`: UTC ISO timestamps; age is nonnegative and under
+  300 seconds, expiry is after the check and at most 300 seconds later.
+- `gateway`: exactly `{replacementEnabled:false,idle:true}`.
+- `clients`: exactly `{ready:2,sqlFailures:0,identitySha256:<SHA-256>}`.
+- `metrics`: exactly `{fresh:true,complete:true}`; `singleOperator`: `true`.
+- `noScaleProof`: exactly `{status:"PASS",evidenceSha256:<SHA-256>}`.
+- `cost`: exactly `{day,net,reserve,allowance,ceiling}`. The day is today's
+  Shanghai date; amounts are finite, nonnegative, ceiling is CNY 1,800 and
+  `net + reserve + allowance <= ceiling`. Reuse the day's billing observation;
+  this code does not query billing.
+- `bindingSha256`: SHA-256 of the exact private binding file bytes.
+
+This is an operator evidence receipt, not independent proof of live state.
+Preserve its underlying evidence and authorization separately; never populate
+it from guessed values, manual success flags or terminal output. It contains no
+credentials, private addresses or raw provider responses. The start validates
+it before any process, then re-reads it unchanged and unexpired immediately
+before the proof, scale-out intent and request. Source hashes and fresh roots
+remain enforced by the existing binding manifest.
+
+Before starting the feed, the controller performs read-only STS account,
+ESS/ECS/NLB snapshot, group desired/min/max and in-progress activity checks via
+the exact bound Alibaba CLI. The exact originals must both be Protected/Healthy
+and Available/Normal NLB backends of weight 100; desired/min are two, max four,
+and no scaling activity may be in progress. The probe timestamp must remain
+under five minutes old at intent and dispatch. Its environment preserves only
+PATH/HOME/locale and the same allowlisted proxy keys as the provider feed.
+Once the feed is live, the controller never makes a direct Alibaba or Workbench
+call: worker actions and the single mutation go through `LaneClient`.
+
+The fresh supervisor uses immutable `disabled-rehearsal` mode. The provider
+feed keeps its 15-second publication interval. At actual feed spawn, its loop
+cap is the smaller of 5,400 seconds and the remaining time to 22:30 Shanghai
+minus a 120-second startup allowance; refuse unless allowance plus at least
+75 seconds fits. The 21:30 paid cutoff is checked before the probe, after it,
+at feed spawn, before intent and immediately before dispatch. **This scheduling
+margin is not a guaranteed 22:30 child exit:** provider initialization precedes
+its loop cap, and process startup/cleanup can overrun. Task 6/7 must own bounded
+feed observation, stop and exact cleanup; do not infer cleanup from this cap.
+
+The fixed sequence is baseline start/status to PREPARED, collector launch and
+identity status, pre-scale start/status to PREPARED, then the same collector's
+status again. Every worker call requires a strictly newer successful same-feed
+publication observed after that call returned. Pre-scale proof must match the
+feed and have a sequence from this pre-scale phase. Write exactly one private
+`{feedSession,sequence}` proof and one exact 2-to-3 `scaleout.intent` using
+O_EXCL plus file/directory fsync; neither can be overwritten. Intent binds
+ModifyScalingGroup, account, group, desired two to three, feed session, current
+sequence and UTC time. Its publication must be under 3.5 seconds old.
+
+Submit `scaleout-two-to-three` once with an absolute 20-second deadline from the
+shared protocol clock. Supervisor durable admission and shared one-use sequence
+reservation remain authoritative. Only a complete journal acknowledgement plus
+a strictly newer desired-three publication observed after ACK returns the
+controller to `scaled-three`. Intermediate desired-two publications cannot
+satisfy that gate. The ACK is not convergence evidence or rehearsal PASS.
+Timeout, malformed/missing ACK, feed/session change, controller or supervisor
+death, or any uncertain worker result leaves the run INCONCLUSIVE. Disconnect
+the owner, retain the bounded feed handle and all private evidence; never retry
+ESS, automatically reconcile/reverse, clear the global active-run record, or
+claim cleanup. The paid continuation/close is the separate Task 6 boundary.
+
+Paid start remains blocked for live use until reviewed close/abort actions exist
+for exact new-node NLB deregistration and the separate ESS 3-to-2 mutation. The
+current fixed supervisor catalog only admits the 2-to-3 mutation; ConfigMap
+`reconcile-close` cannot substitute for either provider operation. Resolve that
+continuation design gap before staging or executing paid mode.

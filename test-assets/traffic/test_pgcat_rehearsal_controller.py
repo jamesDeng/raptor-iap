@@ -294,4 +294,352 @@ class ControllerTests(unittest.TestCase):
         finally: os.close(reader)
 
 
+class PaidStartTests(unittest.TestCase):
+    setUp = ControllerTests.setUp
+    write_binding = ControllerTests.write_binding
+    publish = ControllerTests.publish
+    controller = ControllerTests.controller
+
+    def start_client(self, bindings, mode, root):
+        self.events.append(('client', mode))
+        self.assertEqual(mode, 'disabled-rehearsal')
+        return self.client
+
+    def start_feed(self, args, **kwargs):
+        self.events.append(('feed', args, kwargs)); self.publish(); return self.feed
+
+    def sleep(self, seconds):
+        self.clock += seconds; self.wall += seconds
+        if self.pending_publish:
+            self.pending_publish = False
+            self.publish(desired=3 if getattr(self, 'scaled', False) else 2)
+
+    def call(self, action, receipt, deadline):
+        self.events.append(('call', action, receipt['sequence'], deadline))
+        if self.die_on_call: self.feed.poll.return_value = 1
+        if self.auto_publish: self.pending_publish = True
+        if action == 'scaleout-two-to-three':
+            self.scaled = True
+            payload = dict(requestId='provider-request')
+        elif action.startswith('pre-scale-'):
+            payload = dict(status='STARTED' if action.endswith('start') else 'PREPARED', phase='pre-scale')
+            if action.endswith('status'):
+                payload.update(feedSession=self.session, sequence=receipt['sequence'])
+        else:
+            payload = {'baseline-start':dict(status='STARTED',phase='baseline'),
+                'baseline-status':dict(status='PREPARED',phase='baseline'),
+                'collector-launch':dict(status='LAUNCHED'),
+                'collector-status':dict(status='ALIVE',identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64))}[action]
+        return self.result_override or dict(state='complete',category='ok',payload=payload)
+
+    def prepare(self):
+        from datetime import datetime, timezone
+        self.assertTrue(hasattr(self.module.Controller, 'start_rehearsal'), 'missing guarded paid start')
+        self.wall = datetime(2026,10,27,12,0,tzinfo=timezone.utc).timestamp()
+        iso = lambda t: datetime.fromtimestamp(t,timezone.utc).isoformat()
+        self.preflight = self.base/'preflight.json'
+        self.evidence = dict(target=self.binding['laneBindings']['target'],
+            checkedAt=iso(self.wall), expiresAt=iso(self.wall+299),
+            gateway=dict(replacementEnabled=False,idle=True),
+            clients=dict(ready=2,sqlFailures=0,identitySha256='a'*64),
+            metrics=dict(fresh=True,complete=True),singleOperator=True,
+            noScaleProof=dict(status='PASS',evidenceSha256='b'*64),
+            cost=dict(day='2026-10-27',net=100,reserve=100,allowance=100,ceiling=1800),
+            bindingSha256=hashlib.sha256(self.manifest.read_bytes()).hexdigest())
+        self.write_evidence()
+        self.probe = patch.object(self.module.Controller,'_provider_preflight',return_value=None).start()
+        patch.object(self.module.subprocess,'run',side_effect=AssertionError('direct CLI forbidden')).start()
+        return self.controller()
+
+    def write_evidence(self):
+        self.preflight.write_text(json.dumps(self.evidence)); self.preflight.chmod(0o600)
+
+    def calls(self): return [e for e in self.events if e[0]=='call']
+
+    def test_paid_exact_once_proof_intent_and_successor(self):
+        c=self.prepare(); result=c.start_rehearsal(self.preflight)
+        self.assertEqual(c.state,'scaled-three'); self.assertEqual(result['desired'],3)
+        calls=self.calls()
+        self.assertEqual([e[1] for e in calls],['baseline-start','baseline-status','collector-launch',
+            'collector-status','pre-scale-start','pre-scale-status','collector-status','scaleout-two-to-three'])
+        self.assertEqual([e[2] for e in calls],list(range(1,9)))
+        self.assertEqual(result['sequence'],9)
+        self.assertAlmostEqual(calls[-1][3],1020.35)
+        b=self.binding['laneBindings']; intent=json.loads(Path(b['scaleoutIntentPath']).read_text())
+        self.assertEqual({k:v for k,v in intent.items() if k!='at'},dict(action='ModifyScalingGroup',
+            account='1360282071200743',group='asg-t4necb4dfmu6o3z2rn0g',fromDesired=2,toDesired=3,
+            feedSession=self.session,sequence=8))
+        self.assertEqual(json.loads(Path(b['preScaleProofPath']).read_text()),dict(feedSession=self.session,sequence=6))
+        for key in ('scaleoutIntentPath','preScaleProofPath'):
+            self.assertEqual(Path(b[key]).stat().st_mode & 0o777,0o600)
+        args=self.events[1][1]
+        self.assertEqual(args[args.index('--max-seconds')+1],'5400')
+        with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+        self.assertEqual(len(self.calls()),8)
+
+    def test_paid_refuses_invalid_operator_receipt_before_spawn(self):
+        c=self.prepare()
+        for key,value in [('singleOperator',False),('bindingSha256','0'*64),('expiresAt','2026-10-27T11:00:00+00:00'),
+                          ('gateway',dict(replacementEnabled=True,idle=True)),('noScaleProof',dict(status='FAIL',evidenceSha256='b'*64))]:
+            with self.subTest(key=key):
+                original=self.evidence[key]; self.evidence[key]=value; self.write_evidence()
+                with self.assertRaises(Refused): self.controller().start_rehearsal(self.preflight)
+                self.assertEqual(self.events,[])
+                self.evidence[key]=original
+
+    def test_paid_dead_feed_and_uncertain_worker_never_reach_ess(self):
+        for fault in ('dead','uncertain','session','reused'):
+            with self.subTest(fault=fault):
+                if self.capture.exists():
+                    import shutil
+                    shutil.rmtree(self.capture)
+                c=self.prepare(); self.feed.poll.return_value=None
+                def call(*args):
+                    result=self.call(*args)
+                    if args[0]=='pre-scale-status':
+                        if fault=='dead': self.feed.poll.return_value=1
+                        elif fault=='uncertain': return dict(state='uncertain',category='timeout',payload={})
+                        elif fault=='session': result['payload']['feedSession']=str(uuid.uuid4())
+                        else: self.pending_publish=False; self.auto_publish=False
+                    return result
+                self.client.call.side_effect=call
+                with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+                self.assertNotIn('scaleout-two-to-three',[e[1] for e in self.calls()])
+                self.assertEqual(c.state,'uncertain'); self.assertTrue(self.client.close.called)
+                self.auto_publish=True
+
+    def test_cutoff_and_expiry_before_intent_and_dispatch(self):
+        for point in ('before-intent','before-dispatch','expiry'):
+            with self.subTest(point=point):
+                if self.capture.exists():
+                    import shutil
+                    shutil.rmtree(self.capture)
+                c=self.prepare(); self.events=[]
+                original_save=self.module.save_once
+                def save(root,name,value,*args,**kwargs):
+                    result=original_save(root,name,value,*args,**kwargs)
+                    if name==Path(self.binding['laneBindings']['scaleoutIntentPath']).name:
+                        if point=='before-dispatch': self.wall+=5401
+                    return result
+                def call(*args):
+                    result=self.call(*args)
+                    if args[0]=='collector-status' and len(self.calls())==7:
+                        if point=='before-intent': self.wall+=5401
+                        if point=='expiry': self.wall+=300
+                    return result
+                self.client.call.side_effect=call
+                with patch.object(self.module,'save_once',side_effect=save):
+                    with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+                self.assertNotIn('scaleout-two-to-three',[e[1] for e in self.calls()])
+                self.assertEqual(Path(self.binding['laneBindings']['scaleoutIntentPath']).exists(),point=='before-dispatch')
+
+    def test_private_evidence_rejects_duplicate_keys(self):
+        c=self.prepare()
+        raw=self.preflight.read_text()
+        self.preflight.write_text('{"singleOperator":false,'+raw[1:])
+        with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+        self.assertEqual(self.events,[])
+
+    def test_feed_loop_reserves_startup_margin_at_actual_spawn(self):
+        from datetime import datetime, timezone
+        c=self.prepare()
+        self.wall=datetime(2026,10,27,13,29,tzinfo=timezone.utc).timestamp()
+        self.evidence['checkedAt']=datetime.fromtimestamp(self.wall,timezone.utc).isoformat()
+        self.evidence['expiresAt']=datetime.fromtimestamp(self.wall+299,timezone.utc).isoformat()
+        self.write_evidence()
+        def client(*args):
+            self.wall+=2
+            return self.start_client(*args)
+        with patch.object(self.module.LaneClient,'start',side_effect=client):
+            c.start_rehearsal(self.preflight)
+        args=self.events[1][1]
+        self.assertEqual(args[args.index('--max-seconds')+1],'3538')
+
+    def test_operator_receipt_cost_client_metrics_and_time_checks(self):
+        c=self.prepare()
+        mutations=[('cost',dict(self.evidence['cost'],net=1801)),
+            ('cost',dict(self.evidence['cost'],reserve=-1)),
+            ('cost',dict(self.evidence['cost'],allowance=float('nan'))),
+            ('cost',dict(self.evidence['cost'],day='2026-10-26')),
+            ('clients',dict(self.evidence['clients'],ready=True)),
+            ('clients',dict(self.evidence['clients'],sqlFailures=1)),
+            ('clients',dict(self.evidence['clients'],identitySha256='bad')),
+            ('metrics',dict(fresh=True,complete=False)),
+            ('checkedAt','2026-10-27T12:01:00+00:00'),
+            ('expiresAt','2026-10-27T12:06:00+00:00'),
+            ('checkedAt','2026-10-27T20:00:00+08:00')]
+        for key,value in mutations:
+            with self.subTest(key=key,value=value):
+                original=self.evidence[key]; self.evidence[key]=value; self.write_evidence()
+                with self.assertRaises(Refused): self.controller().start_rehearsal(self.preflight)
+                self.assertEqual(self.events,[]); self.evidence[key]=original
+
+    def test_paid_successor_during_call_is_insufficient(self):
+        c=self.prepare()
+        def during(*args):
+            result=self.call(*args)
+            if args[0]=='pre-scale-status':
+                self.publish(); self.pending_publish=False; self.auto_publish=False
+            return result
+        self.client.call.side_effect=during
+        with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+        self.assertNotIn('scaleout-two-to-three',[e[1] for e in self.calls()])
+
+    def test_unknown_ack_and_missing_post_ack_publication_never_retry(self):
+        for fault in ('unknown','late','no-publication','changed-session'):
+            with self.subTest(fault=fault):
+                if self.capture.exists():
+                    import shutil
+                    shutil.rmtree(self.capture)
+                c=self.prepare(); self.events=[]; self.scaled=False; self.auto_publish=True
+                def faulty(*args):
+                    result=self.call(*args)
+                    if args[0]=='scaleout-two-to-three':
+                        if fault=='unknown': return dict(state='uncertain',category='timeout',payload={})
+                        if fault=='late': self.clock+=20
+                        if fault=='no-publication': self.pending_publish=False
+                        if fault=='changed-session': self.publish(session=str(uuid.uuid4()),desired=3)
+                    return result
+                self.client.call.side_effect=faulty
+                with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+                with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+                self.assertEqual(c.state,'uncertain')
+                self.assertEqual([e[1] for e in self.calls()].count('scaleout-two-to-three'),1)
+                self.assertNotIn('reconcile-close',[e[1] for e in self.calls()])
+
+    def test_paid_controller_process_death_leaves_intent_and_eof(self):
+        c=self.prepare(); reader,writer=os.pipe(); pid=os.fork()
+        if pid==0:
+            os.close(reader)
+            def die(*args):
+                result=self.call(*args)
+                if args[0]=='scaleout-two-to-three':
+                    (self.capture/'fake-admitted').write_text('durable admission')
+                    os._exit(9)
+                return result
+            self.client.call.side_effect=die
+            try: c.start_rehearsal(self.preflight)
+            finally: os._exit(10)
+        os.close(writer)
+        try:
+            _,status=os.waitpid(pid,0)
+            self.assertEqual(os.waitstatus_to_exitcode(status),9)
+            self.assertEqual(os.read(reader,1),b'')
+            self.assertTrue((self.capture/'fake-admitted').exists())
+            self.assertTrue(Path(self.binding['laneBindings']['scaleoutIntentPath']).exists())
+            self.assertFalse((self.capture/'lane'/'finish.ready').exists())
+            with self.assertRaises(Refused): self.controller()
+        finally: os.close(reader)
+
+    def test_existing_proof_or_intent_cannot_be_overwritten(self):
+        for key in ('preScaleProofPath','scaleoutIntentPath'):
+            with self.subTest(key=key):
+                if self.capture.exists():
+                    import shutil
+                    shutil.rmtree(self.capture)
+                c=self.prepare(); self.events=[]
+                path=Path(self.binding['laneBindings'][key])
+                def call(*args):
+                    result=self.call(*args)
+                    if args[0]=='pre-scale-status':
+                        path.write_text('existing evidence'); path.chmod(0o600)
+                    return result
+                self.client.call.side_effect=call
+                with self.assertRaises(FileExistsError): c.start_rehearsal(self.preflight)
+                self.assertEqual(path.read_text(),'existing evidence')
+                self.assertNotIn('scaleout-two-to-three',[e[1] for e in self.calls()])
+
+    def test_stale_pre_scale_proof_and_changed_provider_session_refuse(self):
+        for fault in ('old-proof','session','stale-publication'):
+            with self.subTest(fault=fault):
+                if self.capture.exists():
+                    import shutil
+                    shutil.rmtree(self.capture)
+                c=self.prepare(); self.events=[]
+                def call(*args):
+                    result=self.call(*args)
+                    if args[0]=='pre-scale-status':
+                        if fault=='old-proof': result['payload']['sequence']=1
+                        if fault=='session': self.publish(session=str(uuid.uuid4()))
+                        if fault=='stale-publication':
+                            self.publish(); self.wall+=30; self.pending_publish=False
+                    return result
+                self.client.call.side_effect=call
+                with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+                self.assertNotIn('scaleout-two-to-three',[e[1] for e in self.calls()])
+
+    def test_initial_paid_cutoff_refuses_before_probe_or_spawn(self):
+        from datetime import datetime, timezone
+        c=self.prepare(); self.wall=datetime(2026,10,27,13,30,tzinfo=timezone.utc).timestamp()
+        self.evidence['checkedAt']=datetime.fromtimestamp(self.wall,timezone.utc).isoformat()
+        self.evidence['expiresAt']=datetime.fromtimestamp(self.wall+299,timezone.utc).isoformat()
+        self.write_evidence()
+        with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+        self.assertFalse(self.probe.called); self.assertEqual(self.events,[])
+
+    def test_scaleout_crash_requires_recovery(self):
+        c=self.prepare()
+        def crash(*args):
+            result=self.call(*args)
+            if args[0]=='scaleout-two-to-three': raise BrokenPipeError('supervisor died after admission')
+            return result
+        self.client.call.side_effect=crash
+        with self.assertRaises(BrokenPipeError): c.start_rehearsal(self.preflight)
+        self.assertEqual(c.state,'uncertain')
+        with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+        self.assertEqual([e[1] for e in self.calls()].count('scaleout-two-to-three'),1)
+        self.assertFalse(self.feed.kill.called)
+        self.assertNotIn('reconcile-close',[e[1] for e in self.calls()])
+
+
+class ProviderPreflightTests(unittest.TestCase):
+    setUp = ControllerTests.setUp
+    write_binding = ControllerTests.write_binding
+    controller = ControllerTests.controller
+    start_client = ControllerTests.start_client
+    start_feed = ControllerTests.start_feed
+    call = ControllerTests.call
+    sleep = ControllerTests.sleep
+    def test_provider_probe_checks_exact_fleet_account_and_activity(self):
+        original_operator=self.module.provider.Operator
+        ids=['original-one','original-two']
+        good=dict(desired=2,members=ids,healthyRegistered=ids,
+            memberStates=[dict(id=i,lifecycle='Protected',health='Healthy',addressKnown=True) for i in ids],
+            backendStates=[dict(id=i,status='Available',weight=100,listenerHealth='Normal') for i in ids])
+        group=dict(ScalingGroupId='asg-t4necb4dfmu6o3z2rn0g',DesiredCapacity=2,MinSize=2,MaxSize=4)
+        for fault in ('none','account','roster','protected','nlb','group','activity'):
+            with self.subTest(fault=fault):
+                c=self.controller(); snap=copy.deepcopy(good); g=copy.deepcopy(group); seen=[]; environments=[]
+                if fault=='roster': snap['members']=['other','original-two']
+                if fault=='protected': snap['memberStates'][0]['lifecycle']='InService'
+                if fault=='nlb': snap['backendStates'][0]['listenerHealth']='Unhealthy'
+                if fault=='group': g['MinSize']=1
+                def factory(args):
+                    probe=original_operator(args)
+                    probe.read=lambda:snap; probe.fetch_group=lambda:g
+                    return probe
+                def run(argv,**kwargs):
+                    self.assertIsNone(c.feed); seen.append(argv)
+                    environments.append(kwargs['env'])
+                    self.assertEqual(argv[0],str(self.cli))
+                    if argv[1:3]==['sts','GetCallerIdentity']:
+                        value=dict(AccountId='wrong' if fault=='account' else '1360282071200743')
+                    else:
+                        self.assertEqual(argv[1:3],['ess','DescribeScalingActivities'])
+                        value=dict(PageNumber=1,TotalCount=1 if fault=='activity' else 0,
+                                   ScalingActivities=dict(ScalingActivity=[]))
+                    return SimpleNamespace(stdout=json.dumps(value))
+                from types import SimpleNamespace
+                with patch.dict(os.environ,HTTPS_PROXY='http://fake-proxy.invalid:1',ALIYUN_ACCESS_KEY_SECRET='test-never-forward'), patch.object(self.module.provider,'Operator',side_effect=factory), patch.object(self.module.subprocess,'run',side_effect=run):
+                    if fault=='none': c._provider_preflight()
+                    else:
+                        with self.assertRaises(Refused): c._provider_preflight()
+                self.assertTrue(seen)
+                for env in environments:
+                    self.assertEqual(env.get('HTTPS_PROXY'),'http://fake-proxy.invalid:1')
+                    self.assertNotIn('ALIYUN_ACCESS_KEY_SECRET',env)
+                c.feed=self.feed
+                with self.assertRaises(Refused): c._provider_preflight()
+
+
 if __name__ == '__main__': unittest.main()

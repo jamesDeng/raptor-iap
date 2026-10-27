@@ -1,9 +1,11 @@
-"""Tracked no-scale orchestration. Terminal text is never completion evidence.
+"""Tracked guarded rehearsal orchestration. Terminal text is never completion evidence.
 
 No executable CLI entry point: a reviewed private binding and an independent
 assessment are required by the caller. The historical local helper is unused.
 """
 import copy
+from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
 import hashlib
 import json
 import os
@@ -17,8 +19,9 @@ import time
 from pgcat_lane_actions import validate_bindings, unique
 from pgcat_lane_client import LaneClient
 from pgcat_lane_protocol import (Refused, require, private, read_private, identifier,
-    sha, monotonic, validate_result, validate_finish_receipts)
-from pgcat_lane_supervisor import read_json
+    sha, token, monotonic, validate_result, validate_finish_receipts)
+from pgcat_lane_supervisor import read_json, save_once
+import provider_feed as provider
 import pgcat_workbench_lane as lane
 from provider_feed import GROUP_ID, SERVER_GROUP_ID
 
@@ -94,7 +97,7 @@ class Controller:
         self.binding_path=Path(binding_path)
         self.bindings=load_bindings(self.binding_path)
         self.client=None; self.feed=None; self.receipt=None
-        self.state='new'; self.collector_identity=None
+        self.state='new'; self.collector_identity=None; self.mode=None
 
     def close(self):
         """Disconnect the owner on interruption; retain the bounded feed handle.
@@ -108,8 +111,8 @@ class Controller:
     def _live(self):
         require(self.state == 'active' and self.feed is not None and self.feed.poll() is None,'child')
 
-    def _next_receipt(self, minimum, observed_after=None):
-        deadline=monotonic()+45.
+    def _next_receipt(self, minimum, observed_after=None, desired=2, timeout=45.):
+        deadline=monotonic()+timeout
         b=self.bindings['laneBindings']; session=self.receipt['feedSession'] if self.receipt else None
         while monotonic() < deadline:
             self._live()
@@ -121,12 +124,12 @@ class Controller:
             identifier(current['feedSession'])
             require(session is None or current['feedSession'] == session,'receipt')
             require(current['mode'] == 'disabled-rehearsal' and type(current['desired']) is int
-                    and current['desired'] == 2,'receipt')
+                    and current['desired'] in ((2,3) if desired == 3 else (2,)),'receipt')
             require(type(current['sequence']) is int and current['sequence'] > 0,'receipt')
             require(lane.finite_number(current['observedAt']),'receipt')
             # A higher sequence can have been observed during the worker call.
             # Only a later observation establishes post-call provider progress.
-            if (current['sequence'] >= minimum and
+            if (current['desired'] == desired and current['sequence'] >= minimum and
                     (observed_after is None or current['observedAt'] > observed_after)):
                 try:
                     _,fresh,_=lane.read_receipt(b['receiptPath'],current['feedSession'],minimum)
@@ -142,6 +145,14 @@ class Controller:
         """Only harmless fixed actions; each waits for a successful successor."""
         try:
             require(type(action) is str and action in NO_SCALE_ACTIONS)
+            return self._worker_call(action)
+        except BaseException:
+            self.close(); raise
+
+    def _worker_call(self, action):
+        try:
+            require(action in NO_SCALE_ACTIONS or (self.mode == 'disabled-rehearsal'
+                    and action in ('pre-scale-start','pre-scale-status')))
             self._live(); require(self.receipt is not None,'receipt')
             receipt=copy.deepcopy(self.receipt)
             # The same host-wide clock as protocol/runner; never time.monotonic.
@@ -154,7 +165,17 @@ class Controller:
             validate_result(result)
             require(result['state'] == 'complete' and result['category'] == 'ok','incomplete')
             payload=result['payload']
-            if action == 'baseline-start':
+            if action.startswith('pre-scale-'):
+                expected={'status','phase'}
+                statuses=('STARTED',) if action.endswith('start') else ('RUNNING','PREPARED')
+                require(payload.get('status') in statuses and payload.get('phase') == 'pre-scale','parse')
+                if payload['status'] == 'PREPARED':
+                    expected |= {'feedSession','sequence'}
+                    require(payload.get('feedSession') == receipt['feedSession'] and
+                        type(payload.get('sequence')) is int and
+                        self.pre_scale_minimum <= payload['sequence'] <= receipt['sequence'],'receipt')
+                require(set(payload) == expected,'parse')
+            elif action == 'baseline-start':
                 require(payload == dict(status='STARTED',phase='baseline'),'parse')
             elif action == 'baseline-status':
                 require(set(payload) == {'status','phase'} and payload['phase'] == 'baseline'
@@ -171,33 +192,181 @@ class Controller:
         except BaseException:
             self.close(); raise
 
+    def _start(self, mode, max_seconds):
+        self.mode=mode
+        self.state='starting'
+        value=self.bindings; b=value['laneBindings']
+        Path(value['captureRoot']).mkdir(mode=0o700)
+        Path(b['laneIntentDir']).mkdir(mode=0o700)
+        self.client=LaneClient.start(copy.deepcopy(b),mode,Path(value['laneRoot']))
+        env={'PATH':_feed_path(b),
+             'HOME':os.path.expanduser('~'),'LANG':'C','LC_ALL':'C'}
+        for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY',
+                'http_proxy','https_proxy','all_proxy','no_proxy'):
+            if key in os.environ: env[key]=os.environ[key]
+        env.update(PGCAT_LANE_ROLE='provider',PGCAT_LANE_REAL_CLI=b['workbenchCli'],
+                   PGCAT_LANE_LOCK=b['laneLockPath'])
+        if mode == 'disabled-rehearsal':
+            now=self._china_now()
+            require(now < now.replace(hour=21,minute=30,second=0,microsecond=0),'timeout')
+            remaining=int((now.replace(hour=22,minute=30,second=0,microsecond=0)-now).total_seconds())
+            # Reserve two minutes for startup outside provider.run_loop. This
+            # is a conservative scheduling margin, not a hard child exit timer.
+            require(remaining >= 120+75,'timeout')
+            max_seconds=min(max_seconds,remaining-120)
+        self.feed=subprocess.Popen([sys.executable,'-u',b['providerFeedPath'],
+            '--mode','disabled-rehearsal','--interval','15','--max-seconds',str(max_seconds),
+            '--workbench',b['laneWrapper'],'--worker-inventory',value['workerInventory'],
+            '--kubeconfig',value['workerKubeconfig'],'--status-file',b['receiptPath']],
+            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            start_new_session=True,close_fds=True,env=env)
+        self.state='active'; self._next_receipt(1)
+
+    def _baseline_collector(self):
+        self.call_no_scale('baseline-start')
+        while self.call_no_scale('baseline-status')['status'] != 'PREPARED': pass
+        self.call_no_scale('collector-launch')
+        self.call_no_scale('collector-status')
+
     def start_no_scale(self):
         try:
             require(self.state == 'new')
             require(load_bindings(self.binding_path) == self.bindings,'source')
-            self.state='starting'
-            value=self.bindings; b=value['laneBindings']
-            Path(value['captureRoot']).mkdir(mode=0o700)
-            Path(b['laneIntentDir']).mkdir(mode=0o700)
-            self.client=LaneClient.start(copy.deepcopy(b),'no-scale',Path(value['laneRoot']))
-            env={'PATH':_feed_path(b),
-                 'HOME':os.path.expanduser('~'),'LANG':'C','LC_ALL':'C'}
-            for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY',
-                        'http_proxy','https_proxy','all_proxy','no_proxy'):
-                if key in os.environ: env[key]=os.environ[key]
-            env.update(PGCAT_LANE_ROLE='provider',PGCAT_LANE_REAL_CLI=b['workbenchCli'],
-                       PGCAT_LANE_LOCK=b['laneLockPath'])
-            self.feed=subprocess.Popen([sys.executable,'-u',b['providerFeedPath'],
-                '--mode','disabled-rehearsal','--interval','15','--max-seconds','75',
-                '--workbench',b['laneWrapper'],'--worker-inventory',value['workerInventory'],
-                '--kubeconfig',value['workerKubeconfig'],'--status-file',b['receiptPath']],
-                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-                start_new_session=True,close_fds=True,env=env)
-            self.state='active'; self._next_receipt(1)
-            self.call_no_scale('baseline-start')
-            while self.call_no_scale('baseline-status')['status'] != 'PREPARED': pass
-            self.call_no_scale('collector-launch')
+            self._start('no-scale',75)
+            self._baseline_collector()
+            return copy.deepcopy(self.receipt)
+        except BaseException:
+            self.close(); raise
+
+    def _paid_evidence(self, path):
+        private(path.parent,True)
+        folder=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            value=json.loads(read_private(folder,path.name,8192).decode('ascii'),object_pairs_hook=unique)
+        except (ValueError,UnicodeError): raise Refused('parse') from None
+        finally: os.close(folder)
+        require(type(value) is dict and set(value) == {'target','checkedAt','expiresAt',
+            'gateway','clients','metrics','singleOperator','noScaleProof','cost','bindingSha256'})
+        require(value['target'] == self.bindings['laneBindings']['target'],'target')
+        require(value['bindingSha256'] == hashlib.sha256(self.binding_path.read_bytes()).hexdigest(),'source')
+        def utc(text):
+            require(type(text) is str)
+            try: parsed=datetime.fromisoformat(text.replace('Z','+00:00'))
+            except ValueError: raise Refused() from None
+            require(parsed.tzinfo is not None and parsed.utcoffset() == timedelta(0))
+            return parsed.timestamp()
+        checked=utc(value['checkedAt']); expires=utc(value['expiresAt']); now=time.time()
+        require(0 <= now-checked < 300 and checked < expires <= checked+300 and now < expires,'timeout')
+        g=value['gateway']; c=value['clients']; m=value['metrics']; n=value['noScaleProof']; cost=value['cost']
+        require(type(g) is dict and set(g) == {'replacementEnabled','idle'} and
+                g['replacementEnabled'] is False and g['idle'] is True)
+        require(type(c) is dict and set(c) == {'ready','sqlFailures','identitySha256'} and
+                type(c['ready']) is int and c['ready'] == 2 and type(c['sqlFailures']) is int and
+                c['sqlFailures'] == 0 and sha(c['identitySha256']))
+        require(type(m) is dict and set(m) == {'fresh','complete'} and m['fresh'] is True and m['complete'] is True)
+        require(value['singleOperator'] is True)
+        require(type(n) is dict and set(n) == {'status','evidenceSha256'} and n['status'] == 'PASS' and sha(n['evidenceSha256']))
+        require(type(cost) is dict and set(cost) == {'day','net','reserve','allowance','ceiling'})
+        require(all(lane.finite_number(cost[k]) and cost[k] >= 0 for k in ('net','reserve','allowance','ceiling')))
+        require(cost['ceiling'] == 1800 and cost['net']+cost['reserve']+cost['allowance'] <= 1800)
+        require(cost['day'] == self._china_now().date().isoformat())
+        return value
+
+    @staticmethod
+    def _china_now():
+        return datetime.fromtimestamp(time.time(),timezone(timedelta(hours=8)))
+
+    def _paid_gate(self, evidence_path, evidence, probed_at):
+        self._live()
+        require(self._paid_evidence(evidence_path) == evidence,'source')
+        require(0 <= time.time()-probed_at < 300,'timeout')
+        now=self._china_now()
+        require(now < now.replace(hour=21,minute=30,second=0,microsecond=0),'timeout')
+        b=self.bindings['laneBindings']
+        try: _,current,_=lane.read_receipt(b['receiptPath'],self.receipt['feedSession'],self.receipt['sequence'])
+        except lane.Refused: raise Refused('receipt') from None
+        require(current == self.receipt and current['desired'] == 2 and
+                0 <= time.time()-current['observedAt'] < 3.5,'receipt')
+
+    def _provider_preflight(self):
+        """Read-only CLI probe, exclusively BEFORE a provider feed exists."""
+        require(self.feed is None and self.state == 'new')
+        b=self.bindings['laneBindings']; target=b['target']
+        operator=provider.Operator(SimpleNamespace(mode='disabled-rehearsal',status_file=None,
+                                                   listener_id=provider.LISTENER_ID))
+        env={'PATH':_feed_path(b),'HOME':os.path.expanduser('~'),'LANG':'C','LC_ALL':'C'}
+        for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY',
+                    'http_proxy','https_proxy','all_proxy','no_proxy'):
+            if key in os.environ: env[key]=os.environ[key]
+        def command(argv):
+            require(self.feed is None and argv[0] == 'aliyun')
+            try:
+                result=subprocess.run([b['aliyunCli']]+argv[1:],check=True,capture_output=True,
+                    text=True,timeout=10,env=env)
+                return result.stdout
+            except Exception: raise Refused('remote') from None
+        operator.command=command
+        try:
+            identity=operator.aliyun('sts','GetCallerIdentity')
+            require(identity.get('AccountId') == target['accountId'],'target')
+            snap=operator.read(); group=operator.fetch_group(); ids=sorted(target['originalInstanceIds'])
+            require(snap['desired'] == 2 and snap['members'] == ids and snap['healthyRegistered'] == ids,'target')
+            require(snap['memberStates'] == [dict(id=i,lifecycle='Protected',health='Healthy',addressKnown=True) for i in ids],'target')
+            require(snap['backendStates'] == [dict(id=i,status='Available',weight=100,listenerHealth='Normal') for i in ids],'target')
+            require(group['ScalingGroupId'] == target['scalingGroupId'] and
+                    all(type(group[k]) is int and group[k] == v for k,v in
+                        (('DesiredCapacity',2),('MinSize',2),('MaxSize',4))),'target')
+            activity=operator.aliyun('ess','DescribeScalingActivities',ScalingGroupId=target['scalingGroupId'],
+                                    StatusCode='InProgress',PageNumber=1,PageSize=50)
+            require(type(activity.get('PageNumber')) is int and activity['PageNumber'] == 1 and
+                    type(activity.get('TotalCount')) is int and activity['TotalCount'] == 0 and
+                    activity.get('ScalingActivities',{}).get('ScalingActivity') == [],'target')
+        except (ValueError,KeyError,TypeError,AttributeError): raise Refused('remote') from None
+
+    def start_rehearsal(self, preflight_path):
+        """Single paid start; unknown outcome requires separate exact-state recovery.
+
+        The private operator receipt attests action-day evidence; this API does
+        not produce that evidence or turn an acknowledgement into rehearsal PASS.
+        """
+        try:
+            require(self.state == 'new')
+            require(load_bindings(self.binding_path) == self.bindings,'source')
+            preflight_path=_absolute(str(preflight_path)); private(preflight_path.parent,True)
+            evidence=self._paid_evidence(preflight_path)
+            now=self._china_now()
+            require(now < now.replace(hour=21,minute=30,second=0,microsecond=0),'timeout')
+            probed_at=time.time(); self._provider_preflight()
+            now=self._china_now()
+            require(now < now.replace(hour=21,minute=30,second=0,microsecond=0),'timeout')
+            remaining=int((now.replace(hour=22,minute=30,second=0,microsecond=0)-now).total_seconds())
+            require(remaining >= 120,'timeout')
+            self._start('disabled-rehearsal',min(5400,remaining))
+            self._baseline_collector()
+            self.pre_scale_minimum=self.receipt['sequence']
+            self._worker_call('pre-scale-start')
+            while True:
+                proof=self._worker_call('pre-scale-status')
+                if proof['status'] == 'PREPARED': break
             self.call_no_scale('collector-status')
+            self._paid_gate(preflight_path,evidence,probed_at)
+            b=self.bindings['laneBindings']; proof_path=Path(b['preScaleProofPath'])
+            save_once(proof_path.parent,proof_path.name,dict(feedSession=proof['feedSession'],sequence=proof['sequence']))
+            self._paid_gate(preflight_path,evidence,probed_at)
+            intent_path=Path(b['scaleoutIntentPath']); receipt=copy.deepcopy(self.receipt)
+            save_once(intent_path.parent,intent_path.name,dict(action='ModifyScalingGroup',
+                account=b['target']['accountId'],group=b['target']['scalingGroupId'],fromDesired=2,toDesired=3,
+                feedSession=receipt['feedSession'],sequence=receipt['sequence'],
+                at=datetime.fromtimestamp(time.time(),timezone.utc).isoformat()))
+            self._paid_gate(preflight_path,evidence,probed_at)
+            deadline=monotonic()+20.
+            result=self.client.call('scaleout-two-to-three',receipt,float(deadline))
+            completed_at=time.time(); self._live(); require(monotonic() < deadline,'timeout')
+            validate_result(result)
+            require(result['state'] == 'complete' and result['category'] == 'ok','incomplete')
+            require(set(result['payload']) == {'requestId'} and token(result['payload']['requestId']),'parse')
+            self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=3,timeout=90.)
+            self.state='scaled-three'
             return copy.deepcopy(self.receipt)
         except BaseException:
             self.close(); raise
