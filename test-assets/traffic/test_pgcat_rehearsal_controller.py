@@ -30,14 +30,16 @@ class ControllerTests(unittest.TestCase):
             laneWrapper=str(here/'pgcat_workbench_lane.py'), providerFeedPath=str(here/'provider_feed.py'),
             receiptPath=str(self.capture/'status.json'), laneLockPath=str(self.capture/'lane.lock'),
             laneIntentDir=str(self.capture/'intents'), phaseWorker='/fresh-worker/phase.py',
-            pendingWorker='/fresh-worker/pending.py', remoteRun='/fresh-worker/run',
+            pendingWorker='/fresh-worker/pending.py',
+            pendingProofWorker='/fresh-worker/pending-proof.py', remoteRun='/fresh-worker/run',
             contractDir='/fresh-worker/contract', scaleoutIntentPath=str(self.capture/'scaleout.intent'),
             preScaleProofPath=str(self.capture/'proof.json'),
             target=dict(accountId='1360282071200743', regionId='ap-southeast-1',
                 workerId='i-t4nj1bitmcz7cuoch82h', scalingGroupId='asg-t4necb4dfmu6o3z2rn0g',
                 nlbServerGroupId='sgp-xs5s42tihtl6ja2a67', originalInstanceIds=['original-one','original-two']))
         names = dict(laneWrapper='pgcat_workbench_lane.py', providerFeed='provider_feed.py',
-            laneProtocol='pgcat_lane_protocol.py', laneSupervisor='pgcat_lane_supervisor.py', laneActions='pgcat_lane_actions.py')
+            laneProtocol='pgcat_lane_protocol.py', laneSupervisor='pgcat_lane_supervisor.py',
+            laneActions='pgcat_lane_actions.py',pendingProofWorker='pgcat_pending_proof_worker.py')
         lane['sourceHashes'] = {k:hashlib.sha256((here/v).read_bytes()).hexdigest() for k,v in names.items()}
         self.binding = dict(laneBindings=lane, laneRoot=str(self.capture/'lane'), captureRoot=str(self.capture),
             workerInventory='/fresh-worker/inventory.json', workerKubeconfig='/fresh-worker/kubeconfig',
@@ -216,9 +218,52 @@ class ControllerTests(unittest.TestCase):
 
     def test_no_scale_action_gate_rejects_mutations(self):
         controller=self.controller(); controller.start_no_scale(); before=self.client.call.call_count
-        for action in ('scaleout-two-to-three','pending-start','zero-gate-start','reconcile-close','arbitrary'):
+        for action in ('scaleout-two-to-three','pending-start','pending-proof','zero-gate-start','reconcile-close','arbitrary'):
             with self.assertRaises(Refused): controller.call_no_scale(action)
         self.assertEqual(self.client.call.call_count,before)
+
+    def test_pending_binding_checks_reviewed_source_before_successor(self):
+        controller=self.controller()
+        controller.client=self.client; controller.feed=self.feed
+        controller.mode='disabled-rehearsal'; controller.state='scaled-three'
+        controller.receipt=dict(feedSession=self.session,sequence=4,desired=3,
+                                observedAt=self.wall,mode='disabled-rehearsal')
+        self.client.run_id=str(uuid.uuid4())
+        proof=dict(runId=self.client.run_id,feedSession=self.session,
+            newId='new-node',originalInstanceIds=self.binding['laneBindings']['target']['originalInstanceIds'],
+            sequence=3,observedAt=self.wall,resourceVersion='11',
+            clientRosterSha256='b'*64,evidenceSha256='c'*64,sourceSha256='0'*64)
+        staged=[dict(status='STARTED'),dict(status='PREPARED'),proof]
+        self.client.call.side_effect=lambda action,*args: dict(state='complete',category='ok',payload=staged.pop(0))
+        with patch.object(controller,'_next_receipt') as successor:
+            with self.assertRaises(Refused): controller.bind_pending()
+            self.assertEqual(successor.call_count,2)
+        self.assertEqual([call.args[0] for call in self.client.call.call_args_list],
+                         ['pending-start','pending-status','pending-proof'])
+        self.assertTrue(self.client.close.called)
+
+    def test_pending_binding_only_after_prepared_and_newer_publication(self):
+        controller=self.controller()
+        controller.client=self.client; controller.feed=self.feed
+        controller.mode='disabled-rehearsal'; controller.state='scaled-three'
+        controller.receipt=dict(feedSession=self.session,sequence=4,desired=3,
+                                observedAt=self.wall,mode='disabled-rehearsal')
+        self.client.run_id=str(uuid.uuid4())
+        proof=dict(runId=self.client.run_id,feedSession=self.session,newId='new-node',
+            originalInstanceIds=self.binding['laneBindings']['target']['originalInstanceIds'],
+            sequence=3,observedAt=self.wall,resourceVersion='11',
+            clientRosterSha256='b'*64,evidenceSha256='c'*64,
+            sourceSha256=self.binding['laneBindings']['sourceHashes']['pendingProofWorker'])
+        outputs=[dict(status='STARTED'),dict(status='RUNNING'),dict(status='PREPARED'),proof]
+        self.client.call.side_effect=lambda action,*args: dict(state='complete',category='ok',payload=outputs.pop(0))
+        with patch.object(controller,'_next_receipt') as successor:
+            self.assertEqual(controller.bind_pending(),proof)
+            self.assertEqual(successor.call_count,4)
+            self.assertEqual(successor.call_args.kwargs['desired'],3)
+        self.assertEqual([call.args[0] for call in self.client.call.call_args_list],
+                         ['pending-start','pending-status','pending-status','pending-proof'])
+        self.assertEqual(controller.state,'pending-bound')
+        with self.assertRaises(Refused): controller.bind_pending()
 
     def finish_receipts(self, controller, status):
         seq=controller.receipt['sequence']

@@ -100,7 +100,8 @@ class LaneSupervisor:
         here=Path(__file__).resolve().parent
         paths=dict(laneWrapper=Path(b['laneWrapper']),providerFeed=Path(b['providerFeedPath']),
             laneProtocol=here/'pgcat_lane_protocol.py',laneSupervisor=here/'pgcat_lane_supervisor.py',
-            laneActions=here/'pgcat_lane_actions.py')
+            laneActions=here/'pgcat_lane_actions.py',
+            pendingProofWorker=here/'pgcat_pending_proof_worker.py')
         for name,path in paths.items():
             require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == b['sourceHashes'][name],'source')
         self.bundle=hashlib.sha256(encode(b['sourceHashes'])).hexdigest()
@@ -208,9 +209,13 @@ class LaneSupervisor:
                 with self.journal._connection() as db:
                     run=db.execute('SELECT * FROM run').fetchone()
                     require(run['state'] == 'active')
-                    require(req['action'] != 'scaleout-two-to-three' or run['mode'] == 'disabled-rehearsal')
+                    require(req['action'] not in ('scaleout-two-to-three','pending-proof') or
+                            run['mode'] == 'disabled-rehearsal')
                 identity,receipt=self._receipt(req); self._unused(req,receipt)
-                argv,env,budget=ActionCatalog.command(req['action'],self.bindings)
+                if req['action'] == 'pending-proof':
+                    require(receipt['desired'] == 3 and time.time()-receipt['observedAt'] < 3.5,'receipt')
+                argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
+                    req['runId'] if req['action'] == 'pending-proof' else None)
                 deadline=req['deadlineMonotonic']
                 require(0 < deadline-monotonic() <= budget,'timeout')
                 if req['action'] == 'scaleout-two-to-three': self._ess(req,receipt)
@@ -235,7 +240,11 @@ class LaneSupervisor:
                         preexec_fn=lambda:signal.pthread_sigmask(signal.SIG_SETMASK,child_mask))
                 self._alive(); require(monotonic() < deadline,'timeout')
                 raw=self._communicate(deadline)
-                payload=ActionCatalog.parse(req['action'],raw,req,receipt)
+                if req['action'] == 'pending-proof':
+                    payload=ActionCatalog.parse(req['action'],raw,req,receipt,
+                        source_sha=self.bindings['sourceHashes']['pendingProofWorker'])
+                else:
+                    payload=ActionCatalog.parse(req['action'],raw,req,receipt)
                 self._alive(); require(monotonic() < deadline,'timeout')
                 if req['action'] != 'scaleout-two-to-three':
                     require(time.time() < receipt['observedAt']+12,'receipt')
@@ -243,7 +252,12 @@ class LaneSupervisor:
                 with self._masked():
                     self._alive()
                     require(monotonic() < deadline,'timeout')
-                    self.journal.seal(request_id,dict(state='complete',category='ok',payload=payload))
+                    result=dict(state='complete',category='ok',payload=payload)
+                    if req['action'] == 'pending-proof':
+                        self.journal.seal(request_id,result,
+                            pending_source_sha=self.bindings['sourceHashes']['pendingProofWorker'])
+                    else:
+                        self.journal.seal(request_id,result)
                 if monotonic() >= deadline:
                     self.cancel('timeout')
                 return self.journal.snapshot(request_id)

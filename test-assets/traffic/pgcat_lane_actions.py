@@ -8,13 +8,15 @@ import os
 from pathlib import Path
 import shlex
 import sys
+import time
 
-from pgcat_lane_protocol import ACTIONS, Refused, require, target_valid, token, validate_result
+from pgcat_lane_protocol import ACTIONS, Refused, require, target_valid, token, sha, identifier, validate_result
 
 BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerFeedPath', 'receiptPath',
     'laneLockPath', 'laneIntentDir', 'phaseWorker', 'pendingWorker', 'remoteRun',
-    'contractDir', 'scaleoutIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
-SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions'))
+    'contractDir', 'pendingProofWorker', 'scaleoutIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
+SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions',
+                          'pendingProofWorker'))
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'
 REGION = 'ap-southeast-1'
@@ -60,7 +62,7 @@ def unique(pairs):
 
 class ActionCatalog:
     @staticmethod
-    def command(action, bindings):
+    def command(action, bindings, run_id=None):
         require(type(action) is str and action in ACTIONS)
         validate_bindings(bindings)
         # No ambient credentials, shell startup files or arbitrary environment.
@@ -75,6 +77,10 @@ class ActionCatalog:
         if action.startswith(('baseline-','pre-scale-','zero-gate-')):
             phase, verb = action.rsplit('-',1)
             command = 'python3 '+q(bindings['phaseWorker'])+' '+verb+' '+phase
+        elif action == 'pending-proof':
+            identifier(run_id)
+            command = ('python3 '+q(bindings['pendingProofWorker'])+' '+q(bindings['contractDir'])+
+                       ' '+q(run_id))
         elif action.startswith('pending-'):
             command = 'python3 '+q(bindings['pendingWorker'])+' '+action.split('-')[1]
         elif action.startswith('collector-'):
@@ -89,7 +95,7 @@ class ActionCatalog:
         return ([sys.executable,bindings['laneWrapper'],'exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',command],env,5.0)
 
     @staticmethod
-    def parse(action, raw, request, receipt=None):
+    def parse(action, raw, request, receipt=None, source_sha=None):
         require(type(raw) is bytes and len(raw) <= 8192,'parse')
         if action in ('pending-start','pending-status'):
             statuses=('STARTED',) if action == 'pending-start' else ('RUNNING','PREPARED')
@@ -116,6 +122,26 @@ class ActionCatalog:
             if action == 'scaleout-two-to-three':
                 require(set(value) == {'RequestId'} and token(value['RequestId']),'parse')
                 value={'requestId':value['RequestId']}
+            elif action == 'pending-proof':
+                require(set(value) == {'runId','feedSession','newId','originalInstanceIds',
+                    'sequence','observedAt','resourceVersion','clientRosterSha256',
+                    'evidenceSha256','sourceSha256'}, 'parse')
+                require(value['runId'] == request['runId'] and
+                    value['feedSession'] == request['feedSession'] and
+                    value['originalInstanceIds'] == request['target']['originalInstanceIds'] and
+                    token(value['newId']) and value['newId'] not in value['originalInstanceIds'] and
+                    type(value['sequence']) is int and 0 < value['sequence'] <= request['minimumSequence'] and
+                    type(value['observedAt']) in (int,float) and
+                    0 <= time.time()-value['observedAt'] < 30 and
+                    type(value['resourceVersion']) is str and value['resourceVersion'].isascii() and
+                    value['resourceVersion'].isdigit() and int(value['resourceVersion']) > 0 and
+                    sha(value['clientRosterSha256']) and sha(value['evidenceSha256']) and
+                    sha(source_sha) and value['sourceSha256'] == source_sha, 'parse')
+                if receipt is not None:
+                    require(type(receipt) is dict and receipt.get('feedSession') == value['feedSession'] and
+                            type(receipt.get('sequence')) is int and value['sequence'] <= receipt['sequence'] and
+                            type(receipt.get('observedAt')) in (int,float) and
+                            value['observedAt'] <= receipt['observedAt'], 'receipt')
             elif action.startswith(('baseline-','pre-scale-','zero-gate-')):
                 phase,verb=action.rsplit('-',1)
                 statuses = ('STARTED',) if verb == 'start' else ('RUNNING','PREPARED')

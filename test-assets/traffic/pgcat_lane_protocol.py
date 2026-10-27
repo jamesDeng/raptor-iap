@@ -14,7 +14,7 @@ from contextlib import contextmanager
 MAX_REQUEST = 16384
 ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'pre-scale-status', 'zero-gate-start', 'zero-gate-status', 'pending-start',
-    'pending-status', 'collector-launch', 'collector-status', 'reconcile-close',
+    'pending-status', 'pending-proof', 'collector-launch', 'collector-status', 'reconcile-close',
     'scaleout-two-to-three'))
 REQUEST_KEYS = frozenset(('requestId', 'runId', 'supervisorId', 'action',
     'feedSession', 'minimumSequence', 'receiptIdentity', 'target', 'bundleSha256',
@@ -213,7 +213,9 @@ def validate_result(result):
             (result['state'] == 'uncertain' and result['category'] in CATEGORIES))
     payload = result['payload']
     require(type(payload) is dict and len(encode(payload)) <= 4096)
-    require(set(payload) <= {'status','stage','phase','feedSession','sequence','resourceVersion','requestId','identity'})
+    require(set(payload) <= {'status','stage','phase','feedSession','sequence','resourceVersion','requestId','identity',
+                            'runId','newId','originalInstanceIds','observedAt','clientRosterSha256',
+                            'evidenceSha256','sourceSha256'})
     for key, value in payload.items():
         if key == 'identity':
             require(type(value) is dict and set(value) == {'pid','bootId','startTicks','commandSha256'})
@@ -222,6 +224,13 @@ def validate_result(result):
             require(token(value['bootId']) and sha(value['commandSha256']))
         elif key == 'sequence':
             require(type(value) is int and value > 0)
+        elif key == 'originalInstanceIds':
+            require(type(value) is list and len(value) == 2 and all(token(x) for x in value)
+                    and value[0] != value[1])
+        elif key == 'observedAt':
+            require(type(value) in (int,float) and math.isfinite(value))
+        elif key in ('clientRosterSha256','evidenceSha256','sourceSha256'):
+            require(sha(value))
         else:
             require(token(value))
 
@@ -318,7 +327,10 @@ class Journal:
                 result TEXT);
                 CREATE TABLE IF NOT EXISTS finish_receipts (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-                feed_exit TEXT NOT NULL, assessment TEXT NOT NULL);''')
+                feed_exit TEXT NOT NULL, assessment TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS pending_binding (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                proof TEXT NOT NULL);''')
         folder = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(folder)
@@ -373,27 +385,36 @@ class Journal:
             require(request['runId'] == run['run_id'])
             require(request['target'] == json.loads(run['target']), 'target')
             require(request['bundleSha256'] == json.loads(run['hashes'])['bundleSha256'], 'source')
-            require(request['action'] != 'scaleout-two-to-three' or
+            require(request['action'] not in ('scaleout-two-to-three','pending-proof') or
                     (run['mode'] == 'disabled-rehearsal' and
                      request['target']['scalingGroupId'] == 'asg-t4necb4dfmu6o3z2rn0g'))
             require(request['deadlineMonotonic'] > monotonic(), 'timeout')
             require(run['supervisor'] in (None, request['supervisorId']))
             require(run['session'] in (None, request['feedSession']))
             require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None)
+            if request['action'] == 'pending-proof':
+                require(db.execute('SELECT 1 FROM pending_binding').fetchone() is None, 'incomplete')
+                require(db.execute("SELECT 1 FROM requests WHERE json_extract(request,'$.action')='pending-proof'").fetchone() is None,
+                        'incomplete')
             require(db.execute('SELECT 1 FROM requests WHERE request_id=? OR nonce=?',
                                (request['requestId'],request['nonce'])).fetchone() is None)
             db.execute('UPDATE run SET supervisor=?, session=?', (request['supervisorId'],request['feedSession']))
             db.execute('INSERT INTO requests VALUES (?,?,?,?,?,NULL)',
                        (request['requestId'], request['runId'], request['nonce'], encode(request).decode(), 'dispatching'))
 
-    def seal(self, request_id: str, result: dict) -> None:
+    def seal(self, request_id: str, result: dict, pending_source_sha=None) -> None:
         identifier(request_id)
         validate_result(result)
         with self._transaction() as db:
-            row = db.execute('SELECT state FROM requests WHERE request_id=?', (request_id,)).fetchone()
+            row = db.execute('SELECT state,request FROM requests WHERE request_id=?', (request_id,)).fetchone()
             require(row is not None and row['state'] == 'dispatching')
             run = db.execute('SELECT state FROM run').fetchone()
             require(result['state'] != 'complete' or run['state'] == 'active')
+            request = json.loads(row['request'])
+            if result['state'] == 'complete' and request['action'] == 'pending-proof':
+                self._bind_pending_in_tx(db, request, result['payload'], pending_source_sha)
+            else:
+                require(pending_source_sha is None, 'source')
             db.execute('UPDATE requests SET state=?, result=? WHERE request_id=?',
                        (result['state'], encode(result).decode(), request_id))
             if result['state'] == 'uncertain':
@@ -405,6 +426,44 @@ class Journal:
             require(db.execute('SELECT 1 FROM run').fetchone() is not None)
             db.execute("UPDATE run SET state=? WHERE state='active'",
                        ('cancelled' if category == 'cancelled' else 'uncertain',))
+
+    def _bind_pending_in_tx(self, db, request: dict, proof: dict, source_sha: str) -> None:
+        """Bind one output from the exact reviewed Pending proof worker.
+
+        Only the supervisor calls this after its fixed Workbench command has
+        completed. Remote source equality is a separate staging review gate.
+        """
+        require(type(proof) is dict and set(proof) == {'runId','feedSession','newId',
+            'originalInstanceIds','sequence','observedAt','resourceVersion',
+            'clientRosterSha256','evidenceSha256','sourceSha256'}, 'source')
+        identifier(proof['runId']); identifier(proof['feedSession'])
+        require(token(proof['newId']) and type(proof['sequence']) is int and
+                proof['sequence'] > 0 and sha(proof['clientRosterSha256']) and
+                sha(proof['evidenceSha256']) and token(proof['resourceVersion']) and
+                sha(source_sha) and proof['sourceSha256'] == source_sha, 'source')
+        require(type(proof['observedAt']) in (int,float) and
+                math.isfinite(proof['observedAt']) and
+                0 <= time.time()-proof['observedAt'] < 30, 'source')
+        run = db.execute('SELECT * FROM run').fetchone()
+        require(run is not None and run['state'] == 'active' and
+                run['mode'] == 'disabled-rehearsal', 'incomplete')
+        require(json.loads(run['hashes']).get('pendingProofWorker') == source_sha, 'source')
+        originals = json.loads(run['target'])['originalInstanceIds']
+        require(proof['runId'] == run['run_id'] == request['runId'] and
+                proof['feedSession'] == request['feedSession'] and
+                proof['originalInstanceIds'] == originals and
+                proof['newId'] not in originals and
+                0 < proof['sequence'] <= request['minimumSequence'] and
+                run['session'] in (None,proof['feedSession']), 'target')
+        require(db.execute('SELECT 1 FROM pending_binding').fetchone() is None, 'incomplete')
+        db.execute('INSERT INTO pending_binding VALUES (1,?)', (encode(proof).decode(),))
+        db.execute('UPDATE run SET session=?', (proof['feedSession'],))
+
+    def pending_binding(self) -> dict:
+        with self._connection() as db:
+            row = db.execute('SELECT proof FROM pending_binding').fetchone()
+            require(row is not None, 'incomplete')
+            return json.loads(row['proof'])
 
     def snapshot(self, request_id: str) -> dict:
         identifier(request_id)

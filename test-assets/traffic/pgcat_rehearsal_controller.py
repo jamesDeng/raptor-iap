@@ -84,7 +84,8 @@ def load_bindings(path):
         here=Path(__file__).resolve().parent
         _hashes(b['sourceHashes'],dict(laneWrapper=Path(b['laneWrapper']),
             providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
-            laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py'))
+            laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py',
+            pendingProofWorker=here/'pgcat_pending_proof_worker.py'))
         _hashes(value['sourceHashes'],dict(controller=here/'pgcat_rehearsal_controller.py',
             client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py'))
         return value
@@ -109,7 +110,8 @@ class Controller:
         if self.client is not None: self.client.close()
 
     def _live(self):
-        require(self.state == 'active' and self.feed is not None and self.feed.poll() is None,'child')
+        require(self.state in ('active','scaled-three','pending-bound') and
+                self.feed is not None and self.feed.poll() is None,'child')
         require(self.client is not None,'incomplete')
         self.client._active()
 
@@ -374,6 +376,61 @@ class Controller:
             return copy.deepcopy(self.receipt)
         except BaseException:
             self.close(); raise
+
+    def bind_pending(self):
+        """Request the fixed worker proof once after 2→3 observation.
+
+        The supervisor validates and seals its result. This stage cannot
+        deregister an NLB backend or change ESS capacity.
+        """
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.state == 'scaled-three')
+            hold_deadline=monotonic()+420.
+            self._pending_marker('pending-start')
+            while True:
+                require(monotonic() < hold_deadline, 'timeout')
+                if self._pending_marker('pending-status') == 'PREPARED': break
+            self._live(); receipt=copy.deepcopy(self.receipt)
+            require(receipt is not None and receipt['desired'] == 3, 'receipt')
+            started=monotonic()
+            deadline=min(started+5.,started+receipt['observedAt']+12.-time.time())
+            require(deadline > started, 'timeout')
+            result=self.client.call('pending-proof',receipt,float(deadline))
+            completed_at=time.time()
+            self._live(); require(monotonic() < deadline,'timeout')
+            validate_result(result)
+            require(result['state'] == 'complete' and result['category'] == 'ok','incomplete')
+            proof=result['payload']
+            require(proof['runId'] == self.client.run_id and
+                    proof['feedSession'] == receipt['feedSession'] and
+                    proof['originalInstanceIds'] == self.bindings['laneBindings']['target']['originalInstanceIds'] and
+                    proof['newId'] not in proof['originalInstanceIds'] and
+                    0 < proof['sequence'] <= receipt['sequence'] and
+                    proof['sourceSha256'] == self.bindings['laneBindings']['sourceHashes']['pendingProofWorker'] and
+                    0 <= completed_at-proof['observedAt'] < 30, 'target')
+            self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=3)
+            self.state='pending-bound'
+            return copy.deepcopy(proof)
+        except BaseException:
+            self.close(); raise
+
+    def _pending_marker(self, action):
+        require(action in ('pending-start','pending-status') and self.state == 'scaled-three')
+        self._live(); receipt=copy.deepcopy(self.receipt)
+        require(receipt is not None and receipt['desired'] == 3, 'receipt')
+        started=monotonic()
+        deadline=min(started+5.,started+receipt['observedAt']+12.-time.time())
+        require(deadline > started, 'timeout')
+        result=self.client.call(action,receipt,float(deadline))
+        completed_at=time.time(); self._live()
+        require(monotonic() < deadline, 'timeout')
+        validate_result(result)
+        require(result['state'] == 'complete' and result['category'] == 'ok', 'incomplete')
+        status=result['payload'].get('status')
+        require(set(result['payload']) == {'status'} and
+                status in (('STARTED',) if action == 'pending-start' else ('RUNNING','PREPARED')), 'parse')
+        self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=3)
+        return status
 
     def finish_no_scale(self, feed_exit, assessment):
         """Close once, preserving assessor FAIL/INCONCLUSIVE as well as PASS."""

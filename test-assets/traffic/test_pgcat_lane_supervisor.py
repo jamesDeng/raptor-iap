@@ -57,13 +57,15 @@ class SupervisorTests(unittest.TestCase):
         self.bindings = dict(workbenchCli=str(self.cli), aliyunCli=str(self.cli), laneWrapper=str(here/'pgcat_workbench_lane.py'),
             providerFeedPath=str(here/'provider_feed.py'), receiptPath=str(self.root/'receipt.json'),
             laneLockPath=str(self.root/'lane.lock'), laneIntentDir=str(self.root/'intents'),
-            phaseWorker='/reviewed/phase.py', pendingWorker='/reviewed/pending.py', remoteRun='/reviewed/run',
+            phaseWorker='/reviewed/phase.py', pendingWorker='/reviewed/pending.py',
+            pendingProofWorker='/reviewed/pending-proof.py', remoteRun='/reviewed/run',
             contractDir='/reviewed/contract', scaleoutIntentPath=str(self.root/'scaleout.intent'),
             preScaleProofPath=str(self.root/'proof.json'), target=self.target)
         (self.root/'intents').mkdir(mode=0o700)
         sources = dict(laneWrapper=here/'pgcat_workbench_lane.py', providerFeed=here/'provider_feed.py',
                        laneProtocol=here/'pgcat_lane_protocol.py', laneSupervisor=here/'pgcat_lane_supervisor.py',
-                       laneActions=here/'pgcat_lane_actions.py')
+                       laneActions=here/'pgcat_lane_actions.py',
+                       pendingProofWorker=here/'pgcat_pending_proof_worker.py')
         self.hashes = {key:hashlib.sha256(path.read_bytes()).hexdigest() for key,path in sources.items()}
         self.bindings['sourceHashes'] = self.hashes
         self.bundle = hashlib.sha256(encode(self.hashes)).hexdigest()
@@ -252,6 +254,30 @@ class SupervisorTests(unittest.TestCase):
         with self.journal._transaction() as db: db.execute("UPDATE run SET mode='no-scale'")
         with self.assertRaises(Refused): self.owner.run_once(self.request(action='scaleout-two-to-three')['requestId'])
         self.assertFalse(self.marker.exists())
+
+    def test_no_scale_rejects_pending_proof_before_child(self):
+        with self.journal._transaction() as db: db.execute("UPDATE run SET mode='no-scale'")
+        with self.assertRaises(Refused):
+            self.owner.run_once(self.request(action='pending-proof')['requestId'])
+        self.assertFalse(self.marker.exists())
+
+    def test_pending_proof_seals_binding_from_fake_child(self):
+        self.private_json(Path(self.bindings['receiptPath']),dict(feedSession=self.session,sequence=4,
+            mode='disabled-rehearsal',desired=3,observedAt=time.time()))
+        proof=dict(runId=self.run,feedSession=self.session,newId='i-new-one',
+            originalInstanceIds=self.target['originalInstanceIds'],sequence=3,
+            observedAt=time.time()-1,resourceVersion='11',
+            clientRosterSha256='b'*64,evidenceSha256='c'*64,
+            sourceSha256=self.hashes['pendingProofWorker'])
+        output=json.dumps(proof)
+        fixed=([sys.executable,'-c','print('+repr(output)+')'],
+               {'PATH':os.defpath,'LANG':'C'},5.)
+        with patch.object(actions.ActionCatalog,'command',return_value=fixed):
+            row=self.run_request(action='pending-proof')
+        self.assertEqual(row['state'],'complete')
+        self.assertEqual(self.journal.pending_binding(),proof)
+        with self.assertRaises(Refused):
+            self.owner.run_once(self.request(action='pending-proof')['requestId'])
 
     def test_scaleout_consumes_shared_sequence(self):
         req=self.request(action='scaleout-two-to-three',deadlineMonotonic=monotonic()+10.)
