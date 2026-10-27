@@ -871,3 +871,68 @@ this receipt, not a fresh cluster preflight or proof of the live runtime.
 Live image identity, runtime flag state, disabled-mode finish behavior and retained
 traffic acceptance have not been proven. No live execution or traffic acceptance
 is claimed by this release preparation; full-run assessment remains NOT_RUN.
+
+### Tracked no-scale controller integration (2026-10-27; not live proof)
+
+`test-assets/traffic/pgcat_rehearsal_controller.py` supplies the tracked
+`Controller(binding_path)` API. Integration tests use fake process boundaries;
+implementation or an orderly `finished` journal is not a live PASS. Independent
+source/binding review and the action-day preflight above remain hard stops.
+Keep `replacementEnabled=false`, the historical `RUN_BINDINGS_REVIEWED=False`
+and `SIGNAL_LIFECYCLE_REVIEWED=False`; the old detached local pending helper is
+not part of this path. No credential staging or live action is authorized by
+this documentation update.
+
+Supply a new owner-only mode-0600 JSON manifest in a mode-0700 directory. Its
+exact keys are `laneBindings`, `laneRoot`, `captureRoot`, `workerInventory`,
+`workerKubeconfig`, and `sourceHashes`; unknown/missing keys refuse launch.
+`laneBindings` follows the exact schema in `pgcat_lane_actions.py`, including
+reviewed account, region, worker, scaling group, NLB group, two protected original
+IDs and its five source hashes. The outer `sourceHashes` has exactly
+`controller`, `client`, and `runner`, each a lowercase SHA-256 of the current
+local source bytes. All eight hashes are checked before either process starts.
+The feed executable binding must be a regular executable named `aliyun`; its
+directory leads the minimal feed PATH and exact resolution is checked before
+spawn. Scaling-group and NLB bindings must match the fixed provider targets.
+Local `captureRoot` must not exist; `laneRoot`, provider status, lane lock,
+intent directory, scale-out intent and proof paths are distinct direct children
+of that new root. All worker paths are explicit fresh reviewed bindings;
+local validation does not establish remote freshness or staging correctness.
+Never reuse retired scratch paths, copy credentials into the manifest, or put
+this private manifest in Git.
+
+`start_no_scale()` starts one `LaneClient` in immutable `no-scale` mode before
+one detached provider feed (`disabled-rehearsal`, 15-second interval, 75-second
+loop cap). The fixed sequence is baseline start, baseline status until PREPARED,
+collector launch, then collector status with exact retained process identity.
+Each worker call has a five-second absolute deadline from the shared protocol
+clock, additionally bounded by `observedAt + 12 seconds`. Each call must be
+followed by a strictly newer successful same-session desired-two publication.
+The existing receipt freshness and one-use intent gates remain in force.
+Failure to obtain a successor within 45 seconds, feed exit during a call,
+changed session, uncertain result, changed collector identity or interruption
+stops the run without retry. No-scale callers cannot submit pending, zero-gate,
+reconciliation or ESS actions. An unavailable collector launch is a refusal,
+not permission to skip capture. Additional baseline polling may exhaust the
+bounded feed window; do not extend its cap to force success.
+
+Retain the exact feed `Popen` handle and independently assess retained capture
+evidence with the existing continuity, client, provider and cleanup rules. A
+collector ALIVE marker alone does not establish continuity. After verified
+feed exit, `finish_no_scale(feed_exit, assessment)` requires the private final
+status file to have the same session, desired two, a sequence at least as new
+as the last post-call successor and `observedAt` age under 30 seconds. The
+assessment and exact `{pid, exitCode, category, feedSession, sequence}` exit
+receipt must match that final sequence; assessment fields are exactly
+`{status, mode, feedSession, endSequence, evidenceSha256}` with mode `no-scale`.
+The API returns the independent PASS/FAIL/INCONCLUSIVE unchanged. It does not
+run or replace the assessor, finish clients, fabricate evidence, or convert
+normal local closure into PASS. A nonzero/error feed exit cannot accompany PASS.
+
+`close()` disconnects the supervisor on cancellation; it does not claim remote
+command cancellation or kill a numeric PID. Controller death can leave the
+already detached feed running to its existing bound. Preserve the global active
+record and private evidence for exact feed/child/process/credential cleanup;
+never clear them or start another run based only on terminal text. No-scale
+proof cannot certify the later paid 3-to-2 reconciliation. Paid rehearsal and
+full replacement remain blocked until their separate existing gates pass.
