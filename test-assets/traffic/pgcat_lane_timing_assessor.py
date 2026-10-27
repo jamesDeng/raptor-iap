@@ -69,12 +69,14 @@ def assess_lane_timing(capture_dir,collector_identity,target,run_context,source_
                                 snapshot=pod['snapshot'];pid=snapshot['sample']['processId']
                                 check(type(pod['uid']) is str and pod['uid'] and type(pid) is str and pid)
                                 for event in snapshot['events']:
-                                    if (event.get('processId')==pid and type(event.get('sequence')) is int and
-                                        event['sequence']>0 and window_start is not None and
-                                        window_start<=seconds(event['at'])<=seconds(source['at'])+1):
-                                        if event.get('kind')=='connection_failure':failure=True
-                                        elif event.get('kind') in ('connected','disconnected') and seconds(event['at'])>window_start:
-                                            issue('unexplained connection turnover')
+                                    try:
+                                        if (event.get('processId')==pid and type(event.get('sequence')) is int and
+                                            event['sequence']>0 and window_start is not None and
+                                            window_start<=seconds(event['at'])<=seconds(source['at'])+1):
+                                            if event.get('kind')=='connection_failure':failure=True
+                                            elif event.get('kind') in ('connected','disconnected') and seconds(event['at'])>window_start:
+                                                issue('unexplained connection turnover')
+                                    except invalid:issue('malformed connectivity event')
                             except invalid:issue('malformed connectivity interval')
                         frame=clean(source);actual.append(frame['at']);frames.append(frame)
                     except invalid:issue('malformed retained interval')

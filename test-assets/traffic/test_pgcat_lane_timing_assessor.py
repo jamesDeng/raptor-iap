@@ -130,6 +130,18 @@ class TimingTests(unittest.TestCase):
                 if kind=='connection_failure':(path/'segment-0001.jsonl').unlink()
                 self.assertEqual(self.result(path)['status'],want)
 
+    def test_malformed_earlier_connectivity_event_cannot_hide_later_authenticated_failure(self):
+        self.assertEqual(self.result(self.capture())['status'],'PASS')
+        for later_failure,want in [(False,'INCONCLUSIVE'),(True,'FAIL')]:
+            with self.subTest(later_failure=later_failure):
+                frames=lane_frames();snapshot=frames[35]['pods'][0]['snapshot']
+                snapshot['events'].append(dict(processId='process',sequence=71,at=None,kind='disconnected'))
+                snapshot['sample']['sequence']=71
+                if later_failure:
+                    snapshot['events'].append(dict(processId='process',sequence=72,at=35,kind='connection_failure'))
+                    snapshot['sample']['sequence']=72
+                self.assertEqual(self.result(self.capture(frames))['status'],want)
+
     def test_changed_completion_and_unauthenticated_failure_cannot_pass_or_fail(self):
         path=self.capture();context=dict(runId=RUN,feedSession=SESSION,completionSha256='f'*64)
         self.assertIsNotNone(assess_lane_timing)
