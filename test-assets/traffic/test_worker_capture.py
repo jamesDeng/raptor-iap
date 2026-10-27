@@ -101,7 +101,7 @@ class FrameMetricsFailure(unittest.TestCase):
             for error in (ValueError('invalid series'),KeyError('label'),TypeError('malformed result')):
                 with self.subTest(error=type(error).__name__),patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'query_metrics',side_effect=error):
                     frame=worker.capture_frame(str(path),{('old','container'):final})
-                self.assertEqual(frame['pods'],[{'uid':'old','name':'','containerId':'container','snapshot':final}])
+                self.assertEqual(frame['pods'],[{'uid':'old','name':'','containerId':'container','ready':None,'snapshot':final}])
                 self.assertFalse(frame['metrics']['available'])
                 self.assertEqual(frame['metrics']['raw'],[])
 
@@ -347,3 +347,48 @@ class PartialPodWorkerEvidence(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class LaneIdentityCapture(unittest.TestCase):
+    def capture(self, conditions, deployment_change=None):
+        import tempfile, json
+        from pathlib import Path
+        from test_capture_window import transition_frame
+        fixture=transition_frame(1)
+        pod={'metadata':{'uid':'pod','name':'client-0','private':'opaque'},
+             'status':{'podIP':'10.0.0.1','phase':'Running','conditions':conditions,
+                       'containerStatuses':[{'containerID':'containerd://abc'}]}}
+        deployment={'metadata':{'uid':'deployment-uid','generation':7,'private':'opaque'},
+                    'spec':{'replicas':2},'status':{'observedGeneration':7,'readyReplicas':2}}
+        if deployment_change:deployment_change(deployment)
+        def kube(*args):
+            if args[1]=='pods':return {'items':[pod]}
+            if args[1]=='deployment':return deployment
+            return {'spec':{'clusterIP':'10.0.0.2'}}
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'inventory.json';path.write_text(json.dumps(fixture['inventory']))
+            with patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'get',return_value=fixture['pods'][0]['snapshot']),patch.object(worker,'query_metrics',return_value=fixture['metrics']):
+                return worker.capture_frame(path)
+
+    def test_capture_exact_identity_and_ready_without_kubernetes_dump(self):
+        got=self.capture([{'type':'Ready','status':'True'},{'type':'ContainersReady','status':'True'}])
+        self.assertEqual(got.get('deployment'),{'uid':'deployment-uid','generation':7,'observedGeneration':7,'desired':2,'ready':2})
+        self.assertEqual({k:got['pods'][0].get(k) for k in ('name','containerId','ready')},
+                         {'name':'client-0','containerId':'containerd://abc','ready':True})
+        self.assertNotIn('10.0.0.1',str(got));self.assertNotIn('opaque',str(got))
+
+    def test_ready_is_exact_condition_with_uncertainty_visible(self):
+        for conditions,want in [([{'type':'Ready','status':'False'}],False),
+                                ([{'type':'Ready','status':'Unknown'}],None),([],None),
+                                ([{'type':'Ready','status':True}],None),
+                                ([{'type':'Ready','status':'True'}]*2,None)]:
+            with self.subTest(conditions=conditions):
+                got=self.capture(conditions)
+                self.assertIn('ready',got['pods'][0]);self.assertIs(got['pods'][0]['ready'],want)
+
+    def test_partial_deployment_read_remains_explicit(self):
+        got=self.capture([],lambda d:d['status'].pop('observedGeneration'))
+        self.assertIn('deployment',got)
+        self.assertIsNone((got['deployment'] or {}).get('observedGeneration'))
+        from capture_window import clean
+        self.assertEqual(clean(got)['expectedReplicas'],0)

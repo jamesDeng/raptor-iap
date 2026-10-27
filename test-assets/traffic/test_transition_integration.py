@@ -111,6 +111,7 @@ def capture_fixture(directory, corrupt=None):
         metric_nodes = 'ab' if t < 4 else 'abcd' if t < 14 else 'bcd' if t < 22 else 'cd'
         pods = [{'metadata': {'uid': 'pod-' + name, 'name': 'client-' + name},
                  'status': {'podIP': 'client-' + name, 'phase': 'Running',
+                            'conditions': [{'type': 'Ready', 'status': 'True'}],
                             'containerStatuses': [{'containerID': 'container-' + name}]}}
                 for name in ('one', 'two')]
 
@@ -118,7 +119,9 @@ def capture_fixture(directory, corrupt=None):
             if args[1] == 'pods':
                 return {'items': pods}
             if args[1] == 'deployment':
-                return {'spec': {'replicas': 2}}
+                return {'metadata': {'uid': 'client-deployment', 'generation': 1},
+                        'spec': {'replicas': 2},
+                        'status': {'observedGeneration': 1, 'readyReplicas': 2}}
             if args[1] == 'service':
                 return {'spec': {'clusterIP': 'fixture-prometheus'}}
             raise AssertionError('unexpected Kubernetes read')
