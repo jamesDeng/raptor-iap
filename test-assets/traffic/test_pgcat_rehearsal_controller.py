@@ -577,6 +577,54 @@ class PaidStartTests(unittest.TestCase):
         with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
         self.assertFalse(self.probe.called); self.assertEqual(self.events,[])
 
+    def test_post_ack_supervisor_death_or_cancel_never_returns_scaled_three(self):
+        # Exercise the real client's active validator against fake process and
+        # journal boundaries, rather than making an _active mock always fail.
+        from pgcat_lane_protocol import encode
+        for failure in ('dead-process','cancelled-journal'):
+            for point in ('waiting','receipt-read','before-return'):
+                with self.subTest(failure=failure,point=point):
+                    if self.capture.exists():
+                        import shutil
+                        shutil.rmtree(self.capture)
+                    c=self.prepare(); self.events=[]; self.scaled=False
+                    self.client.liveness_fd=123
+                    self.client.process=Mock(); self.client.process.poll.return_value=None
+                    self.client.run_id=str(uuid.uuid4()); self.client.mode='disabled-rehearsal'
+                    self.client.bindings=copy.deepcopy(self.binding['laneBindings'])
+                    self.client.bundle=hashlib.sha256(encode(self.client.bindings['sourceHashes'])).hexdigest()
+                    snapshot=dict(runState='active',runId=self.client.run_id,mode='disabled-rehearsal',
+                        target=self.client.bindings['target'],
+                        hashes=dict(self.client.bindings['sourceHashes'],bundleSha256=self.client.bundle))
+                    self.client.journal=Mock(); self.client.journal.run_snapshot.side_effect=lambda:copy.deepcopy(snapshot)
+                    self.client._active.side_effect=lambda:self.module.LaneClient._active(self.client)
+                    def invalidate():
+                        if failure=='dead-process': self.client.process.poll.return_value=9
+                        else: snapshot['runState']='cancelled'
+                    original_read=self.module.lane.read_receipt
+                    original_next=c._next_receipt
+                    def sleep(seconds):
+                        self.sleep(seconds)
+                        if self.scaled and point=='waiting': invalidate()
+                    def read(*args,**kwargs):
+                        result=original_read(*args,**kwargs)
+                        if self.scaled and point=='receipt-read': invalidate()
+                        return result
+                    def next_receipt(*args,**kwargs):
+                        result=original_next(*args,**kwargs)
+                        if kwargs.get('desired')==3 and point=='before-return': invalidate()
+                        return result
+                    with patch.object(self.module.time,'sleep',side_effect=sleep), \
+                         patch.object(self.module.lane,'read_receipt',side_effect=read), \
+                         patch.object(c,'_next_receipt',side_effect=next_receipt):
+                        with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+                    self.assertEqual(c.state,'uncertain')
+                    self.assertTrue(self.client.close.called)
+                    with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
+                    self.assertEqual([e[1] for e in self.calls()].count('scaleout-two-to-three'),1)
+                    self.assertNotIn('reconcile-close',[e[1] for e in self.calls()])
+                    self.assertFalse(self.feed.kill.called)
+
     def test_scaleout_crash_requires_recovery(self):
         c=self.prepare()
         def crash(*args):

@@ -110,6 +110,8 @@ class Controller:
 
     def _live(self):
         require(self.state == 'active' and self.feed is not None and self.feed.poll() is None,'child')
+        require(self.client is not None,'incomplete')
+        self.client._active()
 
     def _next_receipt(self, minimum, observed_after=None, desired=2, timeout=45.):
         deadline=monotonic()+timeout
@@ -366,6 +368,8 @@ class Controller:
             require(result['state'] == 'complete' and result['category'] == 'ok','incomplete')
             require(set(result['payload']) == {'requestId'} and token(result['payload']['requestId']),'parse')
             self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=3,timeout=90.)
+            # A completed ACK/receipt cannot outlive its active supervisor run.
+            self._live()
             self.state='scaled-three'
             return copy.deepcopy(self.receipt)
         except BaseException:

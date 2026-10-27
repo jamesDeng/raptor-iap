@@ -1018,3 +1018,12 @@ for exact new-node NLB deregistration and the separate ESS 3-to-2 mutation. The
 current fixed supervisor catalog only admits the 2-to-3 mutation; ConfigMap
 `reconcile-close` cannot substitute for either provider operation. Resolve that
 continuation design gap before staging or executing paid mode.
+
+Receipt waiting also checks the retained supervisor process and active journal
+through the client's existing identity-bound validator, including after a
+matching receipt read and immediately before returning `scaled-three`. A
+complete ESS acknowledgement cannot substitute for an active supervisor run;
+death or cancellation observed at any of those boundaries is INCONCLUSIVE,
+with no retry or automatic reversal. These checks are observations, not an
+atomic guarantee against a later supervisor death or permission for the next
+action, whose admission still belongs to the supervisor transaction.
