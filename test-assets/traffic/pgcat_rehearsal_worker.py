@@ -161,8 +161,10 @@ class _VerifiedSourceFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
     def find_spec(self, fullname, path=None, target=None):
         if fullname in self.verified:
-            return importlib.util.spec_from_loader(fullname, self,
+            spec = importlib.util.spec_from_loader(fullname, self,
                 origin=str(self.run / (fullname + '.py')))
+            spec.has_location = True
+            return spec
         # A future local import needs an explicit reviewed source entry.
         if (self.run / (fullname + '.py')).exists():
             raise ValueError('worker')

@@ -386,6 +386,22 @@ class DetachedWorkerTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stdout.decode())
         self.assertEqual(json.loads(result.stdout),{'observed':'NEW'})
 
+    def test_zero_worker_verified_modules_have_exact_source_file_locations(self):
+        pre=self.run/'pgcat_pre_drain_proof_worker.py'
+        pre.write_text('def location():\n return __file__\n'); pre.chmod(0o600)
+        self.hashes['preDrainProofWorker']=hashlib.sha256(pre.read_bytes()).hexdigest()
+        zero=self.run/'pgcat_zero_proof_worker.py'
+        zero.write_text('import pgcat_pre_drain_proof_worker as pre\n'
+                        'def produce(contract,run,binding):\n'
+                        ' return {"direct":__file__,"transitive":pre.location()}\n')
+        zero.chmod(0o600)
+        self.hashes['zeroProofWorker']=hashlib.sha256(zero.read_bytes()).hexdigest()
+        result=subprocess.run(self._zero_cli(),cwd=str(self.run),stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,timeout=5)
+        self.assertEqual(result.returncode,0,result.stdout.decode())
+        self.assertEqual(json.loads(result.stdout),
+                         {'direct':str(zero),'transitive':str(pre)})
+
     def test_activity_and_scalein_use_only_fixed_ess_arguments(self):
         bindings = self._bindings()
         bindings['zeroProofWorker'] = str(self.run / 'pgcat_zero_proof_worker.py')
