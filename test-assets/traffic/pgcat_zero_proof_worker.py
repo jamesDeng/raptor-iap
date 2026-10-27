@@ -212,6 +212,8 @@ def produce(contract_dir, run_id, pre_drain_binding, *, kubectl=None,
         rank = {'Available': 0, 'Removing': 1, 'absent': 2}
         require(all(rank[right] >= rank[left] for left, right in
                     zip(stages, stages[1:])) and 'absent' in stages)
+        first_absence_at = stamp(frames[boundary[0] + stages.index('absent')]
+                                 ['inventory']['observedAt'])
         require(all(0 < stamp(right['at']) - stamp(left['at']) <= 3
                     for left, right in zip(frames, frames[1:])))
         roster_ids = [row['uid'] for row in baseline['roster']]
@@ -259,6 +261,13 @@ def produce(contract_dir, run_id, pre_drain_binding, *, kubectl=None,
         pair = None
         for index in range(len(zero_samples) - 1, 0, -1):
             first, second = zero_samples[index - 1:index + 1]
+            # Collector frames can carry Prometheus samples that predate the
+            # provider's first observation of NLB absence. Neither selected
+            # zero sample may reuse one of those earlier scrapes.
+            if not all(all(value > first_absence_at for value in sample[1].values())
+                       and all(source > first_absence_at for _, source in sample[2].values())
+                       for sample in (first, second)):
+                continue
             later = [frame for frame in frames if
                      frame['inventory']['sequence'] > second[0]['inventory']['sequence'] and
                      stamp(frame['inventory']['observedAt']) > second[3] and

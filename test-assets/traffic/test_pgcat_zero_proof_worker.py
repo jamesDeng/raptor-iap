@@ -68,6 +68,37 @@ class ZeroProofWorkerTests(unittest.TestCase):
         result = self.produce()
         self.assertEqual(result['sequence'], 62)
 
+    def test_zero_scrapes_before_first_absence_observation_refuse(self):
+        absent_at = self.f.frames[-4]['inventory']['observedAt']
+        originals = [copy.deepcopy(frame['metrics']) for frame in self.f.frames[-3:-1]]
+        for source in ('up', 'raw'):
+            with self.subTest(source=source):
+                for offset, frame in ((.2, self.f.frames[-3]),
+                                      (.1, self.f.frames[-2])):
+                    stale_scrape_at = absent_at - offset
+                    if source == 'up':
+                        frame['metrics']['upSourceAt'] = {
+                            node: stale_scrape_at for node in ('a', 'b', 'c')}
+                    else:
+                        for row in frame['metrics']['raw']:
+                            row['sourceAt'] = stale_scrape_at
+                self.fixture.persist_frames()
+                self.assert_refused()
+                for frame, metric in zip(self.f.frames[-3:-1], originals):
+                    frame['metrics'] = copy.deepcopy(metric)
+                self.fixture.persist_frames()
+
+    def test_older_stale_zero_scrapes_do_not_replace_later_fresh_pair(self):
+        absent_at = self.f.frames[-4]['inventory']['observedAt']
+        for offset, frame in ((.2, self.f.frames[-3]), (.1, self.f.frames[-2])):
+            frame['metrics']['upSourceAt'] = {
+                node: absent_at - offset for node in ('a', 'b', 'c')}
+            for row in frame['metrics']['raw']:
+                row['sourceAt'] = absent_at - offset
+        self.fixture.persist_frames()
+        self.append_zero_tail(15)
+        self.assertEqual(self.produce()['sequence'], 15)
+
     def test_old_post_zero_nonzero_refuses_even_with_later_fresh_zeros(self):
         self.f.frames[-1]['metrics']['raw'][-1]['value'] = 1
         self.fixture.persist_frames()
