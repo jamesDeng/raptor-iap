@@ -43,7 +43,8 @@ class PendingProofWorkerTests(unittest.TestCase):
         self.capture.mkdir(mode=0o700)
         self.kubeconfig = self.root / 'kubeconfig'
         write_private(self.kubeconfig, {'test': True})
-        self.inventory_path = self.root / 'inventory.json'
+        (self.root / 'run').mkdir(mode=0o700)
+        self.inventory_path = self.root / 'run' / 'provider-inventory.json'
         self.now = int(time.time())
         self.run = str(uuid.uuid4())
         self.originals = [dict(id='a', address='10.0.0.1'),
@@ -150,6 +151,131 @@ class PendingProofWorkerTests(unittest.TestCase):
         return proof.produce(self.contract, self.run, kubectl=self.kubectl,
                              live_roster=lambda: copy.deepcopy(self.roster),
                              now=lambda: self.now)
+
+    def install_provider_source(self):
+        source = self.contract / 'provider-source'
+        source.mkdir(mode=0o700)
+        context = dict(schemaVersion=1, runId=self.run,
+            supervisorId=str(uuid.uuid4()), targetSha256='a' * 64,
+            bundleSha256='b' * 64, nonce=str(uuid.uuid4()))
+        record = dict(schemaVersion=1, runContext=context, feedSession=SESSION)
+        write_private(source / 'run-context.json', record)
+        context_sha = hashlib.sha256((source / 'run-context.json').read_bytes()).hexdigest()
+        for artifact in (self.baseline, self.pre, self.pending):
+            artifact['providerRunContextSha256'] = context_sha
+        selected_sha = hashlib.sha256(b'captured selected raw inventory\n').hexdigest()
+        addresses = {'a':'10.0.0.1', 'b':'10.0.0.2', 'c':'10.0.0.3'}
+        for sequence, observed, digest, inventory in (
+                (4, self.pending['observedAt'], selected_sha,
+                 self.frames[3]['inventory']),
+                (5, self.frames[-1]['inventory']['observedAt'],
+                 hashlib.sha256(self.inventory_path.read_bytes()).hexdigest(),
+                 self.frames[-1]['inventory'])):
+            semantic = hashlib.sha256(json.dumps(inventory, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode('ascii')).hexdigest()
+            sidecar = dict(schemaVersion=1, runId=self.run,
+                supervisorId=context['supervisorId'], contextNonce=context['nonce'],
+                targetSha256=context['targetSha256'], bundleSha256=context['bundleSha256'],
+                feedSession=SESSION, sequence=sequence, observedAt=observed,
+                inventorySha256=digest, inventorySemanticSha256=semantic,
+                privateAddresses=addresses)
+            write_private(source / ('%06d.json' % sequence), sidecar)
+        self.save()
+        return source
+
+    def test_complete_provider_source_reaches_producer_review_gate(self):
+        self.install_provider_source()
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'producer-binding')
+        self.assertFalse((self.contract / 'pending-proof.bundle.json').exists())
+
+    def test_provider_source_rejects_correlated_wrong_ecs_address(self):
+        self.install_provider_source()
+        self.pending['address'] = '10.0.0.99'
+        rows = json.loads(self.cm['data']['targets.json'])
+        rows[-1]['targets'] = ['10.0.0.99:9930']
+        self.cm['data']['targets.json'] = json.dumps(rows)
+        self.save()
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+
+    def test_provider_source_rejects_cross_run_or_session(self):
+        source = self.install_provider_source()
+        with self.assertRaises(proof.Refused) as caught:
+            proof.produce(self.contract, str(uuid.uuid4()), kubectl=self.kubectl,
+                live_roster=lambda: copy.deepcopy(self.roster), now=lambda: self.now)
+        self.assertEqual(caught.exception.category, 'source-binding')
+        record = json.loads((source / 'run-context.json').read_text())
+        record['feedSession'] = str(uuid.uuid4())
+        write_private(source / 'run-context.json', record)
+        changed_hash = hashlib.sha256((source / 'run-context.json').read_bytes()).hexdigest()
+        for artifact in (self.baseline, self.pre, self.pending):
+            artifact['providerRunContextSha256'] = changed_hash
+        self.save()
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+
+    def test_provider_source_rejects_missing_selected_sidecar(self):
+        source = self.install_provider_source()
+        (source / '000004.json').unlink()
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+
+    def test_provider_source_rejects_changed_live_inventory_bytes(self):
+        self.install_provider_source()
+        with self.inventory_path.open('ab') as stream:
+            stream.write(b'\n')
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+
+    def test_provider_source_rejects_symlink_and_duplicate_json(self):
+        source = self.install_provider_source()
+        original = source / '000004.json'
+        replacement = source / 'replacement.json'
+        original.rename(replacement)
+        original.symlink_to(replacement)
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+        original.unlink()
+        replacement.rename(original)
+        raw = original.read_bytes().rstrip()
+        original.write_bytes(raw[:-1] + b',"runId":"' + self.run.encode('ascii') + b'"}')
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+
+    def test_provider_source_rejects_stale_selected_sequence(self):
+        source = self.install_provider_source()
+        sidecar = json.loads((source / '000004.json').read_text())
+        sidecar['sequence'] = 3
+        write_private(source / '000004.json', sidecar)
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+
+    def test_provider_source_rejects_selected_semantic_hash_and_seal_change(self):
+        source = self.install_provider_source()
+        sidecar = json.loads((source / '000004.json').read_text())
+        sidecar['inventorySemanticSha256'] = '0' * 64
+        write_private(source / '000004.json', sidecar)
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+        sidecar['inventorySemanticSha256'] = hashlib.sha256(json.dumps(
+            self.frames[3]['inventory'],sort_keys=True,separators=(',', ':'),
+            allow_nan=False).encode('ascii')).hexdigest()
+        write_private(source / '000004.json', sidecar)
+        self.pre['providerRunContextSha256'] = '0' * 64
+        self.save()
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
 
     def assert_invalid(self, operation=None):
         with self.assertRaises(proof.Refused) as caught:

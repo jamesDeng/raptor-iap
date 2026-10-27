@@ -137,11 +137,10 @@ class ActionCatalog:
                     value['resourceVersion'].isdigit() and int(value['resourceVersion']) > 0 and
                     sha(value['clientRosterSha256']) and sha(value['evidenceSha256']) and
                     sha(source_sha) and value['sourceSha256'] == source_sha, 'parse')
-                if receipt is not None:
-                    require(type(receipt) is dict and receipt.get('feedSession') == value['feedSession'] and
-                            type(receipt.get('sequence')) is int and value['sequence'] <= receipt['sequence'] and
-                            type(receipt.get('observedAt')) in (int,float) and
-                            value['observedAt'] <= receipt['observedAt'], 'receipt')
+                require(type(receipt) is dict and receipt.get('feedSession') == value['feedSession'] and
+                        type(receipt.get('sequence')) is int and value['sequence'] <= receipt['sequence'] and
+                        type(receipt.get('observedAt')) in (int,float) and
+                        value['observedAt'] <= receipt['observedAt'], 'receipt')
             elif action.startswith(('baseline-','pre-scale-','zero-gate-')):
                 phase,verb=action.rsplit('-',1)
                 statuses = ('STARTED',) if verb == 'start' else ('RUNNING','PREPARED')

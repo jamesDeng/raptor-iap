@@ -86,11 +86,16 @@ class PendingBindingTests(unittest.TestCase):
             payload={'status':'PREPARED','stage':'extra'}))
         with self.assertRaises(Refused): self.request()
 
-    def parse(self, proof=None, request=None, receipt=None):
+    def parse(self, proof=None, request=None, receipt='successful'):
         request=request or dict(runId=self.run,feedSession=self.session,
                                 minimumSequence=4,target=self.target)
+        if receipt == 'successful':
+            receipt=dict(feedSession=self.session,sequence=4,observedAt=time.time()+1)
         return ActionCatalog.parse('pending-proof',encode(proof or self.proof),request,receipt,
                                    source_sha=self.source)
+
+    def test_pending_proof_requires_acknowledged_publication(self):
+        with self.assertRaises(Refused): self.parse(receipt=None)
 
     def test_exact_address_free_summary_binds_once(self):
         self.prepared()

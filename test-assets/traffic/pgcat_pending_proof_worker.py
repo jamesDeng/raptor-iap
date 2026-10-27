@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Validate actual worker evidence for a Pending-before-NLB proof.
 
-Current historical worker sources lack a sealed run binding and independent
-ECS instance-ID/address evidence. The CLI therefore refuses before publishing
-any proof. Any future staging must pin this file and its transitive imports:
+The provider sidecar can bind a run and independently observed ECS addresses,
+but the retired detached producer has not been reviewed for this source graph.
+The CLI therefore refuses before publishing proof. Any future staging must pin
+this file and its transitive imports:
 capture_window.py, finish_clients.py, and worker_capture.py.
 """
 import hashlib
@@ -103,6 +104,140 @@ def read_sealed(folder, name):
     digest = hashlib.sha256(raw).hexdigest()
     require(seal == {'sha256': digest})
     return decode(raw)
+
+
+def verify_provider_source(contract_dir, run_id, baseline, pre, pending,
+                           selected_inventory, live_inventory_raw, live_inventory):
+    """Verify worker-private provider provenance without publishing proof."""
+    def check(value):
+        require(value, 'source-binding')
+
+    def directory(path):
+        path = Path(path)
+        check(path.is_absolute() and '..' not in path.parts)
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in path.parts[1:]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=fd)
+                os.close(fd)
+                fd = child
+            info = os.fstat(fd)
+            check(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+                  and info.st_uid == os.geteuid())
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+
+    def read_at(fd, name, limit):
+        check(type(name) is str and '/' not in name and name not in ('.', '..'))
+        item = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        try:
+            before = os.fstat(item)
+            check(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
+                  and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1
+                  and before.st_size <= limit)
+            raw = os.read(item, limit + 1)
+            after = os.fstat(item)
+            current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            fields = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                                    value.st_mtime_ns, value.st_ctime_ns)
+            check(len(raw) == before.st_size and len(raw) <= limit and
+                  fields(before) == fields(after) == fields(current))
+            return raw
+        finally:
+            os.close(item)
+
+    def uuid_text(value):
+        check(type(value) is str)
+        check(str(uuid.UUID(value)) == value)
+
+    def sha(value):
+        check(type(value) is str and re.fullmatch(r'[0-9a-f]{64}', value) is not None)
+
+    try:
+        contract = Path(contract_dir)
+        check(contract.name == 'contract' and contract.is_absolute())
+        expected_inventory = contract.parent / 'run' / 'provider-inventory.json'
+        check(Path(baseline['inventoryPath']) == expected_inventory)
+        check(type(live_inventory_raw) is bytes and
+              decode(live_inventory_raw) == live_inventory)
+        parent = directory(contract)
+        try:
+            source = os.open('provider-source', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                             dir_fd=parent)
+            try:
+                info = os.fstat(source)
+                check(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                      and stat.S_IMODE(info.st_mode) == 0o700)
+                context_raw = read_at(source, 'run-context.json', 2048)
+                record = decode(context_raw)
+                check(type(record) is dict and set(record) ==
+                      {'schemaVersion', 'runContext', 'feedSession'} and
+                      type(record['schemaVersion']) is int and record['schemaVersion'] == 1)
+                context = record['runContext']
+                check(type(context) is dict and set(context) ==
+                      {'schemaVersion', 'runId', 'supervisorId', 'targetSha256',
+                       'bundleSha256', 'nonce'} and
+                      type(context['schemaVersion']) is int and context['schemaVersion'] == 1)
+                for value in (context['runId'], context['supervisorId'], context['nonce'],
+                              record['feedSession']):
+                    uuid_text(value)
+                for value in (context['targetSha256'], context['bundleSha256']):
+                    sha(value)
+                check(context['runId'] == run_id and
+                      record['feedSession'] == baseline['receipt']['feedSession'] ==
+                      pre['feedSession'])
+                context_sha = hashlib.sha256(context_raw).hexdigest()
+                check(all(artifact.get('providerRunContextSha256') == context_sha
+                          for artifact in (baseline, pre, pending)))
+                selected_sequence = pending['sequence']
+                live_sequence = live_inventory['sequence']
+                check(type(selected_sequence) is int and type(live_sequence) is int and
+                      1 <= selected_sequence <= live_sequence <= 999999)
+                expected_addresses = {row['id']:row['address'] for row in baseline['originals']}
+                expected_addresses[pending['newId']] = pending['address']
+                check(len(expected_addresses) == 3 and
+                      len(set(expected_addresses.values())) == 3)
+                for sequence, observed, inventory, raw_digest in (
+                        (selected_sequence, pending['observedAt'],
+                         selected_inventory, None),
+                        (live_sequence, live_inventory['observedAt'], live_inventory,
+                         hashlib.sha256(live_inventory_raw).hexdigest())):
+                    check(capture.clean_inventory(inventory) == inventory)
+                    semantic_digest = hashlib.sha256(json.dumps(inventory,
+                        sort_keys=True, separators=(',', ':'),
+                        allow_nan=False).encode('ascii')).hexdigest()
+                    sidecar = decode(read_at(source, '%06d.json' % sequence, 4096))
+                    check(type(sidecar) is dict and set(sidecar) ==
+                          {'schemaVersion', 'runId', 'supervisorId', 'contextNonce',
+                           'targetSha256', 'bundleSha256', 'feedSession', 'sequence',
+                           'observedAt', 'inventorySha256', 'inventorySemanticSha256',
+                           'privateAddresses'} and
+                          type(sidecar['schemaVersion']) is int and sidecar['schemaVersion'] == 1)
+                    sha(sidecar['inventorySha256'])
+                    check(sidecar['runId'] == context['runId'] and
+                          sidecar['supervisorId'] == context['supervisorId'] and
+                          sidecar['contextNonce'] == context['nonce'] and
+                          sidecar['targetSha256'] == context['targetSha256'] and
+                          sidecar['bundleSha256'] == context['bundleSha256'] and
+                          sidecar['feedSession'] == record['feedSession'] and
+                          type(sidecar['sequence']) is int and sidecar['sequence'] == sequence and
+                          type(sidecar['observedAt']) in (int, float) and
+                          math.isfinite(sidecar['observedAt']) and sidecar['observedAt'] == observed and
+                          sidecar['inventorySemanticSha256'] == semantic_digest and
+                          (raw_digest is None or sidecar['inventorySha256'] == raw_digest) and
+                          sidecar['privateAddresses'] == expected_addresses)
+            finally:
+                os.close(source)
+        finally:
+            os.close(parent)
+    except Refused:
+        raise Refused('source-binding') from None
+    except (OSError, ValueError, TypeError, KeyError, IndexError,
+            OverflowError, UnicodeError, AttributeError):
+        raise Refused('source-binding') from None
 
 
 def text(value):
@@ -355,7 +490,8 @@ def produce(contract_dir, run_id, kubectl=None, live_roster=None, now=None):
                         weight=100, listenerHealth='Normal') for node in ids])
         require(candidates == {new_id})
         latest = frames[-1]
-        live_inv = decode(read_private(inventory_path, MAX_FRAME))
+        live_inventory_raw = read_private(inventory_path, MAX_FRAME)
+        live_inv = decode(live_inventory_raw)
         exact_provider(live_inv, session, originals, new_id,
                        pending['postReadbackSequence'], current)
         require(latest['inventory'] == live_inv and
@@ -395,14 +531,14 @@ def produce(contract_dir, run_id, kubectl=None, live_roster=None, now=None):
         # The provider feed can publish while Kubernetes reads are in flight.
         # A changed publication needs a fresh collector correlation and a new
         # proof attempt; it must not inherit this earlier Pending snapshot.
-        require(decode(read_private(inventory_path, MAX_FRAME)) == live_inv)
+        require(read_private(inventory_path, MAX_FRAME) == live_inventory_raw)
         fresh(live_inv['observedAt'], clock(), 30)
         fresh(latest['at'], clock(), 3)
-        # None of the historical sealed inputs binds a run ID, and the worker
-        # inventory deliberately strips provider ECS privateAddresses. The
-        # ConfigMap and Pending claim can agree on an incorrect address. No
-        # amount of digesting these same sources establishes either fact.
-        raise Refused('source-binding')
+        verify_provider_source(folder, run_id, baseline, pre, pending,
+                               selected['inventory'], live_inventory_raw, live_inv)
+        # The retired detached producer did not create the new sealed source
+        # links. Its transitive source graph requires separate review.
+        raise Refused('producer-binding')
     except Refused:
         raise
     except (OSError, ValueError, TypeError, KeyError, IndexError,
