@@ -264,9 +264,13 @@ def validate_result(result):
     require(set(payload) <= {'status','stage','phase','feedSession','sequence','resourceVersion','requestId','jobId','identity',
                             'runId','newId','originalInstanceIds','observedAt','clientRosterSha256',
                             'evidenceSha256','sourceSha256','pendingBindingSha256',
-                            'preDrainBindingSha256'})
+                            'preDrainBindingSha256','exit'})
     for key, value in payload.items():
-        if key == 'identity':
+        if key == 'exit':
+            require(type(value) is dict and set(value)=={'category','exitCode','completionSha256'})
+            require(value['category']=='completed' and type(value['exitCode']) is int and
+                    value['exitCode']==0 and sha(value['completionSha256']))
+        elif key == 'identity':
             require(type(value) is dict and set(value) == {'pid','bootId','startTicks','commandSha256'})
             require(type(value['pid']) is int and value['pid'] > 0)
             require(type(value['startTicks']) is int and value['startTicks'] >= 0)

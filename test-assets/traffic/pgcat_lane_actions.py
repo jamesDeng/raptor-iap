@@ -13,6 +13,7 @@ import time
 
 from pgcat_lane_protocol import ACTIONS, Refused, require, target_valid, token, sha, identifier, validate_result, encode
 from pgcat_rehearsal_worker import SOURCES as WORKER_SOURCES
+from pgcat_collector_control import BOOTSTRAP
 
 BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerFeedPath', 'receiptPath',
     'laneLockPath', 'laneIntentDir', 'phaseWorker', 'pendingWorker', 'remoteRun',
@@ -20,7 +21,7 @@ BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerF
     'workerKubeconfig', 'scaleoutIntentPath', 'scaleinIntentPath',
     'nlbIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
 SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions',
-                          'pendingProofWorker','preDrainProofWorker','zeroProofWorker')) | frozenset(WORKER_SOURCES)
+                          'pendingProofWorker','preDrainProofWorker','zeroProofWorker','collectorControl')) | frozenset(WORKER_SOURCES)
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'
 REGION = 'ap-southeast-1'
@@ -137,7 +138,15 @@ class ActionCatalog:
                    encode(bindings['target']).decode('ascii')]
             command=' '.join(q(part) for part in parts)
         elif action.startswith('collector-'):
-            command = 'cd '+q(bindings['remoteRun'])+' && python3 collector_control.py '+action.split('-')[1]
+            identifier(run_id)
+            hashes={key:bindings['sourceHashes'][key] for key in
+                    set(WORKER_SOURCES) | {'collectorControl'}}
+            parts=['python3','-I','-S','-c',BOOTSTRAP,
+                   str(Path(bindings['remoteRun'])/'pgcat_collector_control.py'),
+                   hashes['collectorControl'],action.split('-')[1],bindings['contractDir'],
+                   run_id,bindings['workerKubeconfig'],
+                   json.dumps(hashes,sort_keys=True,separators=(',',':'))]
+            command=' '.join(q(part) for part in parts)
         else:
             # Task 6D must install a reviewed fixed reconciliation producer.
             raise Refused('source')
@@ -261,7 +270,14 @@ class ActionCatalog:
             elif action == 'collector-launch':
                 require(value == {'status':'LAUNCHED'},'parse')
             elif action == 'collector-status':
-                require(set(value) == {'status','identity'} and value['status'] == 'ALIVE','parse')
+                require(value.get('status') in ('ALIVE','EXITED'),'parse')
+                require(set(value) == ({'status','identity'} if value['status']=='ALIVE'
+                        else {'status','identity','exit'}),'parse')
+                if value['status']=='EXITED':
+                    require(type(value['exit']) is dict and
+                            value['exit'].get('category')=='completed' and
+                            type(value['exit'].get('exitCode')) is int and
+                            value['exit']['exitCode']==0,'parse')
             else:
                 raise Refused('configuration')
         validate_result(dict(state='complete',category='ok',payload=value))

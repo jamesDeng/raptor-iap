@@ -116,7 +116,8 @@ class LaneSupervisor:
             rehearsalContract=here/'pgcat_rehearsal_contract.py',
             captureWindow=here/'capture_window.py',finishClients=here/'finish_clients.py',
             workerCapture=here/'worker_capture.py',
-            segmentedCapture=here/'segmented_capture.py')
+            segmentedCapture=here/'segmented_capture.py',
+            collectorControl=here/'pgcat_collector_control.py')
         for name,path in paths.items():
             require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == b['sourceHashes'][name],'source')
         self.bundle=hashlib.sha256(encode(b['sourceHashes'])).hexdigest()

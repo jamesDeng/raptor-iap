@@ -242,7 +242,8 @@ class DetachedWorkerTests(unittest.TestCase):
                         'providerFeed': 'provider_feed.py',
                         'laneProtocol': 'pgcat_lane_protocol.py',
                         'laneSupervisor': 'pgcat_lane_supervisor.py',
-                        'laneActions': 'pgcat_lane_actions.py'}
+                        'laneActions': 'pgcat_lane_actions.py',
+                        'collectorControl': 'pgcat_collector_control.py'}
         hashes = {key: hashlib.sha256((here / name).read_bytes()).hexdigest()
                   for key, name in source_names.items()}
         hashes.update(self.hashes)
