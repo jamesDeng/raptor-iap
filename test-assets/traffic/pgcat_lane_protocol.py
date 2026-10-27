@@ -78,6 +78,19 @@ def expected_roster(originals, candidate, *, registered):
             for node in healthy])
 
 
+def removing_roster_shas(originals,candidate):
+    """Only the candidate may transition to NLB Removing after its ACK."""
+    base=expected_roster(originals,candidate,registered=True)
+    base['healthyRegistered']=sorted(originals)
+    row=next(item for item in base['backendStates'] if item['id'] == candidate)
+    digests=set()
+    for weight in (0,100):
+        for health in ('Normal','Initial','Unhealthy','Unavailable'):
+            row.update(status='Removing',weight=weight,listenerHealth=health)
+            digests.add(roster_sha(base))
+    return frozenset(digests)
+
+
 def token(value):
     return type(value) is str and TOKEN.fullmatch(value) is not None
 

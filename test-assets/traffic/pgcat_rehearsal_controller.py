@@ -20,7 +20,7 @@ from pgcat_lane_actions import validate_bindings, unique
 from pgcat_lane_client import LaneClient
 from pgcat_lane_protocol import (Refused, require, private, read_private, identifier,
     sha, token, monotonic, validate_result, validate_finish_receipts,
-    encode, roster_sha, expected_roster)
+    encode, roster_sha, expected_roster, removing_roster_shas)
 from pgcat_lane_supervisor import read_json, save_once
 import provider_feed as provider
 import pgcat_workbench_lane as lane
@@ -486,6 +486,7 @@ class Controller:
             originals=self.bindings['laneBindings']['target']['originalInstanceIds']
             three=roster_sha(expected_roster(originals,pending['newId'],registered=True))
             absent=roster_sha(expected_roster(originals,pending['newId'],registered=False))
+            removing=removing_roster_shas(originals,pending['newId'])
             require(receipt['desired'] == 3 and receipt['rosterSha256'] == three and
                     0 <= time.time()-receipt['observedAt'] < 3.5 and
                     0 <= time.time()-pre['observedAt'] < 30,'receipt')
@@ -505,14 +506,21 @@ class Controller:
                     token(result['payload']['requestId']) and token(result['payload']['jobId']),'parse')
             latest=receipt['sequence']
             end=monotonic()+90.
+            phase='available'
             while monotonic() < end:
                 later=self._next_receipt(latest+1,observed_after=completed_at,desired=3,
                     timeout=min(20.,end-monotonic()))
                 latest=later['sequence']
-                require(later['rosterSha256'] in (three,absent),'receipt')
-                if later['rosterSha256'] == absent:
+                roster=later['rosterSha256']
+                if roster == three:
+                    require(phase == 'available','receipt')
+                elif roster in removing:
+                    phase='removing'
+                elif roster == absent:
                     self.state='nlb-absent'
                     return copy.deepcopy(later)
+                else:
+                    raise Refused('receipt')
             raise Refused('timeout')
         except BaseException:
             self.close(); raise

@@ -12,7 +12,7 @@ import unittest
 import uuid
 from unittest.mock import Mock, patch
 
-from pgcat_lane_protocol import Refused, encode, roster_sha, expected_roster
+from pgcat_lane_protocol import Refused, encode, roster_sha, expected_roster, removing_roster_shas
 
 
 class ControllerTests(unittest.TestCase):
@@ -360,6 +360,59 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(intent['rosterSha256'],three)
         self.assertEqual(intent['preDrainProofSha256'],hashlib.sha256(encode(controller.pre_drain_proof)).hexdigest())
         with self.assertRaises(Refused):controller.deregister_new_node()
+
+    def test_nlb_removing_then_absent_is_valid(self):
+        controller,three,absent=self.nlb_controller()
+        originals=self.binding['laneBindings']['target']['originalInstanceIds']
+        roster=expected_roster(originals,'new-node',registered=True)
+        roster['healthyRegistered']=sorted(originals)
+        candidate=next(row for row in roster['backendStates'] if row['id']=='new-node')
+        candidate.update(status='Removing',weight=0,listenerHealth='Unavailable')
+        removing=roster_sha(roster)
+        observations=[dict(controller.receipt,sequence=6,observedAt=self.wall+1,rosterSha256=three),
+            dict(controller.receipt,sequence=7,observedAt=self.wall+2,rosterSha256=removing),
+            dict(controller.receipt,sequence=8,observedAt=self.wall+3,rosterSha256=absent)]
+        with patch.object(controller,'_next_receipt',side_effect=observations) as next_receipt:
+            self.assertEqual(controller.deregister_new_node(),observations[-1])
+        self.assertEqual(next_receipt.call_count,3)
+
+    def test_nlb_removing_cannot_return_to_available(self):
+        controller,three,_=self.nlb_controller()
+        originals=self.binding['laneBindings']['target']['originalInstanceIds']
+        roster=expected_roster(originals,'new-node',registered=True)
+        roster['healthyRegistered']=sorted(originals)
+        next(row for row in roster['backendStates'] if row['id']=='new-node').update(
+            status='Removing',weight=0,listenerHealth='Unavailable')
+        observations=[dict(controller.receipt,sequence=6,observedAt=self.wall+1,
+                           rosterSha256=roster_sha(roster)),
+            dict(controller.receipt,sequence=7,observedAt=self.wall+2,rosterSha256=three)]
+        with patch.object(controller,'_next_receipt',side_effect=observations):
+            with self.assertRaises(Refused):controller.deregister_new_node()
+        self.assertEqual(controller.state,'uncertain')
+
+    def test_removing_roster_digest_excludes_other_changes(self):
+        originals=self.binding['laneBindings']['target']['originalInstanceIds']
+        base=expected_roster(originals,'new-node',registered=True)
+        base['healthyRegistered']=sorted(originals)
+        next(row for row in base['backendStates'] if row['id']=='new-node').update(
+            status='Removing',weight=0,listenerHealth='Unavailable')
+        allowed=removing_roster_shas(originals,'new-node')
+        self.assertIn(roster_sha(base),allowed)
+        for change in ('extra','protection','health','weight','backend'):
+            with self.subTest(change=change):
+                altered=copy.deepcopy(base)
+                if change=='extra':
+                    altered['backendStates'].append(dict(id='other',status='Available',
+                        weight=100,listenerHealth='Normal'))
+                elif change=='protection':
+                    next(row for row in altered['memberStates'] if row['id']==originals[0])['lifecycle']='InService'
+                elif change=='health':
+                    next(row for row in altered['memberStates'] if row['id']==originals[0])['health']='Unhealthy'
+                elif change=='weight':
+                    next(row for row in altered['backendStates'] if row['id']=='new-node')['weight']=50
+                else:
+                    next(row for row in altered['backendStates'] if row['id']==originals[0])['status']='Removing'
+                self.assertNotIn(roster_sha(altered),allowed)
 
     def test_nlb_later_changed_roster_cannot_claim_absence(self):
         controller,_,_=self.nlb_controller()

@@ -1036,10 +1036,14 @@ sequence and digest. The fixed local CLI request removes only the journal-bound
 candidate as `Ecs` on port `6432`; it accepts only sanitized `RequestId` and
 `JobId` within 20 seconds. A durable `(run, action)` key and the existing
 sequence intent prevent retry under another request UUID. Unknown ACK stops;
-there is no automatic retry or re-registration. A later successful publication
-observed after ACK must show exactly the two healthy protected originals in
-NLB, while the candidate remains the sole healthy unprotected ESS member,
-before the controller records NLB absence. The ACK alone is insufficient.
+there is no automatic retry or re-registration. Later same-session publications
+may briefly retain the exact healthy three-node roster, then show only the
+candidate as NLB `Removing` with its bounded weight/health states; once
+`Removing` appears, a return to three Available backends refuses. A final
+successful publication observed after ACK must show exactly the two healthy
+protected originals in NLB, while the candidate remains the sole healthy
+unprotected ESS member, before the controller records NLB absence. The ACK
+alone is insufficient.
 
 This is locally tested code, not live clearance. Paid start remains blocked
 until the separate ESS 3-to-2, final close and abort stages have reviewed
