@@ -28,17 +28,31 @@ class PendingBindingTests(unittest.TestCase):
             resourceVersion='11',clientRosterSha256='b'*64,evidenceSha256='c'*64,
             sourceSha256=self.source)
 
-    def request(self, **changes):
+    def request(self, observed_at=None, **changes):
         req=dict(requestId=str(uuid.uuid4()),runId=self.run,supervisorId=self.supervisor,
             action='pending-proof',feedSession=self.session,minimumSequence=4,
             receiptIdentity='e'*64,target=self.target,bundleSha256='a'*64,
             nonce=str(uuid.uuid4()),deadlineMonotonic=monotonic()+5.)
-        req.update(changes); publish_request(self.root,req); self.journal.admit(req)
+        req.update(changes); publish_request(self.root,req)
+        receipt=(dict(feedSession=self.session,sequence=req['minimumSequence'],
+                      observedAt=time.time()+1 if observed_at is None else observed_at)
+                 if req['action'] == 'pending-proof' else None)
+        self.journal.admit(req,receipt)
         return req
 
     def prepared(self):
         req=self.request(action='pending-status',minimumSequence=3)
         self.journal.seal(req['requestId'],dict(state='complete',category='ok',payload={'status':'PREPARED'}))
+        return self.journal.record_prepared(req['requestId'])
+
+    def test_prepared_marker_requires_later_provider_observation(self):
+        status=self.request(action='pending-status',minimumSequence=3)
+        self.journal.seal(status['requestId'],dict(state='complete',category='ok',
+            payload={'status':'PREPARED'}))
+        with self.assertRaises(Refused): self.request(observed_at=time.time()+1)
+        marker=self.journal.record_prepared(status['requestId'])
+        with self.assertRaises(Refused): self.request(observed_at=marker['sealedAt'])
+        self.request(observed_at=marker['sealedAt']+.001)
 
     def test_no_scale_admits_only_baseline_and_collector(self):
         allowed={'baseline-start','baseline-status','collector-launch','collector-status'}

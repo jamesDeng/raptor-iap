@@ -7,11 +7,12 @@ import subprocess
 import sys
 import time
 import unittest
+import uuid
 from unittest.mock import patch
 
 import pgcat_lane_client as client_module
 from pgcat_lane_client import LaneClient
-from pgcat_lane_protocol import Refused, publish_request
+from pgcat_lane_protocol import Refused, encode, publish_request
 from pgcat_lane_supervisor import read_json, save_once
 import test_pgcat_lane_supervisor as supervisor_tests
 
@@ -43,6 +44,61 @@ class ClientTests(unittest.TestCase):
 
     def call(self):
         return self.client.call('baseline-status', read_json(self.root/'receipt.json'), monotonic()+4.)
+
+    def seed_prepared_status(self):
+        request=dict(requestId=str(uuid.uuid4()),runId=self.client.run_id,
+            supervisorId=self.client.supervisor_id,action='pending-status',
+            feedSession=self.session,minimumSequence=1,receiptIdentity='e'*64,
+            target=self.target,bundleSha256=self.client.bundle,
+            nonce=str(uuid.uuid4()),deadlineMonotonic=monotonic()+5.)
+        result=dict(state='complete',category='ok',payload={'status':'PREPARED'})
+        with self.client.journal._transaction() as db:
+            db.execute('UPDATE run SET supervisor=?,session=?',
+                       (self.client.supervisor_id,self.session))
+            db.execute('INSERT INTO requests VALUES (?,?,?,?,?,?)',
+                       (request['requestId'],self.client.run_id,request['nonce'],
+                        encode(request).decode(),'complete',encode(result).decode()))
+        return request['requestId']
+
+    def test_direct_pending_proof_requires_publication_after_prepared_marker(self):
+        self.receipt(1,desired=3)
+        prepared_id=self.seed_prepared_status()
+        # Sequence 2 exists, but its observation predates the durable marker.
+        self.receipt(2,desired=3)
+        later_time=time.time()+1
+        with patch('pgcat_lane_protocol.time.time',return_value=later_time):
+            marker=self.client.journal.record_prepared(prepared_id)
+        self.assertLess(read_json(self.root/'receipt.json')['observedAt'],marker['sealedAt'])
+        with self.assertRaises(Refused):
+            self.client.call('pending-proof',read_json(self.root/'receipt.json'),monotonic()+4.)
+        with self.client.journal._connection() as db:
+            admitted=db.execute("SELECT count(*) FROM requests WHERE json_extract(request,'$.action')='pending-proof'").fetchone()[0]
+        self.assertEqual(admitted,0)
+
+    def test_direct_pending_proof_accepts_later_publication(self):
+        self.receipt(1,desired=3)
+        prepared_id=self.seed_prepared_status()
+        with patch('pgcat_lane_protocol.time.time',return_value=time.time()-1):
+            self.client.journal.record_prepared(prepared_id)
+        self.receipt(2,desired=3)
+        receipt=read_json(self.root/'receipt.json')
+        proof=dict(runId=self.client.run_id,feedSession=self.session,newId='i-new-c',
+            originalInstanceIds=self.target['originalInstanceIds'],sequence=1,
+            observedAt=receipt['observedAt']-1,resourceVersion='11',
+            clientRosterSha256='b'*64,evidenceSha256='c'*64,
+            sourceSha256=self.hashes['pendingProofWorker'])
+        self.cli.write_text('#!'+sys.executable+'\nprint('+repr(json.dumps(proof))+')\n')
+        self.cli.chmod(0o700)
+        result=self.client.call('pending-proof',receipt,monotonic()+4.)
+        self.assertEqual(result['payload'],proof)
+        self.assertEqual(self.client.journal.pending_binding(),proof)
+
+    def test_pending_prepared_is_not_reported_before_second_marker_commit(self):
+        request_id=self.seed_prepared_status()
+        result=dict(state='complete',category='ok',payload={'status':'PREPARED'})
+        self.assertFalse(self.client._prepared_result_ready('pending-status',request_id,result))
+        self.client.journal.record_prepared(request_id)
+        self.assertTrue(self.client._prepared_result_ready('pending-status',request_id,result))
 
     def receipts(self, status='INCONCLUSIVE'):
         feed = subprocess.Popen([sys.executable, '-c', 'pass'])
@@ -193,7 +249,6 @@ class ClientTests(unittest.TestCase):
         from pgcat_lane_supervisor import LaneSupervisor
         root = self.base/'second'; root.mkdir(mode=0o700)
         journal = Journal(root)
-        import uuid
         journal.create_run(str(uuid.uuid4()), 'disabled-rehearsal', self.target,
                            dict(self.hashes, bundleSha256=self.bundle))
         with self.assertRaises(Refused): LaneSupervisor(root, self.bindings, journal)

@@ -332,7 +332,12 @@ class Journal:
                 feed_exit TEXT NOT NULL, assessment TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS pending_binding (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-                proof TEXT NOT NULL);''')
+                proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS prepared_marker (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                request_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                feed_session TEXT NOT NULL, sequence INTEGER NOT NULL,
+                receipt_identity TEXT NOT NULL, sealed_at REAL NOT NULL);''')
         folder = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(folder)
@@ -377,7 +382,7 @@ class Journal:
             db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?)',
                        (run_id, mode, encode(target).decode(), encode(hashes).decode(), 'active', None, None))
 
-    def admit(self, request: dict) -> None:
+    def admit(self, request: dict, receipt=None) -> None:
         validate_request(request)
         published = read_request(self.root, request['requestId'])
         require(encode(request) == encode(published))
@@ -414,6 +419,19 @@ class Journal:
                         marker['minimumSequence'] < request['minimumSequence'] and
                         outcome == {'state':'complete','category':'ok','payload':{'status':'PREPARED'}},
                         'incomplete')
+                gate = db.execute('SELECT * FROM prepared_marker').fetchone()
+                require(gate is not None and gate['request_id'] == marker['requestId'] and
+                        gate['run_id'] == request['runId'] and
+                        gate['feed_session'] == request['feedSession'] and
+                        gate['sequence'] == marker['minimumSequence'] and
+                        gate['receipt_identity'] == marker['receiptIdentity'], 'incomplete')
+                require(type(receipt) is dict and
+                        receipt.get('feedSession') == request['feedSession'] and
+                        type(receipt.get('sequence')) is int and
+                        receipt['sequence'] == request['minimumSequence'] and
+                        type(receipt.get('observedAt')) in (int,float) and
+                        math.isfinite(receipt['observedAt']) and
+                        receipt['observedAt'] > gate['sealed_at'], 'receipt')
             require(db.execute('SELECT 1 FROM requests WHERE request_id=? OR nonce=?',
                                (request['requestId'],request['nonce'])).fetchone() is None)
             db.execute('UPDATE run SET supervisor=?, session=?', (request['supervisorId'],request['feedSession']))
@@ -437,6 +455,26 @@ class Journal:
                        (result['state'], encode(result).decode(), request_id))
             if result['state'] == 'uncertain':
                 db.execute("UPDATE run SET state='uncertain' WHERE state='active'")
+
+    def record_prepared(self, request_id: str) -> dict:
+        """Commit a second marker strictly after the PREPARED result commit."""
+        identifier(request_id)
+        with self._transaction() as db:
+            row = db.execute('SELECT * FROM requests WHERE request_id=?', (request_id,)).fetchone()
+            run = db.execute('SELECT * FROM run').fetchone()
+            require(row is not None and run is not None and run['state'] == 'active' and
+                    row['state'] == 'complete' and row['run_id'] == run['run_id'], 'incomplete')
+            request = json.loads(row['request']); result = json.loads(row['result'])
+            require(request['action'] == 'pending-status' and
+                    result == {'state':'complete','category':'ok','payload':{'status':'PREPARED'}} and
+                    run['session'] == request['feedSession'], 'incomplete')
+            require(db.execute('SELECT 1 FROM prepared_marker').fetchone() is None, 'incomplete')
+            sealed_at = time.time()
+            db.execute('INSERT INTO prepared_marker VALUES (1,?,?,?,?,?,?)',
+                       (request_id, run['run_id'], request['feedSession'],
+                        request['minimumSequence'], request['receiptIdentity'], sealed_at))
+        return dict(requestId=request_id,feedSession=request['feedSession'],
+                    sequence=request['minimumSequence'],sealedAt=sealed_at)
 
     def cancel(self, category: str) -> None:
         require(category in CATEGORIES)

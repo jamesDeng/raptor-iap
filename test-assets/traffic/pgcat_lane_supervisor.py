@@ -228,7 +228,11 @@ class LaneSupervisor:
                     self._receipt(req)
                     if req['action'] == 'scaleout-two-to-three':
                         require(before_cutoff() and time.time()-receipt['observedAt'] < 3.5,'receipt')
-                    self.journal.admit(req); admitted=True
+                    if req['action'] == 'pending-proof':
+                        self.journal.admit(req,receipt)
+                    else:
+                        self.journal.admit(req)
+                    admitted=True
                     if req['action'] == 'scaleout-two-to-three':
                         lane.consume_intent(self.bindings['laneIntentDir'],req['feedSession'],receipt['sequence'])
                         self._receipt(req)
@@ -259,6 +263,8 @@ class LaneSupervisor:
                             pending_source_sha=self.bindings['sourceHashes']['pendingProofWorker'])
                     else:
                         self.journal.seal(request_id,result)
+                    if req['action'] == 'pending-status' and payload == {'status':'PREPARED'}:
+                        self.journal.record_prepared(request_id)
                 if monotonic() >= deadline:
                     self.cancel('timeout')
                 return self.journal.snapshot(request_id)
@@ -268,7 +274,8 @@ class LaneSupervisor:
                 self.cancel(category)
                 if not admitted: raise Refused(category) from None
                 with self._masked():
-                    self.journal.seal(request_id,dict(state='uncertain',category=category,payload={}))
+                    if self.journal.snapshot(request_id)['state'] == 'dispatching':
+                        self.journal.seal(request_id,dict(state='uncertain',category=category,payload={}))
                 return self.journal.snapshot(request_id)
 
     def finish(self):

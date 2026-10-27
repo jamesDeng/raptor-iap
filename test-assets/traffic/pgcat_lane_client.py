@@ -87,6 +87,14 @@ class LaneClient:
         require(state['mode'] == self.mode and state['target'] == self.bindings['target'])
         require(state['hashes'] == dict(self.bindings['sourceHashes'], bundleSha256=self.bundle), 'source')
 
+    def _prepared_result_ready(self, action, request_id, result):
+        if action != 'pending-status' or result['payload'].get('status') != 'PREPARED':
+            return True
+        with self.journal._connection() as db:
+            row = db.execute('SELECT 1 FROM prepared_marker WHERE request_id=?',
+                             (request_id,)).fetchone()
+        return row is not None
+
     def call(self, action: str, receipt: dict, deadline: float) -> dict:
         try:
             self._active()
@@ -110,6 +118,9 @@ class LaneClient:
                     require(snapshot['request'] == request and snapshot['runId'] == self.run_id)
                     require(snapshot['runState'] == 'active' and snapshot['state'] != 'uncertain', 'incomplete')
                     if snapshot['state'] == 'complete':
+                        if not self._prepared_result_ready(action,request['requestId'],snapshot['result']):
+                            time.sleep(.01)
+                            continue
                         self._active(); require(monotonic() < deadline, 'timeout')
                         return snapshot['result']
                 time.sleep(.01)

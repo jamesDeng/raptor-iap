@@ -42,6 +42,7 @@ class SupervisorTests(unittest.TestCase):
             +'mode=Path('+repr(str(self.behavior))+').read_text()\n'
             +'assert not (signal.pthread_sigmask(signal.SIG_BLOCK, []) & {signal.SIGINT,signal.SIGTERM,signal.SIGHUP})\n'
             +'if mode == "sleep": time.sleep(5)\n'
+            +'if mode == "pending-prepared": print("PENDING_DETACHED:PREPARED",flush=True); raise SystemExit(0)\n'
             +'if mode == "fork":\n'
             +' if os.fork() == 0:\n'
             +'  Path('+repr(str(self.fork_ready))+').touch()\n'
@@ -267,6 +268,7 @@ class SupervisorTests(unittest.TestCase):
         self.journal.admit(prepared)
         self.journal.seal(prepared['requestId'],dict(state='complete',category='ok',
             payload={'status':'PREPARED'}))
+        self.journal.record_prepared(prepared['requestId'])
         self.receipt(4,desired=3)
         proof=dict(runId=self.run,feedSession=self.session,newId='i-new-one',
             originalInstanceIds=self.target['originalInstanceIds'],sequence=3,
@@ -282,6 +284,28 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(self.journal.pending_binding(),proof)
         with self.assertRaises(Refused):
             self.owner.run_once(self.request(action='pending-proof')['requestId'])
+
+    def test_pending_prepared_seals_post_result_marker(self):
+        self.receipt(2,desired=3)
+        self.behavior.write_text('pending-prepared')
+        row=self.run_request(action='pending-status')
+        self.assertEqual(row['state'],'complete')
+        self.assertEqual(row['result']['payload'],{'status':'PREPARED'})
+        with self.journal._connection() as db:
+            marker=db.execute('SELECT * FROM prepared_marker').fetchone()
+        self.assertIsNotNone(marker)
+        self.assertEqual(marker['request_id'],row['requestId'])
+        self.assertEqual(marker['feed_session'],self.session)
+
+    def test_pending_marker_failure_never_reports_active_prepared(self):
+        self.receipt(2,desired=3)
+        self.behavior.write_text('pending-prepared')
+        with patch.object(self.journal,'record_prepared',side_effect=Refused('storage')):
+            row=self.run_request(action='pending-status')
+        self.assertEqual(row['state'],'complete')
+        self.assertEqual(row['runState'],'uncertain')
+        with self.journal._connection() as db:
+            self.assertIsNone(db.execute('SELECT * FROM prepared_marker').fetchone())
 
     def test_scaleout_consumes_shared_sequence(self):
         req=self.request(action='scaleout-two-to-three',deadlineMonotonic=monotonic()+10.)
