@@ -80,6 +80,30 @@ def exact_three(frame, ids, candidate):
                 listenerHealth='Normal') for node in members])
 
 
+def exact_pre_convergence(frame, ids, candidate):
+    """Allow only a clean Adding/Configuring observation before first health."""
+    inv = frame['inventory']
+    members = sorted(ids + [candidate])
+    backends = inv['backendStates']
+    require(frame['phase'] == 'measurement' and frame['expectedReplicas'] == 2 and
+            inv['schemaVersion'] == 2 and inv['mode'] == 'disabled-rehearsal' and
+            inv['desired'] == 3 and inv['members'] == members and
+            inv['healthyRegistered'] == ids and
+            inv['memberStates'] == [dict(id=node,
+                lifecycle='InService' if node == candidate else 'Protected',
+                health='Healthy', addressKnown=True) for node in members] and
+            type(backends) is list and len(backends) == 3 and
+            [row['id'] for row in backends] == members)
+    for row in backends:
+        if row['id'] == candidate:
+            require(row['status'] in ('Adding', 'Configuring') and
+                    row['weight'] == 100 and
+                    row['listenerHealth'] in ('Initial', 'Normal'))
+        else:
+            require(row == dict(id=row['id'], status='Available', weight=100,
+                                listenerHealth='Normal'))
+
+
 def _with_kubeconfig(path, operation, *args):
     previous = os.environ.get('KUBECONFIG')
     os.environ['KUBECONFIG'] = str(path)
@@ -129,17 +153,25 @@ def produce(contract_dir, run_id, pending_binding, *, kubectl=None,
         post = []
         last_sequence = -1
         entered = False
+        converged = False
         for frame in frames[selected_index + 1:]:
-            if candidate in {row['id'] for row in frame['inventory']['backendStates']}:
+            backends = {row['id']: row for row in frame['inventory']['backendStates']}
+            if candidate in backends:
                 entered = True
             if entered:
-                exact_three(frame, ids, candidate)
-                seq = frame['inventory']['sequence']
-                if seq != last_sequence:
-                    post.append(frame)
-                    last_sequence = seq
+                if converged or backends[candidate]['status'] == 'Available':
+                    exact_three(frame, ids, candidate)
+                    converged = True
+                    seq = frame['inventory']['sequence']
+                    if seq != last_sequence:
+                        post.append(frame)
+                        last_sequence = seq
+                    else:
+                        post[-1] = frame
                 else:
-                    post[-1] = frame
+                    exact_pre_convergence(frame, ids, candidate)
+                    pending_proof.complete_metrics(frame, ids + [candidate],
+                        pending_proof.timestamp(frame['at']))
         require(len(post) >= 2 and frames[-1] == post[-1] and
                 post[-2]['inventory']['sequence'] < post[-1]['inventory']['sequence'] and
                 pending_proof.timestamp(post[-2]['inventory']['observedAt']) <

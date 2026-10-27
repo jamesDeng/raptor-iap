@@ -269,6 +269,49 @@ class PreDrainProofWorkerTests(unittest.TestCase):
             self.produce()
         self.assertFalse((self.fixture.contract / 'pre-drain.json').exists())
 
+    def test_initial_adding_then_two_healthy_publications_qualify(self):
+        f = self.fixture
+        first = f.frames[-2]
+        first['inventory']['backendStates'][-1]['status'] = 'Adding'
+        first['inventory']['backendStates'][-1]['listenerHealth'] = 'Initial'
+        first['inventory']['healthyRegistered'] = ['a', 'b']
+        self.append_provider_frame(8, True)
+        self.assertEqual(self.produce()['sequence'], 8)
+
+    def test_initial_configuring_with_incomplete_metrics_refuses(self):
+        f = self.fixture
+        first = f.frames[-2]
+        first['inventory']['backendStates'][-1]['status'] = 'Configuring'
+        first['inventory']['backendStates'][-1]['listenerHealth'] = 'Initial'
+        first['inventory']['healthyRegistered'] = ['a', 'b']
+        first['metrics']['raw'] = [row for row in first['metrics']['raw']
+            if not (row['node'] == 'c' and row['kind'] == 'waiting')]
+        self.append_provider_frame(8, True)
+        with self.assertRaises(proof.Refused):
+            self.produce()
+        self.assertFalse((f.contract / 'pre-drain.json').exists())
+
+    def test_initial_configuring_with_complete_metrics_qualifies(self):
+        f = self.fixture
+        first = f.frames[-2]
+        first['inventory']['backendStates'][-1]['status'] = 'Configuring'
+        first['inventory']['backendStates'][-1]['listenerHealth'] = 'Initial'
+        first['inventory']['healthyRegistered'] = ['a', 'b']
+        self.append_provider_frame(8, True)
+        self.assertEqual(self.produce()['sequence'], 8)
+
+    def test_healthy_then_adding_then_healthy_refuses(self):
+        self.append_provider_frame(8, True)
+        f = self.fixture
+        middle = f.frames[-2]
+        middle['inventory']['backendStates'][-1]['status'] = 'Adding'
+        middle['inventory']['backendStates'][-1]['listenerHealth'] = 'Initial'
+        middle['inventory']['healthyRegistered'] = ['a', 'b']
+        self.persist_frames()
+        with self.assertRaises(proof.Refused):
+            self.produce()
+        self.assertFalse((f.contract / 'pre-drain.json').exists())
+
     def test_candidate_order_between_originals_is_valid(self):
         import pgcat_pre_drain_proof_worker as pre_drain
         frame = copy.deepcopy(self.fixture.frames[-1])
