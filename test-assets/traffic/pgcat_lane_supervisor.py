@@ -19,7 +19,7 @@ import time
 import uuid
 
 from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
-    read_private, read_request, write_all, monotonic)
+    read_private, read_request, write_all, monotonic, NO_SCALE_ACTIONS)
 from pgcat_lane_actions import ActionCatalog, validate_bindings
 import pgcat_workbench_lane as lane
 
@@ -209,6 +209,7 @@ class LaneSupervisor:
                 with self.journal._connection() as db:
                     run=db.execute('SELECT * FROM run').fetchone()
                     require(run['state'] == 'active')
+                    require(run['mode'] != 'no-scale' or req['action'] in NO_SCALE_ACTIONS)
                     require(req['action'] not in ('scaleout-two-to-three','pending-proof') or
                             run['mode'] == 'disabled-rehearsal')
                 identity,receipt=self._receipt(req); self._unused(req,receipt)

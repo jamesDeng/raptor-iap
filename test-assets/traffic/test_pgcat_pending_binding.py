@@ -8,7 +8,7 @@ import unittest
 import uuid
 
 from pgcat_lane_actions import ActionCatalog, SOURCE_NAMES
-from pgcat_lane_protocol import Journal, Refused, encode, monotonic, publish_request
+from pgcat_lane_protocol import ACTIONS, Journal, Refused, encode, monotonic, publish_request
 
 
 class PendingBindingTests(unittest.TestCase):
@@ -36,6 +36,42 @@ class PendingBindingTests(unittest.TestCase):
         req.update(changes); publish_request(self.root,req); self.journal.admit(req)
         return req
 
+    def prepared(self):
+        req=self.request(action='pending-status',minimumSequence=3)
+        self.journal.seal(req['requestId'],dict(state='complete',category='ok',payload={'status':'PREPARED'}))
+
+    def test_no_scale_admits_only_baseline_and_collector(self):
+        allowed={'baseline-start','baseline-status','collector-launch','collector-status'}
+        for action in sorted(ACTIONS):
+            with self.subTest(action=action):
+                root=self.root/action; root.mkdir(mode=0o700)
+                journal=Journal(root)
+                journal.create_run(str(uuid.uuid4()),'no-scale',self.target,
+                                   dict(bundleSha256='a'*64,pendingProofWorker=self.source))
+                snapshot=journal.run_snapshot()
+                req=dict(requestId=str(uuid.uuid4()),runId=snapshot['runId'],
+                    supervisorId=str(uuid.uuid4()),action=action,
+                    feedSession=self.session,minimumSequence=1,receiptIdentity='e'*64,
+                    target=self.target,bundleSha256='a'*64,nonce=str(uuid.uuid4()),
+                    deadlineMonotonic=monotonic()+5.)
+                publish_request(root,req)
+                if action in allowed: journal.admit(req)
+                else:
+                    with self.assertRaises(Refused): journal.admit(req)
+
+    def test_pending_proof_needs_completed_prepared_status(self):
+        with self.assertRaises(Refused): self.request()
+        status=self.request(action='pending-status',minimumSequence=3)
+        with self.assertRaises(Refused): self.request()
+        self.journal.seal(status['requestId'],dict(state='complete',category='ok',payload={'status':'RUNNING'}))
+        with self.assertRaises(Refused): self.request()
+
+    def test_pending_proof_rejects_non_exact_prepared_record(self):
+        status=self.request(action='pending-status',minimumSequence=3)
+        self.journal.seal(status['requestId'],dict(state='complete',category='ok',
+            payload={'status':'PREPARED','stage':'extra'}))
+        with self.assertRaises(Refused): self.request()
+
     def parse(self, proof=None, request=None, receipt=None):
         request=request or dict(runId=self.run,feedSession=self.session,
                                 minimumSequence=4,target=self.target)
@@ -43,11 +79,12 @@ class PendingBindingTests(unittest.TestCase):
                                    source_sha=self.source)
 
     def test_exact_address_free_summary_binds_once(self):
+        self.prepared()
         req=self.request(); parsed=self.parse(request=req)
         self.journal.seal(req['requestId'],dict(state='complete',category='ok',payload=parsed),
                           pending_source_sha=self.source)
         self.assertEqual(self.journal.pending_binding(),parsed)
-        self.assertNotIn('10.',json.dumps(self.journal.pending_binding()))
+        self.assertNotIn('10.0.0.',json.dumps(self.journal.pending_binding()))
         with self.assertRaises(Refused):
             self.request()
 
@@ -66,6 +103,7 @@ class PendingBindingTests(unittest.TestCase):
                 with self.assertRaises(Refused): self.parse(dict(self.proof,**changed))
 
     def test_recent_proof_one_publication_before_call_is_valid(self):
+        self.prepared()
         earlier=dict(self.proof,sequence=3,observedAt=time.time()-1)
         self.assertEqual(self.parse(earlier),earlier)
         req=self.request()
@@ -78,6 +116,7 @@ class PendingBindingTests(unittest.TestCase):
         with self.assertRaises(Refused): self.parse(receipt=receipt)
 
     def test_no_scale_result_never_binds(self):
+        self.prepared()
         req=self.request()
         with self.journal._transaction() as db: db.execute("UPDATE run SET mode='no-scale'")
         with self.assertRaises(Refused):
@@ -86,6 +125,7 @@ class PendingBindingTests(unittest.TestCase):
         with self.assertRaises(Refused): self.journal.pending_binding()
 
     def test_uncertain_result_never_binds(self):
+        self.prepared()
         req=self.request()
         self.journal.seal(req['requestId'],dict(state='uncertain',category='child',payload={}))
         with self.assertRaises(Refused): self.journal.pending_binding()

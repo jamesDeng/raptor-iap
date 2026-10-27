@@ -16,6 +16,8 @@ ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'pre-scale-status', 'zero-gate-start', 'zero-gate-status', 'pending-start',
     'pending-status', 'pending-proof', 'collector-launch', 'collector-status', 'reconcile-close',
     'scaleout-two-to-three'))
+NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status',
+    'collector-launch','collector-status'))
 REQUEST_KEYS = frozenset(('requestId', 'runId', 'supervisorId', 'action',
     'feedSession', 'minimumSequence', 'receiptIdentity', 'target', 'bundleSha256',
     'nonce', 'deadlineMonotonic'))
@@ -385,16 +387,32 @@ class Journal:
             require(request['runId'] == run['run_id'])
             require(request['target'] == json.loads(run['target']), 'target')
             require(request['bundleSha256'] == json.loads(run['hashes'])['bundleSha256'], 'source')
-            require(request['action'] not in ('scaleout-two-to-three','pending-proof') or
-                    (run['mode'] == 'disabled-rehearsal' and
-                     request['target']['scalingGroupId'] == 'asg-t4necb4dfmu6o3z2rn0g'))
+            if run['mode'] == 'no-scale':
+                require(request['action'] in NO_SCALE_ACTIONS, 'configuration')
+            if request['action'] == 'scaleout-two-to-three':
+                require(run['mode'] == 'disabled-rehearsal' and
+                        request['target']['scalingGroupId'] == 'asg-t4necb4dfmu6o3z2rn0g')
             require(request['deadlineMonotonic'] > monotonic(), 'timeout')
             require(run['supervisor'] in (None, request['supervisorId']))
             require(run['session'] in (None, request['feedSession']))
             require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None)
             if request['action'] == 'pending-proof':
+                require(run['mode'] == 'disabled-rehearsal')
                 require(db.execute('SELECT 1 FROM pending_binding').fetchone() is None, 'incomplete')
                 require(db.execute("SELECT 1 FROM requests WHERE json_extract(request,'$.action')='pending-proof'").fetchone() is None,
+                        'incomplete')
+                prior = None
+                for row in db.execute("SELECT request,result FROM requests WHERE run_id=? AND state='complete' ORDER BY rowid DESC",
+                                      (request['runId'],)):
+                    candidate = json.loads(row['request'])
+                    if candidate['action'] == 'pending-status':
+                        prior = (candidate,json.loads(row['result']))
+                        break
+                require(prior is not None, 'incomplete')
+                marker, outcome = prior
+                require(marker['feedSession'] == request['feedSession'] and
+                        marker['minimumSequence'] < request['minimumSequence'] and
+                        outcome == {'state':'complete','category':'ok','payload':{'status':'PREPARED'}},
                         'incomplete')
             require(db.execute('SELECT 1 FROM requests WHERE request_id=? OR nonce=?',
                                (request['requestId'],request['nonce'])).fetchone() is None)

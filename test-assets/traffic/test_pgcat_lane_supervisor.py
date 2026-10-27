@@ -78,9 +78,9 @@ class SupervisorTests(unittest.TestCase):
     def private_json(self, path, value):
         path.write_bytes(encode(value)); path.chmod(0o600)
 
-    def receipt(self, seq):
+    def receipt(self, seq, desired=2):
         self.private_json(Path(self.bindings['receiptPath']), dict(feedSession=self.session,sequence=seq,
-            mode='disabled-rehearsal',desired=2,observedAt=time.time()))
+            mode='disabled-rehearsal',desired=desired,observedAt=time.time()))
 
     def request(self, **changes):
         identity, value, _ = lane.read_receipt(self.bindings['receiptPath'], self.session, 1)
@@ -262,8 +262,12 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(self.marker.exists())
 
     def test_pending_proof_seals_binding_from_fake_child(self):
-        self.private_json(Path(self.bindings['receiptPath']),dict(feedSession=self.session,sequence=4,
-            mode='disabled-rehearsal',desired=3,observedAt=time.time()))
+        self.receipt(3,desired=3)
+        prepared=self.request(action='pending-status')
+        self.journal.admit(prepared)
+        self.journal.seal(prepared['requestId'],dict(state='complete',category='ok',
+            payload={'status':'PREPARED'}))
+        self.receipt(4,desired=3)
         proof=dict(runId=self.run,feedSession=self.session,newId='i-new-one',
             originalInstanceIds=self.target['originalInstanceIds'],sequence=3,
             observedAt=time.time()-1,resourceVersion='11',
