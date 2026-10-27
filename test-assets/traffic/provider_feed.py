@@ -288,8 +288,8 @@ def _unique_pairs(pairs):
     return value
 
 
-def validate_run_context(root, path):
-    """Bind the fixed supervisor file to the active journal and startup marker."""
+def validate_run_context(root, path, *, no_scale=False):
+    """Bind context and requested feed guards to the active journal mode."""
     from pgcat_lane_protocol import Journal, encode, identifier, private, read_private
     import pgcat_lane_supervisor as supervisor
     root, path = Path(root), Path(path)
@@ -324,6 +324,8 @@ def validate_run_context(root, path):
                        'laneRoot':str(root)})
     journal = Journal(root).run_snapshot()
     require(journal['runState'] == 'active' and journal['runId'] == context['runId'])
+    require(type(no_scale) is bool and journal['mode'] in ('no-scale', 'disabled-rehearsal')
+            and (journal['mode'] == 'no-scale') == no_scale)
     target = journal['target']
     require(target['scalingGroupId'] == GROUP_ID and target['nlbServerGroupId'] == SERVER_GROUP_ID
             and target['workerId'] == WORKER_ID and target['regionId'] == REGION)
@@ -508,6 +510,10 @@ def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monot
         delay = min(tick + interval, runtime_end) - monotonic()
         if delay > 0:
             sleep(delay)
+    # The final sleep can contain a stop intent. Acknowledge it without
+    # extending the provider window or fabricating another observation.
+    if stop is not None:
+        stop()
 
 
 class Operator:
@@ -548,7 +554,8 @@ class Operator:
                     inventory.name == 'provider-inventory.json' and
                     inventory.parent.name == 'run' and
                     inventory.parent.parent == contract.parent)
-            self.run_context = validate_run_context(context_path.parent, context_path)
+            self.run_context = validate_run_context(context_path.parent, context_path,
+                no_scale=getattr(args, 'no_scale_target', None) is not None)
         self.no_scale_target = None
         self.stop_ack = None
         raw_target = getattr(args, 'no_scale_target', None)
@@ -614,7 +621,8 @@ class Operator:
     def verify_run_context(self):
         if self.run_context is not None:
             path = Path(self.args.run_context)
-            require(validate_run_context(path.parent, path) == self.run_context)
+            require(validate_run_context(path.parent, path,
+                no_scale=getattr(self.args, 'no_scale_target', None) is not None) == self.run_context)
             if self.deadline is not None:
                 self.deadline.remaining()
 

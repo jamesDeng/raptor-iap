@@ -890,6 +890,51 @@ class NoScaleFeedTests(unittest.TestCase):
         save_once(op.status_file.parent,'no-scale-stop.intent',value,atomic=True)
         return value
 
+    def sealed_context(self, root, mode):
+        from pgcat_lane_protocol import Journal,encode
+        from pgcat_lane_supervisor import save_once
+        lane=root/'lane';lane.mkdir(mode=0o700)
+        active=root/'global';active.mkdir(mode=0o700)
+        target=dict(accountId='account',regionId=feed.REGION,workerId=feed.WORKER_ID,
+            scalingGroupId=feed.GROUP_ID,nlbServerGroupId=feed.SERVER_GROUP_ID,
+            originalInstanceIds=['i-0','i-1'])
+        hashes={'providerFeed':'a'*64};bundle=hashlib.sha256(encode(hashes)).hexdigest()
+        run_id=str(uuid.uuid4());supervisor_id=str(uuid.uuid4());nonce=str(uuid.uuid4())
+        Journal(lane).create_run(run_id,mode,target,dict(hashes,bundleSha256=bundle))
+        context=dict(schemaVersion=1,runId=run_id,supervisorId=supervisor_id,nonce=nonce,
+            targetSha256=hashlib.sha256(encode(target)).hexdigest(),bundleSha256=bundle)
+        save_once(lane,'run-context.json',context)
+        save_once(lane,'supervisor-startup.json',dict(runId=run_id,supervisorId=supervisor_id,contextNonce=nonce))
+        save_once(active,'active-run',dict(runId=run_id,supervisorId=supervisor_id,laneRoot=str(lane)))
+        return active,lane,target
+
+    def test_direct_no_scale_feed_requires_target_before_any_provider_operation(self):
+        import contextlib,io,sys
+        from unittest.mock import patch
+        import pgcat_lane_supervisor as supervisor
+        for mode,include_target,refuse in (('no-scale',False,True),
+                ('no-scale',True,False),('disabled-rehearsal',False,False),
+                ('disabled-rehearsal',True,True)):
+            with self.subTest(mode=mode,include_target=include_target),tempfile.TemporaryDirectory() as d:
+                root=pathlib.Path(d);root.chmod(0o700)
+                active,lane,target=self.sealed_context(root,mode)
+                argv=['provider_feed.py','--mode','disabled-rehearsal','--interval','15','--max-seconds','180',
+                    '--workbench','offline-workbench','--worker-inventory','/fresh/run/provider-inventory.json',
+                    '--run-context',str(lane/'run-context.json'),'--contract-dir','/fresh/contract',
+                    '--status-file',str(root/'status.json'),'--kubeconfig','/fresh/kubeconfig']
+                if include_target:argv+=['--no-scale-target',json.dumps(target)]
+                with patch.object(sys,'argv',argv),patch.object(supervisor,'GLOBAL_ROOT',active), \
+                        patch.object(feed.Operator,'existing_targets',return_value=()) as existing, \
+                        patch.object(feed.Operator,'read') as read,patch.object(feed.Operator,'update_targets') as update, \
+                        patch.object(feed,'run_loop') as loop,contextlib.redirect_stderr(io.StringIO()):
+                    if refuse:
+                        with self.assertRaises(SystemExit) as stopped:feed.main()
+                        self.assertEqual(stopped.exception.code,1)
+                        existing.assert_not_called();read.assert_not_called();update.assert_not_called();loop.assert_not_called()
+                    else:
+                        existing.return_value=(('i-0','10.0.0.1'),('i-1','10.0.0.2'))
+                        feed.main();existing.assert_called_once();loop.assert_called_once()
+
     def test_stop_is_terminal_and_no_scale_targets_can_never_be_patched(self):
         with tempfile.TemporaryDirectory() as d:
             op,context=self.operator(pathlib.Path(d));updates=[]
@@ -1018,6 +1063,26 @@ class NoScaleFeedTests(unittest.TestCase):
                     monotonic=lambda:clock[0],sleep=sleep,stop=op.stop_no_scale)
             self.assertEqual(ticks,[0.])
             self.assertTrue((op.status_file.parent/'no-scale-stop.ack').exists())
+
+    def test_stop_in_final_sleep_acknowledges_without_another_provider_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            op,context=self.operator(pathlib.Path(d));clock=[0.];ticks=[]
+            def read(**kwargs):
+                ticks.append(clock[0]);value=self.take(self.fixture());value['observedAt']=clock[0]
+                return value
+            def sleep(seconds):
+                if clock[0] == 165.:
+                    self.intent(op,context)
+                clock[0]+=seconds
+            feed.run_loop(read,op.write,interval=15,max_seconds=180,
+                monotonic=lambda:clock[0],sleep=sleep,stop=op.stop_no_scale)
+            self.assertEqual(clock[0],180.)
+            self.assertEqual(ticks,list(range(0,180,15)))
+            ack=json.loads((op.status_file.parent/'no-scale-stop.ack').read_text())
+            final=json.loads(op.status_file.read_text())
+            self.assertEqual(ack['sequence'],12)
+            self.assertEqual(final['observedAt'],165.)
+            self.assertEqual(final['sequence'],12)
 
     def test_natural_cap_has_no_ack_and_preserves_15_second_ticks(self):
         with tempfile.TemporaryDirectory() as d:
