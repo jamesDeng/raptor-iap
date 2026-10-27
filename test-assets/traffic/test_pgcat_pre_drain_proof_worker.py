@@ -102,6 +102,50 @@ class PreDrainProofWorkerTests(unittest.TestCase):
                 stream.write(json.dumps(frame, sort_keys=True) + '\n')
         write_private(f.inventory_path, f.frames[-1]['inventory'])
 
+    def append_provider_frame(self, sequence, candidate_registered):
+        f = self.fixture
+        frame = copy.deepcopy(f.frames[-1])
+        frame['at'] += 1
+        inv = frame['inventory']
+        inv['sequence'] = sequence
+        inv['observedAt'] = frame['at'] - .5
+        inv['healthyRegistered'] = ['a', 'b', 'c'] if candidate_registered else ['a', 'b']
+        inv['backendStates'] = [row for row in inv['backendStates'] if row['id'] != 'c']
+        if candidate_registered:
+            inv['backendStates'].append(dict(id='c', status='Available', weight=100,
+                                            listenerHealth='Normal'))
+        frame['metrics']['observedAt'] = frame['at'] - .1
+        frame['metrics']['sourceAt'] = frame['at'] - .2
+        for row in frame['metrics']['raw']:
+            row['sourceAt'] = frame['at'] - .2
+        for pod in frame['pods']:
+            sample = pod['snapshot']['sample']
+            sample['at'] = frame['at']
+            sample['Success'] += 1
+            sample['Scheduled'] += 1
+            sample['Attempts'] += 1
+            next_sequence = sample['sequence'] + 1
+            sample['sequence'] += 2
+            operation_id = str(sample['Success'])
+            pod['snapshot']['events'].extend([
+                dict(processId=sample['processId'], sequence=next_sequence,
+                     at=frame['at'], kind='scheduled', operationId=operation_id),
+                dict(processId=sample['processId'], sequence=next_sequence + 1,
+                     at=frame['at'], kind='operation', operationId=operation_id,
+                     outcome='success')])
+        frame = clean(frame)
+        f.frames.append(frame)
+        f.now = frame['at']
+        self.persist_frames()
+        source = f.contract / 'provider-source'
+        previous = json.loads((source / '000007.json').read_text())
+        raw = f.inventory_path.read_bytes()
+        sidecar = dict(previous, sequence=sequence,
+            observedAt=inv['observedAt'], inventorySha256=hashlib.sha256(raw).hexdigest(),
+            inventorySemanticSha256=hashlib.sha256(json.dumps(inv, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode('ascii')).hexdigest())
+        write_private(source / ('%06d.json' % sequence), sidecar)
+
     def test_two_distinct_healthy_post_entry_observations_seal_address_free_proof(self):
         f = self.fixture
         rows = json.loads(f.cm['data']['targets.json'])
@@ -217,6 +261,13 @@ class PreDrainProofWorkerTests(unittest.TestCase):
         f.now = frame['at']
         self.persist_frames()
         self.assertEqual(self.produce()['sequence'], 7)
+
+    def test_candidate_disappearance_then_reentry_after_nlb_entry_refuses(self):
+        self.append_provider_frame(8, False)
+        self.append_provider_frame(9, True)
+        with self.assertRaises(proof.Refused):
+            self.produce()
+        self.assertFalse((self.fixture.contract / 'pre-drain.json').exists())
 
     def test_candidate_order_between_originals_is_valid(self):
         import pgcat_pre_drain_proof_worker as pre_drain

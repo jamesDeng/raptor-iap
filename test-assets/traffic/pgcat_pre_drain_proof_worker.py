@@ -124,10 +124,15 @@ def produce(contract_dir, run_id, pending_binding, *, kubectl=None,
                 pending['frameSha256'])
         require(all(frame['inventory'].get('feedSession') ==
                     pending_binding['feedSession'] for frame in frames))
+        require(all(candidate not in {row['id'] for row in frame['inventory']['backendStates']}
+                    for frame in frames[:selected_index + 1]))
         post = []
         last_sequence = -1
+        entered = False
         for frame in frames[selected_index + 1:]:
             if candidate in {row['id'] for row in frame['inventory']['backendStates']}:
+                entered = True
+            if entered:
                 exact_three(frame, ids, candidate)
                 seq = frame['inventory']['sequence']
                 if seq != last_sequence:
