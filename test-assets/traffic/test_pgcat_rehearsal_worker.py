@@ -1,7 +1,9 @@
 """Offline one-use detached worker launch and marker tests."""
 import hashlib
+import importlib.util
 import json
 import os
+import py_compile
 from pathlib import Path
 import shlex
 import shutil
@@ -333,6 +335,56 @@ class DetachedWorkerTests(unittest.TestCase):
                                 stderr=subprocess.PIPE,timeout=5)
         self.assertNotEqual(rejected.returncode,0)
         self.assertFalse(marker.exists())
+
+    def _stale_cache(self, path, old, fresh):
+        self.assertEqual(len(old.encode()), len(fresh.encode()))
+        stamp = int(time.time()) - 100
+        path.write_text(old); path.chmod(0o600)
+        os.utime(path, (stamp, stamp))
+        cache_root=self.root/'pycache'
+        previous=sys.pycache_prefix
+        try:
+            sys.pycache_prefix=str(cache_root)
+            py_compile.compile(str(path),
+                cfile=importlib.util.cache_from_source(str(path)),doraise=True)
+        finally:
+            sys.pycache_prefix=previous
+        path.write_text(fresh); path.chmod(0o600)
+        os.utime(path, (stamp, stamp))
+
+    def _zero_cli(self):
+        pre={'runId':self.run_id,'feedSession':self.feed_session,'newId':'candidate',
+             'originalInstanceIds':self.target['originalInstanceIds']}
+        return [sys.executable,str(self.worker),'zero-proof',str(self.contract),self.run_id,
+                str(self.kubeconfig),json.dumps(self.hashes),json.dumps(self.target),json.dumps(pre)]
+
+    def test_zero_worker_ignores_matching_timestamp_size_stale_direct_bytecode(self):
+        zero=self.run/'pgcat_zero_proof_worker.py'
+        old='def produce(contract,run,binding):\n return {"observed":"OLD"}\n'
+        fresh='def produce(contract,run,binding):\n return {"observed":"NEW"}\n'
+        self._stale_cache(zero,old,fresh)
+        self.hashes['zeroProofWorker']=hashlib.sha256(zero.read_bytes()).hexdigest()
+        result=subprocess.run(self._zero_cli(),cwd=str(self.run),stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,timeout=5,
+                              env=dict(os.environ,PYTHONPYCACHEPREFIX=str(self.root/'pycache')))
+        self.assertEqual(result.returncode,0,result.stdout.decode())
+        self.assertEqual(json.loads(result.stdout),{'observed':'NEW'})
+
+    def test_zero_worker_ignores_matching_timestamp_size_stale_transitive_bytecode(self):
+        transitive=self.run/'capture_window.py'
+        self._stale_cache(transitive,'MARKER="OLD"\n','MARKER="NEW"\n')
+        self.hashes['captureWindow']=hashlib.sha256(transitive.read_bytes()).hexdigest()
+        zero=self.run/'pgcat_zero_proof_worker.py'
+        zero.write_text('import capture_window\n'
+                        'def produce(contract,run,binding):\n'
+                        ' return {"observed":capture_window.MARKER}\n')
+        zero.chmod(0o600)
+        self.hashes['zeroProofWorker']=hashlib.sha256(zero.read_bytes()).hexdigest()
+        result=subprocess.run(self._zero_cli(),cwd=str(self.run),stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE,timeout=5,
+                              env=dict(os.environ,PYTHONPYCACHEPREFIX=str(self.root/'pycache')))
+        self.assertEqual(result.returncode,0,result.stdout.decode())
+        self.assertEqual(json.loads(result.stdout),{'observed':'NEW'})
 
     def test_activity_and_scalein_use_only_fixed_ess_arguments(self):
         bindings = self._bindings()

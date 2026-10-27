@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """One-use detached PgCat baseline, pre-scale and Pending worker."""
 import hashlib
+import importlib
+import importlib.abc
 import importlib.util
 import json
 import os
@@ -137,6 +139,7 @@ def _paths(contract, worker_path):
 
 def _verify_sources(run, expected):
     _check(type(expected) is dict and set(expected) == set(SOURCES))
+    verified = {}
     fd = _directory(run)
     try:
         for key, name in SOURCES.items():
@@ -144,8 +147,36 @@ def _verify_sources(run, expected):
             _check(type(digest) is str and re.fullmatch(r'[0-9a-f]{64}', digest) is not None)
             raw = _read_at(fd, name, 256 * 1024)
             _check(hashlib.sha256(raw).hexdigest() == digest)
+            verified[name[:-3]] = raw
     finally:
         os.close(fd)
+    return verified
+
+
+class _VerifiedSourceFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Execute reviewed worker modules from verified source bytes, never pyc."""
+    def __init__(self, run, verified):
+        self.run = run
+        self.verified = verified
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in self.verified:
+            return importlib.util.spec_from_loader(fullname, self,
+                origin=str(self.run / (fullname + '.py')))
+        # A future local import needs an explicit reviewed source entry.
+        if (self.run / (fullname + '.py')).exists():
+            raise ValueError('worker')
+        return None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        name = module.__name__
+        _check(name in self.verified)
+        code = compile(self.verified[name], str(self.run / (name + '.py')),
+                       'exec', dont_inherit=True)
+        exec(code, module.__dict__)
 
 
 def _jobs(run):
@@ -328,13 +359,15 @@ def main():
                    type(binding.get('newId')) is str and
                    binding['newId'] not in target['originalInstanceIds'])
             run = _paths(contract, Path(__file__))
-            _verify_sources(run, expected)
-            source = run / SOURCES['zeroProofWorker']
-            spec = importlib.util.spec_from_file_location('pgcat_zero_proof_worker', str(source))
-            _check(spec is not None and spec.loader is not None)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            result = module.produce(contract, run_id, binding)
+            verified = _verify_sources(run, expected)
+            _check(not any(name in sys.modules for name in verified))
+            finder = _VerifiedSourceFinder(run, verified)
+            sys.meta_path.insert(0, finder)
+            try:
+                module = importlib.import_module('pgcat_zero_proof_worker')
+                result = module.produce(contract, run_id, binding)
+            finally:
+                sys.meta_path.remove(finder)
             _verify_sources(run, expected)
             _check(type(result) is dict)
             print(json.dumps(result, sort_keys=True, separators=(',', ':'), allow_nan=False))
