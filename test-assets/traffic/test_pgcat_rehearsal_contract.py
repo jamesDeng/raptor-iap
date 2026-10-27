@@ -1,12 +1,15 @@
 """Local safety tests for fresh Pending evidence production."""
 import copy
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 from capture_window import clean
 from test_capture_window import transition_frame
@@ -419,6 +422,108 @@ class RehearsalContractTests(unittest.TestCase):
         self.assertEqual(value['sequence'], frames[-1]['inventory']['sequence'])
         self.assertEqual(value['configMapResourceVersion'], '11')
         self.assertGreater(value['postReadbackObservedAt'], value['configMapReadbackAt'])
+
+    def _finished_pending_source(self):
+        self._prepare_pending()
+        from pgcat_rehearsal_contract import pending_ready
+        pending_ready(self.contract, self.run_id, self.target, kubectl=self._kubectl,
+                      read_pod=lambda pod: self.readings[pod['metadata']['name']],
+                      clock=lambda: 128.5, readback_clock=lambda: 127.5)
+        return [dict(name=name, uid=row['uid'], containerId=row['containerId'],
+                     processId=row['snapshot']['sample']['processId'])
+                for name, row in self.readings.items()]
+
+    def test_final_pending_proof_seals_address_free_summary(self):
+        roster = self._finished_pending_source()
+        import pgcat_pending_proof_worker as proof
+        summary = proof.produce(self.contract, self.run_id, kubectl=self._kubectl,
+                                live_roster=lambda: roster, now=lambda: 128.5)
+        baseline = json.loads((self.contract / 'baseline.json').read_text())
+        pending = json.loads((self.contract / 'pending-ready.json').read_text())
+        expected = {'runId': self.run_id, 'feedSession': self.session,
+            'newId': 'i-c', 'originalInstanceIds': ['i-a', 'i-b'],
+            'sequence': pending['sequence'], 'observedAt': pending['observedAt'],
+            'resourceVersion': '11',
+            'clientRosterSha256': hashlib.sha256(json.dumps(baseline['roster'],
+                sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')).hexdigest(),
+            'evidenceSha256': hashlib.sha256((self.contract / 'pending-ready.json').read_bytes()).hexdigest(),
+            'sourceSha256': hashlib.sha256(Path(proof.__file__).read_bytes()).hexdigest()}
+        self.assertEqual(summary, expected)
+        raw = (self.contract / 'pending-proof.bundle.json').read_bytes()
+        self.assertEqual(json.loads(raw)['summary'], expected)
+        self.assertEqual(json.loads((self.contract / 'pending-proof.bundle.json.sha256').read_text()),
+                         {'sha256': hashlib.sha256(raw).hexdigest()})
+        self.assertNotIn(b'10.0.0.', raw)
+        with self.assertRaises(proof.Refused):
+            proof.produce(self.contract, self.run_id, kubectl=self._kubectl,
+                          live_roster=lambda: roster, now=lambda: 128.5)
+
+    def test_final_pending_proof_rejects_wrong_target_link_without_bundle(self):
+        roster = self._finished_pending_source()
+        pending_path = self.contract / 'pending-ready.json'
+        pending = json.loads(pending_path.read_text())
+        pending['targetSha256'] = '0' * 64
+        raw = (json.dumps(pending, sort_keys=True, allow_nan=False) + '\n').encode('ascii')
+        pending_path.write_bytes(raw)
+        (self.contract / 'pending-ready.json.sha256').write_text(
+            json.dumps({'sha256': hashlib.sha256(raw).hexdigest()}) + '\n')
+        import pgcat_pending_proof_worker as proof
+        with self.assertRaises(proof.Refused) as caught:
+            proof.produce(self.contract, self.run_id, kubectl=self._kubectl,
+                          live_roster=lambda: roster, now=lambda: 128.5)
+        self.assertEqual(caught.exception.category, 'source-binding')
+        self.assertFalse((self.contract / 'pending-proof.bundle.json').exists())
+
+    def test_final_pending_cli_prints_only_address_free_summary(self):
+        roster = self._finished_pending_source()
+        import pgcat_pending_proof_worker as proof
+        output = io.StringIO()
+        with patch.object(proof.sys, 'argv', ['pending-proof', str(self.contract), self.run_id]), \
+             patch.object(proof.worker_capture, 'kubectl', side_effect=self._kubectl), \
+             patch.object(proof.finish_clients, 'live_roster', return_value=roster), \
+             patch.object(proof.time, 'time', return_value=128.5), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(proof.main(), 0)
+        rows = output.getvalue().splitlines()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0])['newId'], 'i-c')
+        self.assertNotIn('10.0.0.', rows[0])
+
+    def test_final_pending_cli_is_silent_on_changed_context_seal(self):
+        roster = self._finished_pending_source()
+        baseline_path = self.contract / 'baseline.json'
+        baseline = json.loads(baseline_path.read_text())
+        baseline['providerRunContextSha256'] = '0' * 64
+        raw = (json.dumps(baseline, sort_keys=True, allow_nan=False) + '\n').encode('ascii')
+        baseline_path.write_bytes(raw)
+        (self.contract / 'baseline.json.sha256').write_text(
+            json.dumps({'sha256': hashlib.sha256(raw).hexdigest()}) + '\n')
+        import pgcat_pending_proof_worker as proof
+        output = io.StringIO()
+        with patch.object(proof.sys, 'argv', ['pending-proof', str(self.contract), self.run_id]), \
+             patch.object(proof.worker_capture, 'kubectl', side_effect=self._kubectl), \
+             patch.object(proof.finish_clients, 'live_roster', return_value=roster), \
+             patch.object(proof.time, 'time', return_value=128.5), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(proof.main(), 1)
+        self.assertEqual(output.getvalue(), '')
+        self.assertFalse((self.contract / 'pending-proof.bundle.json').exists())
+
+    def test_final_pending_proof_refuses_inventory_change_before_bundle(self):
+        roster = self._finished_pending_source()
+        import pgcat_pending_proof_worker as proof
+        real_verify = proof.verify_provider_source
+        def change_after_source_check(*args):
+            source = real_verify(*args)
+            with self.inventory.open('ab') as stream:
+                stream.write(b'\n')
+            return source
+        with patch.object(proof, 'verify_provider_source',
+                          side_effect=change_after_source_check):
+            with self.assertRaises(proof.Refused):
+                proof.produce(self.contract, self.run_id, kubectl=self._kubectl,
+                              live_roster=lambda: roster, now=lambda: 128.5)
+        self.assertFalse((self.contract / 'pending-proof.bundle.json').exists())
 
     def test_pending_rejects_cm_candidate_ip_not_in_ecs_sidecar(self):
         self._prepare_pending()

@@ -229,6 +229,8 @@ def verify_provider_source(contract_dir, run_id, baseline, pre, pending,
                           sidecar['inventorySemanticSha256'] == semantic_digest and
                           (raw_digest is None or sidecar['inventorySha256'] == raw_digest) and
                           sidecar['privateAddresses'] == expected_addresses)
+                return {'targetSha256': context['targetSha256'],
+                        'providerRunContextSha256': context_sha}
             finally:
                 os.close(source)
         finally:
@@ -238,6 +240,34 @@ def verify_provider_source(contract_dir, run_id, baseline, pre, pending,
     except (OSError, ValueError, TypeError, KeyError, IndexError,
             OverflowError, UnicodeError, AttributeError):
         raise Refused('source-binding') from None
+
+
+def write_proof_bundle(folder, value):
+    """Seal one address-free result before allowing the CLI to print it."""
+    raw = (json.dumps(value, sort_keys=True, separators=(',', ':'),
+                      allow_nan=False) + '\n').encode('ascii')
+    require(len(raw) <= 16384, 'source-binding')
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid() and
+                stat.S_IMODE(info.st_mode) == 0o700, 'source-binding')
+        for name, contents in (('pending-proof.bundle.json', raw),
+                ('pending-proof.bundle.json.sha256',
+                 (json.dumps({'sha256': hashlib.sha256(raw).hexdigest()},
+                             sort_keys=True, separators=(',', ':')) + '\n').encode('ascii'))):
+            item = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                           0o600, dir_fd=fd)
+            try:
+                os.fchmod(item, 0o600)
+                while contents:
+                    contents = contents[os.write(item, contents):]
+                os.fsync(item)
+            finally:
+                os.close(item)
+            os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def text(value):
@@ -534,11 +564,43 @@ def produce(contract_dir, run_id, kubectl=None, live_roster=None, now=None):
         require(read_private(inventory_path, MAX_FRAME) == live_inventory_raw)
         fresh(live_inv['observedAt'], clock(), 30)
         fresh(latest['at'], clock(), 3)
-        verify_provider_source(folder, run_id, baseline, pre, pending,
-                               selected['inventory'], live_inventory_raw, live_inv)
-        # The retired detached producer did not create the new sealed source
-        # links. Its transitive source graph requires separate review.
-        raise Refused('producer-binding')
+        source = verify_provider_source(folder, run_id, baseline, pre, pending,
+                                        selected['inventory'], live_inventory_raw, live_inv)
+        require(type(baseline.get('version')) is int and baseline['version'] == 1 and
+                baseline.get('targetSha256') == source['targetSha256'] and
+                pre.get('targetSha256') == source['targetSha256'] and
+                pending.get('targetSha256') == source['targetSha256'], 'source-binding')
+        for name in ('baseline', 'pre-scale', 'pending-ready'):
+            require(decode(read_private(folder / (name + '.intent'), 256)) ==
+                    {'version': 1, 'runId': run_id}, 'source-binding')
+        inputs = {}
+        for name, value in (('baseline', baseline), ('pre-scale', pre),
+                            ('pending-ready', pending)):
+            raw = read_private(folder / (name + '.json'))
+            require(decode(raw) == value and
+                    decode(read_private(folder / (name + '.json.sha256'), 256)) ==
+                    {'sha256': hashlib.sha256(raw).hexdigest()}, 'source-binding')
+            inputs[name] = hashlib.sha256(raw).hexdigest()
+        bound_roster = finish_clients.validate_roster(baseline['roster'])
+        require(bound_roster == baseline['roster'], 'source-binding')
+        roster_raw = json.dumps(bound_roster, sort_keys=True, separators=(',', ':'),
+                                allow_nan=False).encode('ascii')
+        source_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        summary = {'runId': run_id, 'feedSession': session, 'newId': new_id,
+            'originalInstanceIds': ids, 'sequence': pending['sequence'],
+            'observedAt': pending['observedAt'],
+            'resourceVersion': pending['configMapResourceVersion'],
+            'clientRosterSha256': hashlib.sha256(roster_raw).hexdigest(),
+            'evidenceSha256': inputs['pending-ready'], 'sourceSha256': source_sha}
+        bundle = {'schemaVersion': 1, 'runId': run_id, 'feedSession': session,
+                  'summary': summary, 'sealedInputsSha256': inputs,
+                  'providerRunContextSha256': source['providerRunContextSha256']}
+        require(read_private(inventory_path, MAX_FRAME) == live_inventory_raw and
+                verified_frames(capture_dir)[-1] == latest, 'source-binding')
+        fresh(live_inv['observedAt'], clock(), 30)
+        fresh(latest['at'], clock(), 3)
+        write_proof_bundle(folder, bundle)
+        return summary
     except Refused:
         raise
     except (OSError, ValueError, TypeError, KeyError, IndexError,
@@ -551,8 +613,9 @@ def main():
     try:
         if len(sys.argv) != 3:
             return 2
-        produce(Path(sys.argv[1]), sys.argv[2])
-        return 1  # No current sealed source can authorize a proof publication.
+        summary = produce(Path(sys.argv[1]), sys.argv[2])
+        print(json.dumps(summary, sort_keys=True, separators=(',', ':'), allow_nan=False))
+        return 0
     except Exception:
         # A refusal has no raw diagnostics or address-bearing output.
         return 1

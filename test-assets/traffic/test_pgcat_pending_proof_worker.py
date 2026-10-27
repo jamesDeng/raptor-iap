@@ -183,11 +183,11 @@ class PendingProofWorkerTests(unittest.TestCase):
         self.save()
         return source
 
-    def test_complete_provider_source_reaches_producer_review_gate(self):
+    def test_synthetic_source_without_producer_intents_cannot_publish(self):
         self.install_provider_source()
         with self.assertRaises(proof.Refused) as caught:
             self.produce()
-        self.assertEqual(caught.exception.category, 'producer-binding')
+        self.assertEqual(caught.exception.category, 'source-binding')
         self.assertFalse((self.contract / 'pending-proof.bundle.json').exists())
 
     def test_provider_source_rejects_correlated_wrong_ecs_address(self):
