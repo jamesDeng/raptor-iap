@@ -203,7 +203,8 @@ class FeedTests(unittest.TestCase):
                     self.assertTrue(path.exists(), 'successful worker publication needs a receipt')
                     self.assertEqual(json.loads(path.read_text()),{
                         'feedSession':op.feedSession,'sequence':sequence,'mode':mode,
-                        'desired':2,'observedAt':1792108800.0})
+                        'desired':2,'observedAt':1792108800.0,
+                        'rosterSha256':feed.roster_sha(value)})
                     self.assertEqual(path.stat().st_mode & 0o777,0o600)
                     for private in (b'10.0.0.',b'synthetic-secret',b'privateAddresses',b'i-0'):
                         self.assertNotIn(private,path.read_bytes())
@@ -318,6 +319,8 @@ class FeedTests(unittest.TestCase):
                     patch.object(feed,'validate_run_context',return_value={}):
                 feed.main()
             self.assertEqual(json.loads(path.read_text())['sequence'],1)
+            self.assertEqual(json.loads(path.read_text())['rosterSha256'],
+                feed.roster_sha(self.take(self.fixture())))
 
     def test_complete_two_three_four(self):
         for count in (2,3,4):

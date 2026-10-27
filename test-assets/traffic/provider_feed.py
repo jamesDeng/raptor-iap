@@ -3,6 +3,7 @@ import argparse
 import copy
 import hashlib
 from capture_window import InventoryMode
+from pgcat_lane_protocol import roster_sha
 import ipaddress
 import json
 import math
@@ -736,7 +737,8 @@ class Operator:
                 self.verify_run_context()
                 receipt = {'feedSession':self.feedSession, 'sequence':self.sequence,
                            'mode':self.mode, 'desired':candidate['desired'],
-                           'observedAt':candidate['observedAt']}
+                           'observedAt':candidate['observedAt'],
+                           'rosterSha256':roster_sha(candidate)}
                 write_status_receipt(self.status_file, receipt, deadline=deadline)
         except Exception:
             # Neither uncertain worker writes nor a later local failure may

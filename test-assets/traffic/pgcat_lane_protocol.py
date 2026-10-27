@@ -15,7 +15,7 @@ MAX_REQUEST = 16384
 ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'pre-scale-status', 'zero-gate-start', 'zero-gate-status', 'pending-start',
     'pending-status', 'pending-proof', 'collector-launch', 'collector-status', 'reconcile-close',
-    'scaleout-two-to-three'))
+    'scaleout-two-to-three', 'pre-drain-proof', 'deregister-new-node'))
 NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status',
     'collector-launch','collector-status'))
 REQUEST_KEYS = frozenset(('requestId', 'runId', 'supervisorId', 'action',
@@ -27,6 +27,7 @@ CATEGORIES = frozenset(('cancelled', 'timeout', 'receipt', 'target', 'source',
     'child', 'storage', 'remote', 'incomplete', 'parse', 'configuration'))
 TOKEN = re.compile(r'[A-Za-z0-9_-]{1,256}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
+ROSTER_KEYS = frozenset(('members','healthyRegistered','memberStates','backendStates'))
 
 
 def monotonic():
@@ -55,6 +56,26 @@ def encode(value):
         return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')
     except (ValueError, TypeError, UnicodeError):
         raise Refused() from None
+
+
+def roster_sha(value):
+    """Bind a receipt to one provider publication without retaining addresses."""
+    require(type(value) is dict and ROSTER_KEYS <= set(value), 'receipt')
+    return hashlib.sha256(encode({key:value[key] for key in ROSTER_KEYS})).hexdigest()
+
+
+def expected_roster(originals, candidate, *, registered):
+    require(type(originals) is list and len(originals) == 2 and
+            all(token(node) for node in originals) and originals[0] != originals[1], 'target')
+    require(token(candidate) and candidate not in originals, 'target')
+    members=sorted(originals+[candidate])
+    healthy=members if registered else sorted(originals)
+    return dict(members=members,healthyRegistered=healthy,
+        memberStates=[dict(id=node,lifecycle='InService' if node == candidate else 'Protected',
+            health='Healthy',addressKnown=True)
+            for node in members],
+        backendStates=[dict(id=node,status='Available',weight=100,listenerHealth='Normal')
+            for node in healthy])
 
 
 def token(value):
@@ -215,9 +236,9 @@ def validate_result(result):
             (result['state'] == 'uncertain' and result['category'] in CATEGORIES))
     payload = result['payload']
     require(type(payload) is dict and len(encode(payload)) <= 4096)
-    require(set(payload) <= {'status','stage','phase','feedSession','sequence','resourceVersion','requestId','identity',
+    require(set(payload) <= {'status','stage','phase','feedSession','sequence','resourceVersion','requestId','jobId','identity',
                             'runId','newId','originalInstanceIds','observedAt','clientRosterSha256',
-                            'evidenceSha256','sourceSha256'})
+                            'evidenceSha256','sourceSha256','pendingBindingSha256'})
     for key, value in payload.items():
         if key == 'identity':
             require(type(value) is dict and set(value) == {'pid','bootId','startTicks','commandSha256'})
@@ -231,7 +252,7 @@ def validate_result(result):
                     and value[0] != value[1])
         elif key == 'observedAt':
             require(type(value) in (int,float) and math.isfinite(value))
-        elif key in ('clientRosterSha256','evidenceSha256','sourceSha256'):
+        elif key in ('clientRosterSha256','evidenceSha256','sourceSha256','pendingBindingSha256'):
             require(sha(value))
         else:
             require(token(value))
@@ -333,6 +354,12 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS pending_binding (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                 proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS pre_drain_binding (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                proof TEXT NOT NULL, sealed_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS mutation_keys (
+                run_id TEXT NOT NULL, action TEXT NOT NULL,
+                PRIMARY KEY (run_id,action));
                 CREATE TABLE IF NOT EXISTS prepared_marker (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                 request_id TEXT NOT NULL, run_id TEXT NOT NULL,
@@ -432,13 +459,47 @@ class Journal:
                         type(receipt.get('observedAt')) in (int,float) and
                         math.isfinite(receipt['observedAt']) and
                         receipt['observedAt'] > gate['sealed_at'], 'receipt')
+            if request['action'] in ('pre-drain-proof','deregister-new-node'):
+                require(run['mode'] == 'disabled-rehearsal' and receipt is not None and
+                        receipt.get('feedSession') == request['feedSession'] and
+                        receipt.get('sequence') == request['minimumSequence'] and
+                        receipt.get('desired') == 3 and
+                        type(receipt.get('observedAt')) in (int,float) and
+                        0 <= time.time()-receipt['observedAt'] < 3.5, 'receipt')
+                pending=db.execute('SELECT proof FROM pending_binding').fetchone()
+                require(pending is not None, 'incomplete')
+                proof=json.loads(pending['proof'])
+                require(proof['runId'] == request['runId'] and
+                        proof['feedSession'] == request['feedSession'] and
+                        proof['originalInstanceIds'] == request['target']['originalInstanceIds'], 'target')
+                if request['action'] == 'pre-drain-proof':
+                    require(db.execute('SELECT 1 FROM pre_drain_binding').fetchone() is None and
+                            db.execute("SELECT 1 FROM requests WHERE json_extract(request,'$.action')='pre-drain-proof'").fetchone() is None,
+                            'incomplete')
+                else:
+                    pre=db.execute('SELECT * FROM pre_drain_binding').fetchone()
+                    require(pre is not None and 0 <= time.time()-pre['sealed_at'] < 30, 'incomplete')
+                    summary=json.loads(pre['proof'])
+                    require(summary['newId'] == proof['newId'] and
+                            summary['feedSession'] == request['feedSession'] and
+                            summary['sequence'] <= receipt['sequence'] and
+                            0 <= time.time()-summary['observedAt'] < 30 and
+                            summary['pendingBindingSha256'] == hashlib.sha256(encode(proof)).hexdigest(), 'target')
+                    require(sha(receipt.get('rosterSha256')) and
+                            receipt['rosterSha256'] == roster_sha(expected_roster(
+                                request['target']['originalInstanceIds'],proof['newId'],registered=True)), 'receipt')
+                    require(db.execute('SELECT 1 FROM mutation_keys WHERE run_id=? AND action=?',
+                            (request['runId'],request['action'])).fetchone() is None,'incomplete')
             require(db.execute('SELECT 1 FROM requests WHERE request_id=? OR nonce=?',
                                (request['requestId'],request['nonce'])).fetchone() is None)
             db.execute('UPDATE run SET supervisor=?, session=?', (request['supervisorId'],request['feedSession']))
             db.execute('INSERT INTO requests VALUES (?,?,?,?,?,NULL)',
                        (request['requestId'], request['runId'], request['nonce'], encode(request).decode(), 'dispatching'))
+            if request['action'] == 'deregister-new-node':
+                db.execute('INSERT INTO mutation_keys VALUES (?,?)',(request['runId'],request['action']))
 
-    def seal(self, request_id: str, result: dict, pending_source_sha=None) -> None:
+    def seal(self, request_id: str, result: dict, pending_source_sha=None,
+             pre_drain_source_sha=None) -> None:
         identifier(request_id)
         validate_result(result)
         with self._transaction() as db:
@@ -449,8 +510,11 @@ class Journal:
             request = json.loads(row['request'])
             if result['state'] == 'complete' and request['action'] == 'pending-proof':
                 self._bind_pending_in_tx(db, request, result['payload'], pending_source_sha)
-            else:
+            elif result['state'] == 'complete' and request['action'] == 'pre-drain-proof':
                 require(pending_source_sha is None, 'source')
+                self._bind_pre_drain_in_tx(db,request,result['payload'],pre_drain_source_sha)
+            else:
+                require(pending_source_sha is None and pre_drain_source_sha is None, 'source')
             db.execute('UPDATE requests SET state=?, result=? WHERE request_id=?',
                        (result['state'], encode(result).decode(), request_id))
             if result['state'] == 'uncertain':
@@ -520,6 +584,38 @@ class Journal:
             row = db.execute('SELECT proof FROM pending_binding').fetchone()
             require(row is not None, 'incomplete')
             return json.loads(row['proof'])
+
+    def _bind_pre_drain_in_tx(self,db,request,proof,source_sha):
+        require(type(proof) is dict and set(proof) == {'runId','feedSession','newId',
+            'originalInstanceIds','pendingBindingSha256','sequence','observedAt',
+            'resourceVersion','clientRosterSha256','evidenceSha256','sourceSha256'}, 'source')
+        require(sha(source_sha) and proof['sourceSha256'] == source_sha and
+                sha(proof['pendingBindingSha256']) and sha(proof['clientRosterSha256']) and
+                sha(proof['evidenceSha256']) and token(proof['resourceVersion']) and
+                type(proof['sequence']) is int and 0 < proof['sequence'] <= request['minimumSequence'] and
+                type(proof['observedAt']) in (int,float) and
+                0 <= time.time()-proof['observedAt'] < 30,'source')
+        run=db.execute('SELECT * FROM run').fetchone()
+        pending=db.execute('SELECT proof FROM pending_binding').fetchone()
+        require(run is not None and pending is not None and
+                json.loads(run['hashes']).get('preDrainProofWorker') == source_sha,'source')
+        bound=json.loads(pending['proof'])
+        require(proof['runId'] == run['run_id'] == request['runId'] and
+                proof['feedSession'] == request['feedSession'] == bound['feedSession'] and
+                proof['newId'] == bound['newId'] and
+                proof['originalInstanceIds'] == bound['originalInstanceIds'] and
+                proof['clientRosterSha256'] == bound['clientRosterSha256'] and
+                proof['pendingBindingSha256'] == hashlib.sha256(encode(bound)).hexdigest() and
+                proof['sequence'] > bound['sequence'],'target')
+        require(db.execute('SELECT 1 FROM pre_drain_binding').fetchone() is None,'incomplete')
+        db.execute('INSERT INTO pre_drain_binding VALUES (1,?,?)',
+                   (encode(proof).decode(),time.time()))
+
+    def pre_drain_binding(self):
+        with self._connection() as db:
+            row=db.execute('SELECT proof,sealed_at FROM pre_drain_binding').fetchone()
+            require(row is not None,'incomplete')
+            return dict(json.loads(row['proof']),sealedAt=row['sealed_at'])
 
     def snapshot(self, request_id: str) -> dict:
         identifier(request_id)

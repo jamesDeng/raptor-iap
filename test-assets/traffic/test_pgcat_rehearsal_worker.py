@@ -242,6 +242,7 @@ class DetachedWorkerTests(unittest.TestCase):
         hashes = {key: hashlib.sha256((here / name).read_bytes()).hexdigest()
                   for key, name in source_names.items()}
         hashes.update(self.hashes)
+        hashes['preDrainProofWorker'] = hashlib.sha256((here/'pgcat_pre_drain_proof_worker.py').read_bytes()).hexdigest()
         return {'workbenchCli': str(cli), 'aliyunCli': str(cli),
                 'laneWrapper': str(here / 'pgcat_workbench_lane.py'),
                 'providerFeedPath': str(here / 'provider_feed.py'),
@@ -250,9 +251,11 @@ class DetachedWorkerTests(unittest.TestCase):
                 'laneIntentDir': str(self.root / 'intents'),
                 'phaseWorker': str(self.worker), 'pendingWorker': str(self.worker),
                 'pendingProofWorker': str(self.run / 'pgcat_pending_proof_worker.py'),
+                'preDrainProofWorker': str(self.run / 'pgcat_pre_drain_proof_worker.py'),
                 'remoteRun': str(self.run), 'contractDir': str(self.contract),
                 'workerKubeconfig': str(self.kubeconfig),
                 'scaleoutIntentPath': str(self.root / 'scaleout.intent'),
+                'nlbIntentPath': str(self.root / 'nlb-deregister.intent'),
                 'preScaleProofPath': str(self.root / 'pre-scale-proof.json'),
                 'sourceHashes': hashes,
                 'target': {'accountId': '1360282071200743', 'regionId': 'ap-southeast-1',

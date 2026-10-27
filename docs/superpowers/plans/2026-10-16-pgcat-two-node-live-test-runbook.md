@@ -891,7 +891,7 @@ The feed executable binding must be a regular executable named `aliyun`; its
 directory leads the minimal feed PATH and exact resolution is checked before
 spawn. Scaling-group and NLB bindings must match the fixed provider targets.
 Local `captureRoot` must not exist; `laneRoot`, provider status, lane lock,
-intent directory, scale-out intent and proof paths are distinct direct children
+intent directory, scale-out intent, NLB deregistration intent and proof paths are distinct direct children
 of that new root. All worker paths are explicit fresh reviewed bindings;
 local validation does not establish remote freshness or staging correctness.
 Never reuse retired scratch paths, copy credentials into the manifest, or put
@@ -920,8 +920,8 @@ followed by a strictly newer successful same-session desired-two publication.
 The existing receipt freshness and one-use intent gates remain in force.
 Failure to obtain a successor within 45 seconds, feed exit during a call,
 changed session, uncertain result, changed collector identity or interruption
-stops the run without retry. No-scale callers cannot submit pending, zero-gate,
-reconciliation or ESS actions. An unavailable collector launch is a refusal,
+stops the run without retry. No-scale callers cannot submit pending, pre-drain,
+NLB deregistration, zero-gate, reconciliation or ESS actions. An unavailable collector launch is a refusal,
 not permission to skip capture. Additional baseline polling may exhaust the
 bounded feed window; do not extend its cap to force success.
 
@@ -1022,11 +1022,29 @@ the owner, retain the bounded feed handle and all private evidence; never retry
 ESS, automatically reconcile/reverse, clear the global active-run record, or
 claim cleanup. The paid continuation/close is the separate Task 6 boundary.
 
-Paid start remains blocked for live use until reviewed close/abort actions exist
-for exact new-node NLB deregistration and the separate ESS 3-to-2 mutation. The
-current fixed supervisor catalog only admits the 2-to-3 mutation; ConfigMap
-`reconcile-close` cannot substitute for either provider operation. Resolve that
-continuation design gap before staging or executing paid mode.
+The local Task 6B NLB continuation binds one immutable Pending candidate in the
+journal, then seals a separate worker pre-drain proof of two protected originals,
+that sole unprotected candidate, unchanged clients and a healthy three-node
+ESS/NLB roster. Its address-free summary is tied to the Pending proof and
+reviewed worker source hash. The provider status receipt now includes
+`rosterSha256`, computed from `{members,healthyRegistered,memberStates,backendStates}`
+in the same successful publication. The NLB action requires its newest receipt
+under 3.5 seconds old to equal the exact healthy three-node digest, plus a
+same-session pre-drain proof under 30 seconds old. It reads a private, fsynced
+one-use `nlb-deregister.intent` bound to that proof, candidate, group, session,
+sequence and digest. The fixed local CLI request removes only the journal-bound
+candidate as `Ecs` on port `6432`; it accepts only sanitized `RequestId` and
+`JobId` within 20 seconds. A durable `(run, action)` key and the existing
+sequence intent prevent retry under another request UUID. Unknown ACK stops;
+there is no automatic retry or re-registration. A later successful publication
+observed after ACK must show exactly the two healthy protected originals in
+NLB, while the candidate remains the sole healthy unprotected ESS member,
+before the controller records NLB absence. The ACK alone is insufficient.
+
+This is locally tested code, not live clearance. Paid start remains blocked
+until the separate ESS 3-to-2, final close and abort stages have reviewed
+implementation and the full action-day gates pass. ConfigMap `reconcile-close`
+cannot substitute for either provider operation.
 
 Receipt waiting also checks the retained supervisor process and active journal
 through the client's existing identity-bound validator, including after a

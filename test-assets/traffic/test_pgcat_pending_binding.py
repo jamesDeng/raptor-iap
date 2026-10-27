@@ -1,5 +1,6 @@
 """Offline tests for the pending-proof result and one-use journal binding."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -107,6 +108,31 @@ class PendingBindingTests(unittest.TestCase):
         with self.assertRaises(Refused):
             self.request()
 
+    def test_pre_drain_summary_binds_exact_pending_singleton(self):
+        self.prepared()
+        pending_req=self.request()
+        self.journal.seal(pending_req['requestId'],dict(state='complete',category='ok',payload=self.proof),
+                          pending_source_sha=self.source)
+        with self.journal._connection() as db:
+            hashes=json.loads(db.execute('SELECT hashes FROM run').fetchone()['hashes'])
+            hashes['preDrainProofWorker']='f'*64
+            db.execute('UPDATE run SET hashes=?',(encode(hashes).decode(),))
+        summary=dict(self.proof,sequence=5,observedAt=time.time(),
+            pendingBindingSha256=hashlib.sha256(encode(self.proof)).hexdigest(),
+            evidenceSha256='1'*64,sourceSha256='f'*64)
+        req=dict(pending_req,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()),
+            action='pre-drain-proof',minimumSequence=5)
+        publish_request(self.root,req)
+        receipt=dict(feedSession=self.session,sequence=5,desired=3,observedAt=time.time())
+        self.journal.admit(req,receipt)
+        self.journal.seal(req['requestId'],dict(state='complete',category='ok',payload=summary),
+                          pre_drain_source_sha='f'*64)
+        self.assertEqual(self.journal.pre_drain_binding()['newId'],self.proof['newId'])
+        self.assertNotIn('address',json.dumps(self.journal.pre_drain_binding()).lower())
+        with self.assertRaises(Refused):
+            other=dict(req,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()))
+            publish_request(self.root,other);self.journal.admit(other,receipt)
+
     def test_original_changed_session_source_or_extra_field_refused(self):
         for changed in (dict(newId=self.originals[0]),
                         dict(feedSession=str(uuid.uuid4())),
@@ -157,8 +183,10 @@ class PendingBindingTests(unittest.TestCase):
             phaseWorker='/fixed/run/pgcat_rehearsal_worker.py',
             pendingWorker='/fixed/run/pgcat_rehearsal_worker.py',
             pendingProofWorker='/fixed/run/pgcat_pending_proof_worker.py',
+            preDrainProofWorker='/fixed/run/pgcat_pre_drain_proof_worker.py',
             workerKubeconfig='/fixed/kubeconfig',remoteRun='/fixed/run',
             contractDir='/fixed/contract',scaleoutIntentPath='/fixed/scaleout',
+            nlbIntentPath='/fixed/nlb',
             preScaleProofPath='/fixed/pre-scale',sourceHashes={k:'d'*64 for k in SOURCE_NAMES},
             target=dict(self.target,workerId='i-t4nj1bitmcz7cuoch82h'))
         argv,env,budget=ActionCatalog.command('pending-proof',bindings,self.run)
@@ -168,6 +196,16 @@ class PendingBindingTests(unittest.TestCase):
         self.assertNotIn('AWS_SECRET_ACCESS_KEY',env)
         with self.assertRaises(Refused):
             ActionCatalog.command('pending-proof',bindings,self.run+'; touch /tmp/bad')
+        argv,_,budget=ActionCatalog.command('pre-drain-proof',bindings,self.run,self.proof)
+        self.assertEqual(budget,5.)
+        self.assertIn('/fixed/run/pgcat_pre_drain_proof_worker.py /fixed/contract '+self.run,argv[-1])
+        self.assertIn('i-new-c',argv[-1]);self.assertNotIn('10.0.0.',argv[-1])
+        pre=dict(self.proof,sequence=5,observedAt=time.time(),
+            pendingBindingSha256=hashlib.sha256(encode(self.proof)).hexdigest())
+        request=dict(runId=self.run,feedSession=self.session,minimumSequence=5,target=self.target)
+        receipt=dict(feedSession=self.session,sequence=5,observedAt=time.time()+1)
+        self.assertEqual(ActionCatalog.parse('pre-drain-proof',encode(pre),request,receipt,
+            source_sha=self.source),pre)
 
 
 if __name__ == '__main__': unittest.main()

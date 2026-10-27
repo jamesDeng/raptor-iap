@@ -12,6 +12,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import stat
 import sys
 import time
@@ -20,7 +21,7 @@ import uuid
 PROFILE = 'infra-ops-poc'
 REGION = 'ap-southeast-1'
 WORKER = 'i-t4nj1bitmcz7cuoch82h'
-RECEIPT_FIELDS = {'feedSession', 'sequence', 'mode', 'desired', 'observedAt'}
+RECEIPT_FIELDS = {'feedSession', 'sequence', 'mode', 'desired', 'observedAt', 'rosterSha256'}
 
 
 class Refused(Exception):
@@ -75,6 +76,8 @@ def read_receipt(path, session, minimum):
         require(value['mode'] == 'disabled-rehearsal', 'receipt')
         require(type(value['desired']) is int and value['desired'] in (2, 3), 'receipt')
         require(type(value['sequence']) is int and value['sequence'] >= minimum, 'receipt')
+        require(type(value['rosterSha256']) is str and
+                re.fullmatch(r'[0-9a-f]{64}',value['rosterSha256']) is not None,'receipt')
         now = time.time()
         require(finite_number(value['observedAt'])
                 and 0 <= now - value['observedAt'] < 7

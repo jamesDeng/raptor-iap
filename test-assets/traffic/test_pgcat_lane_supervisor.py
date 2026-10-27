@@ -1,5 +1,6 @@
 from pgcat_lane_protocol import monotonic
 import copy
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ import uuid
 
 import pgcat_lane_actions as actions
 import pgcat_lane_supervisor as supervisor
-from pgcat_lane_protocol import Journal, Refused, encode, publish_request
+from pgcat_lane_protocol import Journal, Refused, encode, publish_request, roster_sha, expected_roster
 import pgcat_workbench_lane as lane
 
 
@@ -43,6 +44,7 @@ class SupervisorTests(unittest.TestCase):
             +'assert not (signal.pthread_sigmask(signal.SIG_BLOCK, []) & {signal.SIGINT,signal.SIGTERM,signal.SIGHUP})\n'
             +'if mode == "sleep": time.sleep(5)\n'
             +'if mode == "pending-prepared": print("PENDING_DETACHED:PREPARED",flush=True); raise SystemExit(0)\n'
+            +'if mode == "nlb-ack": print(json.dumps({"RequestId":"request-ok","ServerGroupId":"sgp-xs5s42tihtl6ja2a67","JobId":"job-ok"}),flush=True); raise SystemExit(0)\n'
             +'if mode == "fork":\n'
             +' if os.fork() == 0:\n'
             +'  Path('+repr(str(self.fork_ready))+').touch()\n'
@@ -61,14 +63,17 @@ class SupervisorTests(unittest.TestCase):
             phaseWorker='/reviewed/run/pgcat_rehearsal_worker.py',
             pendingWorker='/reviewed/run/pgcat_rehearsal_worker.py',
             pendingProofWorker='/reviewed/run/pgcat_pending_proof_worker.py',
+            preDrainProofWorker='/reviewed/run/pgcat_pre_drain_proof_worker.py',
             workerKubeconfig='/reviewed/kubeconfig', remoteRun='/reviewed/run',
             contractDir='/reviewed/contract', scaleoutIntentPath=str(self.root/'scaleout.intent'),
+            nlbIntentPath=str(self.root/'nlb-deregister.intent'),
             preScaleProofPath=str(self.root/'proof.json'), target=self.target)
         (self.root/'intents').mkdir(mode=0o700)
         sources = dict(laneWrapper=here/'pgcat_workbench_lane.py', providerFeed=here/'provider_feed.py',
                        laneProtocol=here/'pgcat_lane_protocol.py', laneSupervisor=here/'pgcat_lane_supervisor.py',
                        laneActions=here/'pgcat_lane_actions.py',
                        pendingProofWorker=here/'pgcat_pending_proof_worker.py',
+                       preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
                        rehearsalWorker=here/'pgcat_rehearsal_worker.py',
                        rehearsalContract=here/'pgcat_rehearsal_contract.py',
                        captureWindow=here/'capture_window.py',
@@ -89,7 +94,7 @@ class SupervisorTests(unittest.TestCase):
 
     def receipt(self, seq, desired=2):
         self.private_json(Path(self.bindings['receiptPath']), dict(feedSession=self.session,sequence=seq,
-            mode='disabled-rehearsal',desired=desired,observedAt=time.time()))
+            mode='disabled-rehearsal',desired=desired,observedAt=time.time(),rosterSha256='a'*64))
 
     def request(self, **changes):
         identity, value, _ = lane.read_receipt(self.bindings['receiptPath'], self.session, 1)
@@ -105,6 +110,128 @@ class SupervisorTests(unittest.TestCase):
         req = self.request(**changes)
         self.owner.run_once(req['requestId'])
         return self.journal.snapshot(req['requestId'])
+
+    def nlb_proofs(self, *, age=0, candidate='i-candidate'):
+        pending=dict(runId=self.run,feedSession=self.session,newId=candidate,
+            originalInstanceIds=self.target['originalInstanceIds'],sequence=3,
+            observedAt=time.time()-2,resourceVersion='11',clientRosterSha256='b'*64,
+            evidenceSha256='c'*64,sourceSha256=self.hashes['pendingProofWorker'])
+        pre=dict(runId=self.run,feedSession=self.session,newId=candidate,
+            originalInstanceIds=self.target['originalInstanceIds'],
+            pendingBindingSha256=hashlib.sha256(encode(pending)).hexdigest(),
+            sequence=4,observedAt=time.time()-1,resourceVersion='12',
+            clientRosterSha256='b'*64,evidenceSha256='d'*64,
+            sourceSha256=self.hashes['preDrainProofWorker'])
+        with self.journal._connection() as db:
+            db.execute('INSERT INTO pending_binding VALUES (1,?)',(encode(pending).decode(),))
+            db.execute('INSERT INTO pre_drain_binding VALUES (1,?,?)',
+                       (encode(pre).decode(),time.time()-age))
+        roster=roster_sha(expected_roster(self.target['originalInstanceIds'],candidate,registered=True))
+        self.private_json(Path(self.bindings['receiptPath']),dict(feedSession=self.session,
+            sequence=5,mode='disabled-rehearsal',desired=3,observedAt=time.time(),rosterSha256=roster))
+        intent=dict(action='RemoveServersFromServerGroup',runId=self.run,
+            feedSession=self.session,sequence=5,newId=candidate,
+            serverGroupId=self.target['nlbServerGroupId'],
+            preDrainProofSha256=hashlib.sha256(encode(pre)).hexdigest(),
+            rosterSha256=roster,at=datetime.now(timezone.utc).isoformat())
+        self.private_json(Path(self.bindings['nlbIntentPath']),intent)
+        return pending,pre
+
+    def test_nlb_exact_candidate_command_and_sanitized_ack(self):
+        pending,_=self.nlb_proofs()
+        argv,_,budget=actions.ActionCatalog.command('deregister-new-node',self.bindings,self.run,pending)
+        self.assertEqual(argv,[str(self.cli),'nlb','RemoveServersFromServerGroup',
+            '--ServerGroupId','sgp-xs5s42tihtl6ja2a67',
+            '--Servers.1.ServerType','Ecs','--Servers.1.ServerId','i-candidate',
+            '--Servers.1.Port','6432','--profile','infra-ops-poc','--region','ap-southeast-1'])
+        self.assertEqual(budget,20.)
+        self.behavior.write_text('nlb-ack')
+        with patch.object(supervisor,'before_cutoff',return_value=True):
+            result=self.run_request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        self.assertEqual(result['result'],dict(state='complete',category='ok',
+            payload=dict(requestId='request-ok',jobId='job-ok')))
+        self.assertEqual(result['runState'],'active')
+        with self.journal._connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM mutation_keys').fetchone()[0],1)
+
+    def test_nlb_wrong_group_ack_is_rejected(self):
+        self.nlb_proofs()
+        request=self.request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        raw=encode(dict(RequestId='request-ok',ServerGroupId='sgp-wrong',JobId='job-ok'))
+        with self.assertRaises(Refused):actions.ActionCatalog.parse('deregister-new-node',raw,request)
+
+    def test_nlb_stale_proof_or_roster_mismatch_never_spawns(self):
+        self.nlb_proofs(age=31)
+        with patch.object(supervisor,'before_cutoff',return_value=True):
+            with self.assertRaises(Refused):
+                self.run_request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        self.assertFalse(self.marker.exists())
+
+    def test_nlb_stale_intent_refuses_before_child(self):
+        self.nlb_proofs()
+        path=Path(self.bindings['nlbIntentPath'])
+        intent=json.loads(path.read_text())
+        intent['at']='2020-01-01T00:00:00+00:00'
+        self.private_json(path,intent)
+        with patch.object(supervisor,'before_cutoff',return_value=True):
+            with self.assertRaises(Refused):
+                self.run_request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        self.assertFalse(self.marker.exists())
+
+    def test_nlb_protection_or_backend_change_refuses_before_child(self):
+        self.nlb_proofs()
+        path=Path(self.bindings['receiptPath'])
+        receipt=json.loads(path.read_text())
+        changed=expected_roster(self.target['originalInstanceIds'],'i-candidate',registered=True)
+        next(row for row in changed['memberStates']
+             if row['id'] == self.target['originalInstanceIds'][0])['lifecycle']='InService'
+        receipt['rosterSha256']=roster_sha(changed)
+        self.private_json(path,receipt)
+        with patch.object(supervisor,'before_cutoff',return_value=True):
+            with self.assertRaises(Refused):
+                self.run_request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        self.assertFalse(self.marker.exists())
+
+    def test_nlb_changed_pending_candidate_refuses_before_child(self):
+        self.nlb_proofs()
+        with self.journal._connection() as db:
+            pending=json.loads(db.execute('SELECT proof FROM pending_binding').fetchone()['proof'])
+            pending['newId']='i-other'
+            db.execute('UPDATE pending_binding SET proof=?',(encode(pending).decode(),))
+        with patch.object(supervisor,'before_cutoff',return_value=True):
+            with self.assertRaises(Refused):
+                self.run_request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        self.assertFalse(self.marker.exists())
+
+    def test_nlb_new_uuid_cannot_bypass_semantic_action_key(self):
+        self.nlb_proofs();self.behavior.write_text('nlb-ack')
+        with patch.object(supervisor,'before_cutoff',return_value=True):
+            first=self.run_request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        self.assertEqual(first['state'],'complete')
+        self.nlb_receipt_successor(6)
+        later=self.request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        receipt=json.loads(Path(self.bindings['receiptPath']).read_text())
+        with self.assertRaises(Refused): self.journal.admit(later,receipt)
+        with self.journal._connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM mutation_keys').fetchone()[0],1)
+
+    def nlb_receipt_successor(self,sequence):
+        path=Path(self.bindings['receiptPath'])
+        receipt=json.loads(path.read_text())
+        receipt.update(sequence=sequence,observedAt=time.time())
+        self.private_json(path,receipt)
+
+    def test_nlb_ack_timeout_is_uncertain_and_not_retried(self):
+        self.nlb_proofs();self.behavior.write_text('sleep')
+        with patch.object(supervisor,'before_cutoff',return_value=True), \
+                patch.object(self.owner,'_communicate',side_effect=Refused('timeout')) as communicate:
+            result=self.run_request(action='deregister-new-node',deadlineMonotonic=monotonic()+20.)
+        communicate.assert_called_once()
+        self.assertEqual(result['state'],'uncertain')
+        self.assertEqual(result['runState'],'uncertain')
+        with self.journal._connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM mutation_keys').fetchone()[0],1)
+        self.assertIsNone(self.owner.child)
 
     def publish_normal_finish(self):
         from pgcat_lane_protocol import publish_finish

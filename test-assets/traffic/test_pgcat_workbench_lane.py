@@ -61,7 +61,7 @@ with p.open('a') as stream:
 
     def write_receipt(self, **changes):
         value = dict(feedSession=SESSION, sequence=1, mode='disabled-rehearsal',
-                     desired=2, observedAt=time.time())
+                     desired=2, observedAt=time.time(),rosterSha256='a'*64)
         value.update(changes)
         temporary = self.root / ('new-' + str(uuid.uuid4()))
         temporary.write_text(json.dumps(value))
@@ -161,7 +161,8 @@ with p.open('a') as stream:
         for change in ({'observedAt':time.time()-7.1}, {'observedAt':time.time()+1},
                        {'feedSession':str(uuid.uuid4())}, {'sequence':0},
                        {'sequence':True}, {'observedAt':float('nan')}, {'desired':4},
-                       {'mode':'full-replacement'}):
+                       {'mode':'full-replacement'}, {'rosterSha256':'A'*64},
+                       {'rosterSha256':'0'*63}):
             with self.subTest(change=change):
                 self.write_receipt(**change)
                 self.refused(self.run_lane(self.environment('external')), 'receipt')

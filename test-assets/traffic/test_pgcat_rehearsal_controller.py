@@ -12,7 +12,7 @@ import unittest
 import uuid
 from unittest.mock import Mock, patch
 
-from pgcat_lane_protocol import Refused
+from pgcat_lane_protocol import Refused, encode, roster_sha, expected_roster
 
 
 class ControllerTests(unittest.TestCase):
@@ -33,8 +33,10 @@ class ControllerTests(unittest.TestCase):
             phaseWorker='/fresh-worker/run/pgcat_rehearsal_worker.py',
             pendingWorker='/fresh-worker/run/pgcat_rehearsal_worker.py',
             pendingProofWorker='/fresh-worker/run/pgcat_pending_proof_worker.py',
+            preDrainProofWorker='/fresh-worker/run/pgcat_pre_drain_proof_worker.py',
             workerKubeconfig='/fresh-worker/kubeconfig', remoteRun='/fresh-worker/run',
             contractDir='/fresh-worker/contract', scaleoutIntentPath=str(self.capture/'scaleout.intent'),
+            nlbIntentPath=str(self.capture/'nlb-deregister.intent'),
             preScaleProofPath=str(self.capture/'proof.json'),
             target=dict(accountId='1360282071200743', regionId='ap-southeast-1',
                 workerId='i-t4nj1bitmcz7cuoch82h', scalingGroupId='asg-t4necb4dfmu6o3z2rn0g',
@@ -42,6 +44,7 @@ class ControllerTests(unittest.TestCase):
         names = dict(laneWrapper='pgcat_workbench_lane.py', providerFeed='provider_feed.py',
             laneProtocol='pgcat_lane_protocol.py', laneSupervisor='pgcat_lane_supervisor.py',
             laneActions='pgcat_lane_actions.py',pendingProofWorker='pgcat_pending_proof_worker.py',
+            preDrainProofWorker='pgcat_pre_drain_proof_worker.py',
             rehearsalWorker='pgcat_rehearsal_worker.py',
             rehearsalContract='pgcat_rehearsal_contract.py',
             captureWindow='capture_window.py', finishClients='finish_clients.py',
@@ -79,7 +82,8 @@ class ControllerTests(unittest.TestCase):
         self.seq += 1
         p = Path(self.binding['laneBindings']['receiptPath'])
         p.write_text(json.dumps(dict(feedSession=session or self.session, sequence=self.seq,
-            desired=desired, mode='disabled-rehearsal', observedAt=time.time())))
+            desired=desired, mode='disabled-rehearsal', observedAt=time.time(),
+            rosterSha256='a'*64)))
         p.chmod(0o600)
         os.utime(p,(self.wall,self.wall))
 
@@ -183,6 +187,7 @@ class ControllerTests(unittest.TestCase):
         value['laneBindings']['phaseWorker']=root+'/run/pgcat_rehearsal_worker.py'
         value['laneBindings']['pendingWorker']=root+'/run/pgcat_rehearsal_worker.py'
         value['laneBindings']['pendingProofWorker']=root+'/run/pgcat_pending_proof_worker.py'
+        value['laneBindings']['preDrainProofWorker']=root+'/run/pgcat_pre_drain_proof_worker.py'
         value['workerInventory']=root+'/run/provider-inventory.json'
         self.manifest.write_text(json.dumps(value))
         self.assertEqual(self.module.load_bindings(self.manifest)['workerInventory'],
@@ -315,6 +320,54 @@ class ControllerTests(unittest.TestCase):
                          ['pending-start','pending-status','pending-status','pending-proof'])
         self.assertEqual(controller.state,'pending-bound')
         with self.assertRaises(Refused): controller.bind_pending()
+
+    def nlb_controller(self):
+        controller=self.controller();self.capture.mkdir(mode=0o700)
+        controller.client=self.client;controller.feed=self.feed
+        controller.mode='disabled-rehearsal';controller.state='pre-drain-bound'
+        self.client.run_id=str(uuid.uuid4())
+        original=self.binding['laneBindings']['target']['originalInstanceIds']
+        pending=dict(runId=self.client.run_id,feedSession=self.session,newId='new-node',
+            originalInstanceIds=original,sequence=3,observedAt=self.wall-2,
+            resourceVersion='11',clientRosterSha256='b'*64,evidenceSha256='c'*64,
+            sourceSha256=self.binding['laneBindings']['sourceHashes']['pendingProofWorker'])
+        pre=dict(runId=self.client.run_id,feedSession=self.session,newId='new-node',
+            originalInstanceIds=original,pendingBindingSha256=hashlib.sha256(encode(pending)).hexdigest(),
+            sequence=4,observedAt=self.wall-1,resourceVersion='12',
+            clientRosterSha256='b'*64,evidenceSha256='d'*64,
+            sourceSha256=self.binding['laneBindings']['sourceHashes']['preDrainProofWorker'])
+        controller.pending_proof=pending;controller.pre_drain_proof=pre
+        three=roster_sha(expected_roster(original,'new-node',registered=True))
+        absent=roster_sha(expected_roster(original,'new-node',registered=False))
+        controller.receipt=dict(feedSession=self.session,sequence=5,desired=3,
+            observedAt=self.wall,mode='disabled-rehearsal',rosterSha256=three)
+        self.client.call.side_effect=None
+        self.client.call.return_value=dict(state='complete',category='ok',
+                                           payload=dict(requestId='request-ok',jobId='job-ok'))
+        return controller,three,absent
+
+    def test_nlb_ack_needs_later_absence_publication(self):
+        controller,three,absent=self.nlb_controller()
+        later=dict(controller.receipt,sequence=6,observedAt=self.wall+1,rosterSha256=three)
+        gone=dict(later,sequence=7,observedAt=self.wall+2,rosterSha256=absent)
+        with patch.object(controller,'_next_receipt',side_effect=[later,gone]) as next_receipt:
+            self.assertEqual(controller.deregister_new_node(),gone)
+        self.assertEqual(controller.state,'nlb-absent')
+        self.assertEqual(next_receipt.call_count,2)
+        self.assertEqual([call.args[0] for call in self.client.call.call_args_list],['deregister-new-node'])
+        intent=json.loads(Path(self.binding['laneBindings']['nlbIntentPath']).read_text())
+        self.assertEqual(intent['newId'],'new-node')
+        self.assertEqual(intent['rosterSha256'],three)
+        self.assertEqual(intent['preDrainProofSha256'],hashlib.sha256(encode(controller.pre_drain_proof)).hexdigest())
+        with self.assertRaises(Refused):controller.deregister_new_node()
+
+    def test_nlb_later_changed_roster_cannot_claim_absence(self):
+        controller,_,_=self.nlb_controller()
+        changed=dict(controller.receipt,sequence=6,observedAt=self.wall+1,rosterSha256='e'*64)
+        with patch.object(controller,'_next_receipt',return_value=changed):
+            with self.assertRaises(Refused):controller.deregister_new_node()
+        self.assertEqual(controller.state,'uncertain')
+        self.assertTrue(self.client.close.called)
 
     def finish_receipts(self, controller, status):
         seq=controller.receipt['sequence']

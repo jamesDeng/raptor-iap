@@ -19,7 +19,8 @@ import time
 from pgcat_lane_actions import validate_bindings, unique
 from pgcat_lane_client import LaneClient
 from pgcat_lane_protocol import (Refused, require, private, read_private, identifier,
-    sha, token, monotonic, validate_result, validate_finish_receipts)
+    sha, token, monotonic, validate_result, validate_finish_receipts,
+    encode, roster_sha, expected_roster)
 from pgcat_lane_supervisor import read_json, save_once
 import provider_feed as provider
 import pgcat_workbench_lane as lane
@@ -76,7 +77,7 @@ def load_bindings(path):
         require(not os.path.lexists(capture))
         # All mutable local paths belong to this one new private capture root.
         local=[_absolute(value['laneRoot'])]+[_absolute(b[key]) for key in
-            ('receiptPath','laneLockPath','laneIntentDir','scaleoutIntentPath','preScaleProofPath')]
+            ('receiptPath','laneLockPath','laneIntentDir','scaleoutIntentPath','nlbIntentPath','preScaleProofPath')]
         require(len(set(local)) == len(local))
         require(all(p.parent == capture and not os.path.lexists(p) for p in local))
         inventory=_absolute(value['workerInventory']); kubeconfig=_absolute(value['workerKubeconfig'])
@@ -91,6 +92,7 @@ def load_bindings(path):
             providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
             laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py',
             pendingProofWorker=here/'pgcat_pending_proof_worker.py',
+            preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
             rehearsalWorker=here/'pgcat_rehearsal_worker.py',
             rehearsalContract=here/'pgcat_rehearsal_contract.py',
             captureWindow=here/'capture_window.py',finishClients=here/'finish_clients.py',
@@ -109,6 +111,7 @@ class Controller:
         self.bindings=load_bindings(self.binding_path)
         self.client=None; self.feed=None; self.receipt=None
         self.state='new'; self.collector_identity=None; self.mode=None
+        self.pending_proof=None; self.pre_drain_proof=None
 
     def close(self):
         """Disconnect the owner on interruption; retain the bounded feed handle.
@@ -120,7 +123,7 @@ class Controller:
         if self.client is not None: self.client.close()
 
     def _live(self):
-        require(self.state in ('active','scaled-three','pending-bound') and
+        require(self.state in ('active','scaled-three','pending-bound','pre-drain-bound','nlb-absent') and
                 self.feed is not None and self.feed.poll() is None,'child')
         require(self.client is not None,'incomplete')
         self.client._active()
@@ -141,6 +144,7 @@ class Controller:
                     and current['desired'] in ((2,3) if desired == 3 else (2,)),'receipt')
             require(type(current['sequence']) is int and current['sequence'] > 0,'receipt')
             require(lane.finite_number(current['observedAt']),'receipt')
+            require(sha(current['rosterSha256']),'receipt')
             # A higher sequence can have been observed during the worker call.
             # Only a later observation establishes post-call provider progress.
             if (current['desired'] == desired and current['sequence'] >= minimum and
@@ -218,6 +222,7 @@ class Controller:
             providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
             laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py',
             pendingProofWorker=here/'pgcat_pending_proof_worker.py',
+            preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
             rehearsalWorker=here/'pgcat_rehearsal_worker.py',
             rehearsalContract=here/'pgcat_rehearsal_contract.py',
             captureWindow=here/'capture_window.py',
@@ -434,8 +439,81 @@ class Controller:
                     proof['sourceSha256'] == self.bindings['laneBindings']['sourceHashes']['pendingProofWorker'] and
                     0 <= completed_at-proof['observedAt'] < 30, 'target')
             self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=3)
+            self.pending_proof=copy.deepcopy(proof)
             self.state='pending-bound'
             return copy.deepcopy(proof)
+        except BaseException:
+            self.close(); raise
+
+    def bind_pre_drain(self):
+        """Seal a fresh worker proof against the journal's Pending candidate."""
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.state == 'pending-bound' and
+                    self.pending_proof is not None,'incomplete')
+            self._live(); receipt=copy.deepcopy(self.receipt)
+            require(receipt['desired'] == 3,'receipt')
+            started=monotonic()
+            deadline=min(started+5.,started+receipt['observedAt']+12.-time.time())
+            require(deadline > started,'timeout')
+            result=self.client.call('pre-drain-proof',receipt,float(deadline))
+            completed_at=time.time(); self._live(); require(monotonic() < deadline,'timeout')
+            validate_result(result)
+            require(result['state'] == 'complete' and result['category'] == 'ok','incomplete')
+            proof=result['payload']; pending=self.pending_proof
+            require(proof['runId'] == self.client.run_id and
+                    proof['feedSession'] == receipt['feedSession'] and
+                    proof['newId'] == pending['newId'] and
+                    proof['originalInstanceIds'] == pending['originalInstanceIds'] and
+                    proof['pendingBindingSha256'] == hashlib.sha256(encode(pending)).hexdigest() and
+                    proof['clientRosterSha256'] == pending['clientRosterSha256'] and
+                    proof['sourceSha256'] == self.bindings['laneBindings']['sourceHashes']['preDrainProofWorker'] and
+                    pending['sequence'] < proof['sequence'] <= receipt['sequence'] and
+                    0 <= completed_at-proof['observedAt'] < 30,'target')
+            self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=3)
+            self.pre_drain_proof=copy.deepcopy(proof)
+            self.state='pre-drain-bound'
+            return copy.deepcopy(proof)
+        except BaseException:
+            self.close(); raise
+
+    def deregister_new_node(self):
+        """One fixed NLB removal; a later provider absence is required after ACK."""
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.state == 'pre-drain-bound' and
+                    self.pending_proof is not None and self.pre_drain_proof is not None,'incomplete')
+            self._live(); receipt=copy.deepcopy(self.receipt)
+            pending=self.pending_proof; pre=self.pre_drain_proof
+            originals=self.bindings['laneBindings']['target']['originalInstanceIds']
+            three=roster_sha(expected_roster(originals,pending['newId'],registered=True))
+            absent=roster_sha(expected_roster(originals,pending['newId'],registered=False))
+            require(receipt['desired'] == 3 and receipt['rosterSha256'] == three and
+                    0 <= time.time()-receipt['observedAt'] < 3.5 and
+                    0 <= time.time()-pre['observedAt'] < 30,'receipt')
+            intent=dict(action='RemoveServersFromServerGroup',runId=self.client.run_id,
+                feedSession=receipt['feedSession'],sequence=receipt['sequence'],
+                newId=pending['newId'],serverGroupId=self.bindings['laneBindings']['target']['nlbServerGroupId'],
+                preDrainProofSha256=hashlib.sha256(encode(pre)).hexdigest(),
+                rosterSha256=three,at=datetime.now(timezone.utc).isoformat())
+            save_once(Path(self.bindings['laneBindings']['nlbIntentPath']).parent,
+                Path(self.bindings['laneBindings']['nlbIntentPath']).name,intent)
+            deadline=monotonic()+20.
+            result=self.client.call('deregister-new-node',receipt,float(deadline))
+            completed_at=time.time(); self._live(); require(monotonic() < deadline,'timeout')
+            validate_result(result)
+            require(result['state'] == 'complete' and result['category'] == 'ok' and
+                    set(result['payload']) == {'requestId','jobId'} and
+                    token(result['payload']['requestId']) and token(result['payload']['jobId']),'parse')
+            latest=receipt['sequence']
+            end=monotonic()+90.
+            while monotonic() < end:
+                later=self._next_receipt(latest+1,observed_after=completed_at,desired=3,
+                    timeout=min(20.,end-monotonic()))
+                latest=later['sequence']
+                require(later['rosterSha256'] in (three,absent),'receipt')
+                if later['rosterSha256'] == absent:
+                    self.state='nlb-absent'
+                    return copy.deepcopy(later)
+            raise Refused('timeout')
         except BaseException:
             self.close(); raise
 
