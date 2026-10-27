@@ -1,6 +1,6 @@
 import copy, tempfile, unittest
 from pathlib import Path
-from capture_window import CaptureWindow, assess as raw_assess, retain
+from capture_window import CaptureWindow, assess as raw_assess, retain, clean
 def assess(frames,**kwargs):
     kwargs.setdefault("completed",True);return raw_assess(frames,**kwargs)
 
@@ -126,6 +126,40 @@ def transition_frame(t, members=('a','b'), backends=None, pending=(), metrics=No
         healthyRegistered=[n for n in backends if n in members])
     f['metrics'].update(nodes=list(metrics),raw=[dict(node=n,pool='test',user='poc_app',kind=k,value=0,sourceAt=t) for n in metrics for k in ('active','idle','waiting')])
     return f
+
+class UpScrapeEvidenceTests(unittest.TestCase):
+    def test_per_node_scrapes_survive_cleaning_without_extra_metrics(self):
+        f=transition_frame(1)
+        f['metrics']['upSourceAt']={'a':1000.0,'b':1001.0}
+        f['metrics']['private']='do not retain'
+        cleaned=clean(f)
+        self.assertEqual(cleaned['metrics'].get('upSourceAt'),{'a':1000.0,'b':1001.0})
+        self.assertNotIn('private',cleaned['metrics'])
+        self.assertEqual(clean(cleaned),cleaned)
+        self.assertNotIn('upSourceAt',clean(transition_frame(1))['metrics'])
+        with tempfile.TemporaryDirectory() as directory:
+            window=CaptureWindow(Path(directory)/'capture.jsonl')
+            window.append(f)
+            self.assertEqual(next(window.read())['metrics']['upSourceAt'],{'a':1000.0,'b':1001.0})
+            self.assertNotIn('do not retain',window.path.read_text())
+        from segmented_capture import SegmentedCapture
+        with tempfile.TemporaryDirectory() as directory:
+            window=SegmentedCapture(Path(directory)/'capture')
+            window.append(f)
+            self.assertEqual(next(window.window.read())['metrics']['upSourceAt'],{'a':1000.0,'b':1001.0})
+
+    def test_invalid_per_node_scrapes_do_not_look_available(self):
+        for invalid in ({'a':1000.0}, {'a':1000.0,'b':float('nan')},
+                        {'a':1000.0,'b':1001.0,'extra':1001.0},
+                        {'a':1000.0,'b':True}, {'a':1000.0,'b':10**1000},
+                        {'a':1000.0,'b':1001.0,'https://private.example/secret':1002.0}):
+            with self.subTest(invalid=invalid):
+                f=transition_frame(1)
+                f['metrics']['upSourceAt']=invalid
+                cleaned=clean(f)
+                self.assertFalse(cleaned['metrics']['available'])
+                self.assertEqual(cleaned['metrics']['raw'],[])
+                self.assertNotIn('upSourceAt',cleaned['metrics'])
 
 
 def transition_window():

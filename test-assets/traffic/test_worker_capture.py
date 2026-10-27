@@ -17,6 +17,23 @@ class MetricsExtraction(unittest.TestCase):
         with patch.object(worker,'get',side_effect=self.response):
             m=worker.query_metrics('http://fixture',1000)
         self.assertTrue(m['available']);self.assertEqual(len(m['raw']),6);self.assertTrue(all(x['sourceAt']==1000 for x in m['raw']))
+    def test_per_node_up_timestamps_reveal_stale_candidate_when_min_advances(self):
+        from urllib.parse import urlparse, parse_qs
+        def sample(up):
+            def get(url):
+                response=self.response(url)
+                query=parse_qs(urlparse(url).query)['query'][0]
+                if query.startswith('timestamp(up{'):
+                    for row in response['data']['result']:
+                        row['value'][1]=str(up[row['metric']['ecs_instance_id']])
+                return response
+            with patch.object(worker,'get',side_effect=get):
+                return worker.query_metrics('http://fixture',1000)
+        first=sample({'a':1000,'b':1001})
+        second=sample({'a':1002,'b':1001})
+        self.assertEqual((first['sourceAt'],second['sourceAt']),(1000,1001))
+        self.assertEqual(first.get('upSourceAt'),{'a':1000,'b':1001})
+        self.assertEqual(second.get('upSourceAt'),{'a':1002,'b':1001})
     def test_up_only_cannot_pass(self):
         def get(url):
             r=self.response(url)
@@ -51,6 +68,10 @@ class StrictMetrics(MetricsExtraction):
             if case=='duplicate up' and 'up{' in q:rows.append(rows[0])
             if case=='missing up' and 'up{' in q:rows.pop()
             if case=='foreign up' and 'up{' in q:rows[0]['metric']['ecs_instance_id']='foreign'
+            if case=='nonfinite up timestamp' and 'up{' in q:rows[0]['value'][1]='NaN'
+            if case=='invalid up identity' and 'up{' in q:rows[0]['metric']['ecs_instance_id']='https://private.example/secret'
+            if case=='too many up identities' and 'up{' in q:
+                for i in range(3):rows.append({'metric':{'ecs_instance_id':'extra'+str(i)},'value':[1000,'1000']})
             if case=='duplicate value' and q.startswith('pgcat_pools_cl_idle'):rows.append(rows[0])
             if case=='missing timestamp' and q.startswith('timestamp(pgcat_pools_cl_idle'):rows.pop()
             if case=='missing triplet' and 'pgcat_pools_cl_idle' in q:rows.pop()
@@ -58,7 +79,7 @@ class StrictMetrics(MetricsExtraction):
                 for row in rows:row['metric']['pool']='other'
             if case in ('NaN','inf','0.5','-1') and q.startswith('pgcat_pools_cl_active'):rows[0]['value'][1]=case
             if case=='nonfinite timestamp' and q.startswith('timestamp(pgcat_pools'):rows[0]['value'][1]='NaN'
-        for case in ('duplicate up','missing up','foreign up','duplicate value','missing timestamp','missing triplet','wrong identity','NaN','inf','0.5','-1','nonfinite timestamp'):
+        for case in ('duplicate up','missing up','foreign up','nonfinite up timestamp','invalid up identity','too many up identities','duplicate value','missing timestamp','missing triplet','wrong identity','NaN','inf','0.5','-1','nonfinite timestamp'):
             with self.subTest(case=case),self.assertRaises(ValueError):self.query(lambda q,rows:alter(q,rows,case))
     def test_raw_allowlist(self):
         m=self.query(lambda q,rows:None)

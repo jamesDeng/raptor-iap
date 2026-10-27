@@ -250,7 +250,15 @@ def clean(frame):
             pods.append({'uid':p['uid'],'snapshot':{'sample':{k:a[k] for k in ('processId','at','sequence')+COUNTERS},'events':[{k:e[k] for k in EVENT_FIELDS if k in e} for e in s['events']], 'connected':s['connected'],'truncated':s['truncated'],'final':s.get('final',False)}})
     try:
         metrics=dict({k:frame['metrics'][k] for k in ('observedAt','sourceAt','nodes','available')},raw=[{k:r[k] for k in ('node','pool','user','kind','value','sourceAt')} for r in frame['metrics']['raw']])
-    except (KeyError,TypeError):
+        if 'upSourceAt' in frame['metrics']:
+            nodes=metrics['nodes'];stamps=frame['metrics']['upSourceAt']
+            if (type(nodes) is not list or not 1<=len(nodes)<=4 or
+                any(type(node) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',node) for node in nodes) or
+                len(set(nodes))!=len(nodes) or type(stamps) is not dict or set(stamps)!=set(nodes) or
+                any(type(stamps[node]) not in (int,float) or not math.isfinite(stamps[node]) for node in nodes)):
+                raise ValueError('invalid per-node scrape evidence')
+            metrics['upSourceAt']={node:stamps[node] for node in sorted(nodes)}
+    except (KeyError,TypeError,ValueError,OverflowError):
         if inventory.get('schemaVersion')!=2:raise
         metrics=dict(observedAt=0,sourceAt=0,nodes=[],available=False,raw=[])
     return {'at':frame['at'],'phase':frame.get('phase','measurement'),'expectedReplicas':frame.get('expectedReplicas',len(pods)) if complete else 0,'pods':pods,'inventory':inventory,'metrics':metrics}
