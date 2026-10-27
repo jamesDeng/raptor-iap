@@ -409,6 +409,8 @@ def write_private_publication(contract_dir, context, session, sequence, observed
     inventory = json.loads(inventory_raw.decode('ascii'), object_pairs_hook=unique)
     check(type(inventory) is dict and inventory.get('feedSession') == session and
           inventory.get('sequence') == sequence and inventory.get('observedAt') == observed_at)
+    semantic_raw = json.dumps(inventory, sort_keys=True, separators=(',', ':'),
+                              allow_nan=False).encode('ascii')
     record = {'schemaVersion':1,'runContext':context,'feedSession':session}
     record_raw = json.dumps(record,sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')
     sidecar = {'schemaVersion':1,'runId':context['runId'],
@@ -416,6 +418,7 @@ def write_private_publication(contract_dir, context, session, sequence, observed
         'targetSha256':context['targetSha256'],'bundleSha256':context['bundleSha256'],
         'feedSession':session,'sequence':sequence,'observedAt':observed_at,
         'inventorySha256':hashlib.sha256(inventory_raw).hexdigest(),
+        'inventorySemanticSha256':hashlib.sha256(semantic_raw).hexdigest(),
         'privateAddresses':addresses}
     sidecar_raw = json.dumps(sidecar,sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')
     check(len(record_raw) <= 2048 and len(sidecar_raw) <= 4096)

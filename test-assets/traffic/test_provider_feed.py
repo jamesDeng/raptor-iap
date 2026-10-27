@@ -36,6 +36,8 @@ class FeedTests(unittest.TestCase):
                 targetSha256=context['targetSha256'],bundleSha256=context['bundleSha256'],
                 feedSession=session,sequence=1,observedAt=123.0,
                 inventorySha256=hashlib.sha256(raw).hexdigest(),
+                inventorySemanticSha256=hashlib.sha256(json.dumps(json.loads(raw),
+                    sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')).hexdigest(),
                 privateAddresses={'i-one':'10.0.0.1','i-two':'10.0.0.2'}))
             self.assertEqual(inventory.read_bytes(),raw)
             inventory.unlink()
@@ -43,6 +45,33 @@ class FeedTests(unittest.TestCase):
                 feed.write_private_publication(str(contract),context,session,1,123.0,
                     {'i-one':'10.0.0.1','i-two':'10.0.0.2'},str(inventory),raw)
             self.assertFalse(inventory.exists())
+
+    def test_historical_cleaned_frame_matches_semantic_hash_and_tamper_differs(self):
+        from capture_window import clean_inventory
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory));root.chmod(0o700)
+            contract=root/'contract';contract.mkdir(mode=0o700)
+            run=root/'run';run.mkdir(mode=0o700)
+            inventory_path=run/'provider-inventory.json'
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            session=str(uuid.uuid4())
+            observed=self.take(self.fixture())
+            observed.update(feedSession=session,sequence=1,mode='disabled-rehearsal')
+            inventory={key:observed[key] for key in feed.FIELDS}
+            inventory['mode']=observed['mode']
+            raw=json.dumps(inventory,indent=2).encode('ascii')
+            feed.write_private_publication(str(contract),context,session,1,
+                observed['observedAt'],observed['privateAddresses'],str(inventory_path),raw)
+            sidecar=json.loads((contract/'provider-source'/'000001.json').read_text())
+            selected_frame=clean_inventory(json.loads(raw))
+            semantic=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True,
+                separators=(',',':'),allow_nan=False).encode('ascii')).hexdigest()
+            self.assertEqual(sidecar['inventorySemanticSha256'],semantic(selected_frame))
+            self.assertEqual(sidecar['inventorySha256'],hashlib.sha256(raw).hexdigest())
+            self.assertNotEqual(sidecar['inventorySemanticSha256'],sidecar['inventorySha256'])
+            altered=dict(selected_frame,desired=3)
+            self.assertNotEqual(sidecar['inventorySemanticSha256'],semantic(altered))
 
     def test_bound_feed_single_remote_write_keeps_unacknowledged_worker_files(self):
         from types import SimpleNamespace

@@ -902,6 +902,9 @@ one private run root. `workerInventory` is exactly `run/provider-inventory.json`
 the private provider source is `contract/provider-source`, outside the retained
 capture tree. Each sequence writes an immutable ECS address sidecar there before
 publishing the unchanged address-free inventory in the same remote write call.
+The sidecar seals both the exact raw inventory bytes and the canonical parsed
+inventory (`sort_keys=True`, compact JSON) so a selected cleaned collector frame
+can be compared after the live inventory file has advanced.
 The local success receipt follows both writes. A sidecar left by a failed local
 receipt publication is unacknowledged and does not clear Pending proof. The
 Pending consumer and retired producer still need their separate source review;
