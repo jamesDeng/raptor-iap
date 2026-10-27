@@ -32,23 +32,23 @@
 
 ### Task 1: Retain only the identity fields this proof needs
 
-**Files:** Modify `test-assets/traffic/worker_capture.py`, `test-assets/traffic/capture_window.py`; test `test-assets/traffic/test_worker_capture.py`, `test-assets/traffic/test_capture_window.py`.
+**Files:** Modify `test-assets/traffic/worker_capture.py`, `test-assets/traffic/capture_window.py`; test `test-assets/traffic/test_worker_capture.py`, `test-assets/traffic/test_capture_window.py`, and the valid Kubernetes fixtures in `test-assets/traffic/test_transition_integration.py`.
 
 **Interfaces:** `capture_frame(...) -> dict` adds `deployment:{uid,generation,observedGeneration,desired,ready}` and each Pod's exact `name,containerId,ready`. `clean(frame) -> dict` preserves those bounded validated fields only for schema-2 frames; historical absent fields stay readable but cannot satisfy Task 3.
 
-- [ ] Add focused failing tests for valid identity retention, malformed/partial field refusal, no Pod IP retention, and historical schema compatibility.
+- [ ] Add focused failing tests for valid identity retention, malformed/partial field refusal, no Pod IP retention, and historical schema compatibility; update the transition integration fixture with real valid Deployment metadata/status and Pod Ready fields so its complete-source PASS still tests a complete capture.
 - [ ] Run the focused tests and record RED failures.
 - [ ] Implement the minimal capture and sanitizer changes with fixed field names and type/length bounds.
 - [ ] Run focused normal and `python3 -O` tests, then the full traffic suite; require all PASS.
-- [ ] Commit only these four files and obtain independent scoped review before Task 2.
+- [ ] Commit only these five files and obtain independent scoped review before Task 2.
 
 ### Task 2: Finite worker collector with sealed exit
 
 **Files:** Create `test-assets/traffic/pgcat_collector_control.py`; test `test-assets/traffic/test_pgcat_collector_control.py`; modify fixed `collector-launch/status` commands and parsers in `test-assets/traffic/pgcat_lane_actions.py`, payload validation in `test-assets/traffic/pgcat_lane_protocol.py`, and matching tests.
 
-**Interfaces:** A fresh private run-root binding supplies `run`, `contract`, `kubeconfig`, exact source hashes. `launch` starts one detached 65-second `worker_capture.py` without `--boundary-dir`; `status` returns only `ALIVE` with exact process identity or `EXITED` with the same identity and `{category:'completed',exitCode:0,completionSha256}` after sealed capture completion. The worker accepts no arbitrary command/path from a request.
+**Interfaces:** A fresh private run-root binding supplies `run`, `contract`, `kubeconfig`, exact source hashes including the new `collectorControl` key for `run/pgcat_collector_control.py`. The fixed worker entry verifies and executes exact staged source bytes, including transitive worker modules, so stale `.pyc` cannot bypass the reviewed source. `launch` starts one detached 65-second `worker_capture.py` without `--boundary-dir`; `status` returns only `ALIVE` with exact process identity or `EXITED` with the same identity and `{category:'completed',exitCode:0,completionSha256}` after sealed capture completion. The worker accepts no arbitrary command/path from a request.
 
-- [ ] Add failing fake-child tests for one launch, 65-second argv, no boundary, ALIVE→EXITED, exact identity, valid completion hash, duplicate launch, missing completion, nonzero exit and timeout.
+- [ ] Add failing fake-child tests for one launch, 65-second argv, no boundary, ALIVE→EXITED, exact identity, valid completion hash, duplicate launch, missing completion, nonzero exit and timeout. A matching-metadata stale `.pyc` fixture must execute the reviewed `.py` bytes, never cached code.
 - [ ] Run RED tests, implement the fixed worker control and result parser, then run GREEN in normal/optimized modes and Python 3.6 grammar checks.
 - [ ] Run the full traffic suite and commit scoped files; obtain independent review before Task 3.
 
