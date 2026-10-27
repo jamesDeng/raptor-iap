@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One-use detached PgCat baseline, pre-scale and Pending worker."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,8 @@ SOURCES = {
     'rehearsalWorker': 'pgcat_rehearsal_worker.py',
     'rehearsalContract': 'pgcat_rehearsal_contract.py',
     'pendingProofWorker': 'pgcat_pending_proof_worker.py',
+    'preDrainProofWorker': 'pgcat_pre_drain_proof_worker.py',
+    'zeroProofWorker': 'pgcat_zero_proof_worker.py',
     'captureWindow': 'capture_window.py',
     'finishClients': 'finish_clients.py',
     'workerCapture': 'worker_capture.py',
@@ -313,6 +316,29 @@ def main():
     os.umask(0o077)
     try:
         args = sys.argv[1:]
+        if len(args) == 7 and args[0] == 'zero-proof':
+            _, contract, run_id, kubeconfig, hashes, target_raw, binding_raw = args
+            _uuid(run_id)
+            expected = _decode(hashes.encode('ascii'))
+            target = _decode(target_raw.encode('ascii'))
+            binding = _decode(binding_raw.encode('ascii'))
+            _target(target)
+            _check(type(binding) is dict and binding.get('runId') == run_id and
+                   binding.get('originalInstanceIds') == target['originalInstanceIds'] and
+                   type(binding.get('newId')) is str and
+                   binding['newId'] not in target['originalInstanceIds'])
+            run = _paths(contract, Path(__file__))
+            _verify_sources(run, expected)
+            source = run / SOURCES['zeroProofWorker']
+            spec = importlib.util.spec_from_file_location('pgcat_zero_proof_worker', str(source))
+            _check(spec is not None and spec.loader is not None)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            result = module.produce(contract, run_id, binding)
+            _verify_sources(run, expected)
+            _check(type(result) is dict)
+            print(json.dumps(result, sort_keys=True, separators=(',', ':'), allow_nan=False))
+            return 0
         if len(args) not in (7, 8) or args[0] not in ('start', 'status', '_run'):
             raise ValueError('worker')
         verb, stage, contract, run_id, kubeconfig, hashes, target_raw = args[:7]

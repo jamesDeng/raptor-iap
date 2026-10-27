@@ -45,6 +45,8 @@ class SupervisorTests(unittest.TestCase):
             +'if mode == "sleep": time.sleep(5)\n'
             +'if mode == "pending-prepared": print("PENDING_DETACHED:PREPARED",flush=True); raise SystemExit(0)\n'
             +'if mode == "nlb-ack": print(json.dumps({"RequestId":"request-ok","ServerGroupId":"sgp-xs5s42tihtl6ja2a67","JobId":"job-ok"}),flush=True); raise SystemExit(0)\n'
+            +'if mode == "activity-clear": print(json.dumps({"PageNumber":1,"TotalCount":0,"ScalingActivities":{"ScalingActivity":[]}}),flush=True); raise SystemExit(0)\n'
+            +'if mode == "ess-ack": print(json.dumps({"RequestId":"request-ok"}),flush=True); raise SystemExit(0)\n'
             +'if mode == "fork":\n'
             +' if os.fork() == 0:\n'
             +'  Path('+repr(str(self.fork_ready))+').touch()\n'
@@ -64,9 +66,11 @@ class SupervisorTests(unittest.TestCase):
             pendingWorker='/reviewed/run/pgcat_rehearsal_worker.py',
             pendingProofWorker='/reviewed/run/pgcat_pending_proof_worker.py',
             preDrainProofWorker='/reviewed/run/pgcat_pre_drain_proof_worker.py',
+            zeroProofWorker='/reviewed/run/pgcat_zero_proof_worker.py',
             workerKubeconfig='/reviewed/kubeconfig', remoteRun='/reviewed/run',
             contractDir='/reviewed/contract', scaleoutIntentPath=str(self.root/'scaleout.intent'),
             nlbIntentPath=str(self.root/'nlb-deregister.intent'),
+            scaleinIntentPath=str(self.root/'scalein.intent'),
             preScaleProofPath=str(self.root/'proof.json'), target=self.target)
         (self.root/'intents').mkdir(mode=0o700)
         sources = dict(laneWrapper=here/'pgcat_workbench_lane.py', providerFeed=here/'provider_feed.py',
@@ -74,6 +78,7 @@ class SupervisorTests(unittest.TestCase):
                        laneActions=here/'pgcat_lane_actions.py',
                        pendingProofWorker=here/'pgcat_pending_proof_worker.py',
                        preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
+                       zeroProofWorker=here/'pgcat_zero_proof_worker.py',
                        rehearsalWorker=here/'pgcat_rehearsal_worker.py',
                        rehearsalContract=here/'pgcat_rehearsal_contract.py',
                        captureWindow=here/'capture_window.py',
@@ -232,6 +237,41 @@ class SupervisorTests(unittest.TestCase):
         with self.journal._connection() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM mutation_keys').fetchone()[0],1)
         self.assertIsNone(self.owner.child)
+
+    def scalein_ready(self):
+        pending,pre=self.nlb_proofs()
+        zero=dict(runId=self.run,feedSession=self.session,newId=pending['newId'],
+            originalInstanceIds=self.target['originalInstanceIds'],
+            preDrainBindingSha256=hashlib.sha256(encode(pre)).hexdigest(),
+            sequence=5,observedAt=time.time()-1,clientRosterSha256='b'*64,
+            evidenceSha256='c'*64,sourceSha256=self.hashes['zeroProofWorker'])
+        with self.journal._connection() as db:
+            db.execute('INSERT INTO zero_binding VALUES (1,?,?)',(encode(zero).decode(),time.time()-1))
+        absent=roster_sha(expected_roster(self.target['originalInstanceIds'],pending['newId'],registered=False))
+        self.private_json(Path(self.bindings['receiptPath']),dict(feedSession=self.session,
+            sequence=6,mode='disabled-rehearsal',desired=3,observedAt=time.time(),rosterSha256=absent))
+        return zero,absent
+
+    def test_scalein_uses_sanitized_activity_and_exact_one_use_intent(self):
+        zero,absent=self.scalein_ready()
+        self.behavior.write_text('activity-clear')
+        activity=self.run_request(action='scaling-activity-check',deadlineMonotonic=monotonic()+5.)
+        self.assertEqual(activity['result']['payload'],
+                         {'status':'CLEAR','requestId':activity['requestId']})
+        self.assertEqual(activity['runState'],'active')
+        intent=dict(action='ModifyScalingGroup',runId=self.run,feedSession=self.session,
+            sequence=6,fromDesired=3,toDesired=2,newId=zero['newId'],
+            zeroProofSha256=hashlib.sha256(encode(zero)).hexdigest(),
+            activityRequestId=activity['requestId'],rosterSha256=absent,
+            at=datetime.now(timezone.utc).isoformat())
+        self.private_json(Path(self.bindings['scaleinIntentPath']),intent)
+        self.behavior.write_text('ess-ack')
+        with patch.object(supervisor,'before_cutoff',return_value=True):
+            result=self.run_request(action='scalein-three-to-two',deadlineMonotonic=monotonic()+20.)
+        self.assertEqual(result['result'],dict(state='complete',category='ok',
+                                               payload={'requestId':'request-ok'}))
+        with self.journal._connection() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM mutation_keys WHERE action='scalein-three-to-two'").fetchone()[0],1)
 
     def publish_normal_finish(self):
         from pgcat_lane_protocol import publish_finish

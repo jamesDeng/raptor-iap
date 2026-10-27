@@ -34,9 +34,11 @@ class ControllerTests(unittest.TestCase):
             pendingWorker='/fresh-worker/run/pgcat_rehearsal_worker.py',
             pendingProofWorker='/fresh-worker/run/pgcat_pending_proof_worker.py',
             preDrainProofWorker='/fresh-worker/run/pgcat_pre_drain_proof_worker.py',
+            zeroProofWorker='/fresh-worker/run/pgcat_zero_proof_worker.py',
             workerKubeconfig='/fresh-worker/kubeconfig', remoteRun='/fresh-worker/run',
             contractDir='/fresh-worker/contract', scaleoutIntentPath=str(self.capture/'scaleout.intent'),
             nlbIntentPath=str(self.capture/'nlb-deregister.intent'),
+            scaleinIntentPath=str(self.capture/'scalein.intent'),
             preScaleProofPath=str(self.capture/'proof.json'),
             target=dict(accountId='1360282071200743', regionId='ap-southeast-1',
                 workerId='i-t4nj1bitmcz7cuoch82h', scalingGroupId='asg-t4necb4dfmu6o3z2rn0g',
@@ -45,6 +47,7 @@ class ControllerTests(unittest.TestCase):
             laneProtocol='pgcat_lane_protocol.py', laneSupervisor='pgcat_lane_supervisor.py',
             laneActions='pgcat_lane_actions.py',pendingProofWorker='pgcat_pending_proof_worker.py',
             preDrainProofWorker='pgcat_pre_drain_proof_worker.py',
+            zeroProofWorker='pgcat_zero_proof_worker.py',
             rehearsalWorker='pgcat_rehearsal_worker.py',
             rehearsalContract='pgcat_rehearsal_contract.py',
             captureWindow='capture_window.py', finishClients='finish_clients.py',
@@ -188,6 +191,7 @@ class ControllerTests(unittest.TestCase):
         value['laneBindings']['pendingWorker']=root+'/run/pgcat_rehearsal_worker.py'
         value['laneBindings']['pendingProofWorker']=root+'/run/pgcat_pending_proof_worker.py'
         value['laneBindings']['preDrainProofWorker']=root+'/run/pgcat_pre_drain_proof_worker.py'
+        value['laneBindings']['zeroProofWorker']=root+'/run/pgcat_zero_proof_worker.py'
         value['workerInventory']=root+'/run/provider-inventory.json'
         self.manifest.write_text(json.dumps(value))
         self.assertEqual(self.module.load_bindings(self.manifest)['workerInventory'],
@@ -388,6 +392,86 @@ class ControllerTests(unittest.TestCase):
             dict(controller.receipt,sequence=7,observedAt=self.wall+2,rosterSha256=three)]
         with patch.object(controller,'_next_receipt',side_effect=observations):
             with self.assertRaises(Refused):controller.deregister_new_node()
+        self.assertEqual(controller.state,'uncertain')
+
+    def zero_controller(self):
+        controller,_,absent=self.nlb_controller()
+        controller.state='nlb-absent'
+        controller.receipt=dict(controller.receipt,sequence=6,rosterSha256=absent)
+        proof=dict(runId=self.client.run_id,feedSession=self.session,newId='new-node',
+            originalInstanceIds=self.binding['laneBindings']['target']['originalInstanceIds'],
+            preDrainBindingSha256=hashlib.sha256(encode(controller.pre_drain_proof)).hexdigest(),
+            sequence=6,observedAt=self.wall,clientRosterSha256='b'*64,
+            evidenceSha256='c'*64,
+            sourceSha256=self.binding['laneBindings']['sourceHashes']['zeroProofWorker'])
+        return controller,proof,absent
+
+    def test_zero_proof_requires_later_absent_provider_publication(self):
+        controller,proof,absent=self.zero_controller()
+        self.client.call.return_value=dict(state='complete',category='ok',payload=proof)
+        later=dict(controller.receipt,sequence=7,observedAt=self.wall+1,rosterSha256=absent)
+        def next_receipt(*args,**kwargs):
+            controller.receipt=later
+            return later
+        with patch.object(controller,'_next_receipt',side_effect=next_receipt) as successor:
+            self.assertEqual(controller.bind_zero(),proof)
+        self.assertEqual(controller.state,'zero-bound')
+        self.assertEqual(successor.call_args.kwargs['observed_after'],self.wall)
+        self.assertEqual(self.client.call.call_args.args[0],'zero-proof')
+        with self.assertRaises(Refused): controller.bind_zero()
+
+    def test_scalein_checks_activity_on_same_receipt_and_exact_two_convergence(self):
+        controller,proof,absent=self.zero_controller()
+        controller.state='zero-bound';controller.zero_proof=proof
+        controller.receipt=dict(controller.receipt,sequence=7,rosterSha256=absent)
+        check_id=str(uuid.uuid4())
+        outputs=[dict(state='complete',category='ok',payload={'status':'CLEAR','requestId':check_id}),
+                 dict(state='complete',category='ok',payload={'requestId':'ess-ack'})]
+        self.client.call.side_effect=lambda *args: outputs.pop(0)
+        originals=self.binding['laneBindings']['target']['originalInstanceIds']
+        two=dict(members=originals,healthyRegistered=originals,
+            memberStates=[dict(id=i,lifecycle='Protected',health='Healthy',addressKnown=True) for i in originals],
+            backendStates=[dict(id=i,status='Available',weight=100,listenerHealth='Normal') for i in originals])
+        final=dict(controller.receipt,sequence=8,desired=2,observedAt=self.wall+1,
+                   rosterSha256=roster_sha(two))
+        with patch.object(controller,'_next_receipt',return_value=final):
+            self.assertEqual(controller.scalein_three_to_two(),final)
+        self.assertEqual(controller.state,'scaled-two')
+        calls=self.client.call.call_args_list
+        self.assertEqual([call.args[0] for call in calls],
+                         ['scaling-activity-check','scalein-three-to-two'])
+        self.assertEqual(calls[0].args[1],calls[1].args[1])
+        intent=json.loads(Path(self.binding['laneBindings']['scaleinIntentPath']).read_text())
+        self.assertEqual(intent['activityRequestId'],check_id)
+        self.assertEqual(intent['zeroProofSha256'],hashlib.sha256(encode(proof)).hexdigest())
+
+    def test_slow_activity_refuses_before_ess_child(self):
+        controller,proof,absent=self.zero_controller()
+        controller.state='zero-bound';controller.zero_proof=proof
+        controller.receipt=dict(controller.receipt,sequence=7,rosterSha256=absent)
+        check_id=str(uuid.uuid4())
+        def slow(action,*args):
+            self.assertEqual(action,'scaling-activity-check')
+            self.wall += 4
+            return dict(state='complete',category='ok',
+                        payload={'status':'CLEAR','requestId':check_id})
+        self.client.call.side_effect=slow
+        with self.assertRaises(Refused): controller.scalein_three_to_two()
+        self.assertEqual(self.client.call.call_count,1)
+        self.assertFalse(Path(self.binding['laneBindings']['scaleinIntentPath']).exists())
+
+    def test_scalein_wrong_final_roster_is_uncertain(self):
+        controller,proof,absent=self.zero_controller()
+        controller.state='zero-bound';controller.zero_proof=proof
+        controller.receipt=dict(controller.receipt,sequence=7,rosterSha256=absent)
+        outputs=[dict(state='complete',category='ok',payload={'status':'CLEAR',
+                 'requestId':str(uuid.uuid4())}),
+                 dict(state='complete',category='ok',payload={'requestId':'ess-ack'})]
+        self.client.call.side_effect=lambda *args: outputs.pop(0)
+        wrong=dict(controller.receipt,sequence=8,desired=2,
+                   observedAt=self.wall+1,rosterSha256='f'*64)
+        with patch.object(controller,'_next_receipt',return_value=wrong):
+            with self.assertRaises(Refused): controller.scalein_three_to_two()
         self.assertEqual(controller.state,'uncertain')
 
     def test_removing_roster_digest_excludes_other_changes(self):

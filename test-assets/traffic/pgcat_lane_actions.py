@@ -3,6 +3,7 @@
 Bindings are private configuration, never request arguments. Source hash checks
 are local only; staging and worker-source review remain separate requirements.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,10 +16,11 @@ from pgcat_rehearsal_worker import SOURCES as WORKER_SOURCES
 
 BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerFeedPath', 'receiptPath',
     'laneLockPath', 'laneIntentDir', 'phaseWorker', 'pendingWorker', 'remoteRun',
-    'contractDir', 'pendingProofWorker', 'preDrainProofWorker', 'workerKubeconfig', 'scaleoutIntentPath',
+    'contractDir', 'pendingProofWorker', 'preDrainProofWorker', 'zeroProofWorker',
+    'workerKubeconfig', 'scaleoutIntentPath', 'scaleinIntentPath',
     'nlbIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
 SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions',
-                          'pendingProofWorker','preDrainProofWorker')) | frozenset(WORKER_SOURCES)
+                          'pendingProofWorker','preDrainProofWorker','zeroProofWorker')) | frozenset(WORKER_SOURCES)
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'
 REGION = 'ap-southeast-1'
@@ -47,7 +49,8 @@ def validate_bindings(bindings):
             bindings['phaseWorker'] == bindings['pendingWorker'] ==
             str(run/'pgcat_rehearsal_worker.py') and
             bindings['pendingProofWorker'] == str(run/'pgcat_pending_proof_worker.py') and
-            bindings['preDrainProofWorker'] == str(run/'pgcat_pre_drain_proof_worker.py'))
+            bindings['preDrainProofWorker'] == str(run/'pgcat_pre_drain_proof_worker.py') and
+            bindings['zeroProofWorker'] == str(run/'pgcat_zero_proof_worker.py'))
 
 
 def unique(pairs):
@@ -71,6 +74,14 @@ class ActionCatalog:
         if action == 'scaleout-two-to-three':
             return ([bindings['aliyunCli'],'ess','ModifyScalingGroup','--ScalingGroupId',GROUP,
                      '--DesiredCapacity','3','--profile',PROFILE,'--region',REGION],env,20.0)
+        if action == 'scalein-three-to-two':
+            return ([bindings['aliyunCli'],'ess','ModifyScalingGroup','--ScalingGroupId',GROUP,
+                     '--DesiredCapacity','2','--profile',PROFILE,'--region',REGION],env,20.0)
+        if action == 'scaling-activity-check':
+            return ([bindings['aliyunCli'],'ess','DescribeScalingActivities',
+                     '--ScalingGroupId',GROUP,'--StatusCode','InProgress',
+                     '--PageNumber','1','--PageSize','50',
+                     '--profile',PROFILE,'--region',REGION],env,5.0)
         if action == 'deregister-new-node':
             require(type(pending_binding) is dict and token(pending_binding.get('newId')) and
                     pending_binding['newId'] not in bindings['target']['originalInstanceIds'],'target')
@@ -102,6 +113,20 @@ class ActionCatalog:
             require(type(pending_binding) is dict,'target')
             command = ('python3 '+q(bindings['preDrainProofWorker'])+' '+q(bindings['contractDir'])+
                        ' '+q(run_id)+' '+q(encode(pending_binding).decode('ascii')))
+        elif action == 'zero-proof':
+            identifier(run_id)
+            require(type(pending_binding) is dict,'target')
+            bound={key:val for key,val in pending_binding.items() if key != 'sealedAt'}
+            require(bound.get('runId') == run_id and
+                    bound.get('originalInstanceIds') == bindings['target']['originalInstanceIds'] and
+                    token(bound.get('newId')) and
+                    bound['newId'] not in bound['originalInstanceIds'],'target')
+            hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
+            parts=['python3',bindings['phaseWorker'],'zero-proof',bindings['contractDir'],
+                   run_id,bindings['workerKubeconfig'],
+                   json.dumps(hashes,sort_keys=True,separators=(',',':')),
+                   encode(bindings['target']).decode('ascii'),encode(bound).decode('ascii')]
+            command=' '.join(q(part) for part in parts)
         elif action.startswith('pending-'):
             identifier(run_id)
             hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
@@ -122,7 +147,7 @@ class ActionCatalog:
         return ([sys.executable,bindings['laneWrapper'],'exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',command],env,5.0)
 
     @staticmethod
-    def parse(action, raw, request, receipt=None, source_sha=None):
+    def parse(action, raw, request, receipt=None, source_sha=None, pending_binding=None):
         require(type(raw) is bytes and len(raw) <= 8192,'parse')
         if action in ('pending-start','pending-status'):
             statuses=('STARTED',) if action == 'pending-start' else ('RUNNING','PREPARED')
@@ -146,9 +171,17 @@ class ActionCatalog:
         else:
             require(len(rows) == 1 and type(rows[0]) is dict,'parse')
             value=rows[0]
-            if action == 'scaleout-two-to-three':
+            if action in ('scaleout-two-to-three','scalein-three-to-two'):
                 require(set(value) == {'RequestId'} and token(value['RequestId']),'parse')
                 value={'requestId':value['RequestId']}
+            elif action == 'scaling-activity-check':
+                require(set(value) >= {'PageNumber','TotalCount','ScalingActivities'} and
+                        type(value['PageNumber']) is int and value['PageNumber'] == 1 and
+                        type(value['TotalCount']) is int and value['TotalCount'] == 0 and
+                        type(value['ScalingActivities']) is dict and
+                        value['ScalingActivities'].get('ScalingActivity') == [],'parse')
+                identifier(request.get('requestId'))
+                value={'status':'CLEAR','requestId':request['requestId']}
             elif action == 'deregister-new-node':
                 require(set(value) == {'RequestId','ServerGroupId','JobId'} and
                         token(value['RequestId']) and token(value['JobId']) and
@@ -172,6 +205,28 @@ class ActionCatalog:
                 require(type(receipt) is dict and receipt.get('feedSession') == value['feedSession'] and
                         type(receipt.get('sequence')) is int and value['sequence'] <= receipt['sequence'] and
                         value['observedAt'] <= receipt['observedAt'],'receipt')
+            elif action == 'zero-proof':
+                require(type(pending_binding) is dict and
+                        set(value) == {'runId','feedSession','newId','originalInstanceIds',
+                        'preDrainBindingSha256','sequence','observedAt','clientRosterSha256',
+                        'evidenceSha256','sourceSha256'} and
+                        value['runId'] == request['runId'] and
+                        value['feedSession'] == request['feedSession'] and
+                        value['newId'] == pending_binding.get('newId') and
+                        value['originalInstanceIds'] == request['target']['originalInstanceIds'] and
+                        value['clientRosterSha256'] == pending_binding.get('clientRosterSha256') and
+                        value['preDrainBindingSha256'] == hashlib.sha256(encode({key:val for key,val in
+                            pending_binding.items() if key != 'sealedAt'})).hexdigest() and
+                        type(value['sequence']) is int and 0 < value['sequence'] <= request['minimumSequence'] and
+                        type(value['observedAt']) in (int,float) and
+                        0 <= time.time()-value['observedAt'] < 30 and
+                        all(sha(value[key]) for key in ('preDrainBindingSha256',
+                            'clientRosterSha256','evidenceSha256','sourceSha256')) and
+                        sha(source_sha) and value['sourceSha256'] == source_sha, 'parse')
+                require(type(receipt) is dict and receipt.get('feedSession') == value['feedSession'] and
+                        type(receipt.get('sequence')) is int and value['sequence'] <= receipt['sequence'] and
+                        type(receipt.get('observedAt')) in (int,float) and
+                        value['observedAt'] <= receipt['observedAt'], 'receipt')
             elif action == 'pending-proof':
                 require(set(value) == {'runId','feedSession','newId','originalInstanceIds',
                     'sequence','observedAt','resourceVersion','clientRosterSha256',

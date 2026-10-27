@@ -184,9 +184,11 @@ class PendingBindingTests(unittest.TestCase):
             pendingWorker='/fixed/run/pgcat_rehearsal_worker.py',
             pendingProofWorker='/fixed/run/pgcat_pending_proof_worker.py',
             preDrainProofWorker='/fixed/run/pgcat_pre_drain_proof_worker.py',
+            zeroProofWorker='/fixed/run/pgcat_zero_proof_worker.py',
             workerKubeconfig='/fixed/kubeconfig',remoteRun='/fixed/run',
             contractDir='/fixed/contract',scaleoutIntentPath='/fixed/scaleout',
             nlbIntentPath='/fixed/nlb',
+            scaleinIntentPath='/fixed/scalein',
             preScaleProofPath='/fixed/pre-scale',sourceHashes={k:'d'*64 for k in SOURCE_NAMES},
             target=dict(self.target,workerId='i-t4nj1bitmcz7cuoch82h'))
         argv,env,budget=ActionCatalog.command('pending-proof',bindings,self.run)

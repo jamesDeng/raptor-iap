@@ -111,6 +111,7 @@ class LaneSupervisor:
             laneActions=here/'pgcat_lane_actions.py',
             pendingProofWorker=here/'pgcat_pending_proof_worker.py',
             preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
+            zeroProofWorker=here/'pgcat_zero_proof_worker.py',
             rehearsalWorker=here/'pgcat_rehearsal_worker.py',
             rehearsalContract=here/'pgcat_rehearsal_contract.py',
             captureWindow=here/'capture_window.py',finishClients=here/'finish_clients.py',
@@ -218,6 +219,40 @@ class LaneSupervisor:
         except ValueError: raise Refused() from None
         return pending
 
+    def _scalein(self,req,receipt):
+        require(before_cutoff() and receipt['desired'] == 3 and
+                0 <= time.time()-receipt['observedAt'] < 3.5,'receipt')
+        pending=self.journal.pending_binding()
+        zero=self.journal.zero_binding()
+        require(zero['runId'] == req['runId'] and zero['feedSession'] == req['feedSession'] and
+                zero['newId'] == pending['newId'] and
+                zero['originalInstanceIds'] == req['target']['originalInstanceIds'] and
+                zero['clientRosterSha256'] == pending['clientRosterSha256'] and
+                zero['sequence'] < receipt['sequence'] and
+                0 <= time.time()-zero['sealedAt'] < 30 and
+                receipt['observedAt'] > zero['sealedAt'],'target')
+        expected=roster_sha(expected_roster(req['target']['originalInstanceIds'],
+            pending['newId'],registered=False))
+        require(receipt['rosterSha256'] == expected,'receipt')
+        with self.journal._connection() as db:
+            activity=db.execute('SELECT request_id,sealed_at FROM activity_clear').fetchone()
+        require(activity is not None and 0 <= time.time()-activity['sealed_at'] < 3.5,
+                'receipt')
+        intent=read_json(self.bindings['scaleinIntentPath'])
+        require(type(intent) is dict,'configuration')
+        wanted=dict(action='ModifyScalingGroup',runId=req['runId'],
+            feedSession=req['feedSession'],sequence=receipt['sequence'],
+            fromDesired=3,toDesired=2,newId=pending['newId'],
+            zeroProofSha256=hashlib.sha256(encode({key:value for key,value in zero.items()
+                if key != 'sealedAt'})).hexdigest(),
+            activityRequestId=activity['request_id'],rosterSha256=expected,at=intent.get('at'))
+        require(intent == wanted and type(intent['at']) is str,'configuration')
+        try:
+            at=datetime.fromisoformat(intent['at'])
+            require(at.tzinfo is not None and
+                    0 <= (datetime.now(timezone.utc)-at).total_seconds() < 30)
+        except ValueError: raise Refused() from None
+
     def _communicate(self, deadline):
         child=self.child
         streams={child.stdout:b'',child.stderr:b''}
@@ -254,37 +289,47 @@ class LaneSupervisor:
                     require(run['state'] == 'active')
                     require(run['mode'] != 'no-scale' or req['action'] in NO_SCALE_ACTIONS)
                     require(req['action'] not in ('scaleout-two-to-three','pending-proof',
-                        'pre-drain-proof','deregister-new-node') or
+                        'pre-drain-proof','deregister-new-node','zero-proof',
+                        'scaling-activity-check','scalein-three-to-two') or
                             run['mode'] == 'disabled-rehearsal')
                 identity,receipt=self._receipt(req); self._unused(req,receipt)
-                if req['action'] in ('pending-proof','pre-drain-proof'):
+                if req['action'] in ('pending-proof','pre-drain-proof','zero-proof',
+                                     'scaling-activity-check','scalein-three-to-two'):
                     require(receipt['desired'] == 3 and time.time()-receipt['observedAt'] < 3.5,'receipt')
                 binding=(self.journal.pending_binding() if req['action'] in
-                    ('pre-drain-proof','deregister-new-node') else None)
+                    ('pre-drain-proof','deregister-new-node') else
+                    self.journal.pre_drain_binding() if req['action']=='zero-proof' else None)
                 argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
                     self.run_id,binding)
                 deadline=req['deadlineMonotonic']
                 require(0 < deadline-monotonic() <= budget,'timeout')
                 if req['action'] == 'scaleout-two-to-three': self._ess(req,receipt)
                 if req['action'] == 'deregister-new-node': self._nlb(req,receipt)
-                if req['action'] not in ('scaleout-two-to-three','deregister-new-node'):
+                if req['action'] == 'scalein-three-to-two': self._scalein(req,receipt)
+                if req['action'] not in ('scaleout-two-to-three','deregister-new-node',
+                                         'scalein-three-to-two'):
                     deadline=min(deadline,monotonic()+receipt['observedAt']+12-time.time())
                 env.update(PGCAT_LANE_SESSION=req['feedSession'],PGCAT_LANE_MIN_SEQUENCE=str(req['minimumSequence']))
                 self._alive()
                 with self._masked() as old_mask:
                     self._alive()
                     self._receipt(req)
-                    if req['action'] in ('scaleout-two-to-three','deregister-new-node'):
+                    if req['action'] in ('scaleout-two-to-three','deregister-new-node',
+                                         'scalein-three-to-two'):
                         require(before_cutoff() and time.time()-receipt['observedAt'] < 3.5,'receipt')
-                    if req['action'] in ('pending-proof','pre-drain-proof','deregister-new-node'):
+                    if req['action'] in ('pending-proof','pre-drain-proof','deregister-new-node',
+                                         'zero-proof','scaling-activity-check','scalein-three-to-two'):
                         self.journal.admit(req,receipt)
                     else:
                         self.journal.admit(req)
                     admitted=True
-                    if req['action'] in ('scaleout-two-to-three','deregister-new-node'):
+                    if req['action'] in ('scaleout-two-to-three','deregister-new-node',
+                                         'scalein-three-to-two'):
                         lane.consume_intent(self.bindings['laneIntentDir'],req['feedSession'],receipt['sequence'])
                         self._receipt(req)
                         require(before_cutoff() and time.time()-receipt['observedAt'] < 3.5,'receipt')
+                        if req['action'] == 'scalein-three-to-two':
+                            self._scalein(req,receipt)
                     # Python's restore_signals does not restore a pthread mask.
                     child_mask=set(old_mask)-GRACEFUL
                     require(monotonic() < deadline,'timeout')
@@ -293,14 +338,17 @@ class LaneSupervisor:
                         preexec_fn=lambda:signal.pthread_sigmask(signal.SIG_SETMASK,child_mask))
                 self._alive(); require(monotonic() < deadline,'timeout')
                 raw=self._communicate(deadline)
-                if req['action'] in ('pending-proof','pre-drain-proof'):
+                if req['action'] in ('pending-proof','pre-drain-proof','zero-proof'):
                     payload=ActionCatalog.parse(req['action'],raw,req,receipt,
                         source_sha=self.bindings['sourceHashes'][
-                            'pendingProofWorker' if req['action']=='pending-proof' else 'preDrainProofWorker'])
+                            {'pending-proof':'pendingProofWorker','pre-drain-proof':'preDrainProofWorker',
+                             'zero-proof':'zeroProofWorker'}[req['action']]],
+                        pending_binding=binding if req['action']=='zero-proof' else None)
                 else:
                     payload=ActionCatalog.parse(req['action'],raw,req,receipt)
                 self._alive(); require(monotonic() < deadline,'timeout')
-                if req['action'] not in ('scaleout-two-to-three','deregister-new-node'):
+                if req['action'] not in ('scaleout-two-to-three','deregister-new-node',
+                                         'scalein-three-to-two'):
                     require(time.time() < receipt['observedAt']+12,'receipt')
                 self._cleanup()
                 with self._masked():
@@ -313,6 +361,9 @@ class LaneSupervisor:
                     elif req['action'] == 'pre-drain-proof':
                         self.journal.seal(request_id,result,
                             pre_drain_source_sha=self.bindings['sourceHashes']['preDrainProofWorker'])
+                    elif req['action'] == 'zero-proof':
+                        self.journal.seal(request_id,result,
+                            zero_source_sha=self.bindings['sourceHashes']['zeroProofWorker'])
                     else:
                         self.journal.seal(request_id,result)
                     if req['action'] == 'pending-status' and payload == {'status':'PREPARED'}:

@@ -20,6 +20,8 @@ from pgcat_lane_protocol import Refused
 SOURCES = {'rehearsalWorker': 'pgcat_rehearsal_worker.py',
            'rehearsalContract': 'pgcat_rehearsal_contract.py',
            'pendingProofWorker': 'pgcat_pending_proof_worker.py',
+           'preDrainProofWorker': 'pgcat_pre_drain_proof_worker.py',
+           'zeroProofWorker': 'pgcat_zero_proof_worker.py',
            'captureWindow': 'capture_window.py',
            'finishClients': 'finish_clients.py',
            'workerCapture': 'worker_capture.py',
@@ -242,7 +244,6 @@ class DetachedWorkerTests(unittest.TestCase):
         hashes = {key: hashlib.sha256((here / name).read_bytes()).hexdigest()
                   for key, name in source_names.items()}
         hashes.update(self.hashes)
-        hashes['preDrainProofWorker'] = hashlib.sha256((here/'pgcat_pre_drain_proof_worker.py').read_bytes()).hexdigest()
         return {'workbenchCli': str(cli), 'aliyunCli': str(cli),
                 'laneWrapper': str(here / 'pgcat_workbench_lane.py'),
                 'providerFeedPath': str(here / 'provider_feed.py'),
@@ -252,10 +253,12 @@ class DetachedWorkerTests(unittest.TestCase):
                 'phaseWorker': str(self.worker), 'pendingWorker': str(self.worker),
                 'pendingProofWorker': str(self.run / 'pgcat_pending_proof_worker.py'),
                 'preDrainProofWorker': str(self.run / 'pgcat_pre_drain_proof_worker.py'),
+                'zeroProofWorker': str(self.run / 'pgcat_zero_proof_worker.py'),
                 'remoteRun': str(self.run), 'contractDir': str(self.contract),
                 'workerKubeconfig': str(self.kubeconfig),
                 'scaleoutIntentPath': str(self.root / 'scaleout.intent'),
                 'nlbIntentPath': str(self.root / 'nlb-deregister.intent'),
+                'scaleinIntentPath': str(self.root / 'scalein.intent'),
                 'preScaleProofPath': str(self.root / 'pre-scale-proof.json'),
                 'sourceHashes': hashes,
                 'target': {'accountId': '1360282071200743', 'regionId': 'ap-southeast-1',
@@ -286,6 +289,106 @@ class DetachedWorkerTests(unittest.TestCase):
         bindings['target']['originalInstanceIds'].reverse()
         with self.assertRaises(Refused):
             ActionCatalog.command('baseline-start', bindings, self.run_id)
+
+    def test_zero_proof_uses_exact_bound_worker_and_pre_drain_identity(self):
+        bindings = self._bindings()
+        bindings['zeroProofWorker'] = str(self.run / 'pgcat_zero_proof_worker.py')
+        bindings['scaleinIntentPath'] = str(self.root / 'scalein.intent')
+        bindings['sourceHashes']['zeroProofWorker'] = self.hashes['zeroProofWorker']
+        pre = {'runId': self.run_id, 'feedSession': self.feed_session,
+               'newId': 'candidate', 'originalInstanceIds': self.target['originalInstanceIds']}
+        argv, _, timeout = ActionCatalog.command('zero-proof', bindings, self.run_id, pre)
+        command = shlex.split(argv[-1])
+        self.assertEqual(command[:5], ['python3', str(self.worker), 'zero-proof',
+                                       str(self.contract), self.run_id])
+        self.assertEqual(command[5], str(self.kubeconfig))
+        self.assertEqual(json.loads(command[6]), self.hashes)
+        self.assertEqual(json.loads(command[7]), self.target)
+        self.assertEqual(json.loads(command[8]), pre)
+        self.assertEqual(timeout, 5.0)
+        sealed = dict(pre, sealedAt=time.time())
+        argv, _, _ = ActionCatalog.command('zero-proof', bindings, self.run_id, sealed)
+        self.assertEqual(json.loads(shlex.split(argv[-1])[8]), pre)
+
+    def test_zero_worker_executes_only_after_transitive_source_hash_check(self):
+        marker=self.root/'zero-executed'
+        zero=self.run/'pgcat_zero_proof_worker.py'
+        zero.write_text('from pathlib import Path\n'
+            'def produce(contract,run,binding):\n'
+            ' Path('+repr(str(marker))+').write_text("yes")\n'
+            ' return {"runId":run,"newId":binding["newId"]}\n')
+        zero.chmod(0o600)
+        self.hashes['zeroProofWorker']=hashlib.sha256(zero.read_bytes()).hexdigest()
+        pre={'runId':self.run_id,'feedSession':self.feed_session,'newId':'candidate',
+             'originalInstanceIds':self.target['originalInstanceIds']}
+        args=[sys.executable,str(self.worker),'zero-proof',str(self.contract),self.run_id,
+              str(self.kubeconfig),json.dumps(self.hashes),json.dumps(self.target),json.dumps(pre)]
+        valid=subprocess.run(args,cwd=str(self.run),stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE,timeout=5)
+        self.assertEqual(valid.returncode,0,valid.stdout.decode())
+        self.assertEqual(json.loads(valid.stdout),{'runId':self.run_id,'newId':'candidate'})
+        self.assertTrue(marker.exists());marker.unlink()
+        zero.write_text(zero.read_text()+'# changed\n')
+        rejected=subprocess.run(args,cwd=str(self.run),stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,timeout=5)
+        self.assertNotEqual(rejected.returncode,0)
+        self.assertFalse(marker.exists())
+
+    def test_activity_and_scalein_use_only_fixed_ess_arguments(self):
+        bindings = self._bindings()
+        bindings['zeroProofWorker'] = str(self.run / 'pgcat_zero_proof_worker.py')
+        bindings['scaleinIntentPath'] = str(self.root / 'scalein.intent')
+        bindings['sourceHashes']['zeroProofWorker'] = self.hashes['zeroProofWorker']
+        activity, _, budget = ActionCatalog.command('scaling-activity-check', bindings, self.run_id)
+        self.assertEqual(activity[1:6], ['ess', 'DescribeScalingActivities', '--ScalingGroupId',
+                                        self.target['scalingGroupId'], '--StatusCode'])
+        self.assertEqual(activity[6:11], ['InProgress', '--PageNumber', '1', '--PageSize', '50'])
+        self.assertEqual(budget, 5.0)
+        scale, _, budget = ActionCatalog.command('scalein-three-to-two', bindings, self.run_id)
+        self.assertEqual(scale[1:6], ['ess', 'ModifyScalingGroup', '--ScalingGroupId',
+                                     self.target['scalingGroupId'], '--DesiredCapacity'])
+        self.assertEqual(scale[6], '2')
+        self.assertEqual(budget, 20.0)
+
+    def test_activity_parser_requires_clear_exact_page(self):
+        request = {'target': self.target, 'requestId': self.run_id}
+        clean = b'{"PageNumber":1,"TotalCount":0,"ScalingActivities":{"ScalingActivity":[]}}'
+        self.assertEqual(ActionCatalog.parse('scaling-activity-check', clean, request),
+                         {'status':'CLEAR','requestId':self.run_id})
+        for raw in (b'{"PageNumber":1,"TotalCount":1,"ScalingActivities":{"ScalingActivity":[]}}',
+                    b'{"PageNumber":2,"TotalCount":0,"ScalingActivities":{"ScalingActivity":[]}}',
+                    b'{"PageNumber":1,"TotalCount":0,"ScalingActivities":{"ScalingActivity":[{}]}}'):
+            with self.assertRaises(Refused):
+                ActionCatalog.parse('scaling-activity-check', raw, request)
+
+    def test_scalein_ack_requires_single_request_id(self):
+        request = {'target': self.target}
+        self.assertEqual(ActionCatalog.parse('scalein-three-to-two', b'{"RequestId":"req-ok"}', request),
+                         {'requestId':'req-ok'})
+        with self.assertRaises(Refused):
+            ActionCatalog.parse('scalein-three-to-two', b'{"RequestId":"req-ok","extra":1}', request)
+
+    def test_zero_proof_parser_binds_candidate_session_and_reviewed_source(self):
+        pre = dict(runId=self.run_id, feedSession=self.feed_session, newId='candidate',
+                   originalInstanceIds=self.target['originalInstanceIds'],
+                   clientRosterSha256='b'*64)
+        value = dict(runId=self.run_id, feedSession=self.feed_session, newId='candidate',
+            originalInstanceIds=self.target['originalInstanceIds'],
+            preDrainBindingSha256=hashlib.sha256(json.dumps(pre, sort_keys=True,
+                separators=(',',':')).encode()).hexdigest(),
+            sequence=7, observedAt=time.time(), clientRosterSha256='b'*64,
+            evidenceSha256='c'*64, sourceSha256='d'*64)
+        request = dict(runId=self.run_id, feedSession=self.feed_session,
+                       target=self.target, minimumSequence=7)
+        receipt = dict(feedSession=self.feed_session, sequence=7, observedAt=value['observedAt'])
+        self.assertEqual(ActionCatalog.parse('zero-proof', json.dumps(value).encode(),
+                         request, receipt, source_sha='d'*64, pending_binding=pre), value)
+        with self.assertRaises(Refused):
+            ActionCatalog.parse('zero-proof', json.dumps(dict(value,newId='other')).encode(),
+                                request, receipt, source_sha='d'*64, pending_binding=pre)
+        with self.assertRaises(Refused):
+            ActionCatalog.parse('zero-proof', json.dumps(value).encode(), request,
+                                receipt, source_sha='e'*64, pending_binding=pre)
 
 
 if __name__ == '__main__':
