@@ -1,3 +1,4 @@
+from pgcat_lane_protocol import monotonic
 import copy
 import hashlib
 import json
@@ -84,7 +85,7 @@ class SupervisorTests(unittest.TestCase):
         value = dict(requestId=str(uuid.uuid4()),runId=self.run,supervisorId=self.owner.supervisor_id,
             action='baseline-status',feedSession=self.session,minimumSequence=value['sequence'],
             receiptIdentity=supervisor.receipt_identity(identity),target=self.target,
-            bundleSha256=self.bundle,nonce=str(uuid.uuid4()),deadlineMonotonic=time.monotonic()+4.0)
+            bundleSha256=self.bundle,nonce=str(uuid.uuid4()),deadlineMonotonic=monotonic()+4.0)
         value.update(changes)
         publish_request(self.root,value)
         return value
@@ -93,6 +94,14 @@ class SupervisorTests(unittest.TestCase):
         req = self.request(**changes)
         self.owner.run_once(req['requestId'])
         return self.journal.snapshot(req['requestId'])
+
+    def test_finish_refuses_adopted_child(self):
+        self.owner.child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'])
+        try:
+            with self.assertRaises(Refused): self.owner.finish()
+        finally: self.owner._cleanup()
+        with self.journal._connection() as db:
+            self.assertNotEqual(db.execute('SELECT state FROM run').fetchone()['state'], 'finished')
 
     def test_fixed_catalog_rejects_unknown_actions_and_extra_bindings(self):
         for action in ('exec','baseline-status; touch /tmp/x', []):
@@ -154,14 +163,14 @@ class SupervisorTests(unittest.TestCase):
         def spawn(*args,**kwargs):
             child=original(*args,**kwargs); time.sleep(.12); return child
         with patch.object(supervisor.subprocess,'Popen',spawn):
-            row = self.run_request(deadlineMonotonic=time.monotonic()+.06)
+            row = self.run_request(deadlineMonotonic=monotonic()+.06)
         self.assertEqual(row['state'],'uncertain')
         self.assertEqual(row['result']['category'],'timeout')
         self.assertIsNone(self.owner.child)
 
     def test_timeout_and_fork_retaining_pipes_are_uncertain(self):
         self.behavior.write_text('fork')
-        row=self.run_request(deadlineMonotonic=time.monotonic()+.8)
+        row=self.run_request(deadlineMonotonic=monotonic()+.8)
         self.assertEqual(row['state'],'uncertain')
         self.assertIsNone(self.owner.child)
         self.fork_release.touch()
@@ -192,7 +201,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(self.marker.exists())
 
     def test_scaleout_consumes_shared_sequence(self):
-        req=self.request(action='scaleout-two-to-three',deadlineMonotonic=time.monotonic()+10.)
+        req=self.request(action='scaleout-two-to-three',deadlineMonotonic=monotonic()+10.)
         self.private_json(Path(self.bindings['preScaleProofPath']),dict(feedSession=self.session,sequence=1))
         self.private_json(Path(self.bindings['scaleoutIntentPath']),dict(action='ModifyScalingGroup',
             account=self.target['accountId'],group=self.target['scalingGroupId'],fromDesired=2,toDesired=3,
@@ -307,7 +316,7 @@ class SupervisorTests(unittest.TestCase):
 
     def test_timeout_without_fork_and_bounded_output(self):
         self.behavior.write_text('sleep')
-        row=self.run_request(deadlineMonotonic=time.monotonic()+.15)
+        row=self.run_request(deadlineMonotonic=monotonic()+.15)
         self.assertEqual(row['result']['category'],'timeout')
         self.assertIsNone(self.owner.child)
 
@@ -321,20 +330,20 @@ class SupervisorTests(unittest.TestCase):
     def test_actual_fork_retains_lane_lock_after_direct_child_exit(self):
         import fcntl
         self.behavior.write_text('fork')
-        row=self.run_request(deadlineMonotonic=time.monotonic()+.8)
+        row=self.run_request(deadlineMonotonic=monotonic()+.8)
         self.assertEqual(row['state'],'uncertain')
         self.assertTrue(self.fork_ready.exists())
         fd=os.open(self.bindings['laneLockPath'],os.O_RDWR)
         try:
             with self.assertRaises(BlockingIOError): fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
             self.fork_release.touch()
-            until=time.monotonic()+1
+            until=monotonic()+1
             while True:
                 try:
                     fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    self.assertLess(time.monotonic(),until)
+                    self.assertLess(monotonic(),until)
                     time.sleep(.01)
         finally: os.close(fd)
 
@@ -344,8 +353,8 @@ class SupervisorTests(unittest.TestCase):
         pid=os.fork()
         if pid == 0:
             os.close(read)
-            until=time.monotonic()+3
-            while time.monotonic()<until:
+            until=monotonic()+3
+            while monotonic()<until:
                 try:
                     if self.journal.snapshot(request['requestId'])['state'] != 'dispatching': break
                 except Refused: pass
@@ -380,7 +389,7 @@ class SupervisorTests(unittest.TestCase):
                     original()
             else: original()
         with patch.object(self.owner,'_cleanup',cleanup):
-            row=self.run_request(deadlineMonotonic=time.monotonic()+.15)
+            row=self.run_request(deadlineMonotonic=monotonic()+.15)
         self.assertEqual(row['state'],'uncertain')
         self.assertIsNone(self.owner.child)
 
@@ -395,11 +404,11 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(self.marker.exists())
 
     def test_terminal_commit_overrun_cannot_report_active_success(self):
-        request=self.request(deadlineMonotonic=time.monotonic()+1.)
+        request=self.request(deadlineMonotonic=monotonic()+1.)
         original=self.journal.seal
         def slow_seal(request_id,result):
             original(request_id,result)
-            time.sleep(max(0,request['deadlineMonotonic']-time.monotonic())+.02)
+            time.sleep(max(0,request['deadlineMonotonic']-monotonic())+.02)
         with patch.object(self.journal,'seal',slow_seal):
             self.owner.run_once(request['requestId'])
         row=self.journal.snapshot(request['requestId'])
@@ -430,7 +439,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(row['state'],'uncertain')
 
     def prepare_scaleout_request(self):
-        req=self.request(action='scaleout-two-to-three',deadlineMonotonic=time.monotonic()+19.)
+        req=self.request(action='scaleout-two-to-three',deadlineMonotonic=monotonic()+19.)
         self.private_json(Path(self.bindings['preScaleProofPath']),dict(feedSession=self.session,sequence=1))
         self.private_json(Path(self.bindings['scaleoutIntentPath']),dict(action='ModifyScalingGroup',
             account=self.target['accountId'],group=self.target['scalingGroupId'],fromDesired=2,toDesired=3,
@@ -441,25 +450,25 @@ class SupervisorTests(unittest.TestCase):
         from types import SimpleNamespace
         req=self.prepare_scaleout_request()
         offset=[0.]
-        clock=SimpleNamespace(time=lambda:time.time()+offset[0],monotonic=lambda:time.monotonic()+offset[0])
+        clock=SimpleNamespace(time=lambda:time.time()+offset[0],monotonic=lambda:monotonic()+offset[0])
         original=self.owner._communicate
         def communicate(deadline):
             raw=original(deadline)
             offset[0]=13.
             return raw
         command=([sys.executable,'-c','print(\'{"RequestId":"ack"}\')'],{'PATH':os.defpath},20.)
-        with patch.object(actions.ActionCatalog,'command',return_value=command), patch.object(supervisor,'before_cutoff',return_value=True), patch.object(supervisor,'time',clock), patch.object(self.owner,'_communicate',communicate):
+        with patch.object(actions.ActionCatalog,'command',return_value=command), patch.object(supervisor,'before_cutoff',return_value=True), patch.object(supervisor,'time',clock), patch.object(supervisor,'monotonic',clock.monotonic), patch.object(self.owner,'_communicate',communicate):
             self.owner.run_once(req['requestId'])
         row=self.journal.snapshot(req['requestId'])
         self.assertEqual(row['state'],'complete')
         self.assertEqual(row['runState'],'active')
 
     def test_deadline_expired_during_admission_never_spawns(self):
-        req=self.request(deadlineMonotonic=time.monotonic()+.15)
+        req=self.request(deadlineMonotonic=monotonic()+.15)
         original=self.journal.admit
         def admit(request):
             original(request)
-            time.sleep(max(0,req['deadlineMonotonic']-time.monotonic())+.01)
+            time.sleep(max(0,req['deadlineMonotonic']-monotonic())+.01)
         with patch.object(self.journal,'admit',admit), patch.object(supervisor.subprocess,'Popen',wraps=subprocess.Popen) as launch:
             row=self.owner.run_once(req['requestId'])
         self.assertEqual(row['state'],'uncertain')
@@ -472,11 +481,11 @@ class SupervisorTests(unittest.TestCase):
         original=lane.consume_intent
         from types import SimpleNamespace
         offset=[0.]
-        clock=SimpleNamespace(time=time.time,monotonic=lambda:time.monotonic()+offset[0])
+        clock=SimpleNamespace(time=time.time,monotonic=lambda:monotonic()+offset[0])
         def consume(*args):
             original(*args)
             offset[0]=20.
-        with patch.object(lane,'consume_intent',consume), patch.object(supervisor,'before_cutoff',return_value=True), patch.object(supervisor,'time',clock), patch.object(supervisor.subprocess,'Popen',wraps=subprocess.Popen) as launch:
+        with patch.object(lane,'consume_intent',consume), patch.object(supervisor,'before_cutoff',return_value=True), patch.object(supervisor,'time',clock), patch.object(supervisor,'monotonic',clock.monotonic), patch.object(supervisor.subprocess,'Popen',wraps=subprocess.Popen) as launch:
             row=self.owner.run_once(req['requestId'])
         self.assertEqual(row['state'],'uncertain')
         self.assertEqual(row['result']['category'],'timeout')

@@ -1,3 +1,4 @@
+from pgcat_lane_protocol import monotonic
 import copy
 import json
 from pathlib import Path
@@ -6,7 +7,7 @@ import time
 import unittest
 import uuid
 
-from pgcat_lane_protocol import Journal, Refused, publish_request
+from pgcat_lane_protocol import Journal, Refused, publish_request, publish_finish
 
 
 class ProtocolTest(unittest.TestCase):
@@ -29,13 +30,65 @@ class ProtocolTest(unittest.TestCase):
                      feedSession=self.session, minimumSequence=1,
                      receiptIdentity='b'*64, target=copy.deepcopy(self.target),
                      bundleSha256='a'*64, nonce=str(uuid.uuid4()),
-                     deadlineMonotonic=time.monotonic()+5.0)
+                     deadlineMonotonic=monotonic()+5.0)
         value.update(changes)
         return value
 
     def admit(self, request):
         self.assertEqual(publish_request(self.root, request), request['requestId'])
         self.journal.admit(request)
+
+    def test_deadline_clock_is_shared_with_detached_process(self):
+        import subprocess
+        import sys
+        import pgcat_lane_protocol as protocol
+        before = protocol.monotonic()
+        child = float(subprocess.check_output([sys.executable, '-c',
+            'from pgcat_lane_protocol import monotonic; print(monotonic())']))
+        after = protocol.monotonic()
+        self.assertLessEqual(before, child)
+        self.assertLessEqual(child, after)
+
+    def finish_receipts(self):
+        feed = dict(pid=123, exitCode=0, category='ok', feedSession=self.session, sequence=1)
+        assessment = dict(status='INCONCLUSIVE', mode='no-scale', feedSession=self.session,
+                          endSequence=1, evidenceSha256='e'*64)
+        publish_finish(self.root, self.run, feed, assessment)
+
+    def test_finish_is_monotonic_with_valid_marker(self):
+        self.finish_receipts()
+        self.journal.cancel('incomplete')
+        with self.assertRaises(Refused): self.journal.finish()
+        self.assertEqual(self.journal.run_snapshot()['runState'], 'uncertain')
+
+    def test_finish_rejects_unsealed_request_with_valid_marker(self):
+        self.admit(self.request())
+        self.finish_receipts()
+        with self.assertRaises(Refused): self.journal.finish()
+        self.assertEqual(self.journal.run_snapshot()['runState'], 'active')
+
+    def test_finish_rejects_unpublished_staging_file(self):
+        folder = self.root/'requests'; folder.mkdir(mode=0o700)
+        (folder/'partial.request.json').write_text('{}')
+        self.finish_receipts()
+        with self.assertRaises(Refused): self.journal.finish()
+
+    def test_finish_rejects_receipt_digest_change(self):
+        self.finish_receipts()
+        (self.root/'assessment.json').write_text('{}')
+        with self.assertRaises(Refused): self.journal.finish()
+
+    def test_finished_remains_closed_and_preserves_assessment(self):
+        request = self.request(); self.admit(request)
+        self.journal.seal(request['requestId'], dict(state='complete',category='ok',payload={}))
+        self.finish_receipts()
+        result = self.journal.finish()
+        self.assertEqual(result['runState'], 'finished')
+        self.assertEqual(result['assessment']['status'], 'INCONCLUSIVE')
+        self.journal.cancel('cancelled')
+        self.assertEqual(self.journal.run_snapshot()['runState'], 'finished')
+        with self.assertRaises(Refused): self.journal.finish()
+        with self.assertRaises(Refused): self.admit(self.request())
 
     def test_private_publication_and_database(self):
         request = self.request()

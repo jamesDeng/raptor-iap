@@ -27,6 +27,15 @@ TOKEN = re.compile(r'[A-Za-z0-9_-]{1,256}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
+def monotonic():
+    """Host-wide deadline clock, including macOS Python 3.9.
+
+    Callers MUST create deadlineMonotonic values with this clock. Python 3.9's
+    macOS time.monotonic() uses a separate origin in each process.
+    """
+    return time.clock_gettime(time.CLOCK_MONOTONIC)
+
+
 class Refused(Exception):
     """Address-free refusal category, safe to persist or display."""
     def __init__(self, category='configuration'):
@@ -96,12 +105,15 @@ def write_all(fd, raw):
         raw = raw[count:]
 
 
-def read_private(folder, name, maximum):
+def read_private(folder, name, maximum, publication_marker=False):
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
     try:
         before = os.fstat(fd)
-        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
-                and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1)
+        def valid(info):
+            return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600
+                    and info.st_nlink in ((1, 2) if publication_marker else (1,)))
+        require(valid(before))
         require(before.st_size <= maximum)
         raw = b''
         while len(raw) <= maximum:
@@ -111,7 +123,12 @@ def read_private(folder, name, maximum):
             raw += part
         after = os.fstat(fd)
         current = os.stat(name, dir_fd=folder, follow_symlinks=False)
-        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+        require(valid(after) and valid(current))
+        # Atomic link publication briefly has two names; removing the staging
+        # name changes ctime without changing the complete fsynced marker bytes.
+        def identity(info):
+            stable = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+            return stable if publication_marker else stable + (info.st_ctime_ns,)
         require(identity(before) == identity(after) == identity(current) and len(raw) <= maximum)
         return raw
     finally:
@@ -139,7 +156,7 @@ def publish_request(root: Path, request: dict) -> str:
     raw = encode(request)
     request_id = request['requestId']
     folder = request_folder(root)
-    temporary = '.' + request_id + '.' + str(uuid.uuid4()) + '.ready'
+    temporary = '.' + request_id + '.' + str(uuid.uuid4()) + '.staging'
     try:
         fd = os.open(request_id+'.request.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
         try:
@@ -174,7 +191,9 @@ def read_request(root, request_id):
     identifier(request_id)
     folder = request_folder(root)
     try:
-        marker = read_private(folder, request_id+'.ready', 64)
+        # Persist the observed no-replace link even if its publisher is paused.
+        os.fsync(folder)
+        marker = read_private(folder, request_id+'.ready', 64, publication_marker=True)
         raw = read_private(folder, request_id+'.request.json', MAX_REQUEST)
         require(marker == hashlib.sha256(raw).hexdigest().encode('ascii'))
         value = json.loads(raw.decode('ascii'))
@@ -207,6 +226,73 @@ def validate_result(result):
             require(token(value))
 
 
+def validate_finish_receipts(feed_exit, assessment, mode):
+    require(type(feed_exit) is dict and set(feed_exit) ==
+            {'pid','exitCode','category','feedSession','sequence'})
+    require(type(feed_exit['pid']) is int and feed_exit['pid'] > 0)
+    require(type(feed_exit['exitCode']) is int)
+    require(type(feed_exit['category']) is str and feed_exit['category'] in CATEGORIES | {'ok'})
+    identifier(feed_exit['feedSession'])
+    require(type(feed_exit['sequence']) is int and feed_exit['sequence'] > 0)
+    require(type(assessment) is dict and set(assessment) ==
+            {'status','mode','feedSession','endSequence','evidenceSha256'})
+    require(type(assessment['status']) is str and assessment['status'] in ('PASS','FAIL','INCONCLUSIVE'))
+    require(assessment['mode'] == mode and assessment['feedSession'] == feed_exit['feedSession'])
+    require(type(assessment['endSequence']) is int and assessment['endSequence'] == feed_exit['sequence'])
+    require(sha(assessment['evidenceSha256']))
+
+
+def publish_finish(root, run_id, feed_exit, assessment):
+    """Publish immutable receipts followed by one atomic no-replace marker."""
+    identifier(run_id)
+    private(root, True)
+    folder = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = '.' + str(uuid.uuid4()) + '.finish'
+    try:
+        marker = {'runId':run_id}
+        for name, key, value in [('feed-exit.json','feedExitSha256',feed_exit),
+                                 ('assessment.json','assessmentSha256',assessment)]:
+            raw = encode(value)
+            require(len(raw) <= MAX_REQUEST)
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+            try:
+                os.fchmod(fd, 0o600); write_all(fd, raw); os.fsync(fd)
+            finally: os.close(fd)
+            marker[key] = hashlib.sha256(raw).hexdigest()
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+        try:
+            os.fchmod(fd, 0o600); write_all(fd, encode(marker)); os.fsync(fd)
+        finally: os.close(fd)
+        os.link(temporary, 'finish.ready', src_dir_fd=folder, dst_dir_fd=folder, follow_symlinks=False)
+        os.unlink(temporary, dir_fd=folder)
+        os.fsync(folder)
+    except OSError:
+        raise Refused('storage') from None
+    finally:
+        try: os.unlink(temporary, dir_fd=folder)
+        except FileNotFoundError: pass
+        os.close(folder)
+
+
+def read_finish(root):
+    private(root, True)
+    folder = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(folder)
+        marker = json.loads(read_private(folder, 'finish.ready', MAX_REQUEST, publication_marker=True))
+        require(type(marker) is dict and set(marker) == {'runId','feedExitSha256','assessmentSha256'})
+        identifier(marker['runId'])
+        values = []
+        for name, key in [('feed-exit.json','feedExitSha256'), ('assessment.json','assessmentSha256')]:
+            raw = read_private(folder, name, MAX_REQUEST)
+            require(sha(marker[key]) and hashlib.sha256(raw).hexdigest() == marker[key])
+            values.append(json.loads(raw))
+        return marker['runId'], values[0], values[1]
+    except (OSError, ValueError, UnicodeError):
+        raise Refused('configuration') from None
+    finally: os.close(folder)
+
+
 class Journal:
     def __init__(self, root: Path):
         self.root = Path(root)
@@ -224,12 +310,15 @@ class Journal:
             db.executescript('''CREATE TABLE IF NOT EXISTS run (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), run_id TEXT NOT NULL,
                 mode TEXT NOT NULL, target TEXT NOT NULL, hashes TEXT NOT NULL,
-                state TEXT NOT NULL CHECK(state IN ('active','cancelled','uncertain')),
+                state TEXT NOT NULL CHECK(state IN ('active','finished','cancelled','uncertain')),
                 supervisor TEXT, session TEXT);
                 CREATE TABLE IF NOT EXISTS requests (
                 request_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, nonce TEXT UNIQUE NOT NULL,
                 request TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('dispatching','complete','uncertain')),
-                result TEXT);''')
+                result TEXT);
+                CREATE TABLE IF NOT EXISTS finish_receipts (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                feed_exit TEXT NOT NULL, assessment TEXT NOT NULL);''')
         folder = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(folder)
@@ -286,7 +375,7 @@ class Journal:
             require(request['action'] != 'scaleout-two-to-three' or
                     (run['mode'] == 'disabled-rehearsal' and
                      request['target']['scalingGroupId'] == 'asg-t4necb4dfmu6o3z2rn0g'))
-            require(request['deadlineMonotonic'] > time.monotonic(), 'timeout')
+            require(request['deadlineMonotonic'] > monotonic(), 'timeout')
             require(run['supervisor'] in (None, request['supervisorId']))
             require(run['session'] in (None, request['feedSession']))
             require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None)
@@ -326,3 +415,37 @@ class Journal:
                         runState=run['state'], mode=run['mode'], target=json.loads(run['target']),
                         hashes=json.loads(run['hashes']), request=json.loads(row['request']),
                         result=json.loads(row['result']) if row['result'] else None)
+
+
+    def run_snapshot(self):
+        with self._transaction() as db:
+            run = db.execute('SELECT * FROM run').fetchone()
+            require(run is not None)
+            finish = db.execute('SELECT * FROM finish_receipts').fetchone()
+            return dict(runId=run['run_id'], runState=run['state'], mode=run['mode'],
+                        target=json.loads(run['target']), hashes=json.loads(run['hashes']),
+                        assessment=json.loads(finish['assessment']) if finish else None)
+
+    def finish(self):
+        run_id, feed_exit, assessment = read_finish(self.root)
+        with self._transaction() as db:
+            run = db.execute('SELECT * FROM run').fetchone()
+            require(run is not None and run['state'] == 'active' and run['run_id'] == run_id)
+            validate_finish_receipts(feed_exit, assessment, run['mode'])
+            require(run['session'] in (None, feed_exit['feedSession']))
+            rows = db.execute('SELECT * FROM requests').fetchall()
+            require(all(row['state'] == 'complete' for row in rows), 'incomplete')
+            require(all(json.loads(row['request'])['minimumSequence'] <= feed_exit['sequence'] for row in rows))
+            # Also reject staged/unadmitted requests, including incomplete publications.
+            folder = self.root/'requests'
+            if folder.exists():
+                private(folder, True)
+                expected = {row['request_id'] + suffix for row in rows
+                            for suffix in ('.request.json','.ready')}
+                require({entry.name for entry in folder.iterdir()} == expected, 'incomplete')
+                for row in rows:
+                    require(read_request(self.root, row['request_id']) == json.loads(row['request']))
+            db.execute('INSERT INTO finish_receipts VALUES (1,?,?)',
+                       (encode(feed_exit).decode(), encode(assessment).decode()))
+            db.execute("UPDATE run SET state='finished', session=?", (feed_exit['feedSession'],))
+        return self.run_snapshot()

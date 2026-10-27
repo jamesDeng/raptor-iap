@@ -19,7 +19,7 @@ import time
 import uuid
 
 from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
-    read_private, read_request, write_all)
+    read_private, read_request, write_all, monotonic)
 from pgcat_lane_actions import ActionCatalog, validate_bindings
 import pgcat_workbench_lane as lane
 
@@ -171,7 +171,7 @@ class LaneSupervisor:
         active=list(streams)
         while active or child.poll() is None:
             self._alive()
-            remaining=deadline-time.monotonic(); require(remaining > 0,'timeout')
+            remaining=deadline-monotonic(); require(remaining > 0,'timeout')
             watch=[x.fileno() for x in active]
             if self.liveness_fd is not None: watch.append(self.liveness_fd)
             ready,_,_=select.select(watch,[],[],min(.02,remaining))
@@ -202,9 +202,9 @@ class LaneSupervisor:
                 identity,receipt=self._receipt(req); self._unused(req,receipt)
                 argv,env,budget=ActionCatalog.command(req['action'],self.bindings)
                 deadline=req['deadlineMonotonic']
-                require(0 < deadline-time.monotonic() <= budget,'timeout')
+                require(0 < deadline-monotonic() <= budget,'timeout')
                 if req['action'] == 'scaleout-two-to-three': self._ess(req,receipt)
-                else: deadline=min(deadline,time.monotonic()+receipt['observedAt']+12-time.time())
+                else: deadline=min(deadline,monotonic()+receipt['observedAt']+12-time.time())
                 env.update(PGCAT_LANE_SESSION=req['feedSession'],PGCAT_LANE_MIN_SEQUENCE=str(req['minimumSequence']))
                 self._alive()
                 with self._masked() as old_mask:
@@ -219,22 +219,22 @@ class LaneSupervisor:
                         require(before_cutoff() and time.time()-receipt['observedAt'] < 3.5,'receipt')
                     # Python's restore_signals does not restore a pthread mask.
                     child_mask=set(old_mask)-GRACEFUL
-                    require(time.monotonic() < deadline,'timeout')
+                    require(monotonic() < deadline,'timeout')
                     self.child=subprocess.Popen(argv,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,start_new_session=True,close_fds=True,
                         preexec_fn=lambda:signal.pthread_sigmask(signal.SIG_SETMASK,child_mask))
-                self._alive(); require(time.monotonic() < deadline,'timeout')
+                self._alive(); require(monotonic() < deadline,'timeout')
                 raw=self._communicate(deadline)
                 payload=ActionCatalog.parse(req['action'],raw,req,receipt)
-                self._alive(); require(time.monotonic() < deadline,'timeout')
+                self._alive(); require(monotonic() < deadline,'timeout')
                 if req['action'] != 'scaleout-two-to-three':
                     require(time.time() < receipt['observedAt']+12,'receipt')
                 self._cleanup()
                 with self._masked():
                     self._alive()
-                    require(time.monotonic() < deadline,'timeout')
+                    require(monotonic() < deadline,'timeout')
                     self.journal.seal(request_id,dict(state='complete',category='ok',payload=payload))
-                if time.monotonic() >= deadline:
+                if monotonic() >= deadline:
                     self.cancel('timeout')
                 return self.journal.snapshot(request_id)
             except (Refused,lane.Refused,OSError,ValueError,KeyError,TypeError) as error:
@@ -246,6 +246,12 @@ class LaneSupervisor:
                     self.journal.seal(request_id,dict(state='uncertain',category=category,payload={}))
                 return self.journal.snapshot(request_id)
 
+    def finish(self):
+        require(self.owner_fd is not None and self.child is None, 'incomplete')
+        with self._masked():
+            self._alive()
+            return self.journal.finish()
+
     def serve(self, liveness_fd):
         require(self.owner_fd is not None,'incomplete')
         self.liveness_fd=liveness_fd
@@ -253,6 +259,9 @@ class LaneSupervisor:
             with self._handlers():
                 while True:
                     self._alive()
+                    if os.path.lexists(self.root/'finish.ready'):
+                        self.finish()
+                        return
                     folder=self.root/'requests'
                     if folder.exists():
                         private(folder,True)
@@ -262,7 +271,7 @@ class LaneSupervisor:
                             except Refused: self.run_once(request_id)
                             self._alive()
                     select.select([liveness_fd],[],[],.02)
-        except Refused:
+        except (Refused, OSError, ValueError, TypeError):
             self._cleanup()
             self.cancel(self.cancelled or 'incomplete')
         finally:
