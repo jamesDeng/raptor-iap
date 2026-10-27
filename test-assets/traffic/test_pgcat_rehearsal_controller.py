@@ -29,9 +29,11 @@ class ControllerTests(unittest.TestCase):
         lane = dict(workbenchCli=str(self.cli), aliyunCli=str(self.cli),
             laneWrapper=str(here/'pgcat_workbench_lane.py'), providerFeedPath=str(here/'provider_feed.py'),
             receiptPath=str(self.capture/'status.json'), laneLockPath=str(self.capture/'lane.lock'),
-            laneIntentDir=str(self.capture/'intents'), phaseWorker='/fresh-worker/phase.py',
-            pendingWorker='/fresh-worker/pending.py',
-            pendingProofWorker='/fresh-worker/pending-proof.py', remoteRun='/fresh-worker/run',
+            laneIntentDir=str(self.capture/'intents'),
+            phaseWorker='/fresh-worker/run/pgcat_rehearsal_worker.py',
+            pendingWorker='/fresh-worker/run/pgcat_rehearsal_worker.py',
+            pendingProofWorker='/fresh-worker/run/pgcat_pending_proof_worker.py',
+            workerKubeconfig='/fresh-worker/kubeconfig', remoteRun='/fresh-worker/run',
             contractDir='/fresh-worker/contract', scaleoutIntentPath=str(self.capture/'scaleout.intent'),
             preScaleProofPath=str(self.capture/'proof.json'),
             target=dict(accountId='1360282071200743', regionId='ap-southeast-1',
@@ -39,7 +41,11 @@ class ControllerTests(unittest.TestCase):
                 nlbServerGroupId='sgp-xs5s42tihtl6ja2a67', originalInstanceIds=['original-one','original-two']))
         names = dict(laneWrapper='pgcat_workbench_lane.py', providerFeed='provider_feed.py',
             laneProtocol='pgcat_lane_protocol.py', laneSupervisor='pgcat_lane_supervisor.py',
-            laneActions='pgcat_lane_actions.py',pendingProofWorker='pgcat_pending_proof_worker.py')
+            laneActions='pgcat_lane_actions.py',pendingProofWorker='pgcat_pending_proof_worker.py',
+            rehearsalWorker='pgcat_rehearsal_worker.py',
+            rehearsalContract='pgcat_rehearsal_contract.py',
+            captureWindow='capture_window.py', finishClients='finish_clients.py',
+            workerCapture='worker_capture.py', segmentedCapture='segmented_capture.py')
         lane['sourceHashes'] = {k:hashlib.sha256((here/v).read_bytes()).hexdigest() for k,v in names.items()}
         self.binding = dict(laneBindings=lane, laneRoot=str(self.capture/'lane'), captureRoot=str(self.capture),
             workerInventory='/fresh-worker/run/provider-inventory.json', workerKubeconfig='/fresh-worker/kubeconfig',
@@ -61,6 +67,13 @@ class ControllerTests(unittest.TestCase):
 
     def write_binding(self):
         self.manifest.write_text(json.dumps(self.binding)); self.manifest.chmod(0o600)
+
+    def test_worker_kubeconfig_binding_must_match_feed_binding(self):
+        value=copy.deepcopy(self.binding)
+        value['laneBindings']['workerKubeconfig']='/fresh-worker/other-kubeconfig'
+        self.manifest.write_text(json.dumps(value))
+        with self.assertRaises(Refused):
+            self.module.load_bindings(self.manifest)
 
     def publish(self, session=None, desired=2):
         self.seq += 1
@@ -162,11 +175,14 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(Refused):self.module.load_bindings(self.manifest)
         self.assertEqual(self.events,[])
 
-    def test_historical_worker_run_and_contract_siblings_are_accepted(self):
+    def test_fresh_worker_run_and_contract_siblings_are_accepted(self):
         value=copy.deepcopy(self.binding)
-        root='/root/pgcat-rehearsal-20261026-1945'
+        root='/root/pgcat-fresh-worker'
         value['laneBindings']['remoteRun']=root+'/run'
         value['laneBindings']['contractDir']=root+'/contract'
+        value['laneBindings']['phaseWorker']=root+'/run/pgcat_rehearsal_worker.py'
+        value['laneBindings']['pendingWorker']=root+'/run/pgcat_rehearsal_worker.py'
+        value['laneBindings']['pendingProofWorker']=root+'/run/pgcat_pending_proof_worker.py'
         value['workerInventory']=root+'/run/provider-inventory.json'
         self.manifest.write_text(json.dumps(value))
         self.assertEqual(self.module.load_bindings(self.manifest)['workerInventory'],

@@ -58,15 +58,23 @@ class SupervisorTests(unittest.TestCase):
         self.bindings = dict(workbenchCli=str(self.cli), aliyunCli=str(self.cli), laneWrapper=str(here/'pgcat_workbench_lane.py'),
             providerFeedPath=str(here/'provider_feed.py'), receiptPath=str(self.root/'receipt.json'),
             laneLockPath=str(self.root/'lane.lock'), laneIntentDir=str(self.root/'intents'),
-            phaseWorker='/reviewed/phase.py', pendingWorker='/reviewed/pending.py',
-            pendingProofWorker='/reviewed/pending-proof.py', remoteRun='/reviewed/run',
+            phaseWorker='/reviewed/run/pgcat_rehearsal_worker.py',
+            pendingWorker='/reviewed/run/pgcat_rehearsal_worker.py',
+            pendingProofWorker='/reviewed/run/pgcat_pending_proof_worker.py',
+            workerKubeconfig='/reviewed/kubeconfig', remoteRun='/reviewed/run',
             contractDir='/reviewed/contract', scaleoutIntentPath=str(self.root/'scaleout.intent'),
             preScaleProofPath=str(self.root/'proof.json'), target=self.target)
         (self.root/'intents').mkdir(mode=0o700)
         sources = dict(laneWrapper=here/'pgcat_workbench_lane.py', providerFeed=here/'provider_feed.py',
                        laneProtocol=here/'pgcat_lane_protocol.py', laneSupervisor=here/'pgcat_lane_supervisor.py',
                        laneActions=here/'pgcat_lane_actions.py',
-                       pendingProofWorker=here/'pgcat_pending_proof_worker.py')
+                       pendingProofWorker=here/'pgcat_pending_proof_worker.py',
+                       rehearsalWorker=here/'pgcat_rehearsal_worker.py',
+                       rehearsalContract=here/'pgcat_rehearsal_contract.py',
+                       captureWindow=here/'capture_window.py',
+                       finishClients=here/'finish_clients.py',
+                       workerCapture=here/'worker_capture.py',
+                       segmentedCapture=here/'segmented_capture.py')
         self.hashes = {key:hashlib.sha256(path.read_bytes()).hexdigest() for key,path in sources.items()}
         self.bindings['sourceHashes'] = self.hashes
         self.bundle = hashlib.sha256(encode(self.hashes)).hexdigest()
@@ -195,8 +203,9 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaises(Refused): actions.ActionCatalog.command(action,self.bindings)
         with self.assertRaises(Refused):
             actions.ActionCatalog.command('baseline-status',dict(self.bindings,command='echo unsafe'))
-        args, env, budget = actions.ActionCatalog.command('baseline-status',self.bindings)
-        self.assertIn('python3 /reviewed/phase.py status baseline',args)
+        args, env, budget = actions.ActionCatalog.command('baseline-status',self.bindings,self.run)
+        self.assertIn('python3 /reviewed/run/pgcat_rehearsal_worker.py status baseline',args[-1])
+        self.assertIn(self.run,args[-1])
         self.assertEqual(budget,5.0)
         self.assertNotIn('AWS_SECRET_ACCESS_KEY',env)
 
@@ -402,10 +411,15 @@ class SupervisorTests(unittest.TestCase):
 
     def test_unsafe_remote_path_is_not_shell_fragment(self):
         bindings=dict(self.bindings,phaseWorker='/reviewed/a; touch unsafe')
-        args,_,_=actions.ActionCatalog.command('baseline-status',bindings)
-        self.assertEqual(args[-1],"python3 '/reviewed/a; touch unsafe' status baseline")
         with self.assertRaises(Refused):
-            actions.ActionCatalog.command('baseline-status',dict(self.bindings,phaseWorker='/x/../y'))
+            actions.ActionCatalog.command('baseline-status',bindings,self.run)
+        with self.assertRaises(Refused):
+            actions.ActionCatalog.command('baseline-status',dict(self.bindings,phaseWorker='/x/../y'),self.run)
+
+    def test_transitive_worker_hash_change_refuses_supervisor_source_gate(self):
+        self.owner.bindings['sourceHashes']['captureWindow'] = '0' * 64
+        with self.assertRaises(Refused):
+            self.owner._verify_sources()
 
     def test_sigkill_leaves_incomplete_journal_and_global_record(self):
         request=self.request()

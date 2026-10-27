@@ -154,14 +154,16 @@ class PendingBindingTests(unittest.TestCase):
         bindings=dict(workbenchCli=str(cli),aliyunCli=str(cli),laneWrapper='/fixed/wrapper',
             providerFeedPath='/fixed/feed',receiptPath='/fixed/receipt',
             laneLockPath='/fixed/lock',laneIntentDir='/fixed/intents',
-            phaseWorker='/fixed/phase',pendingWorker='/fixed/pending',
-            pendingProofWorker='/fixed/pending-proof',remoteRun='/fixed/run',
+            phaseWorker='/fixed/run/pgcat_rehearsal_worker.py',
+            pendingWorker='/fixed/run/pgcat_rehearsal_worker.py',
+            pendingProofWorker='/fixed/run/pgcat_pending_proof_worker.py',
+            workerKubeconfig='/fixed/kubeconfig',remoteRun='/fixed/run',
             contractDir='/fixed/contract',scaleoutIntentPath='/fixed/scaleout',
             preScaleProofPath='/fixed/pre-scale',sourceHashes={k:'d'*64 for k in SOURCE_NAMES},
             target=dict(self.target,workerId='i-t4nj1bitmcz7cuoch82h'))
         argv,env,budget=ActionCatalog.command('pending-proof',bindings,self.run)
         self.assertEqual(budget,5.)
-        self.assertIn('/fixed/pending-proof /fixed/contract '+self.run,argv[-1])
+        self.assertIn('/fixed/run/pgcat_pending_proof_worker.py /fixed/contract '+self.run,argv[-1])
         self.assertNotIn('10.0.0.',repr(argv))
         self.assertNotIn('AWS_SECRET_ACCESS_KEY',env)
         with self.assertRaises(Refused):

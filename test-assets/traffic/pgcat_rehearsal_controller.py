@@ -80,7 +80,8 @@ def load_bindings(path):
         require(len(set(local)) == len(local))
         require(all(p.parent == capture and not os.path.lexists(p) for p in local))
         inventory=_absolute(value['workerInventory']); kubeconfig=_absolute(value['workerKubeconfig'])
-        require(inventory != kubeconfig)
+        require(inventory != kubeconfig and
+                b['workerKubeconfig'] == str(kubeconfig))
         remote_run=_absolute(b['remoteRun']); contract=_absolute(b['contractDir'])
         require(remote_run.name == 'run' and contract.name == 'contract' and
                 remote_run.parent == contract.parent and
@@ -89,7 +90,12 @@ def load_bindings(path):
         _hashes(b['sourceHashes'],dict(laneWrapper=Path(b['laneWrapper']),
             providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
             laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py',
-            pendingProofWorker=here/'pgcat_pending_proof_worker.py'))
+            pendingProofWorker=here/'pgcat_pending_proof_worker.py',
+            rehearsalWorker=here/'pgcat_rehearsal_worker.py',
+            rehearsalContract=here/'pgcat_rehearsal_contract.py',
+            captureWindow=here/'capture_window.py',finishClients=here/'finish_clients.py',
+            workerCapture=here/'worker_capture.py',
+            segmentedCapture=here/'segmented_capture.py'))
         _hashes(value['sourceHashes'],dict(controller=here/'pgcat_rehearsal_controller.py',
             client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py'))
         return value
@@ -211,7 +217,13 @@ class Controller:
         _hashes(b['sourceHashes'],dict(laneWrapper=Path(b['laneWrapper']),
             providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
             laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py',
-            pendingProofWorker=here/'pgcat_pending_proof_worker.py'))
+            pendingProofWorker=here/'pgcat_pending_proof_worker.py',
+            rehearsalWorker=here/'pgcat_rehearsal_worker.py',
+            rehearsalContract=here/'pgcat_rehearsal_contract.py',
+            captureWindow=here/'capture_window.py',
+            finishClients=here/'finish_clients.py',
+            workerCapture=here/'worker_capture.py',
+            segmentedCapture=here/'segmented_capture.py'))
         _hashes(value['sourceHashes'],dict(controller=here/'pgcat_rehearsal_controller.py',
             client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py'))
         env={'PATH':_feed_path(b),

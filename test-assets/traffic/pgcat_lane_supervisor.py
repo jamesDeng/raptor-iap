@@ -108,7 +108,12 @@ class LaneSupervisor:
         paths=dict(laneWrapper=Path(b['laneWrapper']),providerFeed=Path(b['providerFeedPath']),
             laneProtocol=here/'pgcat_lane_protocol.py',laneSupervisor=here/'pgcat_lane_supervisor.py',
             laneActions=here/'pgcat_lane_actions.py',
-            pendingProofWorker=here/'pgcat_pending_proof_worker.py')
+            pendingProofWorker=here/'pgcat_pending_proof_worker.py',
+            rehearsalWorker=here/'pgcat_rehearsal_worker.py',
+            rehearsalContract=here/'pgcat_rehearsal_contract.py',
+            captureWindow=here/'capture_window.py',finishClients=here/'finish_clients.py',
+            workerCapture=here/'worker_capture.py',
+            segmentedCapture=here/'segmented_capture.py')
         for name,path in paths.items():
             require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == b['sourceHashes'][name],'source')
         self.bundle=hashlib.sha256(encode(b['sourceHashes'])).hexdigest()
@@ -223,7 +228,7 @@ class LaneSupervisor:
                 if req['action'] == 'pending-proof':
                     require(receipt['desired'] == 3 and time.time()-receipt['observedAt'] < 3.5,'receipt')
                 argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
-                    req['runId'] if req['action'] == 'pending-proof' else None)
+                    self.run_id)
                 deadline=req['deadlineMonotonic']
                 require(0 < deadline-monotonic() <= budget,'timeout')
                 if req['action'] == 'scaleout-two-to-three': self._ess(req,receipt)
