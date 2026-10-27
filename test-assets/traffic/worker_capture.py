@@ -78,6 +78,8 @@ def capture_frame(inventory_path,final_snapshots=None):
     expected=0;deployment_identity=None
     try:
         deployment=kubectl('get','deployment','rdev-test-client-client','-o','json')
+        if not isinstance(deployment,dict) or any(not isinstance(deployment.get(key),dict) for key in ('metadata','status','spec')):
+            raise ValueError('Deployment identity mappings unavailable')
         deployment_identity={'uid':deployment['metadata'].get('uid'),'generation':deployment['metadata'].get('generation'),
                              'observedGeneration':deployment.get('status',{}).get('observedGeneration'),
                              'desired':deployment['spec'].get('replicas'),'ready':deployment.get('status',{}).get('readyReplicas')}

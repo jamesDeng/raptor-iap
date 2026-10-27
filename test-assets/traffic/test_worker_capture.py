@@ -350,11 +350,14 @@ if __name__=='__main__':unittest.main()
 
 
 class LaneIdentityCapture(unittest.TestCase):
-    def capture(self, conditions, deployment_change=None):
+    def capture(self, conditions, deployment_change=None, sql_failure=False):
         import tempfile, json
         from pathlib import Path
         from test_capture_window import transition_frame
         fixture=transition_frame(1)
+        if sql_failure:
+            fixture['pods'][0]['snapshot']['sample'].update(Success=0,Failure=1)
+            fixture['pods'][0]['snapshot']['events'][-1]['outcome']='failure'
         pod={'metadata':{'uid':'pod','name':'client-0','private':'opaque'},
              'status':{'podIP':'10.0.0.1','phase':'Running','conditions':conditions,
                        'containerStatuses':[{'containerID':'containerd://abc'}]}}
@@ -392,3 +395,25 @@ class LaneIdentityCapture(unittest.TestCase):
         self.assertIsNone((got['deployment'] or {}).get('observedGeneration'))
         from capture_window import clean
         self.assertEqual(clean(got)['expectedReplicas'],0)
+
+
+    def test_malformed_deployment_mappings_retain_observed_sql_failure(self):
+        import tempfile, json
+        from pathlib import Path
+        from segmented_capture import SegmentedCapture, assess_manifest
+        for field in ('metadata','status','spec'):
+            for invalid in (None,[], 'opaque', 1):
+                with self.subTest(field=field,invalid=invalid):
+                    got=self.capture([{'type':'Ready','status':'True'}],
+                                     lambda d:d.__setitem__(field,invalid),sql_failure=True)
+                    self.assertIsNone(got['deployment'])
+                    self.assertEqual(got['pods'][0]['snapshot']['sample']['Failure'],1)
+                    with tempfile.TemporaryDirectory() as directory:
+                        writer=SegmentedCapture(Path(directory)/'capture')
+                        writer.append(got)
+                        result=writer.finish(completed=True,cancelled=False,errors=[])
+                        self.assertEqual(result['status'],'FAIL')
+                        self.assertEqual(assess_manifest(Path(directory)/'capture')['status'],'FAIL')
+                        retained=json.loads(next((Path(directory)/'capture').glob('segment-*.jsonl')).read_text())
+                        self.assertEqual(retained['expectedReplicas'],0)
+                        self.assertEqual(retained['pods'][0]['snapshot']['sample']['Failure'],1)
