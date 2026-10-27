@@ -54,7 +54,7 @@
 
 ### Task 3: Worker-local lane-timing verdict
 
-**Files:** Create `test-assets/traffic/pgcat_lane_timing_assessor.py`; test `test-assets/traffic/test_pgcat_lane_timing_assessor.py`; extend `test-assets/traffic/capture_window.py` and its tests with a narrow opt-out for transition completion only, and extend worker result parsing and one-use verdict journal in `pgcat_lane_actions.py` and `pgcat_lane_protocol.py` with focused tests.
+**Files:** Create `test-assets/traffic/pgcat_lane_timing_assessor.py`; test `test-assets/traffic/test_pgcat_lane_timing_assessor.py`; extend `test-assets/traffic/capture_window.py` and its tests with a narrow opt-out for transition completion only, extend worker result parsing and one-use verdict journal in `pgcat_lane_actions.py` and `pgcat_lane_protocol.py`, and add the exact `laneTimingAssessor` source hash to `pgcat_collector_control.py`, `pgcat_lane_supervisor.py`, `pgcat_rehearsal_controller.py` and their fixture tests.
 
 **Interfaces:** `assess_lane_timing(capture_dir, collector_identity, target, run_context, source_hashes) -> dict` independently verifies `completion.json` and every listed segment SHA, calls existing `capture_window.assess(..., require_transition=False)` for the shared SQL/event/continuity rules, then applies the stricter lane-only roster/identity/metrics checks. The new `require_transition` argument defaults to `True`, preserving ordinary behavior; ordinary `assess_manifest` remains untouched. Fixed `lane-verdict` action passes only the bound private paths. The address-free verdict binds run/feed session, target/source, collector identity and capture digests.
 
@@ -66,9 +66,9 @@
 
 **Files:** Modify `test-assets/traffic/provider_feed.py`, `test-assets/traffic/pgcat_rehearsal_controller.py`, `test-assets/traffic/pgcat_lane_supervisor.py`, `test-assets/traffic/pgcat_lane_protocol.py`; tests in their matching `test_*.py` files.
 
-**Interfaces:** The feed checks no-scale exact-two target on every read and a private one-use stop intent after publication/before next read. `Controller.stop_no_scale(verdict_result) -> dict` writes the fsynced intent only after `EXITED`, a sealed verdict and later provider publication, then waits on its exact `Popen` for exit zero and reads the final same-session receipt. An intent during a tick permits at most one more exact-two publication. Natural 180-second timeout alone cannot PASS.
+**Interfaces:** The controller passes a fixed address-free `--no-scale-target` JSON argument only in no-scale mode; the feed requires its SHA-256 to equal sealed `run-context.json.targetSha256` and checks that exact-two target on every read. The private one-use stop intent is the fixed sibling `no-scale-stop.intent` of the receipt under the fresh capture root; it binds run ID, feed session, minimum sequence and verdict SHA, and is checked after publication/before the next read. `Controller.stop_no_scale(verdict_result) -> dict` writes/fsyncs that intent only after `EXITED`, a sealed verdict and later provider publication, then waits on its exact `Popen` for exit zero and reads the final same-session receipt. An intent during a tick permits at most one more exact-two publication. Natural 180-second timeout alone cannot PASS.
 
-- [ ] Add failing fake-clock/feed tests for 22:24 admission, unchanged 15-second interval, exact-two-only publication, one-use stop, in-tick race, no acknowledgement, natural timeout and final receipt age ≥30 seconds.
+- [ ] Add failing fake-clock/feed tests for 22:24 admission, unchanged 15-second interval, target hash mismatch, exact-two-only publication, one-use stop, in-tick race, no acknowledgement, natural timeout and final receipt age ≥30 seconds.
 - [ ] Run RED, implement stop state and controller chronology, then run GREEN normal/optimized and full traffic suite.
 - [ ] Commit scoped files and obtain independent review before Task 5.
 
