@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Validate actual worker evidence and seal one Pending-before-NLB proof.
+"""Validate actual worker evidence for a Pending-before-NLB proof.
 
-The only stdout on success is a fixed address-free summary. All detailed
-readbacks and source paths remain in owner-only worker files. This helper is
-read-only except for its one-use private proof bundle and seal.
+Current historical worker sources lack a sealed run binding and independent
+ECS instance-ID/address evidence. The CLI therefore refuses before publishing
+any proof. Any future staging must pin this file and its transitive imports:
+capture_window.py, finish_clients.py, and worker_capture.py.
 """
 import hashlib
 import ipaddress
@@ -35,16 +36,14 @@ ALLOWED_ASSESSMENT_REASONS = frozenset((
 
 class Refused(Exception):
     """Never carry raw evidence or private paths across the caller boundary."""
+    def __init__(self, category='invalid'):
+        self.category = category
+        super().__init__(category)
 
 
-def require(condition):
+def require(condition, category='invalid'):
     if not condition:
-        raise Refused()
-
-
-def canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(',', ':'),
-                      allow_nan=False).encode('ascii')
+        raise Refused(category)
 
 
 def frame_digest(frame):
@@ -103,7 +102,7 @@ def read_sealed(folder, name):
     seal = decode(read_private(Path(str(path) + '.sha256'), 256))
     digest = hashlib.sha256(raw).hexdigest()
     require(seal == {'sha256': digest})
-    return decode(raw), digest
+    return decode(raw)
 
 
 def text(value):
@@ -134,15 +133,12 @@ def verified_frames(capture_dir):
     private(capture_dir, True)
     files = sorted(capture_dir.glob('segment-*.jsonl'))
     require(1 <= len(files) <= 4)
-    frames, segments, total = [], {}, 0
+    frames, total = [], 0
     for index, path in enumerate(files, 1):
         require(path.name == 'segment-%04d.jsonl' % index)
         raw = read_private(path, MAX_TOTAL)
         total += len(raw)
         require(total <= MAX_TOTAL and raw.endswith(b'\n'))
-        # The collector may append after this bounded read. Retain the exact
-        # prefix length so the captured digest stays verifiable later.
-        segments[path.name] = dict(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
         for line in raw.splitlines(True):
             require(line.endswith(b'\n') and len(line) <= MAX_FRAME)
             frame = decode(line)
@@ -150,7 +146,7 @@ def verified_frames(capture_dir):
             frames.append(frame)
             require(len(frames) <= 5406)
     require(len(frames) >= 3)
-    return frames, segments
+    return frames
 
 
 def exact_targets(cm, baseline, new_id, address, resource_version):
@@ -162,8 +158,10 @@ def exact_targets(cm, baseline, new_id, address, resource_version):
             meta['namespace'] == 'raptor-test' and
             not meta.get('deletionTimestamp') and
             meta.get('resourceVersion') == resource_version and
-            type(resource_version) is str and resource_version.isascii() and
-            resource_version.isdigit() and
+            type(resource_version) is str and
+            re.fullmatch(r'[0-9]{1,32}', resource_version) is not None and
+            type(old_meta['resourceVersion']) is str and
+            re.fullmatch(r'[0-9]{1,32}', old_meta['resourceVersion']) is not None and
             int(resource_version) > int(old_meta['resourceVersion']) > 0)
     require(type(cm['data']) is dict and set(cm['data']) == {'targets.json'})
     targets = json.loads(cm['data']['targets.json'], object_pairs_hook=unique)
@@ -270,33 +268,10 @@ def exact_clients(baseline, frames, current_roster, deployment, pods):
             deployment['status']['observedGeneration'] == expected['generation'] and
             all(deployment['status'][key] == 2 for key in
                 ('replicas', 'updatedReplicas', 'readyReplicas', 'availableReplicas')))
-    return hashlib.sha256(canonical(bound)).hexdigest(), bound
-
-
-def sealed_write(path, value):
-    raw = canonical(value) + b'\n'
-    require(len(raw) <= MAX_FRAME)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                 getattr(os, 'O_NOFOLLOW', 0), 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        while raw:
-            count = os.write(fd, raw)
-            require(count > 0)
-            raw = raw[count:]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    parent = os.open(str(path.parent), os.O_RDONLY)
-    try:
-        os.fsync(parent)
-    finally:
-        os.close(parent)
-    return hashlib.sha256(read_private(path, MAX_FRAME)).hexdigest()
 
 
 def produce(contract_dir, run_id, kubectl=None, live_roster=None, now=None):
-    """Revalidate the private sources; return only a fixed public-safe summary."""
+    """Revalidate private sources; refuse until independent bindings exist."""
     try:
         folder = private(Path(contract_dir), True)
         require(type(run_id) is str and str(uuid.UUID(run_id)) == run_id)
@@ -307,9 +282,9 @@ def produce(contract_dir, run_id, kubectl=None, live_roster=None, now=None):
         roster_reader = finish_clients.live_roster if live_roster is None else live_roster
         require(not (folder / 'pending-proof.bundle.json').exists() and
                 not (folder / 'pending-proof.bundle.json.sha256').exists())
-        baseline, base_digest = read_sealed(folder, 'baseline')
-        pre, pre_digest = read_sealed(folder, 'pre-scale')
-        pending, pending_digest = read_sealed(folder, 'pending-ready')
+        baseline = read_sealed(folder, 'baseline')
+        pre = read_sealed(folder, 'pre-scale')
+        pending = read_sealed(folder, 'pending-ready')
         require(baseline['purpose'] == 'disabled-rehearsal-post-stop' and
                 baseline['mode'] == 'disabled-rehearsal')
         originals = baseline['originals']
@@ -341,7 +316,7 @@ def produce(contract_dir, run_id, kubectl=None, live_roster=None, now=None):
         private(Path(baseline['paths']['boundaryDir']), True)
         inventory_path = private(Path(baseline['inventoryPath']))
         require(not (capture_dir / 'completion.json').exists())
-        frames, segment_prefixes = verified_frames(capture_dir)
+        frames = verified_frames(capture_dir)
         require(frames[0]['at'] == pre['firstAt'] and
                 frame_digest(frames[0]) == pre['firstFrameSha256'] and
                 frame_digest(next(f for f in frames if f['at'] == pre['latestAt'])) ==
@@ -392,6 +367,11 @@ def produce(contract_dir, run_id, kubectl=None, live_roster=None, now=None):
                 timestamp(pending['configMapReadbackAt']))
         complete_metrics(selected, ids + [new_id], timestamp(selected['at']))
         complete_metrics(latest, ids + [new_id], current)
+        readback_at = timestamp(pending['configMapReadbackAt'])
+        require(timestamp(selected['metrics']['sourceAt']) > readback_at and
+                all(timestamp(row['sourceAt']) > readback_at
+                    for row in selected['metrics']['raw'] if row['node'] == new_id),
+                'chronology')
         assessment = capture.assess(frames, completed=False)
         require(assessment['status'] != 'FAIL' and
                 set(assessment['reasons']).issubset(ALLOWED_ASSESSMENT_REASONS) and
@@ -411,30 +391,18 @@ def produce(contract_dir, run_id, kubectl=None, live_roster=None, now=None):
                 os.environ.pop('KUBECONFIG', None)
             else:
                 os.environ['KUBECONFIG'] = old_kube
-        roster_digest, bound_roster = exact_clients(baseline, frames, roster,
-                                                   deployment, pods)
+        exact_clients(baseline, frames, roster, deployment, pods)
         # The provider feed can publish while Kubernetes reads are in flight.
         # A changed publication needs a fresh collector correlation and a new
         # proof attempt; it must not inherit this earlier Pending snapshot.
         require(decode(read_private(inventory_path, MAX_FRAME)) == live_inv)
         fresh(live_inv['observedAt'], clock(), 30)
         fresh(latest['at'], clock(), 3)
-        bundle = dict(version=1, runId=run_id, baseline=baseline, preScale=pre,
-            pendingReady=pending, provider=live_inv, configMap=cm,
-            collectorFrame=latest, collectorSegmentPrefixes=segment_prefixes,
-            liveDeployment=deployment, livePods=pods, liveRoster=bound_roster,
-            sourceDigests=dict(baseline=base_digest, preScale=pre_digest,
-                               pendingReady=pending_digest))
-        bundle_path = folder / 'pending-proof.bundle.json'
-        evidence_sha = sealed_write(bundle_path, bundle)
-        sealed_write(Path(str(bundle_path) + '.sha256'), {'sha256': evidence_sha})
-        source_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-        return dict(runId=run_id, feedSession=session, newId=new_id,
-                    originalInstanceIds=ids, sequence=pending['sequence'],
-                    observedAt=pending['observedAt'],
-                    resourceVersion=pending['configMapResourceVersion'],
-                    clientRosterSha256=roster_digest,
-                    evidenceSha256=evidence_sha, sourceSha256=source_sha)
+        # None of the historical sealed inputs binds a run ID, and the worker
+        # inventory deliberately strips provider ECS privateAddresses. The
+        # ConfigMap and Pending claim can agree on an incorrect address. No
+        # amount of digesting these same sources establishes either fact.
+        raise Refused('source-binding')
     except Refused:
         raise
     except (OSError, ValueError, TypeError, KeyError, IndexError,
@@ -447,9 +415,8 @@ def main():
     try:
         if len(sys.argv) != 3:
             return 2
-        summary = produce(Path(sys.argv[1]), sys.argv[2])
-        sys.stdout.write(canonical(summary).decode('ascii') + '\n')
-        return 0
+        produce(Path(sys.argv[1]), sys.argv[2])
+        return 1  # No current sealed source can authorize a proof publication.
     except Exception:
         # A refusal has no raw diagnostics or address-bearing output.
         return 1

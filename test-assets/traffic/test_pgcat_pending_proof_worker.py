@@ -148,69 +148,62 @@ class PendingProofWorkerTests(unittest.TestCase):
 
     def produce(self):
         return proof.produce(self.contract, self.run, kubectl=self.kubectl,
-                             live_roster=lambda: copy.deepcopy(self.roster), now=lambda: self.now)
+                             live_roster=lambda: copy.deepcopy(self.roster),
+                             now=lambda: self.now)
 
-    def test_produces_private_bundle_and_strict_address_free_summary(self):
-        summary = self.produce()
-        self.assertEqual(set(summary), {'runId', 'feedSession', 'newId',
-            'originalInstanceIds', 'sequence', 'observedAt', 'resourceVersion',
-            'clientRosterSha256', 'evidenceSha256', 'sourceSha256'})
-        self.assertEqual(summary['newId'], 'c')
-        self.assertEqual(summary['sequence'], 4)
-        self.assertEqual(summary['observedAt'], self.frames[3]['inventory']['observedAt'])
-        self.assertNotIn('10.0.0.', json.dumps(summary))
-        bundle = self.contract / 'pending-proof.bundle.json'
-        self.assertEqual(bundle.stat().st_mode & 0o777, 0o600)
-        self.assertIn('10.0.0.3', bundle.read_text())
-        self.assertTrue((self.contract / 'pending-proof.bundle.json.sha256').exists())
-        saved = json.loads(bundle.read_text())
-        prefix = saved['collectorSegmentPrefixes']['segment-0001.jsonl']
-        captured = (self.capture / 'segment-0001.jsonl').read_bytes()
-        self.assertEqual(prefix['size'], len(captured))
-        self.assertEqual(prefix['sha256'], hashlib.sha256(captured).hexdigest())
+    def assert_invalid(self, operation=None):
+        with self.assertRaises(proof.Refused) as caught:
+            (self.produce if operation is None else operation)()
+        self.assertEqual(caught.exception.category, 'invalid')
+
+    def test_complete_legacy_sources_refuse_without_independent_bindings(self):
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+        self.assertFalse((self.contract / 'pending-proof.bundle.json').exists())
+        self.assertFalse((self.contract / 'pending-proof.bundle.json.sha256').exists())
 
     def test_rejects_new_backend_seen_before_pending_binding(self):
         self.frames[2]['inventory']['backendStates'].append(dict(id='c', status='Adding',
             weight=100, listenerHealth='Initial'))
         self._rewrite_frames()
-        with self.assertRaises(proof.Refused):
-            self.produce()
+        self.assert_invalid()
 
     def test_rejects_client_restart_and_incomplete_new_metric(self):
         self.roster[0]['processId'] = 'restarted'
-        with self.assertRaises(proof.Refused):
-            self.produce()
-
-    def test_rejects_live_client_not_ready(self):
-        self.pods[0]['status']['containerStatuses'][0]['ready'] = False
-        with self.assertRaises(proof.Refused):
-            self.produce()
+        self.assert_invalid()
         self.roster[0]['processId'] = 'process'
         self.frames[-1]['metrics']['raw'].pop()
         self._rewrite_frames()
-        with self.assertRaises(proof.Refused):
-            self.produce()
+        self.assert_invalid()
+
+    def test_rejects_live_client_not_ready(self):
+        self.pods[0]['status']['containerStatuses'][0]['ready'] = False
+        self.assert_invalid()
 
     def test_rejects_changed_configmap_and_unsealed_source(self):
         rows = json.loads(self.cm['data']['targets.json'])
         rows[-1]['targets'] = ['10.0.0.9:9930']
         self.cm['data']['targets.json'] = json.dumps(rows)
-        with self.assertRaises(proof.Refused):
-            self.produce()
+        self.assert_invalid()
+        self.cm['data']['targets.json'] = json.dumps([dict(targets=[row['address'] + ':9930'],
+            labels=dict(env='rdev.ali', db_proxy_code='DP00001', target_db_code='D00002',
+                        ecs_instance_id=row['id'])) for row in self.originals +
+                        [dict(id='c', address='10.0.0.3')]])
+        (self.contract / 'pending-ready.json.sha256').unlink()
+        self.assert_invalid()
 
     def test_rejects_original_losing_protection_in_collector_history(self):
         self.frames[2]['inventory']['memberStates'][0]['lifecycle'] = 'InService'
         self._rewrite_frames()
-        with self.assertRaises(proof.Refused):
-            self.produce()
+        self.assert_invalid()
 
     def test_rejects_new_member_before_pre_scale_frame(self):
         self.frames[1]['inventory']['members'].append('c')
         self.frames[1]['inventory']['memberStates'].append(dict(
             id='c', lifecycle='Pending', health='Healthy', addressKnown=True))
         self._rewrite_frames()
-        with self.assertRaises(proof.Refused):
-            self.produce()
+        self.assert_invalid()
 
     def test_rejects_provider_change_during_live_readback(self):
         def racing_kubectl(*args):
@@ -223,12 +216,45 @@ class PendingProofWorkerTests(unittest.TestCase):
                     weight=100, listenerHealth='Initial'))
                 write_private(self.inventory_path, changed)
             return result
-        with self.assertRaises(proof.Refused):
-            proof.produce(self.contract, self.run, kubectl=racing_kubectl,
-                          live_roster=lambda: copy.deepcopy(self.roster),
-                          now=lambda: self.now)
+        self.assert_invalid(lambda: proof.produce(self.contract, self.run,
+            kubectl=racing_kubectl, live_roster=lambda: copy.deepcopy(self.roster),
+            now=lambda: self.now))
 
-    def test_cli_stdout_contains_only_summary_and_refusal_is_silent(self):
+    def test_rejects_raw_scrape_older_than_configmap_readback(self):
+        old = self.pending['configMapReadbackAt'] - 9.1
+        self.frames[3]['metrics']['sourceAt'] = old
+        for row in self.frames[3]['metrics']['raw']:
+            if row['node'] == 'c':
+                row['sourceAt'] = old
+        self.pending['sourceAt'] = old
+        self._rewrite_frames()
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'chronology')
+
+    def test_correlated_wrong_ecs_address_cannot_publish(self):
+        self.pending['address'] = '10.0.0.99'
+        rows = json.loads(self.cm['data']['targets.json'])
+        rows[-1]['targets'] = ['10.0.0.99:9930']
+        self.cm['data']['targets.json'] = json.dumps(rows)
+        self.save()
+        with self.assertRaises(proof.Refused) as caught:
+            self.produce()
+        self.assertEqual(caught.exception.category, 'source-binding')
+        self.assertFalse((self.contract / 'pending-proof.bundle.json').exists())
+
+    def test_caller_run_id_cannot_publish_from_legacy_sources(self):
+        with self.assertRaises(proof.Refused) as caught:
+            proof.produce(self.contract, str(uuid.uuid4()), kubectl=self.kubectl,
+                live_roster=lambda: copy.deepcopy(self.roster), now=lambda: self.now)
+        self.assertEqual(caught.exception.category, 'source-binding')
+
+    def test_resource_version_requires_ascii_decimal(self):
+        self.cm['metadata']['resourceVersion'] = '\u0661\u0661'
+        with self.assertRaises(proof.Refused):
+            proof.exact_targets(self.cm, self.baseline, 'c', '10.0.0.3', '\u0661\u0661')
+
+    def test_cli_refusal_is_address_free_and_silent(self):
         output = io.StringIO()
         with patch.object(proof.sys, 'argv', ['pending-proof', str(self.contract), self.run]), \
                 patch.object(proof.worker_capture, 'kubectl', side_effect=self.kubectl), \
@@ -236,24 +262,8 @@ class PendingProofWorkerTests(unittest.TestCase):
                              side_effect=lambda: copy.deepcopy(self.roster)), \
                 patch.object(proof.time, 'time', return_value=self.now), \
                 contextlib.redirect_stdout(output):
-            self.assertEqual(proof.main(), 0)
-        parsed = json.loads(output.getvalue())
-        self.assertEqual(set(parsed), {'runId', 'feedSession', 'newId',
-            'originalInstanceIds', 'sequence', 'observedAt', 'resourceVersion',
-            'clientRosterSha256', 'evidenceSha256', 'sourceSha256'})
-        self.assertNotIn('10.0.0.', output.getvalue())
-        output = io.StringIO()
-        with patch.object(proof.sys, 'argv', ['pending-proof', str(self.contract), self.run]), \
-                contextlib.redirect_stdout(output):
             self.assertEqual(proof.main(), 1)
         self.assertEqual(output.getvalue(), '')
-        self.cm['data']['targets.json'] = json.dumps([dict(targets=[row['address'] + ':9930'],
-            labels=dict(env='rdev.ali', db_proxy_code='DP00001', target_db_code='D00002',
-                        ecs_instance_id=row['id'])) for row in self.originals +
-                        [dict(id='c', address='10.0.0.3')]])
-        (self.contract / 'pending-ready.json.sha256').unlink()
-        with self.assertRaises(proof.Refused):
-            self.produce()
 
     def _rewrite_frames(self):
         with (self.capture / 'segment-0001.jsonl').open('w') as stream:
