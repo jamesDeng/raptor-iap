@@ -48,7 +48,7 @@ class LaneClient:
             deadline = monotonic()+5.
             while not (root/'supervisor-startup.json').exists():
                 self._active(); require(monotonic() < deadline, 'timeout'); time.sleep(.01)
-            startup = read_json(root/'supervisor-startup.json')
+            startup = read_json(root/'supervisor-startup.json', publication_marker=True)
             require(type(startup) is dict and set(startup) == {'runId','supervisorId'})
             require(startup['runId'] == self.run_id)
             identifier(startup['supervisorId'])
@@ -56,13 +56,23 @@ class LaneClient:
             self._active()
             return self
         except (Refused, OSError, ValueError):
-            self.journal.cancel('incomplete'); self.close()
+            self._cancel_and_close('incomplete')
             if self.process is not None:
                 try: self.process.wait(timeout=2)
                 except subprocess.TimeoutExpired: pass  # Retain record; never infer cleanup.
             raise Refused('incomplete') from None
         finally:
             if reader is not None: os.close(reader)
+
+    def _cancel_and_close(self, category):
+        try:
+            self.journal.cancel(category)
+        except (Refused, OSError):
+            # A failed persistence attempt cannot keep the owner alive. The
+            # original refusal is reported; EOF still stops the supervisor.
+            pass
+        finally:
+            self.close()
 
     def close(self):
         """Disconnect; EOF before committed finish means uncertainty."""
@@ -105,14 +115,14 @@ class LaneClient:
                 time.sleep(.01)
         except (Refused, lane.Refused, OSError, ValueError, KeyError, TypeError) as error:
             category = error.category if isinstance(error, Refused) else 'receipt'
-            self.journal.cancel(category); self.close()
+            self._cancel_and_close(category)
             raise Refused(category) from None
 
     def finish(self, feed_process: subprocess.Popen, feed_exit: dict, assessment: dict) -> dict:
         try:
             self._active()
         except Refused:
-            self.journal.cancel('incomplete'); self.close()
+            self._cancel_and_close('incomplete')
             raise
         require(isinstance(feed_process, subprocess.Popen), 'child')
         exit_code = feed_process.poll()
@@ -132,5 +142,5 @@ class LaneClient:
                 self._active(); require(monotonic() < deadline, 'timeout'); time.sleep(.01)
         except (Refused, OSError, ValueError) as error:
             category = error.category if isinstance(error, Refused) else 'incomplete'
-            self.journal.cancel(category); self.close()
+            self._cancel_and_close(category)
             raise Refused(category) from None

@@ -37,21 +37,31 @@ def before_cutoff():
     return (now.hour,now.minute) < (21,30)
 
 
-def save_once(root, name, value):
+def save_once(root, name, value, atomic=False):
     folder=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    staging='.'+str(uuid.uuid4())+'.startup' if atomic else name
     try:
-        fd=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=folder)
+        fd=os.open(staging,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=folder)
         try:
             os.fchmod(fd,0o600); write_all(fd,encode(value)); os.fsync(fd)
         finally: os.close(fd)
+        if atomic:
+            os.link(staging,name,src_dir_fd=folder,dst_dir_fd=folder,follow_symlinks=False)
+            os.unlink(staging,dir_fd=folder)
         os.fsync(folder)
-    finally: os.close(folder)
+    finally:
+        if atomic:
+            try: os.unlink(staging,dir_fd=folder)
+            except FileNotFoundError: pass
+        os.close(folder)
 
 
-def read_json(path):
+def read_json(path, publication_marker=False):
     path=Path(path); private(path.parent,True)
     folder=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-    try: return json.loads(read_private(folder,path.name,8192).decode('ascii'))
+    try:
+        if publication_marker: os.fsync(folder)
+        return json.loads(read_private(folder,path.name,8192,publication_marker=publication_marker).decode('ascii'))
     finally: os.close(folder)
 
 
@@ -80,7 +90,7 @@ class LaneSupervisor:
                 require(json.loads(run['hashes']) == dict(self.bindings['sourceHashes'],bundleSha256=self.bundle),'source')
                 require(db.execute('SELECT 1 FROM requests').fetchone() is None,'incomplete')
             save_once(GLOBAL_ROOT,'active-run',dict(runId=self.run_id,supervisorId=self.supervisor_id))
-            save_once(self.root,'supervisor-startup.json',dict(runId=self.run_id,supervisorId=self.supervisor_id))
+            save_once(self.root,'supervisor-startup.json',dict(runId=self.run_id,supervisorId=self.supervisor_id),atomic=True)
         except (OSError,Refused):
             self.close()
             raise Refused('incomplete') from None
@@ -248,9 +258,20 @@ class LaneSupervisor:
 
     def finish(self):
         require(self.owner_fd is not None and self.child is None, 'incomplete')
+        # This callback runs inside the finish transaction immediately before
+        # COMMIT. It must not attempt a nested journal write on detecting EOF.
+        def before_commit():
+            require(self.cancelled is None, 'cancelled')
+            if self.liveness_fd is not None:
+                require(not select.select([self.liveness_fd],[],[],0)[0], 'incomplete')
         with self._masked():
-            self._alive()
-            return self.journal.finish()
+            try:
+                self._alive()
+                return self.journal.finish(before_commit=before_commit)
+            except Refused as error:
+                # The finish transaction has rolled back before cancellation.
+                self.cancel(error.category)
+                raise
 
     def serve(self, liveness_fd):
         require(self.owner_fd is not None,'incomplete')

@@ -95,6 +95,59 @@ class SupervisorTests(unittest.TestCase):
         self.owner.run_once(req['requestId'])
         return self.journal.snapshot(req['requestId'])
 
+    def publish_normal_finish(self):
+        from pgcat_lane_protocol import publish_finish
+        publish_finish(self.root, self.run,
+            dict(pid=123, exitCode=0, category='ok', feedSession=self.session, sequence=1),
+            dict(status='INCONCLUSIVE', mode='disabled-rehearsal', feedSession=self.session,
+                 endSequence=1, evidenceSha256='e'*64))
+
+    def test_eof_during_finish_receipt_validation_refuses_commit(self):
+        import pgcat_lane_protocol as protocol
+        self.publish_normal_finish()
+        reader, writer = os.pipe(); self.owner.liveness_fd = reader
+        original = protocol.validate_finish_receipts
+        def validate(*args):
+            original(*args)
+            os.close(writer)
+        try:
+            with patch.object(protocol, 'validate_finish_receipts', validate):
+                with self.assertRaises(Refused): self.owner.finish()
+            self.assertEqual(self.journal.run_snapshot()['runState'], 'uncertain')
+            with self.journal._connection() as db:
+                self.assertIsNone(db.execute('SELECT * FROM finish_receipts').fetchone())
+        finally: os.close(reader); self.owner.liveness_fd = None
+
+    def test_eof_while_finish_waits_for_transaction_refuses_commit(self):
+        import sqlite3
+        import threading
+        import pgcat_lane_protocol as protocol
+        self.publish_normal_finish()
+        reader, writer = os.pipe(); self.owner.liveness_fd = reader
+        locked = threading.Event(); validation_done = threading.Event()
+        def locker():
+            db = sqlite3.connect(str(self.journal.path), isolation_level=None)
+            try:
+                db.execute('BEGIN IMMEDIATE'); locked.set()
+                validation_done.wait(2)
+                time.sleep(.05)  # Finish is now waiting for this writer transaction.
+                os.close(writer)
+                db.execute('ROLLBACK')
+            finally: db.close()
+        thread = threading.Thread(target=locker); thread.start(); locked.wait(2)
+        original = protocol.read_finish
+        def read(*args):
+            result = original(*args); validation_done.set(); return result
+        try:
+            with patch.object(protocol, 'read_finish', read):
+                with self.assertRaises(Refused): self.owner.finish()
+            self.assertEqual(self.journal.run_snapshot()['runState'], 'uncertain')
+            with self.journal._connection() as db:
+                self.assertIsNone(db.execute('SELECT * FROM finish_receipts').fetchone())
+        finally:
+            validation_done.set(); thread.join(3)
+            os.close(reader); self.owner.liveness_fd = None
+
     def test_finish_refuses_adopted_child(self):
         self.owner.child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'])
         try:

@@ -52,6 +52,73 @@ class ClientTests(unittest.TestCase):
                           endSequence=1, evidenceSha256='e'*64)
         return feed, exit_receipt, assessment
 
+    def test_cancel_storage_failure_still_closes_pipe(self):
+        with patch.object(self.client.journal, 'cancel', side_effect=Refused('storage')):
+            with self.assertRaises(Refused):
+                self.client.call('baseline-status', {}, monotonic()+4.)
+        self.assertIsNone(self.client.liveness_fd)
+        self.client.process.wait(timeout=3)
+
+    def test_finish_cancel_storage_failure_still_closes_pipe(self):
+        receipts = self.receipts()
+        self.client.process.kill(); self.client.process.wait()
+        with patch.object(self.client.journal, 'cancel', side_effect=Refused('storage')):
+            with self.assertRaises(Refused): self.client.finish(*receipts)
+        self.assertIsNone(self.client.liveness_fd)
+
+    def test_finish_publish_storage_failure_still_closes_pipe(self):
+        receipts = self.receipts()
+        with patch.object(client_module, 'publish_finish', side_effect=Refused('storage')), \
+                patch.object(self.client.journal, 'cancel', side_effect=Refused('storage')):
+            with self.assertRaises(Refused): self.client.finish(*receipts)
+        self.assertIsNone(self.client.liveness_fd)
+        self.client.process.wait(timeout=3)
+
+    def test_startup_receipt_is_not_visible_before_write(self):
+        self.client.finish(*self.receipts()); self.client.process.wait(timeout=3)
+        (self.global_dir/'active-run').unlink()  # Exact fake run, isolated test only.
+        real_spawn = subprocess.Popen
+        children = []
+        def spawn(argv, **kwargs):
+            bootstrap = ("import runpy,sys,time,os; from pathlib import Path; "
+                "sys.path.insert(0,str(Path(sys.argv[1]).parent)); "
+                "import pgcat_lane_supervisor as s; s.GLOBAL_ROOT=Path("+repr(str(self.global_dir))+"); "
+                "original=s.write_all; "
+                "s.write_all=lambda fd,raw:(time.sleep(.15),original(fd,raw))[1] "
+                "if b'supervisorId' in raw else original(fd,raw); "
+                "p=sys.argv[1]; sys.argv=sys.argv[1:]; runpy.run_path(p,run_name='__main__')")
+            child = real_spawn([sys.executable,'-c',bootstrap]+argv[1:], **kwargs)
+            children.append(child)
+            return child
+        try:
+            with patch.object(client_module.subprocess, 'Popen', spawn):
+                new_client = LaneClient.start(self.bindings, 'disabled-rehearsal', self.base/'slow-start')
+            self.assertEqual(new_client.journal.run_snapshot()['runState'], 'active')
+            new_client.close()
+        finally:
+            for child in children:
+                try: child.wait(timeout=3)
+                except subprocess.TimeoutExpired: child.kill(); child.wait()
+
+    def test_start_failure_cancel_storage_failure_closes_pipe(self):
+        readers = []
+        real_pipe = os.pipe
+        def pipe():
+            reader, writer = real_pipe()
+            readers.append(os.dup(reader))
+            return reader, writer
+        try:
+            with patch.object(client_module.os, 'pipe', pipe), \
+                    patch.object(client_module.subprocess, 'Popen', side_effect=OSError()), \
+                    patch.object(client_module.Journal, 'cancel', side_effect=Refused('storage')):
+                with self.assertRaises(Refused):
+                    LaneClient.start(self.bindings, 'disabled-rehearsal', self.base/'failed-start')
+            import select
+            self.assertTrue(select.select(readers, [], [], 0)[0])
+            self.assertEqual(os.read(readers[0], 1), b'')
+        finally:
+            for fd in readers: os.close(fd)
+
     def test_private_startup_and_exact_committed_result(self):
         self.assertFalse(os.get_inheritable(self.client.liveness_fd))
         self.assertEqual(os.getsid(self.client.process.pid), self.client.process.pid)

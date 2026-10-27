@@ -340,11 +340,12 @@ class Journal:
             db.close()
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self, before_commit=None):
         with self._connection() as db:
             db.execute('BEGIN IMMEDIATE')
             try:
                 yield db
+                if before_commit is not None: before_commit()
                 db.execute('COMMIT')
             except BaseException:
                 if db.in_transaction:
@@ -426,9 +427,9 @@ class Journal:
                         target=json.loads(run['target']), hashes=json.loads(run['hashes']),
                         assessment=json.loads(finish['assessment']) if finish else None)
 
-    def finish(self):
+    def finish(self, before_commit=None):
         run_id, feed_exit, assessment = read_finish(self.root)
-        with self._transaction() as db:
+        with self._transaction(before_commit=before_commit) as db:
             run = db.execute('SELECT * FROM run').fetchone()
             require(run is not None and run['state'] == 'active' and run['run_id'] == run_id)
             validate_finish_receipts(feed_exit, assessment, run['mode'])
