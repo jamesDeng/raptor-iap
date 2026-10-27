@@ -425,15 +425,11 @@ replacement, use the reviewed one-use worker control for finish while the feed
 is active and check its latest successful publication afterward. The continuity
 no-scale long check and disabled 2→3→2 rehearsal follow the explicit post-stop
 validation-then-finish sequence above.
-Start the provider feed on the Mac from this repository (placeholders must be
-resolved and authorized, not pasted literally):
-
-```sh
-python3 test-assets/traffic/provider_feed.py \
-  --workbench /absolute/project-root/working/tools/workbench/workbench \
-  --worker-inventory /root/PRIVATE_RUN/provider-inventory.json \
-  --kubeconfig /root/PRIVATE_RUN/kubeconfig --interval 15 --max-seconds 5400
-```
+The earlier direct provider-feed command is retired. The guarded controller
+starts the feed only after its supervisor creates `laneRoot/run-context.json`
+from the active journal and startup identity. The feed requires that fixed
+context path and the reviewed worker `contractDir` before any worker call.
+Direct invocations without this binding refuse at startup.
 
 This reads authoritative ESS/ECS/NLB scope and listener health, atomically publishes
 inventory and reconciles only the existing `raptor-test/pgcat-provider-inventory`
@@ -900,6 +896,16 @@ of that new root. All worker paths are explicit fresh reviewed bindings;
 local validation does not establish remote freshness or staging correctness.
 Never reuse retired scratch paths, copy credentials into the manifest, or put
 this private manifest in Git.
+
+The reviewed worker layout has sibling `run` and `contract` directories under
+one private run root. `workerInventory` is exactly `run/provider-inventory.json`;
+the private provider source is `contract/provider-source`, outside the retained
+capture tree. Each sequence writes an immutable ECS address sidecar there before
+publishing the unchanged address-free inventory in the same remote write call.
+The local success receipt follows both writes. A sidecar left by a failed local
+receipt publication is unacknowledged and does not clear Pending proof. The
+Pending consumer and retired producer still need their separate source review;
+this local change supplies no live clearance.
 
 `start_no_scale()` starts one `LaneClient` in immutable `no-scale` mode before
 one detached provider feed (`disabled-rehearsal`, 15-second interval, 75-second

@@ -2,6 +2,10 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
+import hashlib
+import json
+import os
+import uuid
 from datetime import datetime, timezone
 
 spec = importlib.util.spec_from_file_location('feed', pathlib.Path(__file__).with_name('provider_feed.py'))
@@ -10,6 +14,126 @@ if pathlib.Path(spec.origin).exists():
     spec.loader.exec_module(feed)
 
 class FeedTests(unittest.TestCase):
+    def test_private_publication_is_immutable_and_precedes_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory)); root.chmod(0o700)
+            contract=root/'contract'; contract.mkdir(mode=0o700)
+            run=root/'run'; run.mkdir(mode=0o700)
+            inventory=run/'provider-inventory.json'
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            session=str(uuid.uuid4())
+            raw=json.dumps(dict(schemaVersion=2,feedSession=session,sequence=1,
+                observedAt=123.0,members=['i-one']),separators=(',',':')).encode('ascii')
+            feed.write_private_publication(str(contract),context,session,1,123.0,
+                {'i-one':'10.0.0.1','i-two':'10.0.0.2'},str(inventory),raw)
+            private=contract/'provider-source'
+            self.assertEqual(private.stat().st_mode & 0o777,0o700)
+            sidecar=private/'000001.json'
+            self.assertEqual(sidecar.stat().st_mode & 0o777,0o600)
+            self.assertEqual(json.loads(sidecar.read_text()),dict(schemaVersion=1,runId=context['runId'],
+                supervisorId=context['supervisorId'],contextNonce=context['nonce'],
+                targetSha256=context['targetSha256'],bundleSha256=context['bundleSha256'],
+                feedSession=session,sequence=1,observedAt=123.0,
+                inventorySha256=hashlib.sha256(raw).hexdigest(),
+                privateAddresses={'i-one':'10.0.0.1','i-two':'10.0.0.2'}))
+            self.assertEqual(inventory.read_bytes(),raw)
+            inventory.unlink()
+            with self.assertRaises(ValueError):
+                feed.write_private_publication(str(contract),context,session,1,123.0,
+                    {'i-one':'10.0.0.1','i-two':'10.0.0.2'},str(inventory),raw)
+            self.assertFalse(inventory.exists())
+
+    def test_bound_feed_single_remote_write_keeps_unacknowledged_worker_files(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory)); root.chmod(0o700)
+            contract=root/'contract'; contract.mkdir(mode=0o700)
+            run=root/'run'; run.mkdir(mode=0o700)
+            inventory=run/'provider-inventory.json'; receipt=root/'status.json'
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            args=SimpleNamespace(mode='disabled-rehearsal',status_file=str(receipt),
+                run_context=str(root/'run-context.json'),contract_dir=str(contract),
+                worker_inventory=str(inventory))
+            validation=patch.object(feed,'validate_run_context',return_value=context)
+            validation.start();self.addCleanup(validation.stop)
+            op=feed.Operator(args)
+            calls=[]
+            def remote(script,*arguments):
+                calls.append((script,arguments))
+                return subprocess.run(['python3','-c',script,*arguments],check=True,
+                    capture_output=True,text=True).stdout
+            op.remote=remote; op.update_targets=lambda targets:None
+            with patch.object(feed,'write_status_receipt',side_effect=OSError('local failure')):
+                with self.assertRaises(feed.FeedStop) as error:
+                    op.write(self.take(self.fixture()))
+            self.assertEqual(error.exception.stage,'status-write')
+            self.assertEqual(len(calls),1)
+            import ast
+            ast.parse(calls[0][0],feature_version=(3,6))
+            self.assertTrue(inventory.exists())
+            self.assertTrue((contract/'provider-source'/'000001.json').exists())
+            self.assertFalse(receipt.exists())
+            with self.assertRaises(feed.FeedStop):op.write(self.take(self.fixture()))
+            self.assertEqual(len(calls),1)
+
+    def test_inactive_supervisor_before_publication_prevents_worker_call(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory));root.chmod(0o700)
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            args=SimpleNamespace(mode='disabled-rehearsal',status_file=str(root/'status.json'),
+                run_context=str(root/'run-context.json'),contract_dir=str(root/'contract'),
+                worker_inventory=str(root/'run'/'provider-inventory.json'))
+            with patch.object(feed,'validate_run_context',side_effect=[context,ValueError('inactive')]):
+                op=feed.Operator(args)
+                calls=[];op.remote=lambda *parts:calls.append(parts)
+                op.update_targets=lambda *parts:calls.append(parts)
+                with self.assertRaises(feed.FeedStop):op.write(self.take(self.fixture()))
+            self.assertEqual(calls,[])
+            self.assertFalse((root/'status.json').exists())
+
+    def test_partial_prior_inventory_refuses_next_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory)); root.chmod(0o700)
+            contract=root/'contract';contract.mkdir(mode=0o700)
+            run=root/'run'; run.mkdir(mode=0o700)
+            inventory=run/'provider-inventory.json'; session=str(uuid.uuid4())
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            def raw(sequence):
+                return json.dumps(dict(schemaVersion=2,feedSession=session,sequence=sequence,
+                    observedAt=float(sequence)),separators=(',',':')).encode('ascii')
+            addresses={'i-one':'10.0.0.1','i-two':'10.0.0.2'}
+            feed.write_private_publication(str(contract),context,session,1,1.0,
+                addresses,str(inventory),raw(1))
+            inventory.unlink()
+            with self.assertRaises(ValueError):
+                feed.write_private_publication(str(contract),context,session,2,2.0,
+                    addresses,str(inventory),raw(2))
+            self.assertFalse((contract/'provider-source'/'000002.json').exists())
+
+    def test_private_publication_rejects_symlinked_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory));root.chmod(0o700)
+            actual=root/'actual';actual.mkdir(mode=0o700)
+            (actual/'contract').mkdir(mode=0o700)
+            (actual/'run').mkdir(mode=0o700)
+            alias=root/'alias';alias.symlink_to(actual,target_is_directory=True)
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            session=str(uuid.uuid4())
+            raw=json.dumps(dict(feedSession=session,sequence=1,observedAt=1.0)).encode('ascii')
+            with self.assertRaises(ValueError):
+                feed.write_private_publication(str(alias/'contract'),context,session,1,1.0,
+                    {'a':'10.0.0.1','b':'10.0.0.2'},str(alias/'run'/'provider-inventory.json'),raw)
+            self.assertFalse((actual/'contract'/'provider-source').exists())
+
     def fixture(self, count=2):
         ids = ['i-'+str(n) for n in range(count)]
         pages = [{'TotalCount':count,'PageNumber':n+1,'ScalingInstances':{'ScalingInstance':[{'InstanceId':node,'ScalingGroupId':'asg','LifecycleState':'Protected','HealthStatus':'Healthy'}]}} for n,node in enumerate(ids)]
@@ -156,11 +280,13 @@ class FeedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=pathlib.Path(directory)/'status.json'
             argv=['provider_feed.py','--status-file',str(path),'--workbench','offline',
-                  '--worker-inventory','/private/inventory','--kubeconfig','/private/kubeconfig']
+                  '--worker-inventory','/private/run/provider-inventory.json','--kubeconfig','/private/kubeconfig',
+                  '--run-context',str(path.parent/'run-context.json'),'--contract-dir','/private/contract']
             def once(read,write,**kwargs):write(self.take(self.fixture()))
             with patch.object(sys,'argv',argv),patch.object(feed.Operator,'existing_targets',return_value=()), \
                     patch.object(feed.Operator,'update_targets'),patch.object(feed.Operator,'atomic_worker_write'), \
-                    patch.object(feed,'run_loop',side_effect=once):
+                    patch.object(feed,'run_loop',side_effect=once), \
+                    patch.object(feed,'validate_run_context',return_value={}):
                 feed.main()
             self.assertEqual(json.loads(path.read_text())['sequence'],1)
 
@@ -466,11 +592,15 @@ class FeedTests(unittest.TestCase):
         import sys
         from unittest.mock import patch
         output=io.StringIO()
-        argv=['provider_feed.py','--interval','16','--workbench','/private/workbench',
-              '--worker-inventory','/private/inventory','--kubeconfig','/private/kubeconfig']
-        with patch.object(sys,'argv',argv), patch.object(feed.Operator,'existing_targets',return_value=()), \
-                contextlib.redirect_stderr(output), self.assertRaises(SystemExit):
-            feed.main()
+        with tempfile.TemporaryDirectory() as directory:
+            argv=['provider_feed.py','--interval','16','--workbench','/private/workbench',
+                  '--worker-inventory','/private/run/provider-inventory.json','--kubeconfig','/private/kubeconfig',
+                  '--run-context','/private/lane/run-context.json','--contract-dir','/private/contract',
+                  '--status-file',str(pathlib.Path(directory)/'status.json')]
+            with patch.object(sys,'argv',argv), patch.object(feed.Operator,'existing_targets',return_value=()), \
+                    patch.object(feed,'validate_run_context',return_value={}), \
+                    contextlib.redirect_stderr(output), self.assertRaises(SystemExit):
+                feed.main()
         self.assertIn('stopped at loop',output.getvalue())
         self.assertNotIn('targets-read',output.getvalue())
 

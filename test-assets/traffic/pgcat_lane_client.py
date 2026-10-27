@@ -49,9 +49,10 @@ class LaneClient:
             while not (root/'supervisor-startup.json').exists():
                 self._active(); require(monotonic() < deadline, 'timeout'); time.sleep(.01)
             startup = read_json(root/'supervisor-startup.json', publication_marker=True)
-            require(type(startup) is dict and set(startup) == {'runId','supervisorId'})
+            require(type(startup) is dict and set(startup) == {'runId','supervisorId','contextNonce'})
             require(startup['runId'] == self.run_id)
             identifier(startup['supervisorId'])
+            identifier(startup['contextNonce'])
             self.supervisor_id = startup['supervisorId']
             self._active()
             return self

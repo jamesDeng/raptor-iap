@@ -121,6 +121,37 @@ class SupervisorTests(unittest.TestCase):
                 self.assertIsNone(db.execute('SELECT * FROM finish_receipts').fetchone())
         finally: os.close(reader); self.owner.liveness_fd = None
 
+    def test_supervisor_creates_exclusive_context_bound_to_active_journal(self):
+        import provider_feed as feed
+        path = self.root/'run-context.json'
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        context = feed.validate_run_context(self.root, path)
+        self.assertEqual(context['runId'], self.run)
+        self.assertEqual(context['supervisorId'], self.owner.supervisor_id)
+        self.assertEqual(context['bundleSha256'], self.bundle)
+        self.assertEqual(context['targetSha256'], hashlib.sha256(encode(self.target)).hexdigest())
+        self.assertEqual(set(context), {'schemaVersion','runId','supervisorId','targetSha256','bundleSha256','nonce'})
+        copied = self.root/'other-context.json'
+        copied.write_bytes(path.read_bytes()); copied.chmod(0o600)
+        with self.assertRaises(ValueError): feed.validate_run_context(self.root, copied)
+        path.write_bytes(encode(dict(context, nonce=str(uuid.uuid4()))))
+        with self.assertRaises(ValueError): feed.validate_run_context(self.root, path)
+
+    def test_context_rejects_duplicate_global_active_record(self):
+        import provider_feed as feed
+        path=self.global_dir/'active-run'
+        path.write_text('{"runId":"'+self.run+'","runId":"'+self.run+'","supervisorId":"'+self.owner.supervisor_id+'","laneRoot":"'+str(self.root)+'"}')
+        with self.assertRaises(ValueError):
+            feed.validate_run_context(self.root,self.root/'run-context.json')
+
+    def test_cloned_same_shaped_run_root_is_not_active_owner(self):
+        import provider_feed as feed
+        clone=self.base/'clone';clone.mkdir(mode=0o700)
+        for name in ('journal.sqlite3','run-context.json','supervisor-startup.json'):
+            target=clone/name;target.write_bytes((self.root/name).read_bytes());target.chmod(0o600)
+        with self.assertRaises(ValueError):
+            feed.validate_run_context(clone,clone/'run-context.json')
+
     def test_eof_while_finish_waits_for_transaction_refuses_commit(self):
         import sqlite3
         import threading

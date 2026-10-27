@@ -42,7 +42,7 @@ class ControllerTests(unittest.TestCase):
             laneActions='pgcat_lane_actions.py',pendingProofWorker='pgcat_pending_proof_worker.py')
         lane['sourceHashes'] = {k:hashlib.sha256((here/v).read_bytes()).hexdigest() for k,v in names.items()}
         self.binding = dict(laneBindings=lane, laneRoot=str(self.capture/'lane'), captureRoot=str(self.capture),
-            workerInventory='/fresh-worker/inventory.json', workerKubeconfig='/fresh-worker/kubeconfig',
+            workerInventory='/fresh-worker/run/provider-inventory.json', workerKubeconfig='/fresh-worker/kubeconfig',
             sourceHashes={k:hashlib.sha256((here/v).read_bytes()).hexdigest() for k,v in
                 dict(controller='pgcat_rehearsal_controller.py',client='pgcat_lane_client.py',runner='pgcat_lane_runner.py').items()})
         self.write_binding()
@@ -123,6 +123,20 @@ class ControllerTests(unittest.TestCase):
                 with self.assertRaises(Refused): self.controller().start_no_scale()
                 self.assertEqual(self.events,[])
 
+    def test_feed_source_change_during_supervisor_start_refuses_feed_launch(self):
+        source=Path(self.binding['laneBindings']['providerFeedPath'])
+        staged=self.base/'provider-feed.py'; staged.write_bytes(source.read_bytes())
+        self.binding['laneBindings']['providerFeedPath']=str(staged)
+        self.binding['laneBindings']['sourceHashes']['providerFeed']=hashlib.sha256(staged.read_bytes()).hexdigest()
+        self.write_binding()
+        def change(bindings,mode,root):
+            client=self.start_client(bindings,mode,root)
+            staged.write_bytes(staged.read_bytes()+b'\n# changed after supervisor startup\n')
+            return client
+        with patch.object(self.module.LaneClient,'start',side_effect=change):
+            with self.assertRaises(Refused):self.controller().start_no_scale()
+        self.assertEqual(self.spawn.call_count,0)
+
     def test_feed_cli_and_provider_target_cannot_differ_from_bindings(self):
         for change in ('cli','nlb'):
             with self.subTest(change=change):
@@ -141,6 +155,23 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(Refused): self.module.load_bindings(self.manifest)
         self.assertEqual(self.events,[])
 
+    def test_contract_source_cannot_be_placed_in_renamed_capture_tree(self):
+        value=copy.deepcopy(self.binding)
+        value['laneBindings']['contractDir']=value['laneBindings']['remoteRun']+'/retained-evidence'
+        self.manifest.write_text(json.dumps(value))
+        with self.assertRaises(Refused):self.module.load_bindings(self.manifest)
+        self.assertEqual(self.events,[])
+
+    def test_historical_worker_run_and_contract_siblings_are_accepted(self):
+        value=copy.deepcopy(self.binding)
+        root='/root/pgcat-rehearsal-20261026-1945'
+        value['laneBindings']['remoteRun']=root+'/run'
+        value['laneBindings']['contractDir']=root+'/contract'
+        value['workerInventory']=root+'/run/provider-inventory.json'
+        self.manifest.write_text(json.dumps(value))
+        self.assertEqual(self.module.load_bindings(self.manifest)['workerInventory'],
+                         root+'/run/provider-inventory.json')
+
     def test_feed_cli_symlink_refuses(self):
         self.cli.rename(self.base/'cli-target'); self.cli.symlink_to(self.base/'cli-target')
         with self.assertRaises(Refused): self.module.load_bindings(self.manifest)
@@ -152,6 +183,10 @@ class ControllerTests(unittest.TestCase):
         args,options=self.events[1][1:]
         for flag,want in [('--max-seconds','75'),('--interval','15'),('--mode','disabled-rehearsal')]:
             self.assertEqual(args[args.index(flag)+1],want)
+        self.assertEqual(args[args.index('--run-context')+1],
+                         str(Path(self.binding['laneRoot'])/'run-context.json'))
+        self.assertEqual(args[args.index('--contract-dir')+1],
+                         self.binding['laneBindings']['contractDir'])
         self.assertTrue(options['start_new_session']); self.assertTrue(options['close_fds'])
         self.assertEqual(options['env']['PGCAT_LANE_ROLE'],'provider')
         calls=[e for e in self.events if e[0]=='call']

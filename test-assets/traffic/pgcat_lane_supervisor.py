@@ -89,8 +89,15 @@ class LaneSupervisor:
                 require(json.loads(run['target']) == self.bindings['target'],'target')
                 require(json.loads(run['hashes']) == dict(self.bindings['sourceHashes'],bundleSha256=self.bundle),'source')
                 require(db.execute('SELECT 1 FROM requests').fetchone() is None,'incomplete')
-            save_once(GLOBAL_ROOT,'active-run',dict(runId=self.run_id,supervisorId=self.supervisor_id))
-            save_once(self.root,'supervisor-startup.json',dict(runId=self.run_id,supervisorId=self.supervisor_id),atomic=True)
+            nonce=str(uuid.uuid4())
+            context=dict(schemaVersion=1,runId=self.run_id,supervisorId=self.supervisor_id,
+                targetSha256=hashlib.sha256(encode(self.bindings['target'])).hexdigest(),
+                bundleSha256=self.bundle,nonce=nonce)
+            save_once(self.root,'run-context.json',context)
+            save_once(GLOBAL_ROOT,'active-run',dict(runId=self.run_id,
+                supervisorId=self.supervisor_id,laneRoot=str(self.root)))
+            save_once(self.root,'supervisor-startup.json',
+                dict(runId=self.run_id,supervisorId=self.supervisor_id,contextNonce=nonce),atomic=True)
         except (OSError,Refused):
             self.close()
             raise Refused('incomplete') from None

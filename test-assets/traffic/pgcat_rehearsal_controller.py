@@ -81,6 +81,10 @@ def load_bindings(path):
         require(all(p.parent == capture and not os.path.lexists(p) for p in local))
         inventory=_absolute(value['workerInventory']); kubeconfig=_absolute(value['workerKubeconfig'])
         require(inventory != kubeconfig)
+        remote_run=_absolute(b['remoteRun']); contract=_absolute(b['contractDir'])
+        require(remote_run.name == 'run' and contract.name == 'contract' and
+                remote_run.parent == contract.parent and
+                inventory.parent == remote_run and inventory.name == 'provider-inventory.json')
         here=Path(__file__).resolve().parent
         _hashes(b['sourceHashes'],dict(laneWrapper=Path(b['laneWrapper']),
             providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
@@ -203,6 +207,13 @@ class Controller:
         Path(value['captureRoot']).mkdir(mode=0o700)
         Path(b['laneIntentDir']).mkdir(mode=0o700)
         self.client=LaneClient.start(copy.deepcopy(b),mode,Path(value['laneRoot']))
+        here=Path(__file__).resolve().parent
+        _hashes(b['sourceHashes'],dict(laneWrapper=Path(b['laneWrapper']),
+            providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
+            laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py',
+            pendingProofWorker=here/'pgcat_pending_proof_worker.py'))
+        _hashes(value['sourceHashes'],dict(controller=here/'pgcat_rehearsal_controller.py',
+            client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py'))
         env={'PATH':_feed_path(b),
              'HOME':os.path.expanduser('~'),'LANG':'C','LC_ALL':'C'}
         for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY',
@@ -221,7 +232,9 @@ class Controller:
         self.feed=subprocess.Popen([sys.executable,'-u',b['providerFeedPath'],
             '--mode','disabled-rehearsal','--interval','15','--max-seconds',str(max_seconds),
             '--workbench',b['laneWrapper'],'--worker-inventory',value['workerInventory'],
-            '--kubeconfig',value['workerKubeconfig'],'--status-file',b['receiptPath']],
+            '--kubeconfig',value['workerKubeconfig'],'--status-file',b['receiptPath'],
+            '--run-context',str(Path(value['laneRoot'])/'run-context.json'),
+            '--contract-dir',b['contractDir']],
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             start_new_session=True,close_fds=True,env=env)
         self.state='active'; self._next_receipt(1)
