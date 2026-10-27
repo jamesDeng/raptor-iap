@@ -219,14 +219,16 @@ class LaneSupervisor:
                         require(before_cutoff() and time.time()-receipt['observedAt'] < 3.5,'receipt')
                     # Python's restore_signals does not restore a pthread mask.
                     child_mask=set(old_mask)-GRACEFUL
+                    require(time.monotonic() < deadline,'timeout')
                     self.child=subprocess.Popen(argv,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,start_new_session=True,close_fds=True,
                         preexec_fn=lambda:signal.pthread_sigmask(signal.SIG_SETMASK,child_mask))
                 self._alive(); require(time.monotonic() < deadline,'timeout')
                 raw=self._communicate(deadline)
-                payload=ActionCatalog.parse(req['action'],raw,req)
+                payload=ActionCatalog.parse(req['action'],raw,req,receipt)
                 self._alive(); require(time.monotonic() < deadline,'timeout')
-                require(time.time() < receipt['observedAt']+12,'receipt')
+                if req['action'] != 'scaleout-two-to-three':
+                    require(time.time() < receipt['observedAt']+12,'receipt')
                 self._cleanup()
                 with self._masked():
                     self._alive()

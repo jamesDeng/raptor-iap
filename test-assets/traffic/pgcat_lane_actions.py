@@ -89,7 +89,7 @@ class ActionCatalog:
         return ([sys.executable,bindings['laneWrapper'],'exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',command],env,5.0)
 
     @staticmethod
-    def parse(action, raw, request):
+    def parse(action, raw, request, receipt=None):
         require(type(raw) is bytes and len(raw) <= 8192,'parse')
         if action in ('pending-start','pending-status'):
             statuses=('STARTED',) if action == 'pending-start' else ('RUNNING','PREPARED')
@@ -123,8 +123,10 @@ class ActionCatalog:
                 keys={'status','phase'}
                 if phase == 'pre-scale' and value['status'] == 'PREPARED':
                     keys |= {'feedSession','sequence'}
+                    require(type(receipt) is dict and receipt.get('feedSession') == request['feedSession']
+                            and type(receipt.get('sequence')) is int,'parse')
                     require(value.get('feedSession') == request['feedSession'] and type(value.get('sequence')) is int
-                            and value['sequence'] >= request['minimumSequence'],'parse')
+                            and 0 < value['sequence'] <= receipt['sequence'],'parse')
                 require(set(value) == keys,'parse')
             elif action == 'collector-launch':
                 require(value == {'status':'LAUNCHED'},'parse')

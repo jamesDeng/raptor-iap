@@ -405,5 +405,83 @@ class SupervisorTests(unittest.TestCase):
         row=self.journal.snapshot(request['requestId'])
         self.assertNotEqual(row['runState'],'active')
 
+    def pre_scale_response(self, sequence, session=None):
+        self.receipt(10)
+        response=dict(status='PREPARED',phase='pre-scale',feedSession=session or self.session,sequence=sequence)
+        self.cli.write_text('#!'+sys.executable+'\nprint('+repr(encode(response).decode('ascii'))+')\n')
+        return self.run_request(action='pre-scale-status',minimumSequence=10)
+
+    def test_pre_scale_persisted_earlier_proof_accepted_on_later_poll(self):
+        row=self.pre_scale_response(2)
+        self.assertEqual(row['state'],'complete')
+        self.assertEqual(row['result']['payload']['sequence'],2)
+
+    def test_pre_scale_future_proof_refused(self):
+        row=self.pre_scale_response(11)
+        self.assertEqual(row['state'],'uncertain')
+        self.assertEqual(row['result']['category'],'parse')
+
+    def test_pre_scale_nonpositive_proof_refused(self):
+        row=self.pre_scale_response(0)
+        self.assertEqual(row['state'],'uncertain')
+
+    def test_pre_scale_different_session_refused(self):
+        row=self.pre_scale_response(2,str(uuid.uuid4()))
+        self.assertEqual(row['state'],'uncertain')
+
+    def prepare_scaleout_request(self):
+        req=self.request(action='scaleout-two-to-three',deadlineMonotonic=time.monotonic()+19.)
+        self.private_json(Path(self.bindings['preScaleProofPath']),dict(feedSession=self.session,sequence=1))
+        self.private_json(Path(self.bindings['scaleoutIntentPath']),dict(action='ModifyScalingGroup',
+            account=self.target['accountId'],group=self.target['scalingGroupId'],fromDesired=2,toDesired=3,
+            feedSession=self.session,sequence=1,at='2026-10-27T00:00:00+00:00'))
+        return req
+
+    def test_ess_ack_after_twelve_seconds_within_twenty_second_budget(self):
+        from types import SimpleNamespace
+        req=self.prepare_scaleout_request()
+        offset=[0.]
+        clock=SimpleNamespace(time=lambda:time.time()+offset[0],monotonic=lambda:time.monotonic()+offset[0])
+        original=self.owner._communicate
+        def communicate(deadline):
+            raw=original(deadline)
+            offset[0]=13.
+            return raw
+        command=([sys.executable,'-c','print(\'{"RequestId":"ack"}\')'],{'PATH':os.defpath},20.)
+        with patch.object(actions.ActionCatalog,'command',return_value=command), patch.object(supervisor,'before_cutoff',return_value=True), patch.object(supervisor,'time',clock), patch.object(self.owner,'_communicate',communicate):
+            self.owner.run_once(req['requestId'])
+        row=self.journal.snapshot(req['requestId'])
+        self.assertEqual(row['state'],'complete')
+        self.assertEqual(row['runState'],'active')
+
+    def test_deadline_expired_during_admission_never_spawns(self):
+        req=self.request(deadlineMonotonic=time.monotonic()+.15)
+        original=self.journal.admit
+        def admit(request):
+            original(request)
+            time.sleep(max(0,req['deadlineMonotonic']-time.monotonic())+.01)
+        with patch.object(self.journal,'admit',admit), patch.object(supervisor.subprocess,'Popen',wraps=subprocess.Popen) as launch:
+            row=self.owner.run_once(req['requestId'])
+        self.assertEqual(row['state'],'uncertain')
+        self.assertEqual(row['result']['category'],'timeout')
+        self.assertEqual(launch.call_count,0)
+        self.assertFalse(self.marker.exists())
+
+    def test_deadline_expired_during_ess_intent_never_spawns(self):
+        req=self.prepare_scaleout_request()
+        original=lane.consume_intent
+        from types import SimpleNamespace
+        offset=[0.]
+        clock=SimpleNamespace(time=time.time,monotonic=lambda:time.monotonic()+offset[0])
+        def consume(*args):
+            original(*args)
+            offset[0]=20.
+        with patch.object(lane,'consume_intent',consume), patch.object(supervisor,'before_cutoff',return_value=True), patch.object(supervisor,'time',clock), patch.object(supervisor.subprocess,'Popen',wraps=subprocess.Popen) as launch:
+            row=self.owner.run_once(req['requestId'])
+        self.assertEqual(row['state'],'uncertain')
+        self.assertEqual(row['result']['category'],'timeout')
+        self.assertEqual(launch.call_count,0)
+        self.assertTrue((Path(self.bindings['laneIntentDir'])/(self.session+'.1.intent')).exists())
+
 
 if __name__ == '__main__': unittest.main()
