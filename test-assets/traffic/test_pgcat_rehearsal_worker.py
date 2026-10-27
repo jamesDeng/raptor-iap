@@ -40,6 +40,7 @@ class DetachedWorkerTests(unittest.TestCase):
         self.kubeconfig.write_text('fake private credential')
         self.kubeconfig.chmod(0o600)
         self.run_id = str(uuid.uuid4())
+        self.feed_session = str(uuid.uuid4())
         self.target = {'accountId': '1360282071200743', 'regionId': 'ap-southeast-1',
                        'workerId': 'i-t4nj1bitmcz7cuoch82h',
                        'scalingGroupId': 'asg-t4necb4dfmu6o3z2rn0g',
@@ -58,20 +59,52 @@ class DetachedWorkerTests(unittest.TestCase):
             file.write_text('pass\n')
             file.chmod(0o600)
         fake_contract = self.run / 'pgcat_rehearsal_contract.py'
+        pre_scale_value = {'providerRunContextSha256': 'a' * 64,
+            'targetSha256': hashlib.sha256(json.dumps(self.target, sort_keys=True,
+                separators=(',', ':')).encode('ascii')).hexdigest(),
+            'firstAt': 1.0, 'latestAt': 2.0, 'sequence': 7,
+            'feedSession': self.feed_session,
+            'firstFrameSha256': 'b' * 64, 'latestFrameSha256': 'c' * 64}
         fake_contract.write_text('import hashlib,json,time\nfrom pathlib import Path\n'
-            'def done(contract,stage):\n'
+            'def done(contract,stage,value=None):\n'
             ' time.sleep(.1)\n'
             ' p=Path(contract)/(stage+".json")\n'
-            ' raw=b"{}\\n"\n'
+            ' raw=(json.dumps(value if value is not None else {},sort_keys=True)+"\\n").encode("ascii")\n'
             ' p.write_bytes(raw);p.chmod(0o600)\n'
             ' s=Path(str(p)+".sha256")\n'
             ' s.write_text(json.dumps({"sha256":hashlib.sha256(raw).hexdigest()}));s.chmod(0o600)\n'
             'def baseline(contract,*args): done(contract,"baseline")\n'
-            'def pre_scale(contract,*args): done(contract,"pre-scale")\n'
+            'def pre_scale(contract,*args): done(contract,"pre-scale",'+repr(pre_scale_value)+')\n'
             'def pending_ready(contract,*args): done(contract,"pending-ready")\n')
         fake_contract.chmod(0o600)
         self.hashes = {key: hashlib.sha256((self.run / name).read_bytes()).hexdigest()
                        for key, name in SOURCES.items()}
+
+    def test_pre_scale_real_worker_output_is_accepted_by_action_parser(self):
+        arguments = [sys.executable, str(self.worker), 'start', 'pre-scale',
+            str(self.contract), self.run_id, str(self.kubeconfig),
+            json.dumps(self.hashes, sort_keys=True, separators=(',', ':')),
+            json.dumps(self.target, sort_keys=True, separators=(',', ':'))]
+        started = subprocess.run(arguments, cwd=str(self.run),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        self.assertEqual(started.returncode, 0)
+        self.assertEqual(json.loads(started.stdout),
+                         {'status': 'STARTED', 'phase': 'pre-scale'})
+        arguments[2] = 'status'
+        deadline = time.monotonic() + 3
+        while True:
+            completed = subprocess.run(arguments, cwd=str(self.run),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            if completed.returncode == 0 and b'PREPARED' in completed.stdout:
+                break
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(.02)
+        parsed = ActionCatalog.parse('pre-scale-status', completed.stdout,
+            {'feedSession': self.feed_session},
+            {'feedSession': self.feed_session, 'sequence': 8})
+        self.assertEqual(parsed, {'status': 'PREPARED', 'phase': 'pre-scale',
+                                  'feedSession': self.feed_session, 'sequence': 7})
+        self.assertNotIn(b'10.0.', completed.stdout)
 
     def test_pending_start_returns_quickly_then_only_exact_markers_prepare(self):
         import pgcat_rehearsal_worker as worker

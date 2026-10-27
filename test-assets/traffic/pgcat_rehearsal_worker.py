@@ -177,7 +177,9 @@ def _sealed_stage(contract, stage):
         raw = _read_at(fd, stage + '.json', 65536)
         seal = _decode(_read_at(fd, stage + '.json.sha256', 256))
         _check(seal == {'sha256': hashlib.sha256(raw).hexdigest()})
-        _check(type(_decode(raw)) is dict)
+        value = _decode(raw)
+        _check(type(value) is dict)
+        return value
     finally:
         os.close(fd)
 
@@ -327,7 +329,18 @@ def main():
         if stage == 'pending-ready':
             print('PENDING_DETACHED:' + state)
         else:
-            print(json.dumps({'status': state, 'phase': stage}, sort_keys=True))
+            output = {'status': state, 'phase': stage}
+            if stage == 'pre-scale' and state == 'PREPARED':
+                sealed = _sealed_stage(contract, stage)
+                _check(set(sealed) == {'providerRunContextSha256', 'targetSha256',
+                    'firstAt', 'latestAt', 'sequence', 'feedSession',
+                    'firstFrameSha256', 'latestFrameSha256'} and
+                    sealed['targetSha256'] == _target(target) and
+                    type(sealed['sequence']) is int and sealed['sequence'] > 0)
+                _uuid(sealed['feedSession'])
+                output.update(feedSession=sealed['feedSession'],
+                              sequence=sealed['sequence'])
+            print(json.dumps(output, sort_keys=True))
         return 0 if state in ('STARTED', 'RUNNING', 'PREPARED') else 1
     except BaseException:
         if len(sys.argv) > 2 and sys.argv[2] == 'pending-ready':
