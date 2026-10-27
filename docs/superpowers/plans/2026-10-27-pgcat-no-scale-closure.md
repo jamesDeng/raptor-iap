@@ -26,7 +26,7 @@
 - Repeated inventory sequence between feed ticks: Task 3 tests repeats allowed but skipped distinct sequence refused.
 - Adverse SQL in a partially corrupt segment: Task 3 tests FAIL precedence after authenticating later segments.
 - Stop intent arrives during a provider tick: Task 4 tests at most one further publication and exact clean exit.
-- Paid run uses a new private binding path: Task 5 tests stable target/source/client comparison while binding-file hashes differ.
+- Paid run uses a new private binding and the supervisor exits after durable `finished`: Task 5 tests stable target/source/client hashes across fresh paths and exact sealed final-state reconciliation without inferring success from exit.
 
 ---
 
@@ -44,7 +44,7 @@
 
 ### Task 2: Finite worker collector with sealed exit
 
-**Files:** Create `test-assets/traffic/pgcat_collector_control.py`; test `test-assets/traffic/test_pgcat_collector_control.py`; modify fixed `collector-launch/status` commands and parsers in `test-assets/traffic/pgcat_lane_actions.py`, payload validation in `test-assets/traffic/pgcat_lane_protocol.py`, and matching tests.
+**Files:** Create `test-assets/traffic/pgcat_collector_control.py`; test `test-assets/traffic/test_pgcat_collector_control.py`; modify fixed `collector-launch/status` commands and parsers in `test-assets/traffic/pgcat_lane_actions.py`, payload validation in `test-assets/traffic/pgcat_lane_protocol.py`, source-hash checks in `test-assets/traffic/pgcat_lane_supervisor.py` and `test-assets/traffic/pgcat_rehearsal_controller.py`, and their matching fixture tests.
 
 **Interfaces:** A fresh private run-root binding supplies `run`, `contract`, `kubeconfig`, exact source hashes including the new `collectorControl` key for `run/pgcat_collector_control.py`. The fixed worker entry verifies and executes exact staged source bytes, including transitive worker modules, so stale `.pyc` cannot bypass the reviewed source. `launch` starts one detached 65-second `worker_capture.py` without `--boundary-dir`; `status` returns only `ALIVE` with exact process identity or `EXITED` with the same identity and `{category:'completed',exitCode:0,completionSha256}` after sealed capture completion. The worker accepts no arbitrary command/path from a request.
 
@@ -54,11 +54,11 @@
 
 ### Task 3: Worker-local lane-timing verdict
 
-**Files:** Create `test-assets/traffic/pgcat_lane_timing_assessor.py`; test `test-assets/traffic/test_pgcat_lane_timing_assessor.py`; extend worker result parsing and one-use verdict journal in `pgcat_lane_actions.py` and `pgcat_lane_protocol.py` with focused tests.
+**Files:** Create `test-assets/traffic/pgcat_lane_timing_assessor.py`; test `test-assets/traffic/test_pgcat_lane_timing_assessor.py`; extend `test-assets/traffic/capture_window.py` and its tests with a narrow opt-out for transition completion only, and extend worker result parsing and one-use verdict journal in `pgcat_lane_actions.py` and `pgcat_lane_protocol.py` with focused tests.
 
-**Interfaces:** `assess_lane_timing(capture_dir, collector_identity, target, run_context, source_hashes) -> dict` independently verifies `completion.json` and every listed segment SHA, returns address-free status/reason category and sealed verdict digest. Fixed `lane-verdict` action passes only the bound private paths. The verdict binds run/feed session, target/source, collector identity and capture digests; ordinary `assess_manifest` remains untouched.
+**Interfaces:** `assess_lane_timing(capture_dir, collector_identity, target, run_context, source_hashes) -> dict` independently verifies `completion.json` and every listed segment SHA, calls existing `capture_window.assess(..., require_transition=False)` for the shared SQL/event/continuity rules, then applies the stricter lane-only roster/identity/metrics checks. The new `require_transition` argument defaults to `True`, preserving ordinary behavior; ordinary `assess_manifest` remains untouched. Fixed `lane-verdict` action passes only the bound private paths. The address-free verdict binds run/feed session, target/source, collector identity and capture digests.
 
-- [ ] Add failing fixtures for authentic 65-second/≥60-second coverage and each rule in the spec: ≤3-second gaps, stable two Ready Pod/container/process and Deployment identities, exact original ESS/NLB roster, repeated versus skipped distinct feed sequence, <30-second provider age, ≤45-second complete per-node metrics, advancing clean SQL, and FAIL precedence on authenticated adverse SQL.
+- [ ] Add failing fixtures for authentic 65-second/≥60-second coverage and each rule in the spec: ≤3-second gaps, stable two Ready Pod/container/process and Deployment identities, exact original ESS/NLB roster, repeated versus skipped distinct feed sequence, <30-second provider age, ≤45-second complete per-node metrics, advancing clean SQL, and FAIL precedence on authenticated adverse SQL. Prove default `capture_window.assess` still requires a transition while only the new lane call may skip that one completion rule.
 - [ ] Run RED fixtures, implement minimal assessor and sealed worker verdict, then run GREEN normal/optimized and Python 3.6 grammar checks.
 - [ ] Test that caller text or an unrelated verdict hash cannot enter the journal; run full traffic suite, commit and obtain independent review before Task 4.
 
@@ -74,11 +74,11 @@
 
 ### Task 5: Bind final no-scale proof to the paid preflight
 
-**Files:** Modify `test-assets/traffic/pgcat_rehearsal_controller.py`, `test-assets/traffic/pgcat_lane_supervisor.py`, `test-assets/traffic/pgcat_lane_protocol.py`; matching tests and the active `docs/superpowers/plans/2026-10-16-pgcat-two-node-live-test-runbook.md`.
+**Files:** Modify `test-assets/traffic/pgcat_rehearsal_controller.py`, `test-assets/traffic/pgcat_lane_supervisor.py`, `test-assets/traffic/pgcat_lane_protocol.py`, `test-assets/traffic/pgcat_lane_client.py`; matching tests and the active `docs/superpowers/plans/2026-10-16-pgcat-two-node-live-test-runbook.md`.
 
 **Interfaces:** `finish_no_scale(...)` accepts only a deterministic assessment constructed from the journaled worker verdict, exact feed stop/exit and final receipt, and persists a private proof with date, evidence SHA, stable target/source/client hashes and original binding hash. The paid `preflight.json` extends its `noScaleProof` object to `{status,evidenceSha256,proofPath}`; `proofPath` is an absolute mode-0600 record in a mode-0700 prior-run directory, outside the fresh paid capture root. `_paid_evidence(...)` opens that exact no-symlink file, verifies its bytes/digest and stable hashes, and separately verifies the paid run's own new binding.
 
-- [ ] Add failing tests for forged caller PASS, wrong run/session/collector/target/source/client, stale day, changed private proof, changed paid binding, observed SQL FAIL and incomplete exact process/credential cleanup before PASS.
+- [ ] Add failing tests for forged caller PASS, wrong run/session/collector/target/source/client, stale day, changed private proof, changed paid binding, observed SQL FAIL and incomplete exact process/credential cleanup before PASS. Reproduce the inherited finish race with a deterministic stale-active-snapshot delay; require exact sealed journal reconciliation after supervisor exit and refuse an unsealed exit.
 - [ ] Run RED, implement binding/verification and explicit runbook amendment from 75-second blocked path to reviewed 180-second maximum.
 - [ ] Run GREEN normal/optimized, full traffic suite, Python 3.6 guards and diff checks; commit scoped files, then obtain independent review.
 
