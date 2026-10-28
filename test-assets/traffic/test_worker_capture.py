@@ -419,3 +419,87 @@ class LaneIdentityCapture(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class CollectorWitnessBoundary(unittest.TestCase):
+    # Breaking seal order, restarting the clock at ACK, or accepting a foreign
+    # final/receipt must fail these real-file collector fixtures.
+    def run_witness(self,kind='good'):
+        import tempfile,json,os,copy
+        from pathlib import Path
+        from test_segmented_capture import witness_context,witness_frame
+        from finish_clients import atomic_json
+        from segmented_capture import read_progress
+        context=witness_context();clock=[0];seen={};original_finish=worker.SegmentedCapture.finish
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(os.path.realpath(d));boundary=root/'boundary';boundary.mkdir(mode=0o700)
+            def capture(*args):
+                t=clock[0]
+                if kind=='initial-error' and t==0:raise OSError('poll')
+                if t==1:atomic_json(boundary/'request.json',dict(requestId='one',roster=context['originalRoster']))
+                if t==2:
+                    self.assertTrue((boundary/'boundary-start.json').exists())
+                    self.assertTrue((boundary/'ack.json').exists())
+                    receipt=dict(requestId='wrong' if kind=='receipt' else 'one',status='ACKNOWLEDGED',
+                        clients={r['uid']+'/'+r['processId']:{'status':'acknowledged'} for r in context['originalRoster']})
+                    atomic_json(boundary/'receipt.json',receipt)
+                first=2;second=6 if kind=='exact-five' else 7 if kind=='late' else 3
+                finals=tuple(i for i,limit in enumerate((first,second)) if t>=limit and kind!='missing')
+                f=witness_frame(t,n=min(t,2),finals=finals)
+                for i in finals:f['pods'][i]['snapshot']['sample']['at']=(first,second)[i]
+                if t>=3 and kind=='connected':f['pods'][1]['snapshot']['connected']=1
+                if t>=3 and kind=='counter':f['pods'][1]['snapshot']['sample']['Scheduled']+=1
+                if t>=3 and kind=='foreign':f['pods'][1]['containerId']='foreign'
+                if t==1 and kind=='slow-start':clock[0]=7
+                return f
+            def finish(writer,**kwargs):
+                seen['beforeFinish']=clock[0];seen['start']=json.loads((boundary/'boundary-start.json').read_text()) if (boundary/'boundary-start.json').exists() else None
+                seen['complete']=json.loads((boundary/'boundary-completed.json').read_text()) if (boundary/'boundary-completed.json').exists() else None
+                seen['progress']=read_progress(root/'capture',context)[0]
+                seen['rows']={p.name:p.read_bytes() for p in (root/'capture').glob('segment-*.jsonl')}
+                if kind=='slow-finish':
+                    self.assertIsNotNone(seen['complete']);clock[0]=99
+                result=original_finish(writer,**kwargs)
+                seen['result']=result
+                return result
+            with patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]), \
+                 patch.object(worker.time,'sleep',side_effect=lambda _:clock.__setitem__(0,clock[0]+1)),patch.object(worker.SegmentedCapture,'finish',finish):
+                worker.run_capture(root/'capture',root/'inventory',8,boundary,progress_context=context)
+            seen['files']={p.name:p.read_bytes() for p in boundary.iterdir()}
+        return seen
+    def test_exact_seals_before_slow_finish_and_original_final_pair(self):
+        import hashlib,json
+        for kind in ('good','slow-finish','exact-five'):
+            with self.subTest(kind=kind):
+                seen=self.run_witness(kind);start=seen['start'];complete=seen['complete']
+                self.assertEqual((start['startedMonotonic'],start['deadlineMonotonic']),(1,6))
+                self.assertEqual(complete['finalDurableMonotonic'],6 if kind=='exact-five' else 3)
+                self.assertEqual(set(start),{'schemaVersion','bindingSha256','requestSha256','requestId','originalRosterSha256','startedMonotonic','deadlineMonotonic','firstSettlingFrame'})
+                self.assertEqual(set(complete),{'schemaVersion','bindingSha256','requestSha256','requestId','startSha256','receiptSha256','finalDurableMonotonic','finals','lastFrame'})
+                self.assertEqual(complete['startSha256'],hashlib.sha256(seen['files']['boundary-start.json']).hexdigest())
+                self.assertEqual(complete['receiptSha256'],hashlib.sha256(seen['files']['receipt.json']).hexdigest())
+                self.assertEqual(start['requestSha256'],hashlib.sha256(seen['files']['request.json']).hexdigest())
+                self.assertEqual([row['frame']['at'] for row in complete['finals']],[2,6 if kind=='exact-five' else 3])
+                for row in complete['finals']:
+                    ref=row['frame'];raw=seen['rows'][ref['basename']][ref['offset']:ref['offset']+ref['length']]
+                    self.assertEqual(ref['sha256'],hashlib.sha256(raw).hexdigest())
+                    actual=json.loads(raw);pod=next(p for p in actual['pods'] if p['uid']==row['uid'])
+                    self.assertTrue(pod['snapshot']['final']);self.assertEqual(pod['snapshot']['connected'],0)
+    def test_missing_late_foreign_unsettled_and_bad_receipt_never_seal(self):
+        for kind in ('missing','late','receipt','connected','counter','foreign','slow-start'):
+            with self.subTest(kind=kind):self.assertIsNone(self.run_witness(kind)['complete'])
+    def test_initial_poll_error_remains_after_final_frames(self):
+        seen=self.run_witness('initial-error')
+        self.assertTrue(seen['progress']['flags']['pollError']);self.assertEqual(seen['progress']['attempts'],4)
+
+class WitnessFinalSnapshotRegression(unittest.TestCase):
+    def test_previously_recorded_final_cannot_reopen_connections(self):
+        from test_segmented_capture import witness_context,witness_frame
+        from segmented_capture import SegmentedCapture,read_progress
+        import tempfile,os
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(os.path.realpath(d))/'capture';w=SegmentedCapture(p,progress_context=witness_context())
+            w.append(witness_frame(0));first=witness_frame(1,n=1,finals=(0,));w.append(first)
+            later=witness_frame(2,n=1,finals=(0,1));later['pods'][0]['snapshot']['sample']['at']=1
+            later['pods'][0]['snapshot']['connected']=1;w.append(later)
+            self.assertTrue(read_progress(p,witness_context())[0]['flags']['invalidEvidence'])

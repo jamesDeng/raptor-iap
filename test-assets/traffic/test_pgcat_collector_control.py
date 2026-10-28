@@ -327,7 +327,7 @@ class CollectorTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):control.completion(self.run,profile='disabled-rehearsal')
 
-    def test_rehearsal_capture_executes_reviewed_transitive_bytes_and_checks_intent(self):
+    def test_rehearsal_capture_refuses_missing_original_provenance_and_checks_intent(self):
         self.launch(profile='disabled-rehearsal')
         self._stale(self.run/'capture_window.py','VALUE="OLD"\n','VALUE="NEW"\n')
         capture=self.run/'worker_capture.py'
@@ -340,7 +340,7 @@ class CollectorTests(unittest.TestCase):
              '--boundary-dir',str(self.run/'disabled-boundary')])
         result=subprocess.run(args,cwd=str(self.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5,
             env=dict(os.environ,PYTHONPYCACHEPREFIX=str(self.root/'pycache')))
-        self.assertEqual(result.returncode,0,result.stderr.decode());self.assertEqual(result.stdout,b'NEW\n')
+        self.assertNotEqual(result.returncode,0);self.assertEqual(json.loads(result.stdout),{'status':'INCONCLUSIVE'})
         args[7]='_capture'
         result=subprocess.run(args,cwd=str(self.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
         self.assertNotEqual(result.returncode,0);self.assertEqual(json.loads(result.stdout),{'status':'INCONCLUSIVE'})
@@ -530,3 +530,75 @@ class CollectorParserTests(unittest.TestCase):
             self.assertEqual(words[8:11],[str(fixture.contract),fixture.run_id,str(fixture.kubeconfig)])
             self.assertEqual(json.loads(words[11])['collectorControl'],'c'*64)
             self.assertEqual(timeout,5)
+
+class CollectorWitnessContext(unittest.TestCase):
+    def setUp(self):
+        from test_pgcat_rehearsal_contract import RehearsalContractTests
+        self.fixture=RehearsalContractTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
+        self.fixture._baseline();f=self.fixture
+        for name in control.SOURCES.values():
+            shutil.copyfile(str(Path(__file__).resolve().parent/name),str(f.run/name));(f.run/name).chmod(0o600)
+        self.hashes={key:hashlib.sha256((f.run/name).read_bytes()).hexdigest() for key,name in control.SOURCES.items()}
+        self.run,self.fd,self.verified=control.context(f.contract,f.run_id,self.hashes);self.addCleanup(os.close,self.fd)
+    def derive(self):
+        f=self.fixture
+        return control.capture_context(f.contract,f.run_id,self.hashes,self.verified,self.fd)
+    def identity(self,value=None):control.write(self.fd,'identity.json',dict(IDENTITY) if value is None else value)
+    def test_exact_original_provenance_and_actual_child_identity(self):
+        self.identity();f=self.fixture
+        with patch.object(control,'process_identity',return_value=dict(IDENTITY)) as probe:
+            value=self.derive()
+        self.assertEqual(probe.call_args_list[0].args,(os.getpid(),))
+        self.assertEqual(value['collectorIdentity'],IDENTITY)
+        self.assertEqual(value['baselineSha256'],hashlib.sha256((f.contract/'baseline.json').read_bytes()).hexdigest())
+        self.assertEqual(value['providerRunContextSha256'],hashlib.sha256(f.raw).hexdigest())
+        self.assertEqual(value['sourceHashes'],self.hashes);self.assertEqual(value['bundleSha256'],'b'*64)
+        self.assertEqual(value['originalRoster'],json.loads((f.contract/'baseline.json').read_text())['roster'])
+    def test_verified_disabled_entry_injects_context_without_cli_capability(self):
+        f=self.fixture
+        # Offline subprocess gets a deterministic Linux identity probe; every
+        # transitive module still executes its verified source bytes.
+        path=f.run/'pgcat_collector_control.py';raw=path.read_text()
+        raw=raw.replace("if __name__=='__main__':", "def process_identity(pid):return "+repr(IDENTITY)+"\n\nif __name__=='__main__':")
+        path.write_text(raw)
+        capture=f.run/'worker_capture.py';capture.write_text(capture.read_text()+
+            "\ndef main(*,progress_context=None):\n print(json.dumps(progress_context,sort_keys=True))\n")
+        hashes={key:hashlib.sha256((f.run/name).read_bytes()).hexdigest() for key,name in control.SOURCES.items()}
+        control.write(self.fd,'identity.json',IDENTITY)
+        control.write(self.fd,'intent.json',dict(runId=f.run_id,startedAt=int(time.time()),profile='disabled-rehearsal'))
+        args=control.entry_command(path,hashes['collectorControl'],['_rehearsal-capture',str(f.contract),f.run_id,str(f.kubeconfig),json.dumps(hashes)]+control.capture_arguments(f.run,profile='disabled-rehearsal'))
+        result=subprocess.run(args,cwd=str(f.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+        self.assertEqual(result.returncode,0,result.stderr.decode()+result.stdout.decode())
+        value=json.loads(result.stdout);self.assertEqual(value['runId'],f.run_id);self.assertEqual(value['collectorIdentity'],IDENTITY)
+        self.assertEqual(value['sourceHashes'],hashes)
+
+    def test_guardian_identity_race_wait_is_bounded_and_never_adopted(self):
+        clock=[0];slept=[]
+        def sleep(delay):
+            slept.append(delay);clock[0]+=delay
+            if clock[0]>=.03 and not (self.run/'collector-job'/'identity.json').exists():self.identity()
+        with patch.object(control,'process_identity',return_value=dict(IDENTITY)),patch.object(control.time,'monotonic',side_effect=lambda:clock[0]),patch.object(control.time,'sleep',side_effect=sleep):
+            self.assertEqual(self.derive()['collectorIdentity'],IDENTITY)
+        self.assertTrue(slept);self.assertLessEqual(clock[0],1)
+        (self.run/'collector-job'/'identity.json').unlink();self.identity(dict(IDENTITY,pid=9999))
+        with patch.object(control,'process_identity',return_value=dict(IDENTITY)),self.assertRaises(ValueError):self.derive()
+    def test_missing_identity_timeout_and_mutated_source_or_seal_refuse(self):
+        clock=[0]
+        with patch.object(control,'process_identity',return_value=dict(IDENTITY)),patch.object(control.time,'monotonic',side_effect=lambda:clock[0]), \
+             patch.object(control.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)),self.assertRaises(ValueError):self.derive()
+        self.assertLessEqual(clock[0],1.01)
+        self.identity()
+        for kind in ('source','seal','path','target','feed','run'):
+            with self.subTest(kind=kind):
+                f=self.fixture;path=f.contract/'baseline.json';saved=path.read_bytes();seal=Path(str(path)+'.sha256');saved_seal=seal.read_bytes();v=json.loads(saved)
+                if kind=='source':self.verified['worker_capture']+=b'\n'
+                if kind=='seal':path.write_bytes(saved+b' ')
+                if kind=='path':v['paths']['captureDir']=str(f.run/'wrong')
+                if kind=='target':v['targetSha256']='f'*64
+                if kind=='feed':v['receipt']['feedSession']=str(uuid.uuid4())
+                if kind=='run':v['providerRunContextSha256']='f'*64
+                if kind not in ('source','seal'):
+                    path.write_text(json.dumps(v));seal.write_text(json.dumps(dict(sha256=hashlib.sha256(path.read_bytes()).hexdigest())))
+                with patch.object(control,'process_identity',return_value=dict(IDENTITY)),self.assertRaises(ValueError):self.derive()
+                path.write_bytes(saved);seal.write_bytes(saved_seal)
+                if kind=='source':self.verified['worker_capture']=self.verified['worker_capture'][:-1]

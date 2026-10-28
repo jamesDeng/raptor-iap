@@ -261,3 +261,205 @@ class PartialPodManifestEvidence(unittest.TestCase):
                 self.assertEqual([row['frames'] for row in metadata['segments']],[1,1])
                 raw=''.join(p.read_text() for p in directory.glob('segment-*.jsonl'))
                 self.assertNotIn('do-not-retain',raw);self.assertNotIn('10.20.30.40',raw)
+
+# Witness fixtures use real files; a writer that hashes source input instead of
+# the filtered durable line, or trusts a replaced inode, must fail these tests.
+def witness_context():
+    from test_finish_clients import ROSTER
+    return dict(schemaVersion=1,runId='11111111-1111-4111-8111-111111111111',
+        feedSession='22222222-2222-4222-8222-222222222222',
+        providerRunContextSha256='a'*64,bundleSha256='b'*64,
+        sourceHashes={key:'c'*64 for key in __import__('pgcat_collector_control').SOURCES},
+        baselineSha256='d'*64,originalRoster=copy.deepcopy(ROSTER),
+        deployment=dict(name='rdev-test-client-client',namespace='raptor-test',uid='deployment',generation=1),
+        collectorIdentity=dict(pid=123,bootId='boot',startTicks=456,commandSha256='e'*64))
+
+
+def witness_frame(t,n=None,finals=()):
+    from test_capture_window import transition_frame
+    context=witness_context();f=transition_frame(t);f['inventory']['feedSession']=context['feedSession'];f['pods']=[];f['expectedReplicas']=2
+    for i,row in enumerate(context['originalRoster']):
+        p=copy.deepcopy(frame(t,t if n is None else n)['pods'][0]);p.update({k:v for k,v in row.items() if k!='processId'});p['ready']=i not in finals
+        snap=p['snapshot'];snap['sample']['processId']=row['processId']
+        for event in snap['events']:event['processId']=row['processId']
+        snap.update(final=i in finals,connected=0 if i in finals else 4)
+        f['pods'].append(p)
+    f['deployment']=dict(uid='deployment',generation=1,observedGeneration=1,desired=2,ready=2-len(finals))
+    if finals:f['phase']='settling'
+    return f
+
+
+class BoundedWitnessTests(unittest.TestCase):
+    def writer(self,directory,**kwargs):
+        return SegmentedCapture(directory,progress_context=witness_context(),**kwargs)
+    def read(self,directory,context=None):
+        from segmented_capture import read_progress
+        return read_progress(directory,context or witness_context())
+    def test_actual_filtered_bytes_and_rollover_pair(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p,max_segment_seconds=2)
+            for t in range(3):w.append(witness_frame(t))
+            progress,previous,latest=self.read(p)
+            self.assertEqual((progress['attempts'],progress['committedFrames'],progress['generation']),(3,3,4))
+            self.assertEqual((previous['at'],latest['at']),(1,2))
+            self.assertEqual(progress['previous']['basename'],'segment-0001.jsonl')
+            self.assertEqual(progress['latest']['basename'],'segment-0002.jsonl')
+            ref=progress['previous'];raw=(p/ref['basename']).read_bytes()[ref['offset']:ref['offset']+ref['length']]
+            self.assertTrue(raw.endswith(b'\n'));self.assertEqual(hashlib.sha256(raw).hexdigest(),ref['sha256'])
+            self.assertEqual(len(latest['pods'][0]['snapshot']['events']),2)
+            self.assertNotEqual(json.dumps(witness_frame(2),separators=(',',':')).encode()+b'\n',(p/'segment-0002.jsonl').read_bytes())
+            self.assertEqual((p/'progress-binding.json').stat().st_mode&0o777,0o600)
+            self.assertEqual(set(progress),{'schemaVersion','bindingSha256','generation','attempts','committedFrames','firstAt','lastAttemptAt','lastCommitMonotonic','maxGapSeconds','flags','previous','latest'})
+    def test_initial_error_and_sticky_adverse_evidence(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);w.note_poll_error(0)
+            zero,previous,latest=self.read(p);self.assertEqual(zero['committedFrames'],0);self.assertIsNone(latest)
+            self.assertTrue(zero['flags']['pollError'])
+            f=witness_frame(1);f['pods'][0]['snapshot']['sample']['Failure']=1;f['pods'][0]['snapshot']['sample']['Skipped']=1
+            w.append(f);f=witness_frame(5);f['pods'][0]['containerId']='changed';w.append(f);w.append(witness_frame(6))
+            value,_,_=self.read(p)
+            self.assertEqual(value['maxGapSeconds'],4)
+            for flag in ('pollError','sqlFailure','skipped','identityChanged'):self.assertTrue(value['flags'][flag],flag)
+            self.assertEqual(value['attempts'],4)
+    def test_context_unknown_fields_and_binding_mismatch_refuse(self):
+        for mutation in ('extra','bool','hash','roster','deployment','identity'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as d:
+                c=witness_context()
+                if mutation=='extra':c['extra']=1
+                if mutation=='bool':c['schemaVersion']=True
+                if mutation=='hash':c['sourceHashes']['workerCapture']='bad'
+                if mutation=='roster':c['originalRoster'][0]['processId']=''
+                if mutation=='deployment':c['deployment']['generation']=True
+                if mutation=='identity':c['collectorIdentity']['pid']=True
+                with self.assertRaises(ValueError):SegmentedCapture(Path(__import__('os').path.realpath(d))/'capture',progress_context=c)
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);w.append(witness_frame(0))
+            for key,value in [('runId','33333333-3333-4333-8333-333333333333'),('baselineSha256','f'*64),('bundleSha256','f'*64)]:
+                c=witness_context();c[key]=value
+                with self.subTest(key=key),self.assertRaises(ValueError):self.read(p,c)
+    def test_replaced_symlink_truncated_partial_and_duplicate_artifacts_refuse(self):
+        for kind in ('inode','symlink','truncated','newline','hash','duplicate','directory','progress-symlink','binding'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
+                p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);w.append(witness_frame(0));w.append(witness_frame(1));v,_,_=self.read(p)
+                segment=p/v['latest']['basename']
+                if kind in ('inode','symlink'):
+                    saved=segment.read_bytes();segment.rename(p/'old');segment.write_bytes(saved);segment.chmod(0o600)
+                    if kind=='symlink':segment.unlink();segment.symlink_to(p/'old')
+                if kind=='truncated':segment.write_bytes(segment.read_bytes()[:-10])
+                if kind=='newline':segment.write_bytes(segment.read_bytes()[:-1]+b' ')
+                if kind=='hash':segment.write_bytes(segment.read_bytes().replace(b'"at":1',b'"at":2'))
+                if kind=='duplicate':(p/'progress.json').write_text('{"schemaVersion":1,"schemaVersion":1}')
+                if kind=='directory':p.rename(Path(__import__('os').path.realpath(d))/'old');p.mkdir(mode=0o700)
+                if kind=='progress-symlink':(p/'progress.json').rename(p/'old-progress');(p/'progress.json').symlink_to(p/'old-progress')
+                if kind=='binding':(p/'progress-binding.json').write_text('{}')
+                with self.assertRaises((ValueError,OSError)):self.read(p)
+    def test_missing_identity_invalid_and_settling_readiness_is_allowed(self):
+        for kind in ('container','deployment','ready','counter','events'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
+                p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);f=witness_frame(0)
+                if kind=='container':del f['pods'][0]['containerId']
+                if kind=='deployment':f.pop('deployment')
+                if kind=='ready':f['pods'][0]['ready']=None
+                if kind=='counter':f['pods'][0]['snapshot']['sample']['Skipped']=True
+                if kind=='events':f['pods'][0]['snapshot']['events']=[{}]
+                w.append(f);w.append(witness_frame(1));self.assertTrue(self.read(p)[0]['flags']['invalidEvidence'])
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);w.append(witness_frame(0));w.append(witness_frame(1,finals=(0,1)))
+            self.assertFalse(any(self.read(p)[0]['flags'].values()))
+    def test_default_has_no_witness_artifacts(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=SegmentedCapture(p);w.append(frame(0,0))
+            self.assertEqual([f.name for f in p.iterdir()],['segment-0001.jsonl'])
+
+class WitnessRaceAndFailureTests(unittest.TestCase):
+    writer=BoundedWitnessTests.writer
+    read=BoundedWitnessTests.read
+    def test_replaced_segment_cannot_be_adopted_by_later_clean_polls(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);w.append(witness_frame(0))
+            path=p/'segment-0001.jsonl';path.rename(p/'old');path.write_bytes((p/'old').read_bytes());path.chmod(0o600)
+            with self.assertRaises((ValueError,OSError)):w.append(witness_frame(1))
+            value=json.loads((p/'progress.json').read_text());self.assertTrue(value['flags']['invalidEvidence']);self.assertEqual(value['committedFrames'],1)
+    def test_partial_append_preserves_old_tail_and_sticky_error(self):
+        from capture_window import CaptureWindow
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);w.append(witness_frame(0));old=json.loads((p/'progress.json').read_text())
+            def partial(window,raw):
+                with window.path.open('ab') as stream:stream.write(b'{"at":')
+                raise OSError('partial write')
+            with patch.object(CaptureWindow,'append',partial),self.assertRaises(OSError):w.append(witness_frame(1))
+            value=json.loads((p/'progress.json').read_text())
+            self.assertEqual(value['latest'],old['latest']);self.assertEqual(value['committedFrames'],1);self.assertTrue(value['flags']['invalidEvidence'])
+            with self.assertRaises((ValueError,OSError)):self.read(p)
+    def test_concurrent_progress_or_segment_replacement_during_pread_refuses(self):
+        import os
+        for name in ('progress.json','segment-0001.jsonl'):
+            with self.subTest(name=name),tempfile.TemporaryDirectory() as d:
+                p=Path(os.path.realpath(d))/'capture';w=self.writer(p);w.append(witness_frame(0));w.append(witness_frame(1));original=os.pread;triggered=[False]
+                target=p/name;inode=target.stat().st_ino
+                def read(fd,length,offset):
+                    raw=original(fd,length,offset)
+                    if os.fstat(fd).st_ino==inode and not triggered[0]:
+                        triggered[0]=True;target.rename(p/'replaced');target.write_bytes((p/'replaced').read_bytes());target.chmod(0o600)
+                    return raw
+                with patch.object(os,'pread',side_effect=read),self.assertRaises((ValueError,OSError)):self.read(p)
+                self.assertTrue(triggered[0])
+    def test_no_segment_digest_or_whole_file_read_on_progress_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p,max_segment_seconds=1)
+            with patch('segmented_capture.digest',side_effect=AssertionError('unbounded segment hashing')),patch.object(Path,'read_bytes',side_effect=AssertionError('whole file read')):
+                for t in range(4):w.append(witness_frame(t))
+                self.assertEqual(self.read(p)[0]['committedFrames'],4)
+
+class WitnessValidationRegression(unittest.TestCase):
+    writer=BoundedWitnessTests.writer
+    read=BoundedWitnessTests.read
+    def test_internally_partial_poll_and_foreign_feed_stay_invalid(self):
+        for kind in ('partial','feed'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
+                p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);f=witness_frame(0)
+                if kind=='partial':f['expectedReplicas']=0
+                else:f['inventory']['feedSession']='33333333-3333-4333-8333-333333333333'
+                w.append(f);w.append(witness_frame(1));value=self.read(p)[0]
+                self.assertTrue(value['flags']['invalidEvidence'])
+                if kind=='partial':self.assertTrue(value['flags']['pollError'])
+    def test_nonincreasing_timestamp_attempt_is_sticky_without_tail_advance(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p);w.append(witness_frame(1));before=self.read(p)[0]
+            with self.assertRaises(ValueError):w.append(witness_frame(0))
+            value=self.read(p)[0];self.assertEqual(value['latest'],before['latest']);self.assertEqual(value['committedFrames'],1)
+            self.assertEqual(value['attempts'],2);self.assertTrue(value['flags']['invalidEvidence'])
+    def test_reader_refuses_nonadjacent_pair_and_inconsistent_zero_metadata(self):
+        for kind in ('adjacency','zero','first','generation'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
+                p=Path(__import__('os').path.realpath(d))/'capture';w=self.writer(p)
+                for t in range(3):w.append(witness_frame(t))
+                value=self.read(p)[0]
+                if kind=='adjacency':
+                    lines=(p/'segment-0001.jsonl').read_bytes().splitlines(True);raw=lines[0]
+                    value['previous'].update(offset=0,length=len(raw),at=0,sha256=__import__('hashlib').sha256(raw).hexdigest())
+                if kind=='zero':value.update(attempts=0,committedFrames=0,firstAt=None,lastCommitMonotonic=None,previous=None,latest=None)
+                if kind=='first':value['firstAt']=10
+                if kind=='generation':value['generation']=1
+                (p/'progress.json').write_text(json.dumps(value))
+                with self.assertRaises(ValueError):self.read(p)
+
+class ImmutableWitnessBinding(unittest.TestCase):
+    def test_binding_inode_replacement_stops_publication(self):
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(os.path.realpath(d))/'capture';w=SegmentedCapture(p,progress_context=witness_context());w.append(witness_frame(0))
+            path=p/'progress-binding.json';path.rename(p/'old-binding');path.write_bytes((p/'old-binding').read_bytes());path.chmod(0o600)
+            with self.assertRaises((ValueError,OSError)):w.append(witness_frame(1))
+
+class WitnessBindingSchemaRegression(unittest.TestCase):
+    def test_binding_rejects_bool_schema_even_when_digest_matches(self):
+        import os,hashlib
+        from segmented_capture import read_progress
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(os.path.realpath(d))/'capture';w=SegmentedCapture(p,progress_context=witness_context());w.append(witness_frame(0))
+            path=p/'progress-binding.json';binding=json.loads(path.read_text());binding['schemaVersion']=True
+            raw=json.dumps(binding).encode();path.write_bytes(raw)
+            progress=json.loads((p/'progress.json').read_text());progress['bindingSha256']=hashlib.sha256(raw).hexdigest();(p/'progress.json').write_text(json.dumps(progress))
+            with self.assertRaises(ValueError):read_progress(p,witness_context())

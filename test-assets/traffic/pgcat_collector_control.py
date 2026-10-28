@@ -167,6 +167,46 @@ def valid_identity(value):
           type(value['commandSha256']) is str and re.fullmatch(r'[0-9a-f]{64}',value['commandSha256']) is not None)
 
 
+def capture_context(contract,run_id,expected,verified,job_fd):
+    """Private disabled-capture provenance, under the verified import guard."""
+    from segmented_capture import validate_context
+    source=importlib.import_module('pgcat_rehearsal_contract')
+    contract=Path(contract);run=contract.parent/'run'
+    check(set(expected)==set(SOURCES) and set(verified)=={name[:-3] for name in SOURCES.values()})
+    for key,name in SOURCES.items():check(hashlib.sha256(verified[name[:-3]]).hexdigest()==expected[key])
+    identity=process_identity(os.getpid());valid_identity(identity)
+    deadline=time.monotonic()+1;recorded=None
+    for attempt in range(101):
+        try:recorded=decode(read(job_fd,'identity.json'));break
+        except FileNotFoundError:
+            remaining=deadline-time.monotonic()
+            if remaining<=0 or attempt==100:break
+            time.sleep(min(.01,remaining))
+    check(recorded==identity and time.monotonic()<=deadline and process_identity(os.getpid())==identity)
+    fd=source._directory(contract)
+    try:
+        baseline=source._sealed_read(fd,'baseline.json')
+        raw=source._read_at(fd,'baseline.json',65536)
+        check(source._decode(raw)==baseline)
+        seal=source._decode(source._read_at(fd,'baseline.json.sha256',256))
+        check(seal==dict(sha256=hashlib.sha256(raw).hexdigest()))
+    finally:os.close(fd)
+    source_fd=directory(contract/'provider-source')
+    try:context_raw=read(source_fd,'run-context.json',2048);record=decode(context_raw)
+    finally:os.close(source_fd)
+    provider=source.fresh_provider_source(contract,run_id,run/'provider-inventory.json',require_fresh=False)
+    check(type(baseline['version']) is int and baseline['version']==1 and baseline['mode']=='disabled-rehearsal' and baseline['purpose']=='disabled-rehearsal-post-stop')
+    check(baseline['paths']==dict(captureDir=str(run/'rehearsal-capture'),boundaryDir=str(run/'disabled-boundary'),kubeconfig=str(contract.parent/'kubeconfig')) and baseline['inventoryPath']==str(run/'provider-inventory.json'))
+    check(record['runContext']['runId']==run_id and provider['providerRunContextSha256']==hashlib.sha256(context_raw).hexdigest()==baseline['providerRunContextSha256'])
+    check(provider['targetSha256']==baseline['targetSha256']==record['runContext']['targetSha256'] and provider['feedSession']==baseline['receipt']['feedSession']==record['feedSession'])
+    check(type(baseline['originals']) is list and len(baseline['originals'])==2 and len({row['id'] for row in baseline['originals']})==2)
+    check(all(provider['privateAddresses'].get(row['id'])==row['address'] for row in baseline['originals']))
+    return validate_context(dict(schemaVersion=1,runId=run_id,feedSession=record['feedSession'],
+        providerRunContextSha256=hashlib.sha256(context_raw).hexdigest(),bundleSha256=record['runContext']['bundleSha256'],
+        sourceHashes=dict(expected),baselineSha256=hashlib.sha256(raw).hexdigest(),originalRoster=baseline['roster'],
+        deployment=baseline['deployment'],collectorIdentity=identity))
+
+
 def profile_values(profile):
     check(type(profile) is str and profile in ('no-scale','disabled-rehearsal'))
     if profile=='no-scale':
@@ -388,7 +428,12 @@ def main():
             try:
                 if capture:
                     module=importlib.import_module('worker_capture');sys.argv=['worker_capture.py']+args[5:]
-                    module.main()
+                    if profile=='disabled-rehearsal':
+                        job=directory(run/'collector-job')
+                        try:progress_context=capture_context(contract,run_id,expected,verified,job)
+                        finally:os.close(job)
+                        module.main(progress_context=progress_context)
+                    else:module.main()
                 else:
                     module=importlib.import_module('pgcat_lane_timing_assessor')
                     result=module.seal_verdict(run,run_id,decode(args[5].encode('ascii')),
