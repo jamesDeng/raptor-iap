@@ -1,4 +1,5 @@
 """Isolated execution contract: real source snapshots, harmless child processes."""
+import ast
 import hashlib
 import importlib.util
 import json
@@ -141,6 +142,61 @@ class SnapshotProcessTests(unittest.TestCase):
                 "NO_SCALE_ACTIONS = frozenset(('baseline-start','reconcile-close',"),source)
         got=self.run_entry('providerFeed');self.assertEqual(got.returncode,0,got.stderr)
         self.assertEqual(got.stdout.strip(),b'NEW False')
+
+    def test_generated_worker_sources_use_snapshot_despite_changed_disk_and_stale_linecache(self):
+        source=(self.root/'provider_feed.py').read_text()
+        lines=source.splitlines(True)
+        expected={node.name:''.join(lines[node.lineno-1:node.end_lineno])
+                  for node in ast.parse(source).body
+                  if isinstance(node,ast.FunctionDef) and
+                  node.name in ('atomic_write','write_private_publication')}
+        hashes=self.hashes()
+        probe='''import json,linecache
+from pathlib import Path
+expected=json.loads(sys.argv[2]);m.install(expected)
+path=Path(m.__file__).parent/'provider_feed.py';raw=path.read_bytes()
+cached=raw.replace(b'Worker publication',b'Wrong cached publication')
+linecache.cache[str(path)]=(len(raw),CACHE_MTIME,cached.decode('utf-8').splitlines(True),str(path))
+changed=raw.replace(b'Worker publication',b'Changed disk publication')
+try:
+ path.write_bytes(changed)
+ import provider_feed as feed
+ feed._require_verified()
+ linecache.checkcache(str(path))
+ sources=[feed._ATOMIC_SOURCE,feed._PRIVATE_PUBLICATION_SOURCE]
+ scripts=[]
+ operator=feed.Operator(types.SimpleNamespace(worker_inventory='/unused/inventory',contract_dir='/unused/contract'))
+ operator.remote=lambda script,*arguments:scripts.append(script)
+ operator.atomic_worker_write({})
+ operator.run_context={}
+ operator.atomic_worker_write({},dict(sequence=1,observedAt=1,privateAddresses={}))
+finally:path.write_bytes(raw)
+feed._require_verified()
+print(json.dumps(dict(sources=sources,scripts=scripts,
+ filename=feed.atomic_write.__code__.co_filename,
+ verifiedHash=feed.__verified_source_sha256__,
+ currentHashes={key:hashlib.sha256(m._read(Path(m.__file__).parent/name)).hexdigest() for key,name in m.SOURCES.items()},
+ snapshotHashes=m.current_hashes())))
+'''
+        # A refreshing stale entry exposes changed disk; a non-refreshing one
+        # exposes wrong cached text unless module execution replaces it first.
+        for cache_mtime in ('path.stat().st_mtime','None'):
+            with self.subTest(cache_mtime=cache_mtime):
+                code=self.bootstrap.ROOT.replace('sys.exit(m.main())',probe.replace('CACHE_MTIME',cache_mtime))
+                got=subprocess.run([sys.executable]+(['-O'] if not __debug__ else [])+
+                    ['-I','-S','-c',code,str(self.root/'pgcat_source_bootstrap.py'),
+                     hashes['sourceBootstrap'],'providerFeed',json.dumps(hashes)],
+                    cwd=str(self.root),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+                self.assertEqual(got.returncode,0,got.stderr)
+                result=json.loads(got.stdout)
+                self.assertEqual(result['currentHashes'],hashes)
+                self.assertEqual(result['snapshotHashes'],hashes)
+                self.assertEqual(result['verifiedHash'],hashes['providerFeed'])
+                self.assertEqual(result['filename'],str(self.root/'provider_feed.py'))
+                for index,name in enumerate(('atomic_write','write_private_publication')):
+                    with self.subTest(function=name):
+                        self.assertEqual(result['sources'][index],expected[name])
+                        self.assertIn(expected[name],result['scripts'][index])
 
     def test_unlisted_and_preloaded_application_modules_are_refused(self):
         (self.root/'pgcat_lane_runner.py').write_text('import undeclared\ndef main():return 0\n')

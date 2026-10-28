@@ -8,6 +8,7 @@ import importlib
 import importlib.abc
 import importlib.util
 import json
+import linecache
 import os
 from pathlib import Path
 import stat
@@ -75,6 +76,11 @@ class VerifiedFinder(importlib.abc.MetaPathFinder,importlib.abc.Loader):
     def exec_module(self,module):
         raw=self.snapshot[module.__name__]
         module.__verified_source_sha256__=hashlib.sha256(raw).hexdigest()
+        # Introspection during import must use these bytes, even if disk or a
+        # prior cache entry differs. None prevents linecache's mtime refresh.
+        filename=module.__file__
+        linecache.cache[filename]=(len(raw),None,
+            importlib.util.decode_source(raw).splitlines(True),filename)
         exec(compile(raw,module.__file__,'exec',dont_inherit=True),module.__dict__)
 
 
