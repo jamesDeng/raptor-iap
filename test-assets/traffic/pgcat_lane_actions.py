@@ -137,13 +137,15 @@ class ActionCatalog:
                    json.dumps(hashes,sort_keys=True,separators=(',',':')),
                    encode(bindings['target']).decode('ascii')]
             command=' '.join(q(part) for part in parts)
-        elif action.startswith('collector-') or action=='lane-verdict':
+        elif action.startswith(('collector-','rehearsal-collector-')) or action=='lane-verdict':
             identifier(run_id)
             hashes={key:bindings['sourceHashes'][key] for key in
                     set(WORKER_SOURCES) | {'collectorControl','laneTimingAssessor'}}
             parts=['python3','-I','-S','-c',BOOTSTRAP,
                    str(Path(bindings['remoteRun'])/'pgcat_collector_control.py'),
-                   hashes['collectorControl'],'verdict' if action=='lane-verdict' else action.split('-')[1],bindings['contractDir'],
+                   hashes['collectorControl'],('verdict' if action=='lane-verdict' else
+                       'rehearsal-'+action.rsplit('-',1)[1] if action.startswith('rehearsal-collector-')
+                       else action.split('-')[1]),bindings['contractDir'],
                    run_id,bindings['workerKubeconfig'],
                    json.dumps(hashes,sort_keys=True,separators=(',',':'))]
             if action=='lane-verdict':
@@ -284,9 +286,9 @@ class ActionCatalog:
                         value['category']=='lane-timing' and sha(value['verdictSha256']) and
                         all(sha(value[k]) or (value[k] is None and value['status'] in ('FAIL','INCONCLUSIVE'))
                             for k in ('clientIdentitySha256','workerCredentialCleanupSha256')),'parse')
-            elif action == 'collector-launch':
+            elif action in ('collector-launch','rehearsal-collector-launch'):
                 require(value == {'status':'LAUNCHED'},'parse')
-            elif action == 'collector-status':
+            elif action in ('collector-status','rehearsal-collector-status'):
                 require(value.get('status') in ('ALIVE','EXITED'),'parse')
                 require(set(value) == ({'status','identity'} if value['status']=='ALIVE'
                         else {'status','identity','exit'}),'parse')

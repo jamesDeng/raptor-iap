@@ -894,7 +894,9 @@ class PaidStartTests(unittest.TestCase):
             payload = {'baseline-start':dict(status='STARTED',phase='baseline'),
                 'baseline-status':dict(status='PREPARED',phase='baseline'),
                 'collector-launch':dict(status='LAUNCHED'),
-                'collector-status':dict(status='ALIVE',identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64))}[action]
+                'collector-status':dict(status='ALIVE',identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64)),
+                'rehearsal-collector-launch':dict(status='LAUNCHED'),
+                'rehearsal-collector-status':dict(status='ALIVE',identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64))}[action]
         return self.result_override or dict(state='complete',category='ok',payload=payload)
 
     def prior_proof(self):
@@ -1007,8 +1009,8 @@ class PaidStartTests(unittest.TestCase):
         c=self.prepare(); result=c.start_rehearsal(self.preflight)
         self.assertEqual(c.state,'scaled-three'); self.assertEqual(result['desired'],3)
         calls=self.calls()
-        self.assertEqual([e[1] for e in calls],['baseline-start','baseline-status','collector-launch',
-            'collector-status','pre-scale-start','pre-scale-status','collector-status','scaleout-two-to-three'])
+        self.assertEqual([e[1] for e in calls],['baseline-start','baseline-status','rehearsal-collector-launch',
+            'rehearsal-collector-status','pre-scale-start','pre-scale-status','rehearsal-collector-status','scaleout-two-to-three'])
         self.assertEqual([e[2] for e in calls],list(range(1,9)))
         self.assertEqual(result['sequence'],9)
         self.assertAlmostEqual(calls[-1][3],1020.35)
@@ -1023,6 +1025,54 @@ class PaidStartTests(unittest.TestCase):
         self.assertEqual(args[args.index('--max-seconds')+1],'5400')
         with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
         self.assertEqual(len(self.calls()),8)
+
+    def test_paid_baseline_uses_long_profile_actions(self):
+        c=self.prepare();c._start('disabled-rehearsal',5400);c._baseline_collector()
+        self.assertEqual([e[1] for e in self.calls()],['baseline-start','baseline-status',
+            'rehearsal-collector-launch','rehearsal-collector-status'])
+        self.assertEqual(c.receipt['desired'],2)
+        self.assertEqual(c.collector_identity,dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64))
+
+    def test_paid_collector_status_waits_for_desired_three_successor(self):
+        c=self.prepare();c.start_rehearsal(self.preflight)
+        before=c.receipt['sequence'];observed_before=self.wall;self.scaled=True
+        result=c._worker_call('rehearsal-collector-status')
+        self.assertEqual(result['status'],'ALIVE')
+        self.assertEqual(c.receipt['desired'],3)
+        self.assertGreater(c.receipt['sequence'],before)
+        self.assertGreater(c.receipt['observedAt'],observed_before)
+
+    def test_public_no_scale_api_refuses_paid_controller(self):
+        c=self.prepare();c._start('disabled-rehearsal',5400)
+        before=len(self.calls())
+        with self.assertRaises(Refused):c.call_no_scale('baseline-start')
+        self.assertEqual(len(self.calls()),before)
+        self.assertEqual(c.state,'uncertain')
+
+    def test_worker_call_collector_pair_cannot_cross_modes(self):
+        c=self.controller()
+        self.capture.mkdir(mode=0o700)
+        for mode,action in (('disabled-rehearsal','collector-status'),
+                ('no-scale','rehearsal-collector-status')):
+            with self.subTest(mode=mode):
+                c.mode=mode
+                c.state='active';c.client=self.client;c.feed=Mock()
+                c.feed.poll.return_value=None
+                c.receipt=dict(feedSession=self.session,sequence=1,desired=2,observedAt=self.wall)
+                before=len(self.calls())
+                with self.assertRaises(Refused):c._worker_call(action)
+                self.assertEqual(len(self.calls()),before)
+
+    def test_paid_live_status_rejects_exit_malformed_and_changed_identity(self):
+        c=self.prepare();c._start('disabled-rehearsal',5400);c._baseline_collector()
+        identity=copy.deepcopy(c.collector_identity)
+        for payload in (dict(status='EXITED',identity=identity,
+                exit=dict(category='completed',exitCode=0,completionSha256='c'*64)),
+                dict(status='ALIVE'),dict(status='ALIVE',identity=dict(identity,pid=10))):
+            with self.subTest(payload=payload):
+                c.state='active';self.result_override=dict(state='complete',category='ok',payload=payload)
+                with self.assertRaises(Refused):c._worker_call('rehearsal-collector-status')
+                self.assertIsNone(c.collector_exit)
 
     def test_paid_refuses_invalid_operator_receipt_before_spawn(self):
         c=self.prepare()
@@ -1070,7 +1120,7 @@ class PaidStartTests(unittest.TestCase):
                     return result
                 def call(*args):
                     result=self.call(*args)
-                    if args[0]=='collector-status' and len(self.calls())==7:
+                    if args[0]=='rehearsal-collector-status' and len(self.calls())==7:
                         if point=='before-intent': self.wall+=5401
                         if point=='expiry': self.wall+=300
                     return result

@@ -14,7 +14,8 @@ from contextlib import contextmanager
 MAX_REQUEST = 16384
 ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'pre-scale-status', 'zero-gate-start', 'zero-gate-status', 'pending-start',
-    'pending-status', 'pending-proof', 'collector-launch', 'collector-status', 'lane-verdict', 'reconcile-close',
+    'pending-status', 'pending-proof', 'collector-launch', 'collector-status',
+    'rehearsal-collector-launch', 'rehearsal-collector-status', 'lane-verdict', 'reconcile-close',
     'scaleout-two-to-three', 'pre-drain-proof', 'deregister-new-node',
     'zero-proof', 'scaling-activity-check', 'scalein-three-to-two'))
 NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status',
@@ -56,6 +57,12 @@ def _release_admission(mode, action=None):
     """This release has only the completed no-scale runtime capability."""
     require(mode == 'no-scale', 'configuration')
     require(action is None or action in NO_SCALE_ACTIONS, 'configuration')
+
+
+def _collector_actions(profile):
+    require(profile in ('no-scale','disabled-rehearsal'), 'configuration')
+    return (('collector-launch','collector-status') if profile == 'no-scale' else
+            ('rehearsal-collector-launch','rehearsal-collector-status'))
 
 
 def encode(value):
@@ -583,6 +590,12 @@ class Journal:
             require(request['bundleSha256'] == json.loads(run['hashes'])['bundleSha256'], 'source')
             if run['mode'] == 'no-scale':
                 require(request['action'] in NO_SCALE_ACTIONS, 'configuration')
+            if request['action'] in ('collector-launch','collector-status',
+                    'rehearsal-collector-launch','rehearsal-collector-status'):
+                require(request['action'] in _collector_actions(run['mode']), 'configuration')
+            if request['action'] == 'rehearsal-collector-launch':
+                require(db.execute("SELECT 1 FROM requests WHERE run_id=? AND json_extract(request,'$.action')='rehearsal-collector-launch'",
+                        (request['runId'],)).fetchone() is None, 'incomplete')
             if request['action'] == 'scaleout-two-to-three':
                 require(run['mode'] == 'disabled-rehearsal' and
                         request['target']['scalingGroupId'] == 'asg-t4necb4dfmu6o3z2rn0g')
@@ -753,16 +766,18 @@ class Journal:
                     sequence=request['minimumSequence'],sourceSha256=lane_verdict_source_sha,collectorExit=prior)
                 require(db.execute('SELECT 1 FROM lane_verdict').fetchone() is None,'incomplete')
                 db.execute('INSERT INTO lane_verdict VALUES (1,?)',(encode(proof).decode(),))
-            elif result['state']=='complete' and request['action']=='collector-status':
+            elif result['state']=='complete' and request['action'] in ('collector-status','rehearsal-collector-status'):
                 require(pending_source_sha is None and pre_drain_source_sha is None and
                         zero_source_sha is None,'source')
+                current=db.execute('SELECT mode FROM run').fetchone()
+                require(request['action']==_collector_actions(current['mode'])[1], 'configuration')
                 payload=result['payload'];status=payload.get('status')
                 require(status in ('ALIVE','EXITED') and set(payload)==
                         ({'status','identity'} if status=='ALIVE' else {'status','identity','exit'}),'source')
                 alive=False
                 for previous in db.execute("SELECT request,result FROM requests WHERE state='complete' ORDER BY rowid"):
                     req=json.loads(previous['request']);out=json.loads(previous['result'])['payload']
-                    if req['action']=='collector-status':
+                    if req['action']==request['action']:
                         require(out['identity']==payload['identity'] and req['feedSession']==request['feedSession'],'source')
                         if out['status']=='ALIVE':alive=True
                         if out['status']=='EXITED':require(payload==out,'source')
@@ -796,16 +811,19 @@ class Journal:
             if result['state'] == 'uncertain':
                 db.execute("UPDATE run SET state='uncertain' WHERE state='active'")
 
-    def _collector_exit_in_tx(self,db):
+    def _collector_exit_in_tx(self,db,*,profile='no-scale'):
+        action=_collector_actions(profile)[1]
+        run=db.execute('SELECT mode FROM run').fetchone()
+        require(run is not None and run['mode']==profile, 'configuration')
         for row in db.execute("SELECT request,result FROM requests WHERE state='complete' ORDER BY rowid DESC"):
             req=json.loads(row['request']);out=json.loads(row['result'])['payload']
-            if req['action']=='collector-status' and out.get('status')=='EXITED':
+            if req['action']==action and out.get('status')=='EXITED':
                 return dict(runId=req['runId'],feedSession=req['feedSession'],sequence=req['minimumSequence'],
                             requestId=req['requestId'],payload=out)
         raise Refused('incomplete')
 
-    def collector_exit(self):
-        with self._connection() as db:return self._collector_exit_in_tx(db)
+    def collector_exit(self,*,profile='no-scale'):
+        with self._connection() as db:return self._collector_exit_in_tx(db,profile=profile)
 
     def lane_verdict(self):
         with self._connection() as db:

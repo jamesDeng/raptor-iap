@@ -214,6 +214,89 @@ class ProtocolTest(unittest.TestCase):
         with self.assertRaises(Refused):
             self.journal.admit(request)
 
+    def collector_journal(self, mode):
+        from unittest.mock import patch
+        admission=patch('pgcat_lane_protocol._release_admission')
+        admission.start();self.addCleanup(admission.stop)
+        root=self.root/str(uuid.uuid4());root.mkdir(mode=0o700)
+        journal=Journal(root)
+        journal.create_run(self.run,mode,self.target,{'bundleSha256':'a'*64})
+        return journal
+
+    def collector_request(self, journal, action, sequence=1):
+        request=self.request(action=action,minimumSequence=sequence)
+        publish_request(journal.root,request)
+        journal.admit(request)
+        return request
+
+    def collector_status(self, journal, action, payload, sequence):
+        request=self.collector_request(journal,action,sequence)
+        journal.seal(request['requestId'],dict(state='complete',category='ok',payload=payload))
+        return request
+
+    def test_collector_pair_requires_matching_journal_mode(self):
+        for mode,allowed,denied in (
+                ('no-scale',('collector-launch','collector-status'),
+                    ('rehearsal-collector-launch','rehearsal-collector-status')),
+                ('disabled-rehearsal',('rehearsal-collector-launch','rehearsal-collector-status'),
+                    ('collector-launch','collector-status'))):
+            for action in allowed:
+                with self.subTest(mode=mode,action=action):
+                    journal=self.collector_journal(mode)
+                    self.collector_request(journal,action)
+            for action in denied:
+                with self.subTest(mode=mode,action=action),self.assertRaises(Refused):
+                    self.collector_request(self.collector_journal(mode),action)
+
+    def test_rehearsal_collector_launch_is_semantically_once(self):
+        journal=self.collector_journal('disabled-rehearsal')
+        request=self.collector_request(journal,'rehearsal-collector-launch')
+        journal.seal(request['requestId'],dict(state='complete',category='ok',payload=dict(status='LAUNCHED')))
+        with self.assertRaises(Refused):
+            self.collector_request(journal,'rehearsal-collector-launch',2)
+        with journal._connection() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM requests').fetchone()[0],1)
+
+    def test_collector_exit_cannot_cross_profiles(self):
+        identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64)
+        for mode,action,other in (('no-scale','collector-status','disabled-rehearsal'),
+                ('disabled-rehearsal','rehearsal-collector-status','no-scale')):
+            with self.subTest(mode=mode):
+                journal=self.collector_journal(mode)
+                self.collector_status(journal,action,dict(status='ALIVE',identity=identity),1)
+                exited=dict(status='EXITED',identity=identity,
+                    exit=dict(category='completed',exitCode=0,completionSha256='c'*64))
+                self.collector_status(journal,action,exited,2)
+                self.assertEqual(journal.collector_exit(profile=mode)['payload'],exited)
+                with self.assertRaises(Refused):journal.collector_exit(profile=other)
+                with self.assertRaises(Refused):journal.collector_exit(profile='unknown')
+                if mode=='no-scale':
+                    self.assertEqual(journal.collector_exit()['payload'],exited)
+                    self.collector_request(journal,'lane-verdict',3)
+                else:
+                    with self.assertRaises(Refused):journal.collector_exit()
+                    with self.assertRaises(Refused):self.collector_request(journal,'lane-verdict',3)
+
+    def test_rehearsal_status_requires_alive_and_unchanged_identity(self):
+        identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64)
+        journal=self.collector_journal('disabled-rehearsal')
+        exited=dict(status='EXITED',identity=identity,
+            exit=dict(category='completed',exitCode=0,completionSha256='c'*64))
+        request=self.collector_request(journal,'rehearsal-collector-status')
+        with self.assertRaises(Refused):
+            journal.seal(request['requestId'],dict(state='complete',category='ok',payload=exited))
+        journal.seal(request['requestId'],dict(state='complete',category='ok',
+            payload=dict(status='ALIVE',identity=identity)))
+        request=self.collector_request(journal,'rehearsal-collector-status',2)
+        for payload in (dict(status='LAUNCHED'),dict(exited,identity=dict(identity,pid=10))):
+            with self.subTest(payload=payload),self.assertRaises(Refused):
+                journal.seal(request['requestId'],dict(state='complete',category='ok',payload=payload))
+        journal.seal(request['requestId'],dict(state='complete',category='ok',payload=exited))
+        request=self.collector_request(journal,'rehearsal-collector-status',3)
+        with self.assertRaises(Refused):
+            journal.seal(request['requestId'],dict(state='complete',category='ok',
+                payload=dict(status='ALIVE',identity=identity)))
+
     def test_rehearsal_scaleout_requires_fixed_group(self):
         from unittest.mock import patch
         admission=patch("pgcat_lane_protocol._release_admission");admission.start();self.addCleanup(admission.stop)

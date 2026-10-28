@@ -481,6 +481,38 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(budget,5.0)
         self.assertNotIn('AWS_SECRET_ACCESS_KEY',env)
 
+    def test_rehearsal_collector_action_argv_and_parser(self):
+        import shlex
+        from pgcat_lane_protocol import NO_SCALE_ACTIONS
+        identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64)
+        alive=dict(status='ALIVE',identity=identity)
+        exited=dict(status='EXITED',identity=identity,
+            exit=dict(category='completed',exitCode=0,completionSha256='c'*64))
+        req=self.request()
+        for action,verb,payloads in (
+                ('rehearsal-collector-launch','rehearsal-launch',[dict(status='LAUNCHED')]),
+                ('rehearsal-collector-status','rehearsal-status',[alive,exited])):
+            with self.subTest(action=action):
+                args,env,budget=actions.ActionCatalog.command(action,self.bindings,self.run)
+                parts=shlex.split(args[-1])
+                self.assertEqual(parts[:4],['python3','-I','-S','-c'])
+                self.assertEqual(parts[5:11],['/reviewed/run/pgcat_collector_control.py',
+                    self.hashes['collectorControl'],verb,'/reviewed/contract',self.run,'/reviewed/kubeconfig'])
+                self.assertEqual(len(parts),12)
+                self.assertEqual(json.loads(parts[11]),{k:self.hashes[k] for k in
+                    set(actions.WORKER_SOURCES)|{'collectorControl','laneTimingAssessor'}})
+                old,old_env,_=actions.ActionCatalog.command('collector-launch',self.bindings,self.run)
+                self.assertEqual(args[:-1],old[:-1]);self.assertEqual(env,old_env)
+                self.assertEqual(budget,5.0);self.assertNotIn(action,NO_SCALE_ACTIONS)
+                for payload in payloads:
+                    self.assertEqual(actions.ActionCatalog.parse(action,encode(payload),req),payload)
+        for payload in (dict(status='RUNNING',identity=identity),dict(status='ALIVE'),
+                dict(alive,extra='unexpected'),dict(status='ALIVE',identity=dict(identity,pid=True)),
+                dict(exited,exit=dict(category='completed',exitCode=1,completionSha256='c'*64)),
+                dict(exited,exit=dict(category='completed',exitCode=0))):
+            with self.subTest(payload=payload),self.assertRaises(Refused):
+                actions.ActionCatalog.parse('rehearsal-collector-status',encode(payload),req)
+
     def test_clean_child_mask_restored_and_one_use(self):
         row = self.run_request()
         self.assertEqual(row['state'],'complete')

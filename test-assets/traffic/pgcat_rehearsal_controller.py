@@ -210,15 +210,17 @@ class Controller:
     def call_no_scale(self, action):
         """Only harmless fixed actions; each waits for a successful successor."""
         try:
-            require(type(action) is str and action in NO_SCALE_ACTIONS)
+            require(self.mode == 'no-scale' and type(action) is str and action in NO_SCALE_ACTIONS)
             return self._worker_call(action)
         except BaseException:
             self.close(); raise
 
     def _worker_call(self, action):
         try:
-            require(action in NO_SCALE_ACTIONS or (self.mode == 'disabled-rehearsal'
-                    and action in ('pre-scale-start','pre-scale-status')))
+            require((self.mode == 'no-scale' and action in NO_SCALE_ACTIONS) or
+                    (self.mode == 'disabled-rehearsal' and action in ('baseline-start',
+                    'baseline-status','pre-scale-start','pre-scale-status',
+                    'rehearsal-collector-launch','rehearsal-collector-status')))
             if action == 'lane-verdict':
                 require(self.mode == 'no-scale' and self.collector_exit is not None and
                         self.verdict_result is None,'incomplete')
@@ -249,7 +251,7 @@ class Controller:
             elif action == 'baseline-status':
                 require(set(payload) == {'status','phase'} and payload['phase'] == 'baseline'
                         and payload['status'] in ('RUNNING','PREPARED'),'parse')
-            elif action == 'collector-launch':
+            elif action in ('collector-launch','rehearsal-collector-launch'):
                 require(payload == dict(status='LAUNCHED'),'parse')
             elif action == 'lane-verdict':
                 require(self.mode == 'no-scale' and self.collector_exit is not None and
@@ -271,7 +273,7 @@ class Controller:
                 if self.collector_identity is not None:
                     require(payload['identity'] == self.collector_identity,'child')
                 self.collector_identity=copy.deepcopy(payload['identity'])
-            self._next_receipt(receipt['sequence']+1,observed_after=completed_at)
+            self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=receipt['desired'])
             if action == 'collector-status' and payload['status'] == 'EXITED':
                 self.collector_exit=copy.deepcopy(payload)
             if action == 'lane-verdict':
@@ -341,10 +343,12 @@ class Controller:
         self.state='active'; self._next_receipt(1)
 
     def _baseline_collector(self):
-        self.call_no_scale('baseline-start')
-        while self.call_no_scale('baseline-status')['status'] != 'PREPARED': pass
-        self.call_no_scale('collector-launch')
-        self.call_no_scale('collector-status')
+        self._worker_call('baseline-start')
+        while self._worker_call('baseline-status')['status'] != 'PREPARED': pass
+        launch,status=(('collector-launch','collector-status') if self.mode == 'no-scale' else
+                       ('rehearsal-collector-launch','rehearsal-collector-status'))
+        self._worker_call(launch)
+        self._worker_call(status)
 
     def start_no_scale(self):
         try:
@@ -556,7 +560,7 @@ class Controller:
             while True:
                 proof=self._worker_call('pre-scale-status')
                 if proof['status'] == 'PREPARED': break
-            self.call_no_scale('collector-status')
+            self._worker_call('rehearsal-collector-status')
             self._paid_gate(preflight_path,evidence,probed_at)
             b=self.bindings['laneBindings']; proof_path=Path(b['preScaleProofPath'])
             save_once(proof_path.parent,proof_path.name,dict(feedSession=proof['feedSession'],sequence=proof['sequence']))
