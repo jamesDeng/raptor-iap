@@ -1,6 +1,8 @@
 """Sole private local submitter; completion is observed only in the journal."""
 import copy
+from datetime import datetime, timezone, timedelta
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -75,18 +77,25 @@ class LaneClient:
             if reader is not None: os.close(reader)
 
     def start_feed(self, argv, env, outer_binding_path):
-        """No-scale only: bind the live exact child before allowing provider exec."""
+        """Bind this mode's live exact child before allowing provider exec."""
         self._active()
-        require(self.mode=='no-scale' and getattr(self,'feed_process',None) is None,'child')
+        require(self.mode in ('no-scale','disabled-rehearsal') and getattr(self,'feed_process',None) is None,'child')
+        from pgcat_lane_protocol import _release_admission
+        _release_admission(self.mode)
         outer,raw=private_json(Path(outer_binding_path))
         b=self.bindings
         require(outer['laneBindings']==b and Path(outer['laneRoot'])==self.root,'source')
+        cap='180'
+        if self.mode == 'disabled-rehearsal':
+            require(type(argv) is list and len(argv) > 8 and type(argv[8]) is str,'source')
+            cap=argv[8]
+            require(0 < len(cap) <= 4 and all('0' <= c <= '9' for c in cap) and str(int(cap)) == cap and 75 <= int(cap) <= 5400,'timeout')
         expected=[sys.executable,'-u',b['providerFeedPath'],
-            '--mode','disabled-rehearsal','--interval','15','--max-seconds','180',
+            '--mode','disabled-rehearsal','--interval','15','--max-seconds',cap,
             '--workbench',b['laneWrapper'],'--worker-inventory',outer['workerInventory'],
             '--kubeconfig',outer['workerKubeconfig'],'--status-file',b['receiptPath'],
-            '--run-context',str(self.root/'run-context.json'),'--contract-dir',b['contractDir'],
-            '--no-scale-target',encode(b['target']).decode('ascii')]
+            '--run-context',str(self.root/'run-context.json'),'--contract-dir',b['contractDir']]
+        if self.mode == 'no-scale':expected += ['--no-scale-target',encode(b['target']).decode('ascii')]
         require(argv==expected,'source')
         _require_verified()
         from pgcat_source_bootstrap import command
@@ -95,6 +104,12 @@ class LaneClient:
         here=Path(__file__).resolve().parent
         for key,name in dict(client='pgcat_lane_client.py',controller='pgcat_rehearsal_controller.py',runner='pgcat_lane_runner.py').items():
             require(hashlib.sha256((here/name).read_bytes()).hexdigest()==outer['sourceHashes'][key],'source')
+        def check_cap():
+            if self.mode == 'disabled-rehearsal':
+                now=datetime.fromtimestamp(time.time(),timezone(timedelta(hours=8)))
+                require(now < now.replace(hour=21,minute=30,second=0,microsecond=0) and
+                        int(cap) <= int((now.replace(hour=22,minute=30,second=0,microsecond=0)-now).total_seconds())-120,'timeout')
+        check_cap()
         reader,writer=os.pipe()
         # The isolated bootstrap imports only stdlib and exec preserves this PID.
         # EOF and timeout exit without importing or executing provider code.
@@ -112,8 +127,10 @@ class LaneClient:
             _,current=private_json(Path(outer_binding_path));require(current==raw,'source')
             self.feed_binding=dict(runId=self.run_id,feedId=str(uuid.uuid4()),pid=self.feed_process.pid,
                 bindingSha256=hashlib.sha256(raw).hexdigest(),argvSha256=digest(verified_argv))
-            self.journal.bind_feed(self.feed_binding)
+            if self.mode == 'disabled-rehearsal':self.journal.bind_feed(self.feed_binding,manifest_raw=raw)
+            else:self.journal.bind_feed(self.feed_binding)
             self._active();require(self.feed_process.poll() is None,'child')
+            check_cap()
             require(os.write(writer,b'1')==1,'child')
             return self.feed_process
         finally:
@@ -121,10 +138,18 @@ class LaneClient:
             os.close(writer)
 
     def confirm_feed_exit(self, feed_process):
-        require(self.mode=='no-scale' and feed_process is getattr(self,'feed_process',None) and
+        require(self.mode in ('no-scale','disabled-rehearsal') and feed_process is getattr(self,'feed_process',None) and
                 isinstance(feed_process,subprocess.Popen),'child')
         code=feed_process.poll();require(type(code) is int,'child')
         bound=self.feed_binding
+        with self.journal._connection() as db:
+            row=db.execute('SELECT proof FROM feed_binding').fetchone()
+            require(row is not None,'child')
+            require(encode(json.loads(row['proof'])) == encode(bound),'source')
+            run=db.execute('SELECT * FROM run').fetchone()
+            require(run is not None and run['mode'] == self.mode and run['run_id'] == self.run_id and
+                    json.loads(run['target']) == self.bindings['target'] and
+                    json.loads(run['hashes']) == dict(self.bindings['sourceHashes'],bundleSha256=self.bundle),'source')
         require(feed_process.pid==bound['pid'],'child')
         self.journal.confirm_feed_exit(dict(runId=self.run_id,feedId=bound['feedId'],
             pid=feed_process.pid,exitCode=code))

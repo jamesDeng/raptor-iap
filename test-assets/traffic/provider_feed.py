@@ -4,7 +4,9 @@ import copy
 import hashlib
 from capture_window import InventoryMode
 from pgcat_lane_protocol import (roster_sha, encode, target_valid, original_roster,
-    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK, Refused)
+    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK, Refused,
+    REHEARSAL_STOP_INTENT, REHEARSAL_STOP_ACK, validate_rehearsal_stop_receipt,
+    rehearsal_stop_ack, Journal, private_json)
 import ipaddress
 import json
 import math
@@ -559,6 +561,8 @@ class Operator:
         run_context = getattr(args, 'run_context', None)
         self.run_context = None
         if run_context is not None:
+            # The full four-node observer requires a separate explicit integration.
+            require(self.mode == 'disabled-rehearsal')
             context_path = Path(run_context)
             contract = Path(args.contract_dir)
             inventory = Path(args.worker_inventory)
@@ -569,6 +573,11 @@ class Operator:
                     inventory.parent.parent == contract.parent)
             self.run_context = validate_run_context(context_path.parent, context_path,
                 no_scale=getattr(args, 'no_scale_target', None) is not None)
+        if self.run_context is not None and getattr(args,'no_scale_target',None) is None:
+            require(type(args.interval) is int and args.interval == 15 and
+                    type(args.max_seconds) is int and 75 <= args.max_seconds <= 5400)
+            for name in (REHEARSAL_STOP_INTENT,REHEARSAL_STOP_ACK):
+                require(self.status_file is not None and not os.path.lexists(self.status_file.parent/name))
         self.no_scale_target = None
         self.stop_ack = None
         raw_target = getattr(args, 'no_scale_target', None)
@@ -631,8 +640,42 @@ class Operator:
             self.stopped = True
             raise FeedStop('loop') from None
 
+    def stop_rehearsal(self):
+        """Acknowledge only the actual final publication after sealed reconciliation."""
+        if self.run_context is None or self.no_scale_target is not None:
+            return False
+        from pgcat_lane_supervisor import save_once
+        path=self.status_file.parent/REHEARSAL_STOP_INTENT
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.args.mode == self.mode and
+                    getattr(self.args,'no_scale_target',None) is None)
+            if not os.path.lexists(path):
+                require(self.stop_ack is None and not os.path.lexists(path.parent/REHEARSAL_STOP_ACK))
+                return False
+            self.deadline=None
+            self.verify_run_context()
+            journal=Journal(Path(self.args.run_context).parent)
+            run=journal.run_snapshot();proof=journal.reconcile_binding()
+            intent,raw=private_json(path)
+            require(raw == encode(intent) and intent['runId'] == self.run_context['runId'])
+            receipt,_=private_json(self.status_file)
+            require(receipt['feedSession'] == self.feedSession and receipt['sequence'] == self.sequence)
+            validate_rehearsal_stop_receipt(intent,receipt,proof,run)
+            ack=rehearsal_stop_ack(intent,receipt)
+            if self.stop_ack is None:
+                save_once(path.parent,REHEARSAL_STOP_ACK,ack,atomic=True)
+                self.stop_ack=ack
+            actual,raw=private_json(path.parent/REHEARSAL_STOP_ACK)
+            require(raw == encode(ack) and encode(actual) == encode(self.stop_ack) == encode(ack))
+            self.stopped=True
+            return True
+        except (Refused,OSError,ValueError,UnicodeError,TypeError,KeyError):
+            self.stopped=True
+            raise FeedStop('loop') from None
+
     def verify_run_context(self):
         if self.run_context is not None:
+            require(self.mode == 'disabled-rehearsal' and self.args.mode == self.mode)
             path = Path(self.args.run_context)
             require(validate_run_context(path.parent, path,
                 no_scale=getattr(self.args, 'no_scale_target', None) is not None) == self.run_context)
@@ -897,7 +940,9 @@ def main():
             require([node for node,_ in operator.previous] == operator.no_scale_target['originalInstanceIds'])
         operator.stage = 'loop'
         run_loop(operator.read,operator.write,interval=args.interval,max_seconds=args.max_seconds,
-                 **({'stop':operator.stop_no_scale} if operator.no_scale_target is not None else {}))
+                 **({'stop':operator.stop_no_scale} if operator.no_scale_target is not None else
+                    {'stop':operator.stop_rehearsal} if operator.run_context is not None and
+                    operator.mode == 'disabled-rehearsal' else {}))
     except FeedStop as error:
         parser.exit(1,str(error)+'\n')
     except Exception:

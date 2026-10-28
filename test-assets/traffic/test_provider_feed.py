@@ -92,7 +92,7 @@ class FeedTests(unittest.TestCase):
                 targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
             args=SimpleNamespace(mode='disabled-rehearsal',status_file=str(receipt),
                 run_context=str(root/'run-context.json'),contract_dir=str(contract),
-                worker_inventory=str(inventory))
+                worker_inventory=str(inventory),interval=15,max_seconds=75)
             validation=patch.object(feed,'validate_run_context',return_value=context)
             validation.start();self.addCleanup(validation.stop)
             op=feed.Operator(args)
@@ -124,7 +124,7 @@ class FeedTests(unittest.TestCase):
                 targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
             args=SimpleNamespace(mode='disabled-rehearsal',status_file=str(root/'status.json'),
                 run_context=str(root/'run-context.json'),contract_dir=str(root/'contract'),
-                worker_inventory=str(root/'run'/'provider-inventory.json'))
+                worker_inventory=str(root/'run'/'provider-inventory.json'),interval=15,max_seconds=75)
             with patch.object(feed,'validate_run_context',side_effect=[context,ValueError('inactive')]):
                 op=feed.Operator(args)
                 calls=[];op.remote=lambda *parts:calls.append(parts)
@@ -315,7 +315,7 @@ class FeedTests(unittest.TestCase):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as directory:
             path=pathlib.Path(directory)/'status.json'
-            argv=['provider_feed.py','--status-file',str(path),'--workbench','offline',
+            argv=['provider_feed.py','--mode','disabled-rehearsal','--status-file',str(path),'--workbench','offline',
                   '--worker-inventory','/private/run/provider-inventory.json','--kubeconfig','/private/kubeconfig',
                   '--run-context',str(path.parent/'run-context.json'),'--contract-dir','/private/contract']
             def once(read,write,**kwargs):write(self.take(self.fixture()))
@@ -656,14 +656,14 @@ class FeedTests(unittest.TestCase):
             self.take(fixture)
         self.assertEqual(getattr(caught.exception,'stage',None),'nlb-backend-state')
 
-    def test_invalid_loop_limit_is_not_reported_as_target_read(self):
+    def test_invalid_paid_loop_limit_refuses_before_provider_reads(self):
         import contextlib
         import io
         import sys
         from unittest.mock import patch
         output=io.StringIO()
         with tempfile.TemporaryDirectory() as directory:
-            argv=['provider_feed.py','--interval','16','--workbench','/private/workbench',
+            argv=['provider_feed.py','--mode','disabled-rehearsal','--interval','16','--workbench','/private/workbench',
                   '--worker-inventory','/private/run/provider-inventory.json','--kubeconfig','/private/kubeconfig',
                   '--run-context','/private/lane/run-context.json','--contract-dir','/private/contract',
                   '--status-file',str(pathlib.Path(directory)/'status.json')]
@@ -671,7 +671,7 @@ class FeedTests(unittest.TestCase):
                     patch.object(feed,'validate_run_context',return_value={}), \
                     contextlib.redirect_stderr(output), self.assertRaises(SystemExit):
                 feed.main()
-        self.assertIn('stopped at loop',output.getvalue())
+        self.assertIn('stopped at startup',output.getvalue())
         self.assertNotIn('targets-read',output.getvalue())
 
     def test_publish_allowlist_and_changed_targets(self):
@@ -1160,4 +1160,104 @@ class NoScaleFeedTests(unittest.TestCase):
             self.assertEqual(ticks,list(range(0,180,15)))
             self.assertFalse((op.status_file.parent/'no-scale-stop.ack').exists())
 
-if __name__=='__main__':unittest.main()
+
+
+
+class PaidFeedStopTests(unittest.TestCase):
+    def setUp(self):
+        from test_pgcat_lane_protocol import PaidStopJournalTests
+        fixture=PaidStopJournalTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        self.fixture=fixture
+        from unittest.mock import patch
+        self.patch=patch
+        patch('pgcat_lane_protocol._release_admission').start();self.addCleanup(patch.stopall)
+        context=dict(runId=fixture.run,targetSha256=hashlib.sha256(__import__('pgcat_lane_protocol').encode(fixture.outer['laneBindings']['target'])).hexdigest())
+        from types import SimpleNamespace
+        args=dict(mode='disabled-rehearsal',status_file=str(fixture.root.parent/'status.json'),
+            run_context=str(fixture.root/'run-context.json'),contract_dir='/fresh/contract',
+            worker_inventory='/fresh/run/provider-inventory.json',no_scale_target=None,interval=15,max_seconds=75)
+        with patch.object(feed,'validate_run_context',return_value=context):self.op=feed.Operator(SimpleNamespace(**args))
+        self.op.verify_run_context=lambda:None
+        self.op.feedSession=fixture.session;self.op.sequence=fixture.receipt['sequence']
+        fixture.controls()
+
+    def test_paid_stop_acknowledges_actual_receipt_and_one_inflight_publication(self):
+        from pgcat_lane_protocol import digest,encode
+        for extra in (0,1):
+            with self.subTest(extra=extra):
+                self.op.stop_ack=None;self.op.stopped=False
+                ack=self.op.status_file.parent/'rehearsal-stop.ack';ack.unlink(missing_ok=True)
+                final=dict(self.fixture.receipt,sequence=10+extra)
+                self.op.sequence=10+extra;self.op.status_file.write_bytes(encode(final))
+                self.assertTrue(self.op.stop_rehearsal())
+                value=json.loads(ack.read_text())
+                self.assertEqual(value['sequence'],10+extra)
+                self.assertEqual(value['finalReceiptSha256'],digest(final))
+                self.assertEqual(value['reconcileBindingSha256'],digest(self.fixture.proof))
+
+    def test_paid_stop_refuses_wrong_session_source_sequence_and_missing_ack_is_natural(self):
+        from pgcat_lane_protocol import encode
+        ack=self.op.status_file.parent/'rehearsal-stop.ack';ack.unlink()
+        intent=self.op.status_file.parent/'rehearsal-stop.intent';raw=intent.read_bytes();intent.unlink()
+        self.assertFalse(self.op.stop_rehearsal());self.assertFalse(ack.exists())
+        intent.write_bytes(raw);intent.chmod(0o600)
+        for changes in (dict(sequence=12),dict(feedSession=str(uuid.uuid4())),dict(desired=3),
+                        dict(observedAt=self.fixture.proof['sealedAt']),dict(rosterSha256='0'*64)):
+            self.op.stopped=False;self.op.status_file.write_bytes(encode(dict(self.fixture.receipt,**changes)))
+            self.op.sequence=dict(self.fixture.receipt,**changes)['sequence']
+            with self.subTest(changes=changes),self.assertRaises(feed.FeedStop):self.op.stop_rehearsal()
+            self.assertFalse(ack.exists())
+
+    def test_paid_journal_cannot_adopt_full_replacement_inventory_mode(self):
+        from types import SimpleNamespace
+        args=dict(vars(self.op.args),mode='full-replacement',status_file=str(self.fixture.root.parent/'other-status.json'))
+        with self.patch.object(feed,'validate_run_context',return_value=self.op.run_context),self.assertRaises(ValueError):
+            feed.Operator(SimpleNamespace(**args))
+
+    def test_paid_loop_checks_both_tick_boundaries_and_never_synthesizes_observation(self):
+        from pgcat_lane_protocol import encode
+        root=self.op.status_file.parent
+        (root/'rehearsal-stop.ack').unlink();intent=root/'rehearsal-stop.intent';raw=intent.read_bytes();intent.unlink()
+        clock=[0.];calls=[]
+        def read(**kwargs):
+            calls.append('read');intent.write_bytes(raw);intent.chmod(0o600)
+            return dict(self.fixture.receipt,sequence=11)
+        def write(value,**kwargs):
+            self.op.sequence=value['sequence'];self.op.status_file.write_bytes(encode(value))
+        feed.run_loop(read,write,interval=15,max_seconds=75,monotonic=lambda:clock[0],
+            sleep=lambda n:clock.__setitem__(0,clock[0]+n),stop=self.op.stop_rehearsal)
+        self.assertEqual(calls,['read']);self.assertEqual(clock[0],0.)
+        final=json.loads(self.op.status_file.read_text())
+        self.assertEqual(final['sequence'],11);self.assertEqual(final['observedAt'],self.fixture.receipt['observedAt'])
+        self.assertTrue(self.op.stopped)
+        with self.assertRaises(feed.FeedStop):self.op.write({})
+
+    def test_paid_natural_cap_preserves_fifteen_second_ticks_without_ack(self):
+        root=self.op.status_file.parent;(root/'rehearsal-stop.ack').unlink();(root/'rehearsal-stop.intent').unlink()
+        clock=[0.];ticks=[]
+        def read(**kwargs):ticks.append(clock[0]);return None
+        feed.run_loop(read,lambda *a,**kw:None,interval=15,max_seconds=75,
+            monotonic=lambda:clock[0],sleep=lambda n:clock.__setitem__(0,clock[0]+n),stop=self.op.stop_rehearsal)
+        self.assertEqual(ticks,[0.,15.,30.,45.,60.]);self.assertEqual(clock[0],75.)
+        self.assertFalse((root/'rehearsal-stop.ack').exists())
+
+    def test_paid_callback_independently_refuses_wrong_intent_source_and_existing_ack(self):
+        from pgcat_lane_protocol import encode,digest
+        root=self.op.status_file.parent;ack=root/'rehearsal-stop.ack';ack.unlink()
+        path=root/'rehearsal-stop.intent';original=json.loads(path.read_text())
+        for changes in (dict(runId=str(uuid.uuid4())),dict(feedSession=str(uuid.uuid4())),
+                        dict(reconcileBindingSha256='0'*64),dict(minimumSequence=11),dict(extra=True)):
+            path.write_bytes(encode(dict(original,**changes)))
+            with self.subTest(changes=changes),self.assertRaises(feed.FeedStop):self.op.stop_rehearsal()
+            self.assertFalse(ack.exists())
+        altered=dict(self.fixture.proof,sourceSha256='0'*64)
+        with self.fixture.journal._transaction() as db:db.execute('UPDATE reconcile_binding SET proof=?',(encode(altered).decode(),))
+        path.write_bytes(encode(dict(original,reconcileBindingSha256=digest(altered))))
+        with self.assertRaises(feed.FeedStop):self.op.stop_rehearsal()
+        with self.fixture.journal._transaction() as db:db.execute('UPDATE reconcile_binding SET proof=?',(encode(self.fixture.proof).decode(),))
+        path.write_bytes(encode(original));ack.write_bytes(b'{}');ack.chmod(0o600)
+        with self.assertRaises(feed.FeedStop):self.op.stop_rehearsal()
+        self.assertEqual(ack.read_bytes(),b'{}')
+
+
+if __name__ == '__main__': unittest.main()

@@ -481,3 +481,167 @@ class ProtocolTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PaidStopJournalTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        from test_pgcat_rehearsal_controller import ControllerTests
+        from pgcat_lane_protocol import encode,digest
+        from pgcat_lane_supervisor import save_once
+        fixture=ControllerTests();fixture.setUp();self.addCleanup(fixture.doCleanups);patch.stopall()
+        admission=patch('pgcat_lane_protocol._release_admission');admission.start();self.addCleanup(admission.stop)
+        self.fixture=fixture;self.outer=fixture.binding;self.root=Path(self.outer['laneRoot'])
+        self.root.parent.mkdir(mode=0o700);self.root.mkdir(mode=0o700)
+        self.journal=Journal(self.root);self.run=str(uuid.uuid4());self.session=str(uuid.uuid4())
+        b=self.outer['laneBindings']
+        with patch('pgcat_lane_protocol._release_admission'):
+            self.journal.create_run(self.run,'disabled-rehearsal',b['target'],dict(b['sourceHashes'],bundleSha256=digest(b['sourceHashes'])))
+        save_once(self.root,'bindings.json',b)
+        self.raw=fixture.manifest.read_bytes()
+        import hashlib
+        self.binding=dict(runId=self.run,feedId=str(uuid.uuid4()),pid=123,
+            bindingSha256=hashlib.sha256(self.raw).hexdigest(),argvSha256='a'*64)
+        self.proof=dict(runId=self.run,feedSession=self.session,sequence=9,resourceVersion='42',
+            requestId=str(uuid.uuid4()),scaleinRequestId='scalein-ack',pendingBindingSha256='e'*64,
+            sourceSha256=b['sourceHashes']['rehearsalContract'],sealedAt=time.time()-2)
+        with self.journal._transaction() as db:
+            db.execute('UPDATE run SET session=?',(self.session,))
+            db.execute('INSERT INTO reconcile_binding VALUES (1,?)',(encode(self.proof).decode(),))
+        self.receipt=dict(feedSession=self.session,sequence=10,desired=2,mode='disabled-rehearsal',
+            observedAt=time.time()-1,rosterSha256=__import__('pgcat_lane_protocol').roster_sha(
+                __import__('pgcat_lane_protocol').original_roster(b['target']['originalInstanceIds'])))
+
+    def bind(self):
+        self.journal.bind_feed(self.binding,manifest_raw=self.raw)
+        self.journal.confirm_feed_exit(dict(runId=self.run,feedId=self.binding['feedId'],pid=123,exitCode=0))
+
+    def controls(self,**changes):
+        from pgcat_lane_protocol import digest,rehearsal_stop_ack
+        from pgcat_lane_supervisor import save_once
+        self.intent=dict(schemaVersion=1,runId=self.run,feedSession=self.session,minimumSequence=10,
+                         reconcileBindingSha256=digest(self.proof))
+        self.receipt.update(changes)
+        save_once(self.root.parent,'rehearsal-stop.intent',self.intent,atomic=True)
+        save_once(self.root.parent,'rehearsal-stop.ack',rehearsal_stop_ack(self.intent,self.receipt),atomic=True)
+        save_once(self.root.parent,'status.json',self.receipt)
+
+    def test_paid_bind_requires_original_bytes_and_is_atomic(self):
+        from pgcat_lane_protocol import encode
+        for raw in (None,encode(self.outer),self.raw+b' ',b'{}'):
+            with self.subTest(raw=raw),self.assertRaises(Refused):
+                self.journal.bind_feed(self.binding,manifest_raw=raw)
+        with self.journal._connection() as db:self.assertIsNone(db.execute('SELECT 1 FROM feed_binding').fetchone())
+        self.bind()
+        with self.journal._connection() as db:self.assertEqual(bytes(db.execute('SELECT raw FROM feed_manifest').fetchone()['raw']),self.raw)
+        with self.assertRaises(Refused):self.journal.bind_feed(self.binding,manifest_raw=self.raw)
+
+    def test_record_derives_one_stop_with_exact_private_files_and_exit(self):
+        self.bind();self.controls(sequence=11)
+        proof=self.journal.record_rehearsal_stop()
+        self.assertEqual(proof,self.journal.rehearsal_stop())
+        self.assertEqual(proof['receipt'],self.receipt)
+        self.assertEqual(proof['feedExit'],dict(pid=123,exitCode=0,category='ok',feedSession=self.session,sequence=11))
+        self.assertEqual(proof['reconcileBinding'],self.proof)
+        self.assertEqual(proof['feedBinding'],self.binding)
+        self.assertEqual(self.journal.run_snapshot()['runState'],'active')
+        with self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+        with self.assertRaises(TypeError):self.journal.record_rehearsal_stop({'exitCode':0})
+
+    def test_direct_record_refuses_missing_independent_artifacts(self):
+        self.bind();self.controls()
+        for table in ('feed_binding','feed_exit_confirmation','feed_manifest','reconcile_binding'):
+            with self.subTest(table=table):
+                with self.journal._transaction() as db:
+                    row=dict(db.execute('SELECT * FROM '+table).fetchone());db.execute('DELETE FROM '+table)
+                with self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+                with self.journal._transaction() as db:
+                    db.execute('INSERT INTO '+table+' VALUES ('+','.join('?' for _ in row)+')',tuple(row.values()))
+        for name in ('rehearsal-stop.intent','rehearsal-stop.ack','status.json','lane/bindings.json'):
+            path=self.root.parent/name;raw=path.read_bytes();path.unlink()
+            with self.subTest(name=name),self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+            path.write_bytes(raw);path.chmod(0o600)
+
+    def test_record_refuses_changed_private_evidence_and_wrong_reconciliation(self):
+        from pgcat_lane_protocol import encode
+        self.bind();self.controls()
+        for name in ('rehearsal-stop.intent','rehearsal-stop.ack','status.json','lane/bindings.json'):
+            path=self.root.parent/name;raw=path.read_bytes();value=json.loads(raw)
+            if name.endswith('intent'):value['reconcileBindingSha256']='0'*64
+            elif name.endswith('ack'):value['finalReceiptSha256']='0'*64
+            elif name=='status.json':value['observedAt']=time.time()-30
+            else:value['receiptPath']=str(self.root.parent/'unrelated.json')
+            path.write_bytes(encode(value))
+            with self.subTest(name=name),self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+            path.write_bytes(raw)
+        for changes in (dict(sourceSha256='0'*64),dict(runId=str(uuid.uuid4())),dict(feedSession=str(uuid.uuid4())),
+                        dict(sealedAt=time.time()),dict(sequence=10),dict(extra=True)):
+            with self.journal._transaction() as db:db.execute('UPDATE reconcile_binding SET proof=?',(encode(dict(self.proof,**changes)).decode(),))
+            with self.subTest(changes=changes),self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+        with self.journal._transaction() as db:
+            db.execute('UPDATE reconcile_binding SET proof=?',(encode(self.proof).decode(),))
+            db.execute('UPDATE feed_manifest SET raw=?',(self.raw+b' ',))
+        with self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+
+    def test_stop_intent_schema_and_ack_bind_actual_sequence(self):
+        from pgcat_lane_protocol import validate_rehearsal_stop,rehearsal_stop_ack,digest
+        intent=dict(schemaVersion=1,runId=self.run,feedSession=self.session,minimumSequence=10,reconcileBindingSha256=digest(self.proof))
+        validate_rehearsal_stop(intent)
+        for change in (dict(schemaVersion=True),dict(minimumSequence=True),dict(minimumSequence=0),
+                       dict(reconcileBindingSha256='bad'),dict(extra='bad')):
+            with self.subTest(change=change),self.assertRaises(Refused):validate_rehearsal_stop(dict(intent,**change))
+        for change in (dict(sequence=9),dict(sequence=12),dict(sequence=True),dict(feedSession=str(uuid.uuid4()))):
+            with self.subTest(change=change),self.assertRaises(Refused):rehearsal_stop_ack(intent,dict(self.receipt,**change))
+
+    def test_record_refuses_nonzero_exit_cancelled_run_and_noncanonical_or_redirected_controls(self):
+        self.bind();self.controls()
+        from pgcat_lane_protocol import encode
+        with self.journal._transaction() as db:
+            row=db.execute('SELECT proof FROM feed_exit_confirmation').fetchone()
+            original=row['proof'];value=json.loads(original);value['exitCode']=1
+            db.execute('UPDATE feed_exit_confirmation SET proof=?',(encode(value).decode(),))
+        with self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+        with self.journal._transaction() as db:db.execute('UPDATE feed_exit_confirmation SET proof=?',(original,))
+        for name in ('rehearsal-stop.intent','rehearsal-stop.ack','status.json'):
+            path=self.root.parent/name;raw=path.read_bytes()
+            if name != 'status.json':
+                path.write_bytes(raw+b' ')
+                with self.subTest(name=name),self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+                path.write_bytes(raw)
+            path.rename(path.with_name('unrelated'));path.symlink_to(path.with_name('unrelated'))
+            with self.subTest(symlink=name),self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+            path.unlink();path.with_name('unrelated').rename(path)
+        self.journal.cancel('incomplete')
+        with self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+
+    def test_bind_rejects_root_inner_or_manifest_mismatch_before_atomic_storage(self):
+        from pgcat_lane_protocol import encode
+        import hashlib
+        for key,value in (('laneRoot',str(self.root.parent/'other')),('captureRoot',str(self.root.parent.parent)),
+                          ('workerInventory','/other/run/provider-inventory.json'),('sourceHashes',dict(controller='0'*64,client='0'*64,runner='0'*64))):
+            raw=encode(dict(self.outer,**{key:value}));binding=dict(self.binding,bindingSha256=hashlib.sha256(raw).hexdigest())
+            with self.subTest(key=key),self.assertRaises(Refused):self.journal.bind_feed(binding,manifest_raw=raw)
+        path=self.root/'bindings.json';raw=path.read_bytes();path.write_bytes(encode(dict(self.outer['laneBindings'],receiptPath=str(self.root.parent/'other'))))
+        with self.assertRaises(Refused):self.journal.bind_feed(self.binding,manifest_raw=self.raw)
+        path.write_bytes(raw)
+        with self.journal._connection() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM feed_binding').fetchone())
+            self.assertIsNone(db.execute('SELECT 1 FROM feed_manifest').fetchone())
+
+    def test_record_refuses_unknown_fields_in_independent_feed_binding(self):
+        from pgcat_lane_protocol import encode
+        self.bind();self.controls()
+        with self.journal._transaction() as db:
+            db.execute('UPDATE feed_binding SET proof=?',(encode(dict(self.binding,extra=True)).decode(),))
+        with self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+
+    def test_record_refuses_unknown_fields_in_independent_exit_confirmation(self):
+        from pgcat_lane_protocol import encode
+        self.bind();self.controls()
+        with self.journal._transaction() as db:
+            row=db.execute('SELECT proof FROM feed_exit_confirmation').fetchone()
+            db.execute('UPDATE feed_exit_confirmation SET proof=?',(encode(dict(json.loads(row['proof']),extra=True)).decode(),))
+        with self.assertRaises(Refused):self.journal.record_rehearsal_stop()
+
+
+if __name__ == '__main__': unittest.main()
