@@ -47,3 +47,7 @@
 ## Following gates
 
 Same-handle guardian abort/actual exit, durable authenticated FAIL/ordinary detached verdict, actual2/2 restoration/identity-bound credential cleanup/independent finish, adequate closure headroom/cutoff, full native observer and session handoff remain pending. All common source changes must precede final freeze/no-scale long proof/paid rehearsal. No cloud operation is part of this plan.
+
+## Durable proof getter clarification
+
+post_stop_binding() authenticates the sealed database binding/admission/request/result/run/source linkage and remains readable after121seconds. It must not apply an expired original request deadline or current receipt age to a historical completed step. This read grants no execution authority and adds no historical stop/artifact validator or closure action. Strict current independently derived stop/frozen receipt/source/freshness/deadline checks remain on first admit, wrapper dispatch and result seal/acceptance. Test late getter and late duplicate/ordinary refusal with owner/proof retained.
