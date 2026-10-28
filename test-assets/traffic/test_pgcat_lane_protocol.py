@@ -62,7 +62,8 @@ class ProtocolTest(unittest.TestCase):
         import pgcat_lane_protocol as protocol
         before = protocol.monotonic()
         child = float(subprocess.check_output([sys.executable, '-c',
-            'from pgcat_lane_protocol import monotonic; print(monotonic())']))
+            'from pgcat_lane_protocol import monotonic; print(monotonic())'],
+            cwd=Path(__file__).resolve().parent))
         after = protocol.monotonic()
         self.assertLessEqual(before, child)
         self.assertLessEqual(child, after)
