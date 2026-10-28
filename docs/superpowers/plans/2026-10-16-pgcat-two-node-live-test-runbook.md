@@ -1,5 +1,15 @@
 # PgCat two-node live-test operator runbook
 
+2026-10-28 update: reviewed merge `7508dfac` completed a tracked no-scale timing
+**PASS**, independently reassessed from retained capture and sealed records:
+64.003 seconds measurement, 66 frames, maximum gap 1.002616 seconds and 195 SQL
+successes per client. Exact feed/supervisor exits, both credential absences and
+the finished reservation release were verified. This proves only that source's
+no-scale timing path. Ordinary transition assessment is INCONCLUSIVE; the paid
+rehearsal and full replacement remain unproven. Paid admission remains
+structurally disabled pending the long collector and Task 6D close/abort path.
+See project-root `working/handoffs/2026-10-28-pgcat-live.md` for evidence hashes.
+
 Status as of 2026-10-26: request `570533ed-e417-4bc5-beba-ad4db3db8d20`
 ended **failed/ToolFailed** before approval or scale-in. Its retained full
 capture is **INCONCLUSIVE** (`missing metrics coverage`), not replacement PASS.
@@ -896,7 +906,8 @@ are staged together locally. The repeated three outer hashes must equal their
 lane-map values. The outer `sourceHashes` has exactly
 `controller`, `client`, and `runner`, each a lowercase SHA-256 of the current
 local source bytes. All declared hashes are checked before either process starts.
-The feed executable binding must be a regular executable named `aliyun`; its
+The feed executable binding must be a non-symlink regular executable named
+`aliyun` (resolve the Homebrew launcher to its actual Cellar executable); its
 directory leads the minimal feed PATH and exact resolution is checked before
 spawn. Scaling-group and NLB bindings must match the fixed provider targets.
 Local `captureRoot` must not exist; `laneRoot`, provider status, lane lock,
@@ -907,7 +918,12 @@ Never reuse retired scratch paths, copy credentials into the manifest, or put
 this private manifest in Git.
 
 The reviewed worker layout has sibling `run` and `contract` directories under
-one private run root. `workerInventory` is exactly `run/provider-inventory.json`;
+one private mode-0700 run root. Before baseline launch, verify an existing empty
+mode-0700 `run/disabled-boundary` directory. Both capture paths must still be
+absent; do not reuse an old boundary or collector job. Missing boundary was a
+confirmed pre-collector staging blocker on October 28; it is not safe to infer
+that code import smoke checked this runtime prerequisite.
+`workerInventory` is exactly `run/provider-inventory.json`;
 the private provider source is `contract/provider-source`, outside the retained
 capture tree. Each sequence writes an immutable ECS address sidecar there before
 publishing the unchanged address-free inventory in the same remote write call.
