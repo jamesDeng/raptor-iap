@@ -7,13 +7,24 @@ from segmented_capture import (SegmentedCapture, open_directory, check_directory
 from capture_window import seconds as evidence_seconds, clean_inventory
 
 def utc():return datetime.datetime.now(datetime.timezone.utc).isoformat()
-def get(url):
-    with urllib.request.urlopen(url,timeout=2) as r:
+def remaining(deadline, maximum):
+    if deadline is None:return maximum
+    value=deadline-time.monotonic()
+    if not math.isfinite(value) or value<=0:raise ValueError('worker deadline exhausted')
+    return min(maximum,value)
+
+def get(url, *, deadline=None):
+    with urllib.request.urlopen(url,timeout=remaining(deadline,2)) as r:
         raw=r.read(2*1024*1024+1)
+        remaining(deadline,2)
         if len(raw)>2*1024*1024:raise ValueError('response bound exceeded')
         return json.loads(raw)
-def kubectl(*args):
-    r=subprocess.run(['kubectl','-n','raptor-test']+list(args),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=3)
+def kubectl(*args, deadline=None, kubeconfig=None):
+    options=dict(stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=remaining(deadline,3))
+    if kubeconfig is not None:
+        options['env']=dict(os.environ,KUBECONFIG=str(kubeconfig))
+    r=subprocess.run(['kubectl','-n','raptor-test']+list(args),**options)
+    remaining(deadline,3)
     if r.returncode:raise RuntimeError('Kubernetes read failed')
     return json.loads(r.stdout)
 def query_metrics(base,stamp):
@@ -53,12 +64,15 @@ def container_id(p):
     statuses=p['status'].get('containerStatuses',[])
     if len(statuses)!=1 or not statuses[0].get('containerID'):raise ValueError('exact client container identity unavailable')
     return statuses[0]['containerID']
-def read_pod(p,final_snapshots):
+def read_pod(p,final_snapshots, *, deadline=None):
+    remaining(deadline,2)
     uid=p['metadata']['uid'];cid=container_id(p);key=(uid,cid)
     snapshot=final_snapshots.get(key)
     if snapshot is None:
-        snapshot=get('http://'+p['status']['podIP']+':9090/evidence')
+        url='http://'+p['status']['podIP']+':9090/evidence'
+        snapshot=get(url) if deadline is None else get(url,deadline=deadline)
         if snapshot.get('final') is True:final_snapshots[key]=snapshot
+    remaining(deadline,2)
     conditions=p['status'].get('conditions',[])
     ready_rows=[row for row in conditions if isinstance(row,dict) and row.get('type')=='Ready'] if isinstance(conditions,list) else []
     status=ready_rows[0].get('status') if len(ready_rows)==1 else None

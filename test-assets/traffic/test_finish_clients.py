@@ -155,3 +155,105 @@ class BoundRosterTests(unittest.TestCase):
             self.assertEqual(finish.read_json(p/'request.json')['roster'],ROSTER)
             self.assertEqual(sorted(actions,key=lambda r:r['uid']),ROSTER)
             self.assertEqual(result['status'],'ACKNOWLEDGED')
+
+class DeadlineFinishTests(unittest.TestCase):
+    def test_ack_and_second_roster_share_deadline_and_private_credential(self):
+        ticks=[10.0];seen=[]
+        def roster(**kw):
+            seen.append(kw);ticks[0]+=1.6;return ROSTER
+        def ack(directory,request,**kw):
+            self.assertEqual(kw,{'deadline':14});finish.atomic_json(directory/'ack.json',request)
+        def execute(row,**kw):
+            self.assertEqual(kw,{'deadline':14,'kubeconfig':'/bound'});ticks[0]=14.1
+        with tempfile.TemporaryDirectory() as d,patch.object(finish.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(finish,'live_roster',side_effect=roster),patch.object(finish,'wait_ack',side_effect=ack),patch.object(finish,'exec_finish',side_effect=execute):
+            receipt=finish.finish(Path(d)/'boundary',expected_roster=ROSTER,deadline=14,kubeconfig='/bound')
+            self.assertEqual(receipt['status'],'INCONCLUSIVE')
+            self.assertTrue(all(v['status']=='unknown' for v in receipt['clients'].values()))
+        self.assertTrue(all(kw=={'deadline':14,'kubeconfig':'/bound'} for kw in seen))
+
+    def test_late_thread_keeps_bound_environment_and_does_not_block_return(self):
+        import os,subprocess
+        entered=threading.Event();release=threading.Event();seen=[]
+        def execute(argv,**kw):
+            if 'client-1' in argv:
+                entered.set();release.wait(2)
+            seen.append(kw['env']['KUBECONFIG']);return subprocess.CompletedProcess(argv,0)
+        def ack(directory,request,**kw):finish.atomic_json(directory/'ack.json',request)
+        try:
+            with tempfile.TemporaryDirectory() as d,patch.object(finish,'live_roster',return_value=ROSTER),patch.object(finish,'wait_ack',side_effect=ack),patch.object(finish.subprocess,'run',side_effect=execute),patch.dict(os.environ,{'KUBECONFIG':'ambient'}):
+                started=time.monotonic();receipt=finish.finish(Path(d)/'boundary',expected_roster=ROSTER,deadline=started+.2,kubeconfig='/bound')
+                self.assertTrue(entered.is_set());self.assertLess(time.monotonic()-started,.7)
+                self.assertEqual(receipt['status'],'INCONCLUSIVE');self.assertEqual(os.environ['KUBECONFIG'],'ambient')
+                release.set()
+                for _ in range(100):
+                    if len(seen)==2:break
+                    time.sleep(.001)
+            self.assertEqual(seen,['/bound','/bound'])
+        finally:release.set()
+
+    def test_expired_before_roster_or_after_ack_never_executes(self):
+        for expired in ('entry','ack'):
+            ticks=[14 if expired=='entry' else 10]
+            def ack(directory,request,**kw):ticks[0]=14
+            with self.subTest(expired=expired),tempfile.TemporaryDirectory() as d,patch.object(finish.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(finish,'live_roster',return_value=ROSTER),patch.object(finish,'wait_ack',side_effect=ack),patch.object(finish,'exec_finish') as execute:
+                with self.assertRaises(ValueError):finish.finish(Path(d)/'boundary',deadline=14,kubeconfig='/bound')
+                execute.assert_not_called()
+
+    def test_two_sequential_three_second_reads_cannot_share_four_second_success(self):
+        import subprocess,json,worker_capture
+        ticks=[10.0];timeouts=[]
+        pod={'metadata':{'name':'client-0','uid':'uid-0'},'status':{'phase':'Running','podIP':'10.0.0.1','containerStatuses':[{'containerID':'container-0'}]}}
+        def kube(argv,**kw):
+            timeouts.append(kw['timeout']);ticks[0]+=3
+            return subprocess.CompletedProcess(argv,0,json.dumps({'items':[pod,pod]}).encode())
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*a):pass
+            def read(self,n):ticks[0]+=3;return b'{"sample":{"processId":"process-0"}}'
+        def http(url,timeout):timeouts.append(timeout);return Response()
+        with patch.object(finish.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(worker_capture.subprocess,'run',side_effect=kube),patch.object(worker_capture.urllib.request,'urlopen',side_effect=http):
+            with self.assertRaises(ValueError):finish.live_roster(deadline=14,kubeconfig='/bound')
+        self.assertEqual(timeouts,[3,1])
+
+    def test_ack_sleeps_and_ack_file_read_cannot_reset_deadline(self):
+        ticks=[10.0];sleeps=[]
+        def sleep(value):sleeps.append(value);ticks[0]+=value
+        with tempfile.TemporaryDirectory() as d,patch.object(finish.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(finish.time,'sleep',side_effect=sleep):
+            p=Path(d)/'boundary';finish.private_directory(p)
+            with self.assertRaises(ValueError):finish.wait_ack(p,{},deadline=10.4)
+        self.assertEqual(len(sleeps),1);self.assertAlmostEqual(sleeps[0],.4)
+        ticks[0]=10
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'boundary';finish.private_directory(p);request={'requestId':'f'*32,'roster':ROSTER};finish.atomic_json(p/'ack.json',request)
+            actual=finish.read_json
+            def late(path):
+                value=actual(path);ticks[0]=14;return value
+            with patch.object(finish.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(finish,'read_json',side_effect=late):
+                with self.assertRaises(ValueError):finish.wait_ack(p,request,deadline=14)
+
+    def test_partial_parallel_response_preserves_known_ack_and_never_replays(self):
+        gate=threading.Event();seen=[]
+        def execute(row,**kw):
+            seen.append(row['uid'])
+            if row['uid']=='uid-1':gate.wait(1);raise TimeoutError('private diagnostic')
+        def ack(directory,request,**kw):finish.atomic_json(directory/'ack.json',request)
+        try:
+            with tempfile.TemporaryDirectory() as d,patch.object(finish,'live_roster',return_value=ROSTER),patch.object(finish,'wait_ack',side_effect=ack),patch.object(finish,'exec_finish',side_effect=execute):
+                p=Path(d)/'boundary';receipt=finish.finish(p,expected_roster=ROSTER,deadline=time.monotonic()+.2,kubeconfig='/bound')
+                self.assertEqual(receipt['clients'],{'uid-0/process-0':{'status':'acknowledged'},'uid-1/process-1':{'status':'unknown'}})
+                self.assertEqual(receipt['status'],'INCONCLUSIVE');self.assertFalse(receipt['rosterUnchanged'])
+                self.assertEqual(finish.read_json(p/'receipt.json'),receipt)
+                with self.assertRaises(FileExistsError):finish.finish(p,expected_roster=ROSTER,deadline=time.monotonic()+1,kubeconfig='/bound')
+                self.assertEqual(sorted(seen),['uid-0','uid-1'])
+        finally:gate.set()
+
+    def test_late_durable_ack_receipt_is_not_returned_as_success(self):
+        ticks=[10.0];actual=finish.atomic_json
+        def write(path,value):
+            actual(path,value)
+            if path.name=='receipt.json':ticks[0]=14
+        def ack(directory,request,**kw):actual(directory/'ack.json',request)
+        with tempfile.TemporaryDirectory() as d,patch.object(finish.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(finish,'live_roster',return_value=ROSTER),patch.object(finish,'wait_ack',side_effect=ack),patch.object(finish,'exec_finish'),patch.object(finish,'atomic_json',side_effect=write):
+            p=Path(d)/'boundary'
+            with self.assertRaises(ValueError):finish.finish(p,expected_roster=ROSTER,deadline=14,kubeconfig='/bound')
+            self.assertTrue((p/'request.json').exists());self.assertTrue((p/'receipt.json').exists())

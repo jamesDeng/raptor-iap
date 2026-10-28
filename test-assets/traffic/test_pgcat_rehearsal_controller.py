@@ -70,7 +70,8 @@ class ControllerTests(unittest.TestCase):
         self.client.start_feed.side_effect=lambda argv,env,path:self.start_feed(argv,env=env,start_new_session=True,close_fds=True)
         self.client.finish.side_effect = lambda *args: dict(runState='finished',assessment=copy.deepcopy(args[2]))
         self.auto_publish = True; self.die_on_call = False; self.result_override = None
-        self.pending_publish = False; self.wall = time.time()
+        from datetime import datetime, timezone
+        self.pending_publish = False; self.wall = datetime(2026,10,27,12,0,tzinfo=timezone.utc).timestamp()
         self.addCleanup(patch.stopall)
         patch.object(self.module.LaneClient, 'start', side_effect=self.start_client).start()
         self.spawn = patch.object(self.module.subprocess, 'Popen', side_effect=self.start_feed).start()

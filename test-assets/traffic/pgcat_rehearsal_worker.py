@@ -154,12 +154,15 @@ def _paths(contract, worker_path):
     return run
 
 
-def _verify_sources(run, expected):
-    _check(type(expected) is dict and set(expected) == set(SOURCES))
+def _verify_sources(run, expected, *, post_stop=False):
+    sources = (dict(SOURCES, collectorControl='pgcat_collector_control.py',
+                    laneTimingAssessor='pgcat_lane_timing_assessor.py')
+               if post_stop else SOURCES)
+    _check(type(expected) is dict and set(expected) == set(sources))
     verified = {}
     fd = _directory(run)
     try:
-        for key, name in SOURCES.items():
+        for key, name in sources.items():
             digest = expected[key]
             _check(type(digest) is str and re.fullmatch(r'[0-9a-f]{64}', digest) is not None)
             raw = _read_at(fd, name, 256 * 1024)
@@ -376,6 +379,39 @@ def main():
     os.umask(0o077)
     try:
         args = sys.argv[1:]
+        if len(args) == 7 and args[0] == 'post-stop-finish':
+            _, contract, run_id, kubeconfig, hashes, target_raw, context_raw = args
+            _uuid(run_id)
+            expected = _decode(hashes.encode('ascii'))
+            target = _decode(target_raw.encode('ascii'))
+            context = _decode(context_raw.encode('ascii'))
+            _target(target)
+            run = _paths(contract, Path(__file__))
+            verified = _verify_sources(run, expected, post_stop=True)
+            _check(not any(name in sys.modules for name in verified))
+            _check(_sealed_stage(contract, 'baseline')['paths']['kubeconfig'] == kubeconfig)
+            finder = _VerifiedSourceFinder(run, verified)
+            sys.meta_path.insert(0, finder)
+            try:
+                module = importlib.import_module('pgcat_rehearsal_contract')
+                result = module.post_stop_finish(contract, run_id, target, context,
+                                                 source_hashes=expected)
+            finally:
+                sys.meta_path.remove(finder)
+            _verify_sources(run, expected, post_stop=True)
+            _check(type(result) is dict and set(result) == {'feedSession', 'sequence',
+                'boundaryRequestId', 'boundarySha256', 'evidenceSha256', 'sourceSha256'})
+            _uuid(result['feedSession'])
+            _check(type(result['sequence']) is int and 1 <= result['sequence'] <= 999999 and
+                   type(result['boundaryRequestId']) is str and
+                   re.fullmatch(r'[0-9a-f]{32}', result['boundaryRequestId']) is not None)
+            for key in ('boundarySha256', 'evidenceSha256', 'sourceSha256'):
+                _check(type(result[key]) is str and re.fullmatch(r'[0-9a-f]{64}', result[key]) is not None)
+            _check(result['sourceSha256'] == expected['rehearsalContract'])
+            print(json.dumps(dict(status='PREPARED', stage='post-stop-finish', category='rehearsal-only'),
+                             sort_keys=True, separators=(',', ':')))
+            print(json.dumps(result, sort_keys=True, separators=(',', ':'), allow_nan=False))
+            return 0
         if len(args) == 8 and args[0] == 'reconcile-close':
             _, contract, run_id, kubeconfig, hashes, target_raw, binding_raw, context_raw = args
             _uuid(run_id)

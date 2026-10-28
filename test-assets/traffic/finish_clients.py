@@ -8,7 +8,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from worker_capture import kubectl, read_pod
+from worker_capture import kubectl, read_pod, remaining
 
 _UNBOUND_ROSTER=object()
 
@@ -55,55 +55,96 @@ def validate_roster(rows, expected=2):
     return sorted((dict(r) for r in rows),key=lambda r:r['uid'])
 
 
-def live_roster():
-    pods=kubectl('get','pods','-l','app.kubernetes.io/name=rdev-test-client-client','-o','json')['items']
+def live_roster(*, deadline=None, kubeconfig=None):
+    remaining(deadline,3)
+    options={}
+    if deadline is not None:options['deadline']=deadline
+    if kubeconfig is not None:options['kubeconfig']=kubeconfig
+    pods=kubectl('get','pods','-l','app.kubernetes.io/name=rdev-test-client-client','-o','json',**options)['items']
+    remaining(deadline,3)
     rows=[]
     for pod in pods:
+        remaining(deadline,2)
         if pod['metadata'].get('deletionTimestamp') or pod['status'].get('phase')!='Running':raise ValueError('client roster not stable')
-        row=read_pod(pod,{})
+        row=read_pod(pod,{}) if deadline is None else read_pod(pod,{},deadline=deadline)
+        remaining(deadline,2)
         rows.append(dict(name=pod['metadata']['name'],uid=row['uid'],containerId=row['containerId'],processId=row['snapshot']['sample']['processId']))
     return validate_roster(rows)
 
 
-def wait_ack(directory, request):
-    end=time.monotonic()+5
+def wait_ack(directory, request, *, deadline=None):
+    end=time.monotonic()+5 if deadline is None else deadline
     while time.monotonic()<end:
         if (directory/'ack.json').exists():
             if read_json(directory/'ack.json')!=request:raise ValueError('boundary acknowledgement mismatch')
+            remaining(deadline,5)
             return
-        time.sleep(1)
+        time.sleep(1 if deadline is None else min(1,remaining(end,1)))
     raise ValueError('boundary acknowledgement unavailable')
 
 
-def exec_finish(row):
-    result=subprocess.run(['kubectl','-n','raptor-test','exec',row['name'],'--','/client','finish','--expected-pod-uid',row['uid'],'--expected-process-id',row['processId']],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=3)
+def exec_finish(row, *, deadline=None, kubeconfig=None):
+    options=dict(stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=remaining(deadline,3))
+    if kubeconfig is not None:options['env']=dict(os.environ,KUBECONFIG=str(kubeconfig))
+    result=subprocess.run(['kubectl','-n','raptor-test','exec',row['name'],'--','/client','finish','--expected-pod-uid',row['uid'],'--expected-process-id',row['processId']],**options)
+    remaining(deadline,3)
     if result.returncode:raise RuntimeError('finish response uncertain')
     return 'acknowledged'
 
 
-def finish(boundary_dir: Path, expected_replicas: int = 2, expected_roster=_UNBOUND_ROSTER) -> dict:
-    # Legacy callers may omit the binding; post-stop callers must supply originals.
+def finish(boundary_dir: Path, expected_replicas: int = 2, expected_roster=_UNBOUND_ROSTER, *, deadline=None, kubeconfig=None) -> dict:
+    # Legacy callers omit private keywords. A deadline never resets between steps.
+    remaining(deadline,4)
+    options={}
+    if deadline is not None:options['deadline']=deadline
+    if kubeconfig is not None:options['kubeconfig']=str(kubeconfig)
     bound=validate_roster(expected_roster,expected_replicas) if expected_roster is not _UNBOUND_ROSTER else None
     directory=Path(boundary_dir);private_directory(directory)
-    roster=validate_roster(live_roster(),expected_replicas)
+    remaining(deadline,4)
+    roster=validate_roster(live_roster(**options),expected_replicas)
+    remaining(deadline,4)
     if bound is not None:
         if roster!=bound:raise ValueError('client roster changed')
         roster=bound
     request={'requestId':uuid.uuid4().hex,'roster':roster}
-    atomic_json(directory/'request.json',request);wait_ack(directory,request)
-    if validate_roster(live_roster(),expected_replicas)!=roster:raise ValueError('client roster changed')
+    atomic_json(directory/'request.json',request)
+    remaining(deadline,4)
+    wait_ack(directory,request,**({'deadline':deadline} if deadline is not None else {}))
+    remaining(deadline,4)
+    if validate_roster(live_roster(**options),expected_replicas)!=roster:raise ValueError('client roster changed')
+    remaining(deadline,4)
     def execute(row):
         status='acknowledged'
-        try:exec_finish(row)
+        try:
+            remaining(deadline,3);exec_finish(row,**options);remaining(deadline,3)
         except Exception:status='unknown'
         return row['uid']+'/'+row['processId'],{'status':status}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:clients=dict(pool.map(execute,roster))
+    if deadline is None:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:clients=dict(pool.map(execute,roster))
+    else:
+        # Outstanding remote work is uncertain, not cancelled. Never wait for a
+        # transport thread after the shared budget or retry its mutation.
+        pool=concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        futures=[]
+        try:
+            for row in roster:
+                if time.monotonic()>=deadline:break
+                futures.append((row,pool.submit(execute,row)))
+            wait=max(0,deadline-time.monotonic())
+            if wait:concurrent.futures.wait([f for _,f in futures],timeout=wait)
+            clients={row['uid']+'/'+row['processId']:{'status':'unknown'} for row in roster}
+            for row,future in futures:
+                if future.done():
+                    key,value=future.result();clients[key]=value
+        finally:pool.shutdown(wait=False)
     receipt={'requestId':request['requestId'],'status':'INCONCLUSIVE' if any(r['status']=='unknown' for r in clients.values()) else 'ACKNOWLEDGED','clients':clients}
-    # Read-only exact identity reconciliation is diagnostic; it cannot repair an uncertain response.
     if receipt['status']=='INCONCLUSIVE':
-        try:receipt['rosterUnchanged']=validate_roster(live_roster())==roster
-        except Exception:receipt['rosterUnchanged']=False
+        receipt['rosterUnchanged']=False
+        if deadline is None:
+            try:receipt['rosterUnchanged']=validate_roster(live_roster(**options))==roster
+            except Exception:pass
     atomic_json(directory/'receipt.json',receipt)
+    if receipt['status']=='ACKNOWLEDGED':remaining(deadline,4)
     return receipt
 
 

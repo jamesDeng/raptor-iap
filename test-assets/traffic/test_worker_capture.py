@@ -528,3 +528,38 @@ class MalformedPeerWorkerRegression(unittest.TestCase):
                 self.assertEqual(progress['committedFrames'],5);self.assertEqual(result['status'],'FAIL')
                 retained=json.loads((root/'capture'/'segment-0001.jsonl').read_text().splitlines()[0])
                 self.assertTrue(any(p['snapshot']['sample']['Failure']==1 for p in retained['pods']))
+
+class DeadlineReads(unittest.TestCase):
+    def test_kubernetes_uses_remaining_budget_and_bound_environment(self):
+        import subprocess,os
+        commands=[];ticks=[10.0]
+        def run(argv,**kw):
+            commands.append((argv,kw));ticks[0]=10.75
+            return subprocess.CompletedProcess(argv,0,b'{}')
+        with patch.object(worker.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(worker.subprocess,'run',side_effect=run),patch.dict(os.environ,{'KUBECONFIG':'ambient'}):
+            self.assertEqual(worker.kubectl('get','pods',deadline=11,kubeconfig='/bound'),{})
+            self.assertEqual(os.environ['KUBECONFIG'],'ambient')
+        self.assertEqual(commands[0][1]['timeout'],1)
+        self.assertEqual(commands[0][1]['env']['KUBECONFIG'],'/bound')
+
+    def test_expired_before_or_after_io_refuses(self):
+        import subprocess
+        for before,after in ((11,11),(10,11)):
+            ticks=[before];calls=[]
+            def run(argv,**kw):
+                calls.append(argv);ticks[0]=after
+                return subprocess.CompletedProcess(argv,0,b'{}')
+            with self.subTest(before=before),patch.object(worker.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(worker.subprocess,'run',side_effect=run):
+                with self.assertRaises(ValueError):worker.kubectl('get','pods',deadline=11)
+                self.assertEqual(len(calls),int(before<11))
+
+    def test_http_read_checks_after_response_and_caps_timeout(self):
+        ticks=[5];seen=[]
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*a):pass
+            def read(self,n):ticks[0]=6;return b'{}'
+        def urlopen(url,timeout):seen.append(timeout);return Response()
+        with patch.object(worker.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(worker.urllib.request,'urlopen',side_effect=urlopen):
+            with self.assertRaises(ValueError):worker.get('http://fixture',deadline=6)
+        self.assertEqual(seen,[1])
