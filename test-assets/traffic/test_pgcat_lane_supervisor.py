@@ -282,7 +282,7 @@ class SupervisorTests(unittest.TestCase):
         with self.journal._connection() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM mutation_keys WHERE action='scalein-three-to-two'").fetchone()[0],1)
 
-    def publish_no_scale_finish(self, status='PASS', forged=None):
+    def publish_no_scale_finish(self, status='PASS', forged=None, bound=True, exited=True, caller_pid=123, caller_binding='f'*64):
         from datetime import datetime,timezone,timedelta
         from pgcat_lane_protocol import (digest,no_scale_stop_ack,no_scale_assessment,
             publish_finish,roster_sha,original_roster)
@@ -298,14 +298,18 @@ class SupervisorTests(unittest.TestCase):
         intent=dict(schemaVersion=1,runId=self.run,feedSession=self.session,minimumSequence=3,verdictSha256='d'*64)
         receipt=dict(feedSession=self.session,sequence=3,mode='disabled-rehearsal',desired=2,observedAt=time.time(),
             rosterSha256=roster_sha(original_roster(self.target['originalInstanceIds'])))
-        feed_exit=dict(pid=123,exitCode=0,category='ok',feedSession=self.session,sequence=3)
+        feed_exit=dict(pid=caller_pid,exitCode=0,category='ok',feedSession=self.session,sequence=3)
         record=dict(schemaVersion=1,day=datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
             runId=self.run,feedSession=self.session,targetSha256=digest(self.target),sourceSha256=digest(hashes),
-            sourceHashes=hashes,clientIdentitySha256='a'*64,bindingSha256='f'*64,workerVerdict=worker,
+            sourceHashes=hashes,clientIdentitySha256='a'*64,bindingSha256=caller_binding,workerVerdict=worker,
             localCredentialCleanup=True,stop=dict(intent=intent,ack=no_scale_stop_ack(intent,receipt),receipt=receipt,feedExit=feed_exit))
         with self.journal._transaction() as db:
             db.execute("UPDATE run SET mode='no-scale'")
             db.execute('INSERT INTO lane_verdict VALUES (1,?)',(encode(worker).decode(),))
+        if bound:
+            binding=dict(runId=self.run,feedId=str(uuid.uuid4()),pid=123,bindingSha256='f'*64,argvSha256='a'*64)
+            self.journal.bind_feed(binding)
+            if exited:self.journal.confirm_feed_exit(dict(runId=self.run,feedId=binding['feedId'],pid=123,exitCode=0))
         self.private_json(self.root/'no-scale-proof.json',record)
         self.private_json(self.root.parent/'no-scale-stop.intent',intent)
         self.private_json(self.root.parent/'no-scale-stop.ack',record['stop']['ack'])
@@ -314,6 +318,36 @@ class SupervisorTests(unittest.TestCase):
         if forged:assessment['status']=forged
         publish_finish(self.root,self.run,feed_exit,assessment)
         return record,assessment
+
+    def test_direct_finish_refuses_unbound_feed(self):
+        self.publish_no_scale_finish(bound=False)
+        with self.assertRaises(Refused):self.owner.finish()
+        self.assertNotEqual(self.journal.run_snapshot()['runState'],'finished')
+
+    def test_direct_finish_refuses_changed_caller_pid(self):
+        self.publish_no_scale_finish(caller_pid=999)
+        with self.assertRaises(Refused):self.owner.finish()
+        self.assertNotEqual(self.journal.run_snapshot()['runState'],'finished')
+
+    def test_direct_finish_refuses_changed_outer_binding(self):
+        self.publish_no_scale_finish(caller_binding='e'*64)
+        with self.assertRaises(Refused):self.owner.finish()
+        self.assertNotEqual(self.journal.run_snapshot()['runState'],'finished')
+
+    def test_direct_finish_refuses_live_unconfirmed_feed(self):
+        self.publish_no_scale_finish(exited=False)
+        with self.assertRaises(Refused):self.owner.finish()
+        self.assertNotEqual(self.journal.run_snapshot()['runState'],'finished')
+
+    def test_exit_record_refuses_unrelated_pid_and_feed_identity(self):
+        self.publish_no_scale_finish(exited=False)
+        with self.journal._connection() as db:
+            binding=json.loads(db.execute('SELECT proof FROM feed_binding').fetchone()['proof'])
+        good=dict(runId=self.run,feedId=binding['feedId'],pid=123,exitCode=0)
+        for changes in (dict(pid=999),dict(feedId=str(uuid.uuid4())),dict(runId=str(uuid.uuid4())),dict(exitCode=False)):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                self.journal.confirm_feed_exit(dict(good,**changes))
+        with self.assertRaises(Refused):self.owner.finish()
 
     def test_no_scale_finish_recomputes_exact_journaled_proof(self):
         record,assessment=self.publish_no_scale_finish()

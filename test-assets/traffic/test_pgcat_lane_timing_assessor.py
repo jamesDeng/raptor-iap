@@ -236,7 +236,8 @@ class VerdictActionTests(unittest.TestCase):
         self.assertEqual(words[7],'verdict');self.assertEqual(json.loads(words[-1]),context)
         good=dict(status='PASS',category='lane-timing',verdictSha256='e'*64,clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64)
         self.assertEqual(ActionCatalog.parse('lane-verdict',json.dumps(good).encode(),{}),good)
-        for value in (dict(good,privateAddress='hidden'),dict(good,verdictSha256='invalid'),dict(good,category='ok')):
+        for value in (dict(good,privateAddress='hidden'),dict(good,verdictSha256='invalid'),dict(good,category='ok'),
+                      dict(good,clientIdentitySha256=None),dict(good,workerCredentialCleanupSha256=None)):
             with self.assertRaises(Refused):ActionCatalog.parse('lane-verdict',json.dumps(value).encode(),{})
 
     def test_worker_refuses_boolean_exit_code_before_sealing_verdict(self):
@@ -294,6 +295,47 @@ class VerdictExecutionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode,0)
         self.assertEqual(json.loads(result.stdout),{'status':'INCONCLUSIVE'})
 
+    def test_fixed_entry_sql_fail_survives_cleanup_error_or_incomplete_identity(self):
+        import subprocess
+        from pgcat_lane_actions import ActionCatalog
+        from pgcat_lane_protocol import validate_result
+        for fault in ('unlink','fsync','identity'):
+            with self.subTest(fault=fault):
+                case=self.fixture();capture_case=TimingTests();capture_case.setUp();self.addCleanup(capture_case.doCleanups)
+                frames=lane_frames();frames[50]['pods'][0]['snapshot']['sample']['Failure']=1
+                if fault=='identity':
+                    extras=[]
+                    for n in range(1,7):
+                        extra=copy.deepcopy(frames[50]);extra['at']=50+n/10.;extras.append(extra)
+                    frames[51:51]=extras
+                capture=capture_case.capture(frames);capture.rename(case.run/'collector-capture')
+                completion=hashlib.sha256((case.run/'collector-capture'/'completion.json').read_bytes()).hexdigest()
+                job=case.run/'collector-job';job.mkdir(mode=0o700);fd=control.directory(job)
+                try:
+                    control.write(fd,'identity.json',IDENTITY);control.write(fd,'observed.json',IDENTITY)
+                    control.write(fd,'exit.json',dict(identity=IDENTITY,exitCode=0,category='completed',completionSha256=completion))
+                finally:os.close(fd)
+                context=dict(runId=case.run_id,feedSession=SESSION,collectorIdentity=IDENTITY,completionSha256=completion)
+                args=control.entry_command(case.worker,case.hashes['collectorControl'],['verdict',str(case.contract),
+                    case.run_id,str(case.kubeconfig),json.dumps(case.hashes),json.dumps(TARGET),json.dumps(context)])
+                # Inject only the OS failure at the local subprocess boundary;
+                # the fixed entry still verifies and executes all staged bytes.
+                if fault=='unlink':
+                    args[4]='import os\n_real_unlink=os.unlink\ndef _unlink(p,*a,**k):\n if p=="kubeconfig": raise OSError("fixture")\n return _real_unlink(p,*a,**k)\nos.unlink=_unlink\n'+args[4]
+                if fault=='fsync':
+                    args[4]='import os\n_real_fsync=os.fsync\ndef _fsync(fd):\n if not os.path.exists('+repr(str(case.kubeconfig))+'): raise OSError("fixture")\n return _real_fsync(fd)\nos.fsync=_fsync\n'+args[4]
+                result=subprocess.run(args,cwd=str(case.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+                self.assertEqual(result.returncode,0,result.stdout)
+                response=json.loads(result.stdout);self.assertEqual(response['status'],'FAIL')
+                self.assertEqual(response['verdictSha256'],hashlib.sha256((job/'lane-verdict.json').read_bytes()).hexdigest())
+                if fault=='identity':self.assertIsNone(response['clientIdentitySha256'])
+                else:
+                    self.assertIsNone(response['workerCredentialCleanupSha256'])
+                    self.assertFalse((job/'credential-cleanup.json').exists())
+                validate_result(dict(state='complete',category='ok',payload=response))
+                self.assertEqual(ActionCatalog.parse('lane-verdict',result.stdout,{}),response)
+                self.assertEqual(case.kubeconfig.exists(),fault=='unlink')
+
     def test_real_fixed_entry_seals_bound_capture_once_without_arbitrary_paths(self):
         import subprocess
         case=self.fixture();capture_case=TimingTests();capture_case.setUp();self.addCleanup(capture_case.doCleanups)
@@ -324,17 +366,28 @@ class VerdictExecutionTests(unittest.TestCase):
 
 class SupervisorVerdictTests(unittest.TestCase):
     def test_fixed_supervisor_action_uses_journal_exit_and_journals_exact_worker_hash(self):
+        self.fixed_payload(dict(status='PASS',category='lane-timing',verdictSha256='e'*64,
+            clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64))
+
+    def test_supervisor_journals_fail_with_null_identity_and_cleanup(self):
+        self.fixed_payload(dict(status='FAIL',category='lane-timing',verdictSha256='e'*64,
+            clientIdentitySha256=None,workerCredentialCleanupSha256=None))
+
+    def test_supervisor_journals_inconclusive_with_null_identity_and_cleanup(self):
+        self.fixed_payload(dict(status='INCONCLUSIVE',category='lane-timing',verdictSha256='e'*64,
+            clientIdentitySha256=None,workerCredentialCleanupSha256=None))
+
+    def fixed_payload(self,payload):
         import shlex
         import sys
         import test_pgcat_lane_supervisor as supervisor_tests
         fixture=supervisor_tests.SupervisorTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
         with fixture.journal._transaction() as db:db.execute("UPDATE run SET mode='no-scale'")
-        for sequence,payload in [(1,dict(status='ALIVE',identity=IDENTITY)),
+        for sequence,collector_payload in [(1,dict(status='ALIVE',identity=IDENTITY)),
                 (2,dict(status='EXITED',identity=IDENTITY,exit=dict(category='completed',exitCode=0,completionSha256='d'*64)))]:
             fixture.receipt(sequence);req=fixture.request(action='collector-status')
             fixture.journal.admit(req)
-            fixture.journal.seal(req['requestId'],dict(state='complete',category='ok',payload=payload))
-        payload=dict(status='PASS',category='lane-timing',verdictSha256='e'*64,clientIdentitySha256='a'*64,workerCredentialCleanupSha256='b'*64)
+            fixture.journal.seal(req['requestId'],dict(state='complete',category='ok',payload=collector_payload))
         marker=fixture.base/'remote-command'
         fixture.cli.write_text('#!'+sys.executable+'\nimport sys\nfrom pathlib import Path\n'
             +'Path('+repr(str(marker))+').write_text(sys.argv[-1])\nprint('+repr(json.dumps(payload))+')\n')

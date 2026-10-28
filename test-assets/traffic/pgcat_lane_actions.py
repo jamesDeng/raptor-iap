@@ -279,7 +279,9 @@ class ActionCatalog:
             elif action=='lane-verdict':
                 require(set(value)=={'status','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'} and
                         value['status'] in ('PASS','FAIL','INCONCLUSIVE') and
-                        value['category']=='lane-timing' and all(sha(value[k]) for k in ('verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256')),'parse')
+                        value['category']=='lane-timing' and sha(value['verdictSha256']) and
+                        all(sha(value[k]) or (value[k] is None and value['status'] in ('FAIL','INCONCLUSIVE'))
+                            for k in ('clientIdentitySha256','workerCredentialCleanupSha256')),'parse')
             elif action == 'collector-launch':
                 require(value == {'status':'LAUNCHED'},'parse')
             elif action == 'collector-status':

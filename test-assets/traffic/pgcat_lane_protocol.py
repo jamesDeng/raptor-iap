@@ -284,7 +284,10 @@ def validate_result(result):
             require(type(value) in (int,float) and math.isfinite(value))
         elif key=='category':
             require(value=='lane-timing')
-        elif key in ('verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'):
+        elif key in ('clientIdentitySha256','workerCredentialCleanupSha256'):
+            require(sha(value) or (value is None and payload.get('category')=='lane-timing' and
+                    payload.get('status') in ('FAIL','INCONCLUSIVE')))
+        elif key=='verdictSha256':
             require(sha(value))
         elif key in ('clientRosterSha256','evidenceSha256','sourceSha256','pendingBindingSha256'):
             require(sha(value))
@@ -487,6 +490,10 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS finish_receipts (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                 feed_exit TEXT NOT NULL, assessment TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS feed_binding (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS feed_exit_confirmation (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS lane_verdict (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS pending_binding (
@@ -727,7 +734,7 @@ class Journal:
                 payload=result['payload']
                 require(type(payload) is dict and set(payload)=={'status','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'} and
                         payload['status'] in ('PASS','FAIL','INCONCLUSIVE') and payload['category']=='lane-timing' and
-                        all(sha(payload[k]) for k in ('verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256')) and payload==lane_verdict_result,'source')
+                        payload==lane_verdict_result,'source')
                 current=db.execute('SELECT * FROM run').fetchone()
                 require(current['mode']=='no-scale' and sha(lane_verdict_source_sha) and
                         json.loads(current['hashes']).get('laneTimingAssessor')==lane_verdict_source_sha,'source')
@@ -949,6 +956,41 @@ class Journal:
                         assessment=json.loads(finish['assessment']) if finish else None,
                         feedExit=json.loads(finish['feed_exit']) if finish else None)
 
+    def bind_feed(self, binding):
+        require(type(binding) is dict and set(binding)=={'runId','feedId','pid','bindingSha256','argvSha256'},'child')
+        identifier(binding['runId']);identifier(binding['feedId'])
+        require(type(binding['pid']) is int and binding['pid']>0 and
+                sha(binding['bindingSha256']) and sha(binding['argvSha256']),'child')
+        with self._transaction() as db:
+            run=db.execute('SELECT * FROM run').fetchone()
+            require(run is not None and run['mode']=='no-scale' and run['state']=='active' and
+                    run['run_id']==binding['runId'],'child')
+            require(db.execute('SELECT 1 FROM feed_binding').fetchone() is None,'child')
+            db.execute('INSERT INTO feed_binding VALUES (1,?)',(encode(binding).decode(),))
+
+    def confirm_feed_exit(self, confirmation):
+        require(type(confirmation) is dict and set(confirmation)=={'runId','feedId','pid','exitCode'},'child')
+        require(type(confirmation['pid']) is int and type(confirmation['exitCode']) is int,'child')
+        with self._transaction() as db:
+            row=db.execute('SELECT proof FROM feed_binding').fetchone()
+            require(row is not None,'child');binding=json.loads(row['proof'])
+            require(all(confirmation[k]==binding[k] for k in ('runId','feedId','pid')),'child')
+            require(db.execute('SELECT 1 FROM feed_exit_confirmation').fetchone() is None,'child')
+            db.execute('INSERT INTO feed_exit_confirmation VALUES (1,?)',(encode(confirmation).decode(),))
+
+    def _verify_feed_closure(self, db, record, feed_exit):
+        bound=db.execute('SELECT proof FROM feed_binding').fetchone()
+        exited=db.execute('SELECT proof FROM feed_exit_confirmation').fetchone()
+        require(bound is not None and exited is not None,'child')
+        bound=json.loads(bound['proof']);exited=json.loads(exited['proof'])
+        require(bound['runId']==record['runId'] and bound['bindingSha256']==record['bindingSha256'],'source')
+        require(all(bound[k]==exited[k] for k in ('runId','feedId','pid')) and
+                type(feed_exit['pid']) is int and type(exited['exitCode']) is int and
+                bound['pid']==feed_exit['pid'] and exited['exitCode']==feed_exit['exitCode'],'child')
+
+    def verify_feed_closure(self, record, feed_exit):
+        with self._connection() as db:self._verify_feed_closure(db,record,feed_exit)
+
     def finish(self, before_commit=None):
         run_id, feed_exit, assessment = read_finish(self.root)
         with self._transaction(before_commit=before_commit) as db:
@@ -958,6 +1000,7 @@ class Journal:
             require(run['session'] in (None, feed_exit['feedSession']))
             if run['mode']=='no-scale':
                 record,raw=private_json(self.root/NO_SCALE_PROOF)
+                self._verify_feed_closure(db,record,feed_exit)
                 worker_row=db.execute('SELECT proof FROM lane_verdict').fetchone()
                 worker=json.loads(worker_row['proof']) if worker_row else None
                 bound=dict(runId=run['run_id'],target=json.loads(run['target']),hashes=json.loads(run['hashes']))

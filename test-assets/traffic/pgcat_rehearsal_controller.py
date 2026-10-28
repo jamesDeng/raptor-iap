@@ -121,6 +121,7 @@ class Controller:
         self.pending_proof=None; self.pre_drain_proof=None; self.zero_proof=None
         self.collector_exit=None; self.verdict_result=None; self.verdict_proof=None
         self.no_scale_stop=None; self.stop_attempted=False
+        self.feed_deadline=None; self.local_cleanup_verified=False
 
     def close(self):
         """Disconnect the owner on interruption; retain the bounded feed handle.
@@ -129,9 +130,34 @@ class Controller:
         numeric PIDs, clear its global record, retry, or claim remote cleanup.
         """
         if self.state != 'finished': self.state='uncertain'
-        if self.mode=='no-scale' and isinstance(self.feed,Popen) and type(self.feed.poll()) is int:
-            self._local_cleanup()
         if self.client is not None: self.client.close()
+        if self.mode=='no-scale':
+            # start_feed retains its actual child even when binding fails.
+            if self.feed is None and self.client is not None:
+                retained=getattr(self.client,'feed_process',None)
+                if isinstance(retained,Popen):self.feed=retained
+            if isinstance(self.feed,Popen):
+                deadline=self.feed_deadline
+                remaining=max(0.,deadline-monotonic()) if deadline is not None else 0.
+                while self.feed.poll() is None and remaining>0:
+                    interval=min(30.,remaining)
+                    try:
+                        self.feed.wait(timeout=interval)
+                        break
+                    except subprocess.TimeoutExpired:
+                        remaining=min(remaining-interval,max(0.,deadline-monotonic()))
+                        continue
+                    except (OSError,ValueError):break
+                cleaned=type(self.feed.poll()) is int and self._local_cleanup()
+                if not cleaned:
+                    pending=dict(status='cleanup-pending',runId=self.client.run_id,
+                        pid=self.feed.pid,credentialPath=self.bindings['localKubeconfig'],
+                        action='Confirm the retained exact feed has exited, then remove only the unchanged bound local credential and verify absence.')
+                    root=Path(self.bindings['laneRoot'])
+                    if not (root/'cleanup-pending.json').exists():
+                        save_once(root,'cleanup-pending.json',pending)
+            elif hasattr(self,'local_credential_identity'):
+                self._local_cleanup()
 
     def _live(self):
         require(self.state in ('active','scaled-three','pending-bound','pre-drain-bound',
@@ -294,9 +320,13 @@ class Controller:
             '--run-context',str(Path(value['laneRoot'])/'run-context.json'),
             '--contract-dir',b['contractDir']]
         if mode == 'no-scale':argv += ['--no-scale-target',encode(b['target']).decode('ascii')]
-        self.feed=subprocess.Popen(argv,
-            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-            start_new_session=True,close_fds=True,env=env)
+        if mode=='no-scale':
+            self.feed_deadline=monotonic()+180.+60.
+            self.feed=self.client.start_feed(argv,env,self.binding_path)
+        else:
+            self.feed=subprocess.Popen(argv,
+                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                start_new_session=True,close_fds=True,env=env)
         self.state='active'; self._next_receipt(1)
 
     def _baseline_collector(self):
@@ -429,6 +459,7 @@ class Controller:
         journal=Journal(path.parent);run=journal.run_snapshot()
         require(run['runState']=='finished' and run['mode']=='no-scale','incomplete')
         worker=journal.lane_verdict()
+        journal.verify_feed_closure(record,run['feedExit'])
         derived=no_scale_assessment(record,run,worker,run['feedExit'])
         sealed_run,sealed_exit,sealed_assessment=read_finish(path.parent)
         require(sealed_run==run['runId'] and encode(sealed_exit)==encode(run['feedExit']) and
@@ -766,6 +797,7 @@ class Controller:
 
     def _local_cleanup(self):
         """Never follow or delete a replacement for the credential seen at start."""
+        if self.local_cleanup_verified:return True
         try:
             path=_absolute(self.bindings['localKubeconfig'])
             require(path==Path(self.bindings['captureRoot']).parent/'kubeconfig')
@@ -779,6 +811,7 @@ class Controller:
                 os.unlink(path.name,dir_fd=fd);os.fsync(fd)
                 require(not os.path.lexists(path),'incomplete')
             finally:os.close(fd)
+            self.local_cleanup_verified=True
             return True
         except (Refused,OSError,KeyError,AttributeError):return False
 

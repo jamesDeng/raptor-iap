@@ -10,7 +10,7 @@ import uuid
 
 from pgcat_lane_actions import validate_bindings
 from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
-    monotonic, identifier, publish_request, publish_finish, read_finish, validate_finish_receipts)
+    monotonic, identifier, digest, private_json, publish_request, publish_finish, read_finish, validate_finish_receipts)
 from pgcat_lane_supervisor import read_json, save_once, receipt_identity
 import pgcat_workbench_lane as lane
 
@@ -64,6 +64,58 @@ class LaneClient:
             raise Refused('incomplete') from None
         finally:
             if reader is not None: os.close(reader)
+
+    def start_feed(self, argv, env, outer_binding_path):
+        """No-scale only: bind the live exact child before allowing provider exec."""
+        self._active()
+        require(self.mode=='no-scale' and getattr(self,'feed_process',None) is None,'child')
+        outer,raw=private_json(Path(outer_binding_path))
+        b=self.bindings
+        require(outer['laneBindings']==b and Path(outer['laneRoot'])==self.root,'source')
+        expected=[sys.executable,'-u',b['providerFeedPath'],
+            '--mode','disabled-rehearsal','--interval','15','--max-seconds','180',
+            '--workbench',b['laneWrapper'],'--worker-inventory',outer['workerInventory'],
+            '--kubeconfig',outer['workerKubeconfig'],'--status-file',b['receiptPath'],
+            '--run-context',str(self.root/'run-context.json'),'--contract-dir',b['contractDir'],
+            '--no-scale-target',encode(b['target']).decode('ascii')]
+        require(argv==expected,'source')
+        require(hashlib.sha256(Path(b['providerFeedPath']).read_bytes()).hexdigest()==b['sourceHashes']['providerFeed'],'source')
+        here=Path(__file__).resolve().parent
+        for key,name in dict(client='pgcat_lane_client.py',controller='pgcat_rehearsal_controller.py',runner='pgcat_lane_runner.py').items():
+            require(hashlib.sha256((here/name).read_bytes()).hexdigest()==outer['sourceHashes'][key],'source')
+        reader,writer=os.pipe()
+        # The isolated bootstrap imports only stdlib and exec preserves this PID.
+        # EOF and timeout exit without importing or executing provider code.
+        gate=('import os,select,sys; fd=int(sys.argv[1]); '
+              'ready=select.select([fd],[],[],5.0)[0]; '
+              'token=os.read(fd,1) if ready else b""; os.close(fd); '
+              'sys.exit(125) if token!=b"1" else None; '
+              'os.execv(sys.argv[2],sys.argv[2:])')
+        try:
+            self.feed_process=subprocess.Popen([sys.executable,'-I','-S','-c',gate,str(reader)]+argv,
+                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                start_new_session=True,close_fds=True,pass_fds=(reader,),env=env)
+            os.close(reader);reader=None
+            require(self.feed_process.poll() is None,'child')
+            _,current=private_json(Path(outer_binding_path));require(current==raw,'source')
+            self.feed_binding=dict(runId=self.run_id,feedId=str(uuid.uuid4()),pid=self.feed_process.pid,
+                bindingSha256=hashlib.sha256(raw).hexdigest(),argvSha256=digest(argv))
+            self.journal.bind_feed(self.feed_binding)
+            self._active();require(self.feed_process.poll() is None,'child')
+            require(os.write(writer,b'1')==1,'child')
+            return self.feed_process
+        finally:
+            if reader is not None:os.close(reader)
+            os.close(writer)
+
+    def confirm_feed_exit(self, feed_process):
+        require(self.mode=='no-scale' and feed_process is getattr(self,'feed_process',None) and
+                isinstance(feed_process,subprocess.Popen),'child')
+        code=feed_process.poll();require(type(code) is int,'child')
+        bound=self.feed_binding
+        require(feed_process.pid==bound['pid'],'child')
+        self.journal.confirm_feed_exit(dict(runId=self.run_id,feedId=bound['feedId'],
+            pid=feed_process.pid,exitCode=code))
 
     def _cancel_and_close(self, category):
         try:
@@ -142,6 +194,7 @@ class LaneClient:
         validate_finish_receipts(feed_exit, assessment, self.mode)
         require(feed_exit['pid'] == feed_process.pid and feed_exit['exitCode'] == exit_code, 'child')
         try:
+            if self.mode=='no-scale':self.confirm_feed_exit(feed_process)
             publish_finish(self.root, self.run_id, feed_exit, assessment)
             deadline = monotonic()+5.
             def sealed_final(state):

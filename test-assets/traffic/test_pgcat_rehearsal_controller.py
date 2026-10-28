@@ -65,6 +65,7 @@ class ControllerTests(unittest.TestCase):
         self.session = str(uuid.uuid4()); self.seq = 0; self.clock = 1000.; self.events = []
         self.feed = Mock(spec=subprocess.Popen); self.feed.pid = 123; self.feed.poll.return_value = None
         self.client = Mock(); self.client.run_id=str(uuid.uuid4()); self.client.call.side_effect = self.call
+        self.client.start_feed.side_effect=lambda argv,env,path:self.start_feed(argv,env=env,start_new_session=True,close_fds=True)
         self.client.finish.side_effect = lambda *args: dict(runState='finished',assessment=copy.deepcopy(args[2]))
         self.auto_publish = True; self.die_on_call = False; self.result_override = None
         self.pending_publish = False; self.wall = time.time()
@@ -129,7 +130,7 @@ class ControllerTests(unittest.TestCase):
                 self.wall=datetime(2026,10,27,22,minute,second,tzinfo=timezone(timedelta(hours=8))).timestamp()
                 if allowed:
                     c=self.controller();c.start_no_scale()
-                    args=self.spawn.call_args.args[0]
+                    args=self.client.start_feed.call_args.args[0]
                     self.assertEqual(json.loads(args[args.index('--no-scale-target')+1]),
                                      self.binding['laneBindings']['target'])
                     import shutil
@@ -680,6 +681,35 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.state,'uncertain')
         self.assertTrue(self.client.close.called)
 
+    def test_early_close_waits_exact_feed_then_removes_local_credential(self):
+        c=self.controller();c.start_no_scale()
+        def exit_later(timeout):
+            self.assertTrue((self.base/'kubeconfig').exists())
+            self.feed.poll.return_value=0
+            return 0
+        self.feed.wait.side_effect=exit_later
+        c.close()
+        self.assertFalse((self.base/'kubeconfig').exists())
+        self.assertFalse(self.feed.kill.called)
+
+    def test_uncertain_exit_keeps_credential_and_private_cleanup_pending(self):
+        c=self.controller();c.start_no_scale()
+        def timeout(seconds=None,timeout=None):
+            self.clock+=timeout
+            raise subprocess.TimeoutExpired('fixture',timeout)
+        self.feed.wait.side_effect=timeout
+        c.close()
+        self.assertTrue((self.base/'kubeconfig').exists())
+        pending=Path(c.bindings['laneRoot'])/'cleanup-pending.json'
+        self.assertTrue(pending.exists())
+        self.assertEqual(pending.stat().st_mode & 0o777,0o600)
+        value=json.loads(pending.read_text())
+        self.assertEqual(value['pid'],self.feed.pid)
+        self.assertEqual(value['credentialPath'],str(self.base/'kubeconfig'))
+        self.assertEqual(value['status'],'cleanup-pending')
+        self.assertTrue(value['action'])
+        self.assertFalse(self.feed.kill.called)
+
     def test_deterministic_proof_refuses_forged_caller_pass(self):
         c,result=self.ready_stop()
         self.feed.wait.side_effect=lambda timeout:self.acknowledge_stop(c)
@@ -714,6 +744,8 @@ class ControllerTests(unittest.TestCase):
     def test_observed_sql_fail_precedes_missing_stop_and_cleanup(self):
         c,result=self.ready_stop();result['status']='FAIL'
         c.verdict_proof['payload']['status']='FAIL';c.verdict_result=result
+        for key in ('clientIdentitySha256','workerCredentialCleanupSha256'):
+            result[key]=None;c.verdict_proof['payload'][key]=None
         self.journal.lane_verdict.return_value=c.verdict_proof
         self.feed.poll.return_value=0
         (self.base/'kubeconfig').unlink()
@@ -890,8 +922,20 @@ class PaidStartTests(unittest.TestCase):
         self.prior=root/'no-scale-proof.json';save_once(root,self.prior.name,record)
         assessment=no_scale_assessment(record,journal.run_snapshot(),worker,exit_)
         with journal._transaction() as db:db.execute('INSERT INTO lane_verdict VALUES (1,?)',(encode(worker).decode(),))
+        binding=dict(runId=run_id,feedId=str(uuid.uuid4()),pid=123,bindingSha256='f'*64,argvSha256='a'*64)
+        journal.bind_feed(binding)
+        journal.confirm_feed_exit(dict(runId=run_id,feedId=binding['feedId'],pid=123,exitCode=0))
         publish_finish(root,run_id,exit_,assessment);journal.finish()
         return dict(status='PASS',evidenceSha256=digest(record),proofPath=str(self.prior))
+
+    def test_paid_proof_requires_independent_feed_binding_and_exit(self):
+        from pgcat_lane_protocol import Journal
+        for table in ('feed_binding','feed_exit_confirmation'):
+            with self.subTest(table=table):
+                c=self.prepare()
+                with Journal(self.prior.parent)._transaction() as db:
+                    db.execute('DELETE FROM '+table)
+                with self.assertRaises(Refused):c._paid_evidence(self.preflight)
 
     def test_paid_proof_rejects_changed_private_bytes(self):
         controller=self.prepare()

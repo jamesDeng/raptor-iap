@@ -79,6 +79,9 @@ class ProtocolTest(unittest.TestCase):
             clientIdentitySha256=None,bindingSha256='d'*64,workerVerdict=None,stop=None,localCredentialCleanup=False)
         save_once(self.root,'no-scale-proof.json',record)
         assessment=no_scale_assessment(record,self.journal.run_snapshot(),None,feed)
+        binding=dict(runId=self.run,feedId=str(uuid.uuid4()),pid=123,bindingSha256='d'*64,argvSha256='a'*64)
+        self.journal.bind_feed(binding)
+        self.journal.confirm_feed_exit(dict(runId=self.run,feedId=binding['feedId'],pid=123,exitCode=0))
         publish_finish(self.root, self.run, feed, assessment)
 
     def test_finish_is_monotonic_with_valid_marker(self):

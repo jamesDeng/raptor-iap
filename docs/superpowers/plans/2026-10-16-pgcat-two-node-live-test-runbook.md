@@ -939,6 +939,17 @@ uncertain exit, failure to receive a successor or feed exit during a call stops
 the run. No-scale admits no Pending, pre-drain, NLB, ESS, Gateway, client finish
 or ConfigMap mutation.
 
+No-scale feed launch uses `LaneClient.start_feed(argv, env, outer_binding_path)`.
+The fixed reviewed command waits behind an inherited pipe before any provider
+execution. The client retains the actual live `Popen` and seals the one-use
+journal `feed_binding` (`runId`, fresh `feedId`, `pid`, original outer manifest
+SHA-256 and argv SHA-256) before releasing one byte. EOF, startup timeout or a
+failed binding prevents provider execution. Only the same retained handle with
+an actual integer `poll()` result can seal `feed_exit_confirmation`. Direct
+supervisor finish and the paid proof verifier require both independent records;
+copies of caller-supplied PID, exit status or binding hash cannot substitute.
+The paid feed launch path is unchanged.
+
 After the verdict's successor, `stop_no_scale(verdict_result)` writes one private
 fsynced stop intent, waits on its exact retained feed `Popen`, and checks the
 matching acknowledgement and actual final receipt. At most one additional
@@ -949,7 +960,10 @@ The fixed worker `lane-verdict` action seals its read-only assessment, then
 removes only the bound worker `kubeconfig` under the contract's private parent,
 fsyncs that directory, verifies absence, and seals a separate cleanup receipt.
 The sanitized result contains status/category plus verdict, client-identity and
-worker-credential-cleanup SHA-256 values. The required successor publication
+worker-credential-cleanup SHA-256 values. FAIL and INCONCLUSIVE can carry null
+client/cleanup hashes when identity or cleanup is incomplete; the sealed SQL
+FAIL and verdict digest remain intact even if unlink or fsync fails. PASS
+requires valid hashes and verified cleanup. The required successor publication
 uses the private inventory writer and does not need kubeconfig; any target drift
 is refused before a ConfigMap update. A missing cleanup response is uncertainty,
 not permission to retry the one-use action.
@@ -971,8 +985,12 @@ journal state never turns FAIL or INCONCLUSIVE into PASS. The client reconciles
 a supervisor exit only against the exact durable journal and sealed final
 receipts; process exit alone proves nothing about the assessment.
 
-`close()` disconnects the supervisor on cancellation; it does not claim remote
-command cancellation or kill a numeric PID. Controller death can leave the
+`close()` disconnects the supervisor on cancellation, retains the exact feed
+handle and waits through the 180-second feed cap plus 60 seconds bounded grace
+from feed launch. After confirmed exit it removes and verifies only the exact
+unchanged local credential. Uncertain exit or cleanup writes a private mode-0600
+`lane/cleanup-pending.json` with the bound path, PID and required operator action;
+it never claims remote cancellation or signals a numeric PID. Controller death can leave the
 already detached feed running to its existing bound. Preserve the global active
 record and private evidence for exact feed/child/process/credential cleanup;
 never clear them or start another run based only on terminal text. No-scale

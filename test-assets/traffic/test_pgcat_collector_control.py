@@ -61,6 +61,38 @@ class CollectorTests(unittest.TestCase):
             verdictSha256=hashlib.sha256((job/'lane-verdict.json').read_bytes()).hexdigest())
         return job,result
 
+    def test_authenticated_fail_survives_unlink_failure(self):
+        from unittest.mock import patch
+        job,result=self.cleanup_fixture('FAIL')
+        with patch.object(control.os,'unlink',side_effect=OSError('fixture')):
+            response=control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        self.assertEqual(response['status'],'FAIL')
+        self.assertEqual(response['verdictSha256'],result['verdictSha256'])
+        self.assertIsNone(response['workerCredentialCleanupSha256'])
+        self.assertTrue(self.kubeconfig.exists())
+        validate_result(dict(state='complete',category='ok',payload=response))
+
+    def test_authenticated_fail_survives_cleanup_claim_fsync_failure(self):
+        from unittest.mock import patch
+        job,result=self.cleanup_fixture('FAIL')
+        with patch.object(control.os,'fsync',side_effect=OSError('fixture')):
+            response=control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        self.assertEqual(response['status'],'FAIL')
+        self.assertEqual(response['verdictSha256'],result['verdictSha256'])
+        self.assertIsNone(response['workerCredentialCleanupSha256'])
+        self.assertTrue(self.kubeconfig.exists())
+        with self.assertRaises((OSError,ValueError)):
+            control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+
+    def test_authenticated_fail_survives_missing_client_identity(self):
+        job,result=self.cleanup_fixture('FAIL',complete=False)
+        response=control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        self.assertEqual(response['status'],'FAIL')
+        self.assertEqual(response['verdictSha256'],result['verdictSha256'])
+        self.assertIsNone(response['clientIdentitySha256'])
+        self.assertFalse(self.kubeconfig.exists())
+        validate_result(dict(state='complete',category='ok',payload=response))
+
     def test_worker_cleanup_is_exact_one_use_and_keeps_evidence(self):
         job,result=self.cleanup_fixture('FAIL')
         response=control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
@@ -73,7 +105,8 @@ class CollectorTests(unittest.TestCase):
 
     def test_incomplete_worker_verdict_still_removes_bound_credential_but_refuses_pass(self):
         job,result=self.cleanup_fixture('INCONCLUSIVE',complete=False)
-        with self.assertRaises(ValueError):control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        response=control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
+        self.assertEqual(response['status'],'INCONCLUSIVE');self.assertIsNone(response['clientIdentitySha256'])
         self.assertFalse(self.kubeconfig.exists());self.assertTrue((job/'credential-cleanup.json').exists())
 
     def test_worker_cleanup_never_follows_symlink_or_unrelated_path(self):

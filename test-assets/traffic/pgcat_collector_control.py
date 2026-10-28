@@ -282,27 +282,40 @@ def close_verdict(contract, run_id, kubeconfig, result):
     run=Path(contract).parent/'run'
     path=Path(kubeconfig)
     check(path == Path(contract).parent/'kubeconfig')
-    job=directory(run/'collector-job');parent=directory(path.parent)
+    job=directory(run/'collector-job');parent=None
     try:
         raw=read(job,'lane-verdict.json');verdict=decode(raw)
         check(hashlib.sha256(raw).hexdigest()==result['verdictSha256'] and
               verdict.get('runId',run_id)==run_id and verdict['status']==result['status'])
         digest=verdict.get('clientIdentitySha256')
-        # Claim before deletion: retry never fabricates a successful absence.
-        write(job,'credential-cleanup-claim.json',dict(runId=run_id,verdictSha256=result['verdictSha256']))
-        before=os.stat(path.name,dir_fd=parent,follow_symlinks=False)
-        check(stat.S_ISREG(before.st_mode) and before.st_uid==os.geteuid() and
-              stat.S_IMODE(before.st_mode)==0o600 and before.st_nlink==1)
-        os.unlink(path.name,dir_fd=parent);os.fsync(parent)
-        try:os.stat(path.name,dir_fd=parent,follow_symlinks=False)
-        except FileNotFoundError:pass
-        else:raise ValueError('collector')
-        cleanup=dict(runId=run_id,verdictSha256=result['verdictSha256'],workerKubeconfigAbsent=True)
-        write(job,'credential-cleanup.json',cleanup)
-        check(verdict.get('runId')==run_id and type(digest) is str and re.fullmatch(r'[0-9a-f]{64}',digest) is not None)
-        return dict(result,clientIdentitySha256=digest,
-            workerCredentialCleanupSha256=hashlib.sha256(read(job,'credential-cleanup.json')).hexdigest())
-    finally:os.close(parent);os.close(job)
+        cleanup_sha=None
+        try:
+            # Claim before deletion; even a failed fsync consumes this attempt.
+            write(job,'credential-cleanup-claim.json',dict(runId=run_id,verdictSha256=result['verdictSha256']))
+            parent=directory(path.parent)
+            before=os.stat(path.name,dir_fd=parent,follow_symlinks=False)
+            check(stat.S_ISREG(before.st_mode) and before.st_uid==os.geteuid() and
+                  stat.S_IMODE(before.st_mode)==0o600 and before.st_nlink==1)
+            os.unlink(path.name,dir_fd=parent);os.fsync(parent)
+            try:os.stat(path.name,dir_fd=parent,follow_symlinks=False)
+            except FileNotFoundError:pass
+            else:raise ValueError('collector')
+            cleanup=dict(runId=run_id,verdictSha256=result['verdictSha256'],workerKubeconfigAbsent=True)
+            write(job,'credential-cleanup.json',cleanup)
+            cleanup_sha=hashlib.sha256(read(job,'credential-cleanup.json')).hexdigest()
+        except FileExistsError:
+            raise  # Never replay a previously claimed cleanup.
+        except (OSError,ValueError):
+            # A sealed adverse assessment survives uncertain cleanup. PASS may
+            # never be returned without both independent closure hashes.
+            if result['status']=='PASS':raise
+        if not (verdict.get('runId')==run_id and type(digest) is str and
+                re.fullmatch(r'[0-9a-f]{64}',digest) is not None):digest=None
+        check(result['status']!='PASS' or (digest is not None and cleanup_sha is not None))
+        return dict(result,clientIdentitySha256=digest,workerCredentialCleanupSha256=cleanup_sha)
+    finally:
+        if parent is not None:os.close(parent)
+        os.close(job)
 
 
 def main():
