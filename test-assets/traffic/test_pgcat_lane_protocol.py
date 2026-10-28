@@ -479,8 +479,6 @@ class ProtocolTest(unittest.TestCase):
             self.journal.admit(later)
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class PaidStopJournalTests(unittest.TestCase):
