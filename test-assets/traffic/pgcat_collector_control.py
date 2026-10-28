@@ -194,6 +194,10 @@ def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,*,pro
     run,fd,_=context(contract,run_id,expected,worker_path)
     try:
         kubeconfig=kube_binding(contract,kubeconfig)
+        if profile=='disabled-rehearsal':
+            boundary=directory(run/'disabled-boundary')
+            try:check(not os.listdir(boundary))
+            finally:os.close(boundary)
         check(not os.listdir(fd))
         started=dict(runId=run_id,startedAt=int(time.time()))
         if profile=='disabled-rehearsal':started['profile']=profile

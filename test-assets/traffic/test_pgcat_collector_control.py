@@ -40,6 +40,7 @@ class CollectorTests(unittest.TestCase):
         self.root = Path(os.path.realpath(self.tmp.name)); self.root.chmod(0o700)
         self.run = self.root/'run'; self.run.mkdir(mode=0o700)
         self.contract = self.root/'contract'; self.contract.mkdir(mode=0o700)
+        (self.run/'disabled-boundary').mkdir(mode=0o700)
         self.kubeconfig = self.root/'kubeconfig'
         self.kubeconfig.write_text('fixture'); self.kubeconfig.chmod(0o600)
         self.run_id = str(uuid.uuid4())
@@ -196,6 +197,22 @@ class CollectorTests(unittest.TestCase):
     def observe(self):
         self.assertEqual(self.status(alive=True), {'status':'ALIVE','identity':IDENTITY})
 
+    def test_rehearsal_launch_requires_existing_empty_private_boundary(self):
+        for kind in ('missing','nonempty','public','symlink'):
+            with self.subTest(kind=kind):
+                self.setUp();boundary=self.run/'disabled-boundary'
+                if kind=='missing':boundary.rmdir()
+                if kind=='nonempty':(boundary/'request.json').write_text('stale')
+                if kind=='public':boundary.chmod(0o755)
+                if kind=='symlink':
+                    boundary.rmdir();target=self.root/'elsewhere';target.mkdir(mode=0o700)
+                    boundary.symlink_to(target,target_is_directory=True)
+                with self.assertRaises((ValueError,OSError)):self.launch(profile='disabled-rehearsal')
+                self.assertFalse(self.calls)
+                self.assertFalse((self.run/'collector-job'/'intent.json').exists())
+                # The no-scale component has no boundary precondition.
+                self.assertEqual(self.launch(),{'status':'LAUNCHED'})
+
     def test_rehearsal_capture_argv_uses_bound_paths_and5400(self):
         self.assertEqual(control.capture_arguments(self.run,profile='disabled-rehearsal'),
             ['--output',str(self.run/'rehearsal-capture'),'--inventory',
@@ -276,7 +293,7 @@ class CollectorTests(unittest.TestCase):
         import worker_capture
         from test_capture_window import frame
         from finish_clients import atomic_json
-        boundary=self.run/'disabled-boundary';boundary.mkdir(mode=0o700)
+        boundary=self.run/'disabled-boundary'
         from test_finish_clients import ROSTER
         roster=ROSTER
         clock=[0]
