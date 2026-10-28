@@ -993,6 +993,10 @@ def post_stop_finish(contract_dir, run_id, target, stop_context, *, source_hashe
         for frame in (previous,latest):
             _require(capture_window.clean(frame) == frame and not capture_window.observed_sql_failure(frame,proof.timestamp(progress['firstAt'])) and
                      not any(e['kind'] == 'skipped' for p in frame['pods'] for e in p['snapshot']['events']))
+            frame_roster = finish_clients.validate_roster([dict(name=pod['name'],uid=pod['uid'],
+                containerId=pod['containerId'],processId=pod['snapshot']['sample']['processId'])
+                for pod in frame['pods']])
+            _require(frame_roster == roster)
             _exact_original_frame(frame,baseline_value)
             _require(type(frame['inventory']['sequence']) is int and frame['inventory']['sequence'] >= binding['sequence'])
             proof.complete_metrics(frame,ids,current_time())

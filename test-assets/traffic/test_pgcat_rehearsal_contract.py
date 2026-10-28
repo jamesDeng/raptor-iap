@@ -1153,6 +1153,28 @@ class RehearsalContractTests(unittest.TestCase):
         with patch.object(Path,'read_bytes',autospec=True,side_effect=read):
             self.assertEqual(self._post()['sourceSha256'],self.post_hashes['rehearsalContract'])
 
+    def test_post_each_retained_frame_binds_full_original_identity_even_with_cleared_flags(self):
+        from segmented_capture import publish_private,read_progress
+        for position in ('previous','latest'):
+            for field in ('name','containerId'):
+                with self.subTest(position=position,field=field):
+                    self.setUp();self._post_fixture()
+                    frames=[self._post_frame(224),self._post_frame(225)]
+                    frames[0 if position=='previous' else 1]['pods'][0][field]='valid-replacement'
+                    for frame in frames:self.post_writer.append(frame)
+                    self.assertTrue(self.post_writer.progress['flags']['identityChanged'])
+                    self.post_writer.progress['flags']={key:False for key in self.post_writer.progress['flags']}
+                    publish_private(self.post_writer.progress_fd,'progress.json',self.post_writer.progress,replace=True)
+                    progress,previous,latest=read_progress(self.run/'rehearsal-capture',self.post_writer.progress_context)
+                    self.assertFalse(any(progress['flags'].values()))
+                    retained=previous if position=='previous' else latest
+                    self.assertEqual(retained['pods'][0][field],'valid-replacement')
+                    self.assertEqual(retained['pods'][0]['uid'],self.post_baseline['roster'][0]['uid'])
+                    self.assertEqual(retained['pods'][0]['snapshot']['sample']['processId'],self.post_baseline['roster'][0]['processId'])
+                    with self.assertRaises(ValueError):self._post()
+                    self.assertFalse((self.contract/'post-stop-finish.intent').exists())
+                    self.assertEqual(self.post_actions,[])
+
 
 if __name__ == '__main__':
     unittest.main()
