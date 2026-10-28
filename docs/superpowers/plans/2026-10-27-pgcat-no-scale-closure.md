@@ -14,7 +14,7 @@
 
 - Existing checkout only; preserve unrelated iCloud `* 2` files and private credentials.
 - No cloud resource provisioning, ESS/NLB/Gateway mutation, Raptor request or client finish in no-scale mode.
-- Provider interval remains 15 seconds; loop maximum is 180 seconds; collector duration is 65 seconds and authenticated coverage is at least 60 seconds.
+- Provider interval remains 15 seconds; loop maximum is 180 seconds; planned collector measurement is 65 seconds with at least 60 seconds authenticated measurement coverage and a separately validated terminal settling tail of at most 5 seconds.
 - Require 120 seconds startup, 180 seconds feed and 60 seconds cleanup before the 22:30 Shanghai stop, so no-scale admission closes at 22:24.
 - Every Workbench action stays under the same child-owning supervisor and requires a later successful same-session provider publication.
 - Observed adverse SQL is FAIL; uncertain/missing evidence is INCONCLUSIVE; `finished` never changes the verdict.
@@ -58,7 +58,7 @@
 
 **Interfaces:** `assess_lane_timing(capture_dir, collector_identity, target, run_context, source_hashes) -> dict` independently verifies `completion.json` and every listed segment SHA, calls existing `capture_window.assess(..., require_transition=False)` for the shared SQL/event/continuity rules, then applies the stricter lane-only roster/identity/metrics checks. The new `require_transition` argument defaults to `True`, preserving ordinary behavior; ordinary `assess_manifest` remains untouched. Fixed `lane-verdict` action passes only the bound private paths. The address-free verdict binds run/feed session, target/source, collector identity and capture digests.
 
-- [ ] Add failing fixtures for authentic 65-second/≥60-second coverage and each rule in the spec: ≤3-second gaps, stable two Ready Pod/container/process and Deployment identities, exact original ESS/NLB roster, repeated versus skipped distinct feed sequence, <30-second provider age, ≤45-second complete per-node metrics, advancing clean SQL, and FAIL precedence on authenticated adverse SQL. Prove default `capture_window.assess` still requires a transition while only the new lane call may skip that one completion rule.
+- [ ] Add failing fixtures and an actual `run_capture`→assessor test for ≥60-second measurement coverage within the planned 65-second measurement span, ordered terminal settling of at most 5 seconds, and each rule in the spec: ≤3-second gaps across all frames, stable two Ready Pod/container/process and Deployment identities, exact original ESS/NLB roster, repeated versus skipped distinct feed sequence, <30-second provider age, ≤45-second complete per-node metrics, advancing clean SQL, and FAIL precedence including authenticated adverse SQL in the tail. Prove default `capture_window.assess` still requires a transition while only the new lane call may skip that one completion rule.
 - [ ] Run RED fixtures, implement minimal assessor and sealed worker verdict, then run GREEN normal/optimized and Python 3.6 grammar checks.
 - [ ] Test that caller text or an unrelated verdict hash cannot enter the journal; run full traffic suite, commit and obtain independent review before Task 4.
 
@@ -89,6 +89,7 @@
 **Interfaces:** Exact source-hash/staged-byte comparison includes collector, assessor, feed and all transitive worker modules. The old no-scale/scratch source cannot launch. A fresh disabled proof may run only when all Task 1–5 reviews pass, live account/fleet/Gateway/client/metric checks are fresh, the same-day CNY ceiling observation is reused, and the 22:24 start bound is satisfied.
 
 - [ ] Review the whole branch against this plan and resolve blocking findings.
+- [ ] Whole-review fix wave must execute verified source snapshots before reachable local/worker application imports, cover stale direct/transitive caches, and structurally refuse public paid start plus durable paid mutation admission until a separately reviewed long capture/close/abort implementation exists. Keep offline component tests without a runtime enable flag.
 - [ ] Before any later paid `LaneClient.start`, independently audit the prior no-scale `finished` journal, retained proof, exact feed and supervisor process exits, and both temporary credential absences. Release only the matching global `active-run` reservation while holding its owner lock and retain a private release receipt; never infer release from a finished status or terminal text. An unresolved reservation blocks the next run.
 - [ ] Before any ACK/Workbench command read `working/skills/ack-workbench-cli/SKILL.md`. Verify all traffic tests, optimized tests, Python 3.6 worker syntax, source hashes and exact staged bytes. Do not touch credential content.
 - [ ] Push/merge reviewed source under the user's standing authorization, then perform one finite disabled no-scale proof and independently assess retained evidence/cleanup. If any check refuses, record INCONCLUSIVE and do not start paid rehearsal.
