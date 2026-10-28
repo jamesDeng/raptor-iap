@@ -167,21 +167,39 @@ def valid_identity(value):
           type(value['commandSha256']) is str and re.fullmatch(r'[0-9a-f]{64}',value['commandSha256']) is not None)
 
 
-def intent(fd,run_id):
-    value=decode(read(fd,'intent.json'))
-    check(type(value) is dict and set(value)=={'runId','startedAt'} and value['runId']==run_id and
-          type(value['startedAt']) is int)
+def profile_values(profile):
+    check(type(profile) is str and profile in ('no-scale','disabled-rehearsal'))
+    if profile=='no-scale':
+        return 'collector-capture',65,80,90
+    return 'rehearsal-capture',5400,5415,5430
+
+
+def intent_profile(value,profile):
+    profile_values(profile)
+    keys={'runId','startedAt'}
+    if profile=='disabled-rehearsal':keys.add('profile')
+    check(type(value) is dict and set(value)==keys and type(value['startedAt']) is int)
+    check(profile=='no-scale' or value['profile']==profile)
     return value
 
 
-def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None):
+def intent(fd,run_id,*,profile='no-scale'):
+    value=intent_profile(decode(read(fd,'intent.json')),profile)
+    check(value['runId']==run_id)
+    return value
+
+
+def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,*,profile='no-scale'):
+    profile_values(profile)
     run,fd,_=context(contract,run_id,expected,worker_path)
     try:
         kubeconfig=kube_binding(contract,kubeconfig)
         check(not os.listdir(fd))
-        write(fd,'intent.json',dict(runId=run_id,startedAt=int(time.time())))
+        started=dict(runId=run_id,startedAt=int(time.time()))
+        if profile=='disabled-rehearsal':started['profile']=profile
+        write(fd,'intent.json',started)
         args=entry_command(run/'pgcat_collector_control.py',expected['collectorControl'],
-            ['_run',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))])
+            ['_run' if profile=='no-scale' else '_rehearsal-run',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))])
         env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8'}
         try:
             (spawn or subprocess.Popen)(args,cwd=str(run),env=env,stdin=subprocess.DEVNULL,
@@ -193,33 +211,52 @@ def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None):
         os.close(fd)
 
 
-def capture_arguments(run):
-    return ['--output',str(run/'collector-capture'),'--inventory',
-            str(run/'provider-inventory.json'),'--seconds','65']
+def capture_arguments(run,*,profile='no-scale'):
+    output,seconds,_,_=profile_values(profile)
+    arguments=['--output',str(run/output),'--inventory',
+               str(run/'provider-inventory.json'),'--seconds',str(seconds)]
+    if profile=='disabled-rehearsal':arguments+=['--boundary-dir',str(run/'disabled-boundary')]
+    return arguments
 
 
-def completion(run):
-    fd=directory(run/'collector-capture')
+def completion(run,*,profile='no-scale'):
+    output,seconds,_,_=profile_values(profile)
+    job=directory(run/'collector-job')
+    try:intent_profile(decode(read(job,'intent.json')),profile)
+    finally:os.close(job)
+    fd=directory(run/output)
     try:
         raw=read(fd,'completion.json',2*1024*1024);value=decode(raw)
         check(type(value) is dict and value.get('version')==1 and value.get('completed') is True and
               value.get('cancelled') is False and type(value.get('maxTotalSeconds')) is int and
-              value['maxTotalSeconds']==65 and type(value.get('segments')) is list and
-              1<=len(value['segments'])<=71)
+              value['maxTotalSeconds']==seconds and type(value.get('segments')) is list and
+              1<=len(value['segments'])<=seconds+6)
+        if profile=='disabled-rehearsal':
+            check(type(value.get('maxSegmentSeconds')) is int and value['maxSegmentSeconds']==1800 and
+                  type(value.get('missingPollCount')) is int and value['missingPollCount']==0 and
+                  value.get('errors')==[])
+            finals=value.get('clientFinalMarkers')
+            check(type(finals) is list and finals)
+            identities=set()
+            for row in finals:
+                check(type(row) is dict and set(row)=={'uid','processId','final'} and row['final'] is True and
+                      type(row['uid']) is str and row['uid'] and type(row['processId']) is str and row['processId'])
+                identity=(row['uid'],row['processId']);check(identity not in identities);identities.add(identity)
         return hashlib.sha256(raw).hexdigest()
     finally:
         os.close(fd)
 
 
-def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,probe=None):
+def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,probe=None,*,profile='no-scale'):
     fd=None;child=None
     try:
+        _,_,wait_seconds,_=profile_values(profile)
         run,fd,_=context(contract,run_id,expected,worker_path)
-        kubeconfig=kube_binding(contract,kubeconfig);intent(fd,run_id)
+        kubeconfig=kube_binding(contract,kubeconfig);intent(fd,run_id,profile=profile)
         write(fd,'claim.json',dict(runId=run_id))
         args=entry_command(run/'pgcat_collector_control.py',expected['collectorControl'],
-            ['_capture',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))]
-            +capture_arguments(run))
+            ['_capture' if profile=='no-scale' else '_rehearsal-capture',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))]
+            +capture_arguments(run,profile=profile))
         child=(spawn or subprocess.Popen)(args,cwd=str(run),
             env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8','KUBECONFIG':kubeconfig},
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
@@ -227,9 +264,9 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
         write(fd,'identity.json',identity)
         category='incomplete';digest=None
         try:
-            code=child.wait(timeout=80)
+            code=child.wait(timeout=wait_seconds)
             if type(code) is int and code==0:
-                digest=completion(run);category='completed'
+                digest=completion(run,profile=profile);category='completed'
         except subprocess.TimeoutExpired:
             child.kill();code=child.wait(timeout=5);category='timeout'
         write(fd,'exit.json',dict(identity=identity,exitCode=code,category=category,
@@ -248,12 +285,13 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
             os.close(fd)
 
 
-def status(contract,run_id,expected,probe=None,now=None):
+def status(contract,run_id,expected,probe=None,now=None,*,profile='no-scale'):
     fd=None
     try:
+        _,_,_,status_seconds=profile_values(profile)
         run,fd,_=context(contract,run_id,expected)
-        started=intent(fd,run_id)
-        check(0<=(now or time.time)()-started['startedAt']<=90)
+        started=intent(fd,run_id,profile=profile)
+        check(0<=(now or time.time)()-started['startedAt']<=status_seconds)
         check(decode(read(fd,'claim.json')) == dict(runId=run_id))
         identity=decode(read(fd,'identity.json'));valid_identity(identity)
         observed=(probe or process_identity)(identity['pid'])
@@ -265,7 +303,7 @@ def status(contract,run_id,expected,probe=None,now=None):
             return dict(status='ALIVE',identity=identity)
         check(decode(read(fd,'observed.json'))==identity)
         sealed=decode(read(fd,'exit.json'))
-        digest=completion(run)
+        digest=completion(run,profile=profile)
         check(sealed==dict(identity=identity,exitCode=0,category='completed',completionSha256=digest)
               and type(sealed['exitCode']) is int)
         return dict(status='EXITED',identity=identity,
@@ -324,11 +362,19 @@ def main():
         args=sys.argv[1:]
         check(len(args)>=5)
         verb,contract,run_id,kubeconfig,hashes=args[:5];expected=decode(hashes.encode('ascii'))
-        check(verb in ('launch','status','_run','_capture','verdict'))
-        if verb in ('_capture','verdict'):
-            run,fd,verified=context(contract,run_id,expected,Path(__file__));os.close(fd)
+        profiles={'launch':'no-scale','status':'no-scale','_run':'no-scale','_capture':'no-scale',
+                  'verdict':'no-scale','rehearsal-launch':'disabled-rehearsal',
+                  'rehearsal-status':'disabled-rehearsal','_rehearsal-run':'disabled-rehearsal',
+                  '_rehearsal-capture':'disabled-rehearsal'}
+        check(verb in profiles);profile=profiles[verb]
+        capture=verb in ('_capture','_rehearsal-capture')
+        if capture or verb=='verdict':
+            run,fd,verified=context(contract,run_id,expected,Path(__file__))
+            try:
+                if capture:intent(fd,run_id,profile=profile)
+            finally:os.close(fd)
             kube_binding(contract,kubeconfig)
-            check(args[5:]==capture_arguments(run) if verb=='_capture' else len(args)==7)
+            check(args[5:]==capture_arguments(run,profile=profile) if capture else len(args)==7)
             # Bootstrap the import guard itself from verified source, then ensure
             # every transitive local import executes the same reviewed bytes.
             namespace={'__name__':'_verified_worker','__file__':str(run/'pgcat_rehearsal_worker.py')}
@@ -336,7 +382,7 @@ def main():
             check(not any(name in sys.modules for name in verified))
             finder=namespace['_VerifiedSourceFinder'](run,verified);sys.meta_path.insert(0,finder)
             try:
-                if verb=='_capture':
+                if capture:
                     module=importlib.import_module('worker_capture');sys.argv=['worker_capture.py']+args[5:]
                     module.main()
                 else:
@@ -349,10 +395,10 @@ def main():
                 sys.meta_path.remove(finder)
             return 0
         check(len(args)==5)
-        if verb=='_run':
-            return run_child(contract,run_id,kubeconfig,expected,worker_path=Path(__file__))
-        result=(launch(contract,run_id,kubeconfig,expected,worker_path=Path(__file__)) if verb=='launch'
-                else status(contract,run_id,expected))
+        if verb in ('_run','_rehearsal-run'):
+            return run_child(contract,run_id,kubeconfig,expected,worker_path=Path(__file__),profile=profile)
+        result=(launch(contract,run_id,kubeconfig,expected,worker_path=Path(__file__),profile=profile)
+                if verb in ('launch','rehearsal-launch') else status(contract,run_id,expected,profile=profile))
         print(json.dumps(result,sort_keys=True,separators=(',',':')))
         return 0 if result['status'] in ('LAUNCHED','ALIVE','EXITED') else 1
     except BaseException:
