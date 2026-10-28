@@ -5,6 +5,8 @@ are local only; staging and worker-source review remain separate requirements.
 """
 import hashlib
 import json
+import math
+import re
 import os
 from pathlib import Path
 import shlex
@@ -128,6 +130,34 @@ class ActionCatalog:
                    json.dumps(hashes,sort_keys=True,separators=(',',':')),
                    encode(bindings['target']).decode('ascii'),encode(bound).decode('ascii')]
             command=' '.join(q(part) for part in parts)
+        elif action == 'reconcile-close':
+            identifier(run_id)
+            require(type(pending_binding) is dict and
+                    pending_binding.get('runId') == run_id and
+                    pending_binding.get('originalInstanceIds') == bindings['target']['originalInstanceIds'] and
+                    token(pending_binding.get('newId')) and
+                    pending_binding['newId'] not in bindings['target']['originalInstanceIds'],'target')
+            require(type(run_context) is dict and set(run_context) == {'feedSession','sequence',
+                'observedAt','scaleinRequestId','scaleinAcknowledgedAt','pendingBindingSha256'},'source')
+            identifier(run_context['feedSession']);identifier(run_context['scaleinRequestId'])
+            require(run_context['feedSession'] == pending_binding.get('feedSession') and
+                    type(run_context['sequence']) is int and
+                    type(pending_binding.get('sequence')) is int and
+                    0 < pending_binding['sequence'] < run_context['sequence'] <= 999999 and
+                    all(type(run_context[key]) in (int,float) and math.isfinite(run_context[key])
+                        for key in ('observedAt','scaleinAcknowledgedAt')) and
+                    type(pending_binding.get('observedAt')) in (int,float) and
+                    math.isfinite(pending_binding['observedAt']) and
+                    run_context['observedAt'] > max(pending_binding['observedAt'],run_context['scaleinAcknowledgedAt']) and
+                    sha(run_context['pendingBindingSha256']) and
+                    run_context['pendingBindingSha256'] == hashlib.sha256(encode(pending_binding)).hexdigest(),'source')
+            hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
+            parts=['python3','-I','-S','-c',BOOTSTRAP,bindings['phaseWorker'],hashes['rehearsalWorker'],
+                'reconcile-close',bindings['contractDir'],run_id,bindings['workerKubeconfig'],
+                json.dumps(hashes,sort_keys=True,separators=(',',':')),
+                encode(bindings['target']).decode('ascii'),encode(pending_binding).decode('ascii'),
+                encode(run_context).decode('ascii')]
+            command=' '.join(q(part) for part in parts)
         elif action.startswith('pending-'):
             identifier(run_id)
             hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
@@ -187,9 +217,8 @@ class ActionCatalog:
             value=rows[1]
             require(type(value) is dict and set(value) == {'feedSession','sequence','resourceVersion'},'parse')
             require(value['feedSession'] == request['feedSession'] and type(value['sequence']) is int
-                    and value['sequence'] >= request['minimumSequence'] and token(value['resourceVersion'])
-                    and value['resourceVersion'].isascii() and value['resourceVersion'].isdigit()
-                    and int(value['resourceVersion']) > 0,'parse')
+                    and value['sequence'] == request['minimumSequence'] and type(value['resourceVersion']) is str
+                    and re.fullmatch(r'[1-9][0-9]{0,31}',value['resourceVersion']) is not None,'parse')
         else:
             require(len(rows) == 1 and type(rows[0]) is dict,'parse')
             value=rows[0]

@@ -524,6 +524,12 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS nlb_ack (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                 request_id TEXT NOT NULL, sealed_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS scalein_ack (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS reconcile_admission (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS reconcile_binding (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS mutation_keys (
                 run_id TEXT NOT NULL, action TEXT NOT NULL,
                 PRIMARY KEY (run_id,action));
@@ -729,6 +735,17 @@ class Journal:
                                     'receipt')
                             require(db.execute('SELECT 1 FROM mutation_keys WHERE run_id=? AND action=?',
                                     (request['runId'],request['action'])).fetchone() is None,'incomplete')
+            if request['action'] == 'reconcile-close':
+                context=self._reconcile_context_in_tx(db,receipt)
+                require(context['feedSession'] == request['feedSession'] and
+                        context['sequence'] == request['minimumSequence'], 'receipt')
+                require(db.execute('SELECT 1 FROM reconcile_admission').fetchone() is None and
+                        db.execute('SELECT 1 FROM mutation_keys WHERE run_id=? AND action=?',
+                            (request['runId'],'reconcile-close')).fetchone() is None, 'incomplete')
+                admission=dict(requestId=request['requestId'],runId=request['runId'],
+                    context=context,receipt=receipt,receiptIdentity=request['receiptIdentity'])
+                db.execute('INSERT INTO reconcile_admission VALUES (1,?)',(encode(admission).decode(),))
+                db.execute('INSERT INTO mutation_keys VALUES (?,?)',(request['runId'],'reconcile-close'))
             require(db.execute('SELECT 1 FROM requests WHERE request_id=? OR nonce=?',
                                (request['requestId'],request['nonce'])).fetchone() is None)
             db.execute('UPDATE run SET supervisor=?, session=?', (request['supervisorId'],request['feedSession']))
@@ -739,7 +756,8 @@ class Journal:
 
     def seal(self, request_id: str, result: dict, pending_source_sha=None,
              pre_drain_source_sha=None, zero_source_sha=None,
-             lane_verdict_source_sha=None, lane_verdict_result=None) -> None:
+             lane_verdict_source_sha=None, lane_verdict_result=None,
+             reconcile_source_sha=None) -> None:
         identifier(request_id)
         validate_result(result)
         with self._transaction() as db:
@@ -750,7 +768,28 @@ class Journal:
             request = json.loads(row['request'])
             require(request['action']=='lane-verdict' or
                     lane_verdict_source_sha is None and lane_verdict_result is None,'source')
-            if result['state']=='complete' and request['action']=='lane-verdict':
+            require(request['action'] == 'reconcile-close' or reconcile_source_sha is None, 'source')
+            require(result['state'] == 'complete' or reconcile_source_sha is None, 'source')
+            if result['state'] == 'complete' and request['action'] == 'reconcile-close':
+                require(pending_source_sha is None and pre_drain_source_sha is None and
+                        zero_source_sha is None, 'source')
+                self._bind_reconcile_in_tx(db,request,result['payload'],reconcile_source_sha)
+            elif result['state'] == 'complete' and request['action'] == 'scalein-three-to-two':
+                require(set(result['payload']) == {'requestId'} and token(result['payload']['requestId']) and
+                        pending_source_sha is None and pre_drain_source_sha is None and
+                        zero_source_sha is None, 'source')
+                current=db.execute('SELECT * FROM run').fetchone()
+                require(current['mode'] == 'disabled-rehearsal' and
+                        current['run_id'] == request['runId'] and
+                        current['session'] == request['feedSession'], 'incomplete')
+                require(db.execute('SELECT 1 FROM scalein_ack').fetchone() is None, 'incomplete')
+                sealed=time.time()
+                require(type(sealed) in (int,float) and math.isfinite(sealed), 'source')
+                proof=dict(requestId=request_id,runId=request['runId'],feedSession=request['feedSession'],
+                    sequence=request['minimumSequence'],sealedAt=sealed,
+                    providerRequestId=result['payload']['requestId'])
+                db.execute('INSERT INTO scalein_ack VALUES (1,?)',(encode(proof).decode(),))
+            elif result['state']=='complete' and request['action']=='lane-verdict':
                 require(pending_source_sha is None and pre_drain_source_sha is None and zero_source_sha is None,'source')
                 payload=result['payload']
                 require(type(payload) is dict and set(payload)=={'status','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'} and
@@ -810,6 +849,108 @@ class Journal:
                        (result['state'], encode(result).decode(), request_id))
             if result['state'] == 'uncertain':
                 db.execute("UPDATE run SET state='uncertain' WHERE state='active'")
+
+    def _scalein_ack_in_tx(self,db):
+        row=db.execute('SELECT proof FROM scalein_ack').fetchone()
+        require(row is not None,'incomplete')
+        proof=json.loads(row['proof'])
+        require(type(proof) is dict and set(proof) == {'requestId','runId','feedSession',
+                'sequence','sealedAt','providerRequestId'},'source')
+        for key in ('requestId','runId','feedSession'):identifier(proof[key])
+        require(type(proof['sequence']) is int and 0 < proof['sequence'] <= 999999 and
+                type(proof['sealedAt']) in (int,float) and math.isfinite(proof['sealedAt']) and
+                token(proof['providerRequestId']),'source')
+        sent=db.execute('SELECT request,state,result FROM requests WHERE request_id=?',
+                        (proof['requestId'],)).fetchone()
+        require(sent is not None and sent['state'] == 'complete','incomplete')
+        request=json.loads(sent['request'])
+        require(request['action'] == 'scalein-three-to-two' and
+                request['runId'] == proof['runId'] and request['feedSession'] == proof['feedSession'] and
+                request['minimumSequence'] == proof['sequence'] and
+                json.loads(sent['result']) == dict(state='complete',category='ok',
+                    payload=dict(requestId=proof['providerRequestId'])),'source')
+        return proof
+
+    def scalein_ack(self):
+        with self._connection() as db:return self._scalein_ack_in_tx(db)
+
+    def _reconcile_context_in_tx(self,db,receipt):
+        run=db.execute('SELECT * FROM run').fetchone()
+        require(run is not None and run['state'] == 'active' and
+                run['mode'] == 'disabled-rehearsal','incomplete')
+        ack=self._scalein_ack_in_tx(db)
+        row=db.execute('SELECT proof FROM pending_binding').fetchone()
+        require(row is not None,'incomplete')
+        pending=json.loads(row['proof']);target=json.loads(run['target'])
+        require(type(pending) is dict and set(pending) == {'runId','feedSession','newId',
+            'originalInstanceIds','sequence','observedAt','resourceVersion',
+            'clientRosterSha256','evidenceSha256','sourceSha256'},'source')
+        identifier(pending['runId']);identifier(pending['feedSession'])
+        require(pending['runId'] == ack['runId'] == run['run_id'] and
+                pending['feedSession'] == ack['feedSession'] == run['session'] and
+                pending['originalInstanceIds'] == target['originalInstanceIds'] and
+                token(pending['newId']) and pending['newId'] not in target['originalInstanceIds'] and
+                type(pending['sequence']) is int and 0 < pending['sequence'] < ack['sequence'] and
+                type(pending['observedAt']) in (int,float) and math.isfinite(pending['observedAt']) and
+                pending['observedAt'] <= ack['sealedAt'] and
+                token(pending['resourceVersion']) and
+                all(sha(pending[key]) for key in ('clientRosterSha256','evidenceSha256','sourceSha256')) and
+                pending['sourceSha256'] == json.loads(run['hashes']).get('pendingProofWorker'),'source')
+        sent=db.execute('SELECT request FROM requests WHERE request_id=?',(ack['requestId'],)).fetchone()
+        require(json.loads(sent['request'])['target'] == target,'target')
+        require(type(receipt) is dict and set(receipt) == {'feedSession','sequence','mode',
+                'desired','observedAt','rosterSha256'},'receipt')
+        identifier(receipt['feedSession'])
+        require(receipt['feedSession'] == run['session'] and receipt['mode'] == 'disabled-rehearsal' and
+                type(receipt['desired']) is int and receipt['desired'] == 2 and
+                type(receipt['sequence']) is int and ack['sequence'] < receipt['sequence'] <= 999999 and
+                type(receipt['observedAt']) in (int,float) and math.isfinite(receipt['observedAt']) and
+                0 <= time.time()-receipt['observedAt'] < 3.5 and
+                receipt['observedAt'] > ack['sealedAt'] and sha(receipt['rosterSha256']) and
+                receipt['rosterSha256'] == roster_sha(original_roster(target['originalInstanceIds'])),'receipt')
+        return dict(feedSession=run['session'],sequence=receipt['sequence'],observedAt=receipt['observedAt'],
+            scaleinRequestId=ack['requestId'],scaleinAcknowledgedAt=ack['sealedAt'],
+            pendingBindingSha256=hashlib.sha256(encode(pending)).hexdigest())
+
+    def reconcile_context(self,receipt):
+        """Observe provenance; only admit reserves permission in a transaction."""
+        with self._connection() as db:return self._reconcile_context_in_tx(db,receipt)
+
+    def _bind_reconcile_in_tx(self,db,request,payload,source_sha):
+        run=db.execute('SELECT * FROM run').fetchone()
+        require(run['mode'] == 'disabled-rehearsal' and run['run_id'] == request['runId'] and
+                sha(source_sha) and json.loads(run['hashes']).get('rehearsalContract') == source_sha,'source')
+        row=db.execute('SELECT proof FROM reconcile_admission').fetchone()
+        require(row is not None,'incomplete')
+        admission=json.loads(row['proof']);context=admission['context']
+        require(admission['requestId'] == request['requestId'] and admission['runId'] == request['runId'] and
+                admission['receiptIdentity'] == request['receiptIdentity'] and
+                context['feedSession'] == request['feedSession'] == run['session'] and
+                context['sequence'] == request['minimumSequence'] and
+                admission['receipt']['sequence'] == context['sequence'] and
+                admission['receipt']['observedAt'] == context['observedAt'],'source')
+        ack=self._scalein_ack_in_tx(db)
+        pending=json.loads(db.execute('SELECT proof FROM pending_binding').fetchone()['proof'])
+        require(context['scaleinRequestId'] == ack['requestId'] and
+                context['scaleinAcknowledgedAt'] == ack['sealedAt'] and
+                context['pendingBindingSha256'] == hashlib.sha256(encode(pending)).hexdigest(),'source')
+        require(type(payload) is dict and set(payload) == {'feedSession','sequence','resourceVersion'} and
+                payload['feedSession'] == context['feedSession'] and type(payload['sequence']) is int and
+                payload['sequence'] == context['sequence'] and type(payload['resourceVersion']) is str and
+                re.fullmatch(r'[1-9][0-9]{0,31}',payload['resourceVersion']) is not None,'source')
+        require(db.execute('SELECT 1 FROM reconcile_binding').fetchone() is None,'incomplete')
+        sealed=time.time()
+        require(type(sealed) in (int,float) and math.isfinite(sealed) and sealed >= context['observedAt'],'source')
+        proof=dict(payload,requestId=request['requestId'],runId=request['runId'],
+            scaleinRequestId=context['scaleinRequestId'],pendingBindingSha256=context['pendingBindingSha256'],
+            sourceSha256=source_sha,sealedAt=sealed)
+        db.execute('INSERT INTO reconcile_binding VALUES (1,?)',(encode(proof).decode(),))
+
+    def reconcile_binding(self):
+        with self._connection() as db:
+            row=db.execute('SELECT proof FROM reconcile_binding').fetchone()
+            require(row is not None,'incomplete')
+            return json.loads(row['proof'])
 
     def _collector_exit_in_tx(self,db,*,profile='no-scale'):
         action=_collector_actions(profile)[1]

@@ -622,6 +622,63 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(intent['activityRequestId'],check_id)
         self.assertEqual(intent['zeroProofSha256'],hashlib.sha256(encode(proof)).hexdigest())
 
+    def reconciliation_controller(self):
+        from pgcat_lane_protocol import original_roster
+        if self.capture.exists():
+            import shutil
+            shutil.rmtree(self.capture)
+        controller,_,_=self.zero_controller()
+        controller.state='scaled-two'
+        Path(self.binding['laneRoot']).mkdir(mode=0o700)
+        controller.receipt=dict(controller.receipt,sequence=9,desired=2,
+            rosterSha256=roster_sha(original_roster(self.binding['laneBindings']['target']['originalInstanceIds'])))
+        payload=dict(feedSession=self.session,sequence=9,resourceVersion='42')
+        proof=dict(payload,requestId=str(uuid.uuid4()),runId=self.client.run_id,
+            scaleinRequestId=str(uuid.uuid4()),pendingBindingSha256=hashlib.sha256(encode(controller.pending_proof)).hexdigest(),
+            sourceSha256=self.binding['laneBindings']['sourceHashes']['rehearsalContract'],sealedAt=self.wall)
+        self.client.call.side_effect=lambda *args:dict(state='complete',category='ok',payload=payload)
+        return controller,payload,proof
+
+    def test_reconcile_enters_reconciled_two_only_after_later_exact_provider_publication(self):
+        controller,payload,proof=self.reconciliation_controller()
+        later=dict(controller.receipt,sequence=10,observedAt=self.wall+1)
+        def successor(minimum,**kwargs):
+            self.assertEqual(minimum,10);self.assertEqual(kwargs['observed_after'],self.wall)
+            self.assertEqual(kwargs['desired'],2)
+            controller.receipt=later;return later
+        with patch.object(self.module.Journal,'reconcile_binding',return_value=proof,create=True), \
+                patch.object(controller,'_next_receipt',side_effect=successor):
+            self.assertEqual(controller.reconcile_rehearsal(),proof)
+        self.assertEqual(controller.state,'reconciled-two')
+        self.assertEqual(self.client.call.call_args.args[0],'reconcile-close')
+        controller._live()
+        with self.assertRaises(Refused):controller.reconcile_rehearsal()
+
+    def test_reconcile_refuses_wrong_state_stale_roster_and_journal_result(self):
+        for kind in ('state','mode','stale','roster','binding','successor','timeout'):
+            with self.subTest(kind=kind):
+                controller,payload,proof=self.reconciliation_controller()
+                if kind=='state':controller.state='zero-bound'
+                if kind=='mode':controller.mode='no-scale'
+                if kind=='stale':controller.receipt['observedAt']-=3.5
+                if kind=='roster':controller.receipt['rosterSha256']='0'*64
+                if kind=='binding':proof['resourceVersion']='43'
+                later=dict(controller.receipt,sequence=10,observedAt=self.wall+1)
+                if kind=='successor':later['rosterSha256']='0'*64
+                with patch.object(self.module.Journal,'reconcile_binding',return_value=proof,create=True), \
+                        patch.object(controller,'_next_receipt',side_effect=Refused('timeout') if kind=='timeout' else None,return_value=later):
+                    with self.assertRaises(Refused):controller.reconcile_rehearsal()
+                self.assertEqual(controller.state,'uncertain')
+
+    def test_private_worker_reconcile_cannot_bypass_scaled_two_state(self):
+        controller,_,proof=self.reconciliation_controller()
+        controller.state='zero-bound'
+        with patch.object(self.module.Journal,'reconcile_binding',return_value=proof), \
+                patch.object(controller,'_next_receipt',return_value=controller.receipt):
+            with self.assertRaises(Refused):controller._worker_call('reconcile-close')
+        self.assertEqual(controller.state,'uncertain')
+        self.assertEqual(self.client.call.call_count,0)
+
     def test_slow_activity_refuses_before_ess_child(self):
         controller,proof,absent=self.zero_controller()
         controller.state='zero-bound';controller.zero_proof=proof

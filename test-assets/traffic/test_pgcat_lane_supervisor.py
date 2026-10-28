@@ -287,6 +287,92 @@ class SupervisorTests(unittest.TestCase):
         with self.journal._connection() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM mutation_keys WHERE action='scalein-three-to-two'").fetchone()[0],1)
 
+    def reconciliation_ready(self):
+        self.test_scalein_uses_sanitized_activity_and_exact_one_use_intent()
+        from pgcat_lane_protocol import original_roster
+        receipt=dict(feedSession=self.session,sequence=7,mode='disabled-rehearsal',desired=2,
+            observedAt=time.time(),rosterSha256=roster_sha(original_roster(self.target['originalInstanceIds'])))
+        self.private_json(Path(self.bindings['receiptPath']),receipt)
+        return receipt
+
+    def test_reconcile_fixed_command_has_only_reviewed_eight_worker_arguments(self):
+        import shlex
+        receipt=self.reconciliation_ready()
+        context=self.journal.reconcile_context(receipt)
+        argv,env,budget=actions.ActionCatalog.command('reconcile-close',self.bindings,
+            self.run,self.journal.pending_binding(),context)
+        # Decode the local wrapper bootstrap and its fixed Workbench -c command.
+        remote=shlex.split(argv[-1])
+        self.assertEqual(remote[7:11],['reconcile-close',self.bindings['contractDir'],self.run,self.bindings['workerKubeconfig']])
+        self.assertEqual(len(remote[7:]),8)
+        self.assertEqual(json.loads(remote[-1]),context)
+        self.assertEqual(budget,5.)
+        for changes in (dict(extra='caller'),dict(sequence=True),dict(scaleinRequestId='provider-ack'),dict(pendingBindingSha256='0'*64)):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                actions.ActionCatalog.command('reconcile-close',self.bindings,self.run,self.journal.pending_binding(),dict(context,**changes))
+
+    def test_reconcile_owned_dispatch_seals_original_admission_despite_feed_race(self):
+        receipt=self.reconciliation_ready()
+        rows=[dict(status='PREPARED',stage='reconcile',category='rehearsal-only'),
+              dict(feedSession=self.session,sequence=7,resourceVersion='42')]
+        def response(deadline):
+            self.private_json(Path(self.bindings['receiptPath']),dict(receipt,sequence=8,observedAt=time.time()))
+            return b'\n'.join(encode(row) for row in rows)
+        with patch.object(self.owner,'_communicate',side_effect=response):
+            result=self.run_request(action='reconcile-close')
+        self.assertEqual(result['state'],'complete')
+        self.assertEqual(self.journal.reconcile_binding()['sequence'],7)
+        if self.marker.exists():self.marker.unlink()
+        with self.assertRaises(Refused):self.run_request(action='reconcile-close')
+        self.assertFalse(self.marker.exists())
+
+    def test_reconcile_parser_requires_exact_admitted_sequence_and_canonical_rv(self):
+        req=self.request(action='reconcile-close')
+        prepared=dict(status='PREPARED',stage='reconcile',category='rehearsal-only')
+        good=dict(feedSession=self.session,sequence=1,resourceVersion='42')
+        for changes in (dict(sequence=2),dict(sequence=True),dict(resourceVersion='01'),
+                dict(resourceVersion='1'*33),dict(resourceVersion='١'),dict(extra='field')):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                actions.ActionCatalog.parse('reconcile-close',b'\n'.join(map(encode,[prepared,dict(good,**changes)])),req)
+        for rows in ([good],[prepared,good,good],[dict(prepared,extra='field'),good]):
+            with self.assertRaises(Refused):actions.ActionCatalog.parse('reconcile-close',b'\n'.join(map(encode,rows)),req)
+
+    def test_fake_ack_admission_worker_and_successor_reach_reconciled_two(self):
+        from types import SimpleNamespace
+        from pgcat_rehearsal_controller import Controller
+        receipt=self.reconciliation_ready()
+        controller=Controller.__new__(Controller)
+        controller.bindings=dict(laneRoot=str(self.root),laneBindings=self.bindings)
+        controller.mode='disabled-rehearsal';controller.state='scaled-two'
+        controller.receipt=receipt;controller.reconcile_proof=None
+        controller.pending_proof=self.journal.pending_binding()
+        controller.feed=SimpleNamespace(poll=lambda:None)
+        def call(action,admitted,deadline):
+            self.assertEqual(action,'reconcile-close');self.assertEqual(admitted,receipt)
+            req=self.request(action=action,deadlineMonotonic=deadline)
+            return self.owner.run_once(req['requestId'])['result']
+        controller.client=SimpleNamespace(run_id=self.run,call=call,_active=lambda:None,close=lambda:None)
+        original_next=controller._next_receipt
+        def provider_successor(minimum,**kwargs):
+            # A fake successful provider tick AFTER the completed worker call.
+            self.private_json(Path(self.bindings['receiptPath']),dict(receipt,
+                sequence=minimum,observedAt=time.time()))
+            return original_next(minimum,**kwargs)
+        def worker_response(deadline):
+            with self.journal._connection() as db:
+                admission=json.loads(db.execute('SELECT proof FROM reconcile_admission').fetchone()[0])
+                self.assertEqual(admission['context']['scaleinRequestId'],self.journal.scalein_ack()['requestId'])
+                self.assertEqual(admission['receipt'],receipt)
+            return b'\n'.join(map(encode,[dict(status='PREPARED',stage='reconcile',category='rehearsal-only'),
+                dict(feedSession=self.session,sequence=7,resourceVersion='42')]))
+        with patch.object(self.owner,'_communicate',side_effect=worker_response), \
+                patch.object(controller,'_next_receipt',side_effect=provider_successor):
+            proof=controller.reconcile_rehearsal()
+        self.assertEqual(controller.state,'reconciled-two')
+        self.assertEqual(controller.receipt['sequence'],8)
+        self.assertEqual(proof,self.journal.reconcile_binding())
+        self.assertGreater(controller.receipt['observedAt'],proof['sealedAt'])
+
     def publish_no_scale_finish(self, status='PASS', forged=None, bound=True, exited=True, caller_pid=123, caller_binding='f'*64):
         from datetime import datetime,timezone,timedelta
         from pgcat_lane_protocol import (digest,no_scale_stop_ack,no_scale_assessment,

@@ -477,6 +477,38 @@ class FeedTests(unittest.TestCase):
         op.fetch_nlb=lambda:fixture[3]
         return op,fixture
 
+    def test_retained_three_cache_does_not_restore_explicitly_reconciled_two_target_configmap(self):
+        op,fixture=self.operator_fixture();writes=[];updates=[];live=[None]
+        op.mode='disabled-rehearsal'
+        # Start exact two, then learn one candidate monitoring address.
+        fixture[0][:]=fixture[0][:2]
+        for page in fixture[0]:page['TotalCount']=2
+        fixture[1]['DesiredCapacity']=2
+        fixture[3]['Servers']=fixture[3]['Servers'][:2]
+        def update(targets):updates.append(targets);live[0]=targets
+        op.atomic_worker_write=writes.append;op.update_targets=update
+        op.write(op.read())
+        source=self.fixture(3)
+        source[0][2]['ScalingInstances']['ScalingInstance'][0]['ScalingGroupId']=feed.GROUP_ID
+        fixture[0].append(source[0][2])
+        for page in fixture[0]:page['TotalCount']=3
+        fixture[1]['DesiredCapacity']=3
+        op.write(op.read())
+        self.assertEqual(len(live[0]),3)
+        # Fake ACK and provider convergence: candidate departs, cache retains 3.
+        fixture[1]['DesiredCapacity']=2;fixture[0].pop()
+        for page in fixture[0]:page['TotalCount']=2
+        op.write(op.read())
+        self.assertEqual(len(op.previous),3)
+        self.assertEqual(writes[-1]['members'],['i-0','i-1'])
+        # Fixed worker explicitly reconciles the live ConfigMap to originals.
+        live[0]=(('i-0','10.0.0.1'),('i-1','10.0.0.2'));count=len(updates)
+        op.write(op.read())
+        self.assertEqual(len(updates),count)
+        self.assertEqual(live[0],(('i-0','10.0.0.1'),('i-1','10.0.0.2')))
+        self.assertEqual(len(op.previous),3)
+        self.assertEqual(writes[-1]['sequence'],4)
+
     def test_operator_session_sequence_and_delayed_departures(self):
         import uuid
         op,fixture=self.operator_fixture();writes=[];updates=[]

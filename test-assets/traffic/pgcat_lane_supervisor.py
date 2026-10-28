@@ -304,14 +304,14 @@ class LaneSupervisor:
                     require(run['mode'] != 'no-scale' or req['action'] in NO_SCALE_ACTIONS)
                     require(req['action'] not in ('scaleout-two-to-three','pending-proof',
                         'pre-drain-proof','deregister-new-node','zero-proof',
-                        'scaling-activity-check','scalein-three-to-two') or
+                        'scaling-activity-check','scalein-three-to-two','reconcile-close') or
                             run['mode'] == 'disabled-rehearsal')
                 identity,receipt=self._receipt(req); self._unused(req,receipt)
                 if req['action'] in ('pending-proof','pre-drain-proof','zero-proof',
                                      'scaling-activity-check','scalein-three-to-two'):
                     require(receipt['desired'] == 3 and time.time()-receipt['observedAt'] < 3.5,'receipt')
                 binding=(self.journal.pending_binding() if req['action'] in
-                    ('pre-drain-proof','deregister-new-node') else
+                    ('pre-drain-proof','deregister-new-node','reconcile-close') else
                     self.journal.pre_drain_binding() if req['action']=='zero-proof' else None)
                 verdict_context=None
                 if req['action']=='lane-verdict':
@@ -320,6 +320,8 @@ class LaneSupervisor:
                     verdict_context=dict(runId=self.run_id,feedSession=req['feedSession'],
                         collectorIdentity=collector['payload']['identity'],
                         completionSha256=collector['payload']['exit']['completionSha256'])
+                if req['action'] == 'reconcile-close':
+                    verdict_context=self.journal.reconcile_context(receipt)
                 argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
                     self.run_id,binding,run_context=verdict_context)
                 deadline=req['deadlineMonotonic']
@@ -339,7 +341,7 @@ class LaneSupervisor:
                                          'scalein-three-to-two'):
                         require(before_cutoff() and time.time()-receipt['observedAt'] < 3.5,'receipt')
                     if req['action'] in ('pending-proof','pre-drain-proof','deregister-new-node',
-                                         'zero-proof','scaling-activity-check','scalein-three-to-two'):
+                                         'zero-proof','scaling-activity-check','scalein-three-to-two','reconcile-close'):
                         self.journal.admit(req,receipt)
                     else:
                         self.journal.admit(req)
@@ -382,6 +384,9 @@ class LaneSupervisor:
                     elif req['action'] == 'pre-drain-proof':
                         self.journal.seal(request_id,result,
                             pre_drain_source_sha=self.bindings['sourceHashes']['preDrainProofWorker'])
+                    elif req['action'] == 'reconcile-close':
+                        self.journal.seal(request_id,result,
+                            reconcile_source_sha=self.bindings['sourceHashes']['rehearsalContract'])
                     elif req['action']=='lane-verdict':
                         self.journal.seal(request_id,result,
                             lane_verdict_source_sha=self.bindings['sourceHashes']['laneTimingAssessor'],

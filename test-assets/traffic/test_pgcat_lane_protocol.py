@@ -310,6 +310,153 @@ class ProtocolTest(unittest.TestCase):
             with self.assertRaises(Refused):
                 journal.admit(request)
 
+    def reconciliation_journal(self):
+        from pgcat_lane_protocol import encode, original_roster, roster_sha
+        journal=self.collector_journal('disabled-rehearsal')
+        pending=dict(runId=self.run,feedSession=self.session,newId='candidate',
+            originalInstanceIds=self.target['originalInstanceIds'],sequence=3,
+            observedAt=time.time()-120,resourceVersion='11',clientRosterSha256='c'*64,
+            evidenceSha256='d'*64,sourceSha256='e'*64)
+        scalein=self.request(action='scalein-three-to-two',minimumSequence=8)
+        with journal._transaction() as db:
+            db.execute('UPDATE run SET session=?, hashes=?',(self.session,
+                encode(dict(bundleSha256='a'*64,rehearsalContract='f'*64,pendingProofWorker='e'*64)).decode()))
+            db.execute('INSERT INTO pending_binding VALUES (1,?)',(encode(pending).decode(),))
+            db.execute('INSERT INTO requests VALUES (?,?,?,?,?,NULL)',
+                (scalein['requestId'],self.run,scalein['nonce'],encode(scalein).decode(),'dispatching'))
+        journal.seal(scalein['requestId'],dict(state='complete',category='ok',payload=dict(requestId='provider-ack')))
+        receipt=dict(feedSession=self.session,sequence=9,mode='disabled-rehearsal',desired=2,
+            observedAt=time.time()+.001,rosterSha256=roster_sha(original_roster(self.target['originalInstanceIds'])))
+        return journal,pending,scalein,receipt
+
+    def test_scalein_terminal_seals_actual_ack_and_reconcile_ignores_old_provenance_age(self):
+        from unittest.mock import patch
+        journal,pending,scalein,receipt=self.reconciliation_journal()
+        ack=journal.scalein_ack()
+        self.assertEqual(ack['requestId'],scalein['requestId'])
+        self.assertEqual(ack['providerRequestId'],'provider-ack')
+        self.assertEqual(ack['sequence'],8)
+        with patch('pgcat_lane_protocol.time.time',return_value=receipt['observedAt']+60):
+            # Old ACK/Pending remain provenance while the current publication is fresh.
+            receipt['observedAt']+=60
+            context=journal.reconcile_context(receipt)
+        self.assertEqual(set(context),{'feedSession','sequence','observedAt','scaleinRequestId',
+            'scaleinAcknowledgedAt','pendingBindingSha256'})
+        self.assertEqual(context['scaleinRequestId'],scalein['requestId'])
+        self.assertEqual(context['scaleinAcknowledgedAt'],ack['sealedAt'])
+        ack['requestId']='changed'
+        self.assertEqual(journal.scalein_ack()['requestId'],scalein['requestId'])
+
+    def test_reconcile_context_refuses_missing_ack_and_bad_current_evidence(self):
+        from unittest.mock import patch
+        journal,pending,scalein,receipt=self.reconciliation_journal()
+        now=receipt['observedAt']
+        for changes in (dict(sequence=8),dict(sequence=True),dict(desired=3),dict(desired=True),
+                dict(mode='no-scale'),dict(feedSession=str(uuid.uuid4())),dict(observedAt=now-3.5),
+                dict(observedAt=now+1),dict(observedAt=float('nan')),dict(rosterSha256='0'*64)):
+            with self.subTest(changes=changes),patch('pgcat_lane_protocol.time.time',return_value=now),self.assertRaises(Refused):
+                journal.reconcile_context(dict(receipt,**changes))
+        with journal._transaction() as db:db.execute('DELETE FROM scalein_ack')
+        with self.assertRaises(Refused):journal.reconcile_context(receipt)
+
+    def test_reconcile_context_rejects_wrong_run_session_and_pending_scope(self):
+        from pgcat_lane_protocol import encode
+        from unittest.mock import patch
+        for changes in (dict(runId=str(uuid.uuid4())),dict(feedSession=str(uuid.uuid4())),
+                        dict(originalInstanceIds=['different','original']),dict(sequence=True),
+                        dict(sourceSha256='0'*64)):
+            journal,pending,scalein,receipt=self.reconciliation_journal()
+            with journal._transaction() as db:
+                db.execute('UPDATE pending_binding SET proof=?',(encode(dict(pending,**changes)).decode(),))
+            with patch('pgcat_lane_protocol.time.time',return_value=receipt['observedAt']),self.assertRaises(Refused):
+                journal.reconcile_context(receipt)
+
+    def test_reconcile_admit_rechecks_receipt_and_semantic_claim_is_atomic(self):
+        from unittest.mock import patch
+        journal,_,_,receipt=self.reconciliation_journal()
+        request=self.request(action='reconcile-close',minimumSequence=9)
+        publish_request(journal.root,request)
+        with patch('pgcat_lane_protocol.time.time',return_value=receipt['observedAt']):
+            journal.reconcile_context(receipt)  # This getter does not reserve permission.
+            with self.assertRaises(Refused):journal.admit(request,dict(receipt,sequence=10))
+            journal.admit(request,receipt)
+        journal.seal(request['requestId'],dict(state='complete',category='ok',
+            payload=dict(feedSession=self.session,sequence=9,resourceVersion='42')),reconcile_source_sha='f'*64)
+        replay=self.request(action='reconcile-close',minimumSequence=10)
+        publish_request(journal.root,replay)
+        with patch('pgcat_lane_protocol.time.time',return_value=receipt['observedAt']),self.assertRaises(Refused):
+            journal.admit(replay,dict(receipt,sequence=10))
+        with journal._connection() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM requests WHERE json_extract(request,'$.action')='reconcile-close'").fetchone()[0],1)
+
+    def test_reconcile_seal_uses_admitted_context_and_requires_bound_source(self):
+        from unittest.mock import patch
+        journal,_,scalein,receipt=self.reconciliation_journal()
+        req=self.request(action='reconcile-close',minimumSequence=9)
+        publish_request(journal.root,req)
+        with patch('pgcat_lane_protocol.time.time',return_value=receipt['observedAt']):journal.admit(req,receipt)
+        payload=dict(feedSession=self.session,sequence=9,resourceVersion='42')
+        complete=lambda value:dict(state='complete',category='ok',payload=value)
+        for source,value in ((None,payload),('0'*64,payload),('f'*64,dict(payload,sequence=10)),
+                ('f'*64,dict(payload,feedSession=str(uuid.uuid4()))),('f'*64,dict(payload,resourceVersion='042'))):
+            with self.subTest(source=source,value=value),self.assertRaises(Refused):
+                journal.seal(req['requestId'],complete(value),reconcile_source_sha=source)
+        # The feed may publish a newer receipt before the original response seals.
+        with patch('pgcat_lane_protocol.time.time',return_value=receipt['observedAt']+1):
+            journal.reconcile_context(dict(receipt,sequence=10,observedAt=receipt['observedAt']+1))
+            journal.seal(req['requestId'],complete(payload),reconcile_source_sha='f'*64)
+        proof=journal.reconcile_binding()
+        self.assertEqual(proof['sequence'],9)
+        self.assertEqual(proof['requestId'],req['requestId'])
+        self.assertEqual(proof['scaleinRequestId'],scalein['requestId'])
+        self.assertEqual(proof['sourceSha256'],'f'*64)
+        self.assertEqual(proof['sealedAt'],receipt['observedAt']+1)
+        with self.assertRaises(Refused):journal.seal(req['requestId'],complete(payload),reconcile_source_sha='f'*64)
+
+    def test_reconcile_source_for_other_action_and_no_scale_are_refused(self):
+        req=self.request();self.admit(req)
+        with self.assertRaises(Refused):
+            self.journal.seal(req['requestId'],dict(state='complete',category='ok',payload={}),reconcile_source_sha='f'*64)
+        req=self.request(action='reconcile-close');publish_request(self.root,req)
+        with self.assertRaises(Refused):self.journal.admit(req,{})
+
+    def test_reconcile_refuses_ack_from_wrong_run_session_or_unconfirmed_request(self):
+        from pgcat_lane_protocol import encode
+        from unittest.mock import patch
+        for changes in (dict(runId=str(uuid.uuid4())),dict(feedSession=str(uuid.uuid4())),
+                dict(requestId=str(uuid.uuid4())),dict(sequence=7),dict(sealedAt=float('inf'))):
+            journal,_,_,receipt=self.reconciliation_journal()
+            ack=journal.scalein_ack()
+            with journal._transaction() as db:
+                # Raw JSON permits an intentionally malformed non-finite fixture.
+                db.execute('UPDATE scalein_ack SET proof=?',(json.dumps(dict(ack,**changes)),))
+            with patch('pgcat_lane_protocol.time.time',return_value=receipt['observedAt']),self.assertRaises(Refused):
+                journal.reconcile_context(receipt)
+
+    def test_reconcile_refuses_missing_changed_admission_or_cancelled_run(self):
+        from pgcat_lane_protocol import encode
+        from unittest.mock import patch
+        for kind in ('missing','identity','context','source','cancelled'):
+            journal,_,_,receipt=self.reconciliation_journal()
+            req=self.request(action='reconcile-close',minimumSequence=9)
+            publish_request(journal.root,req)
+            with patch('pgcat_lane_protocol.time.time',return_value=receipt['observedAt']):journal.admit(req,receipt)
+            with journal._transaction() as db:
+                if kind=='missing':db.execute('DELETE FROM reconcile_admission')
+                elif kind=='source':db.execute('UPDATE run SET hashes=?',(encode(dict(bundleSha256='a'*64,rehearsalContract='0'*64)).decode(),))
+                elif kind!='cancelled':
+                    proof=json.loads(db.execute('SELECT proof FROM reconcile_admission').fetchone()[0])
+                    if kind=='identity':proof['receiptIdentity']='0'*64
+                    if kind=='context':proof['context']['observedAt']+=1
+                    db.execute('UPDATE reconcile_admission SET proof=?',(encode(proof).decode(),))
+            if kind=='cancelled':journal.cancel('cancelled')
+            result=dict(state='complete',category='ok',payload=dict(feedSession=self.session,sequence=9,resourceVersion='42'))
+            with self.subTest(kind=kind),self.assertRaises(Refused):
+                journal.seal(req['requestId'],result,reconcile_source_sha='f'*64)
+            with self.assertRaises(Refused):journal.reconcile_binding()
+            journal.seal(req['requestId'],dict(state='uncertain',category='source',payload={}))
+            self.assertEqual(journal.snapshot(req['requestId'])['state'],'uncertain')
+
     def test_invalid_mode_and_nonprivate_root_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
