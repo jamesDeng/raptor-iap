@@ -463,3 +463,23 @@ class WitnessBindingSchemaRegression(unittest.TestCase):
             raw=json.dumps(binding).encode();path.write_bytes(raw)
             progress=json.loads((p/'progress.json').read_text());progress['bindingSha256']=hashlib.sha256(raw).hexdigest();(p/'progress.json').write_text(json.dumps(progress))
             with self.assertRaises(ValueError):read_progress(p,witness_context())
+
+class MalformedPeerWitnessRegression(unittest.TestCase):
+    def test_nonmapping_sample_preserves_original_peer_failure_in_both_orders(self):
+        import os
+        from segmented_capture import read_progress
+        for reverse in (False,True):
+            with self.subTest(reverse=reverse),tempfile.TemporaryDirectory() as d:
+                p=Path(os.path.realpath(d))/'capture';w=SegmentedCapture(p,progress_context=witness_context())
+                malformed=witness_frame(0);malformed['pods'][0]['snapshot']['sample']=[]
+                peer=malformed['pods'][1]['snapshot'];peer['sample'].update(Scheduled=1,Attempts=1,Failure=1)
+                if reverse:malformed['pods'].reverse()
+                w.append(malformed)
+                for t in (1,2):w.append(witness_frame(t))
+                progress,_,_=read_progress(p,witness_context())
+                self.assertTrue(progress['flags']['invalidEvidence']);self.assertTrue(progress['flags']['sqlFailure'])
+                self.assertEqual(progress['committedFrames'],3)
+                retained=json.loads((p/'segment-0001.jsonl').read_text().splitlines()[0])
+                failed=next(pod for pod in retained['pods'] if pod['uid']==witness_context()['originalRoster'][1]['uid'])
+                self.assertEqual(failed['snapshot']['sample']['Failure'],1)
+                self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'FAIL')

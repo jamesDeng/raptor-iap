@@ -238,7 +238,9 @@ class SegmentedCapture:
             rows=frame['pods'];require(type(rows) is list and len(rows)==2)
             expected={r['uid']:r for r in context['originalRoster']};seen=set()
             for pod in rows:
-                snap=pod['snapshot'];sample=snap['sample']
+                require(type(pod) is dict)
+                snap=pod['snapshot'];require(type(snap) is dict)
+                sample=snap['sample'];require(type(sample) is dict)
                 require(all(type(pod.get(k)) is str and pod[k] for k in ('name','uid','containerId')) and type(sample.get('processId')) is str and sample['processId'])
                 identity=dict(name=pod['name'],uid=pod['uid'],containerId=pod['containerId'],processId=sample['processId'])
                 if pod['uid'] in seen or identity!=expected.get(pod['uid']):flags['identityChanged']=True;continue
@@ -318,8 +320,9 @@ class SegmentedCapture:
             self.current['sha256']=digest(self.window.path) if self.progress_context is None else None;self.segments.append(self.current);self.current=None
     def append(self,frame: dict):
         if self.progress_context is None:return self._append(frame)
-        self._observe(frame)
-        try:return self._append(frame)
+        try:
+            self._observe(frame)
+            return self._append(frame)
         except Exception:
             self.progress['flags']['invalidEvidence']=True;self._publish();raise
     def _append(self,frame):

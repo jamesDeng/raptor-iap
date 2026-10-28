@@ -503,3 +503,28 @@ class WitnessFinalSnapshotRegression(unittest.TestCase):
             later=witness_frame(2,n=1,finals=(0,1));later['pods'][0]['snapshot']['sample']['at']=1
             later['pods'][0]['snapshot']['connected']=1;w.append(later)
             self.assertTrue(read_progress(p,witness_context())[0]['flags']['invalidEvidence'])
+
+class MalformedPeerWorkerRegression(unittest.TestCase):
+    def test_partial_bad_sample_retains_peer_fail_through_later_clean_polls(self):
+        import tempfile,os,json
+        from pathlib import Path
+        from test_segmented_capture import witness_context,witness_frame
+        from segmented_capture import read_progress
+        for reverse in (False,True):
+            with self.subTest(reverse=reverse),tempfile.TemporaryDirectory() as d:
+                root=Path(os.path.realpath(d));boundary=root/'boundary';boundary.mkdir(mode=0o700);clock=[0]
+                def capture(*args):
+                    row=witness_frame(clock[0])
+                    if clock[0]==0:
+                        row['pods'][0]['snapshot']['sample']=[]
+                        row['pods'][1]['snapshot']['sample'].update(Scheduled=1,Attempts=1,Failure=1)
+                        if reverse:row['pods'].reverse()
+                    return row
+                with patch.object(worker,'capture_frame',side_effect=capture),patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]), \
+                     patch.object(worker.time,'sleep',side_effect=lambda _:clock.__setitem__(0,clock[0]+1)):
+                    result=worker.run_capture(root/'capture',root/'inventory',5,boundary,progress_context=witness_context())
+                progress,_,_=read_progress(root/'capture',witness_context())
+                self.assertTrue(progress['flags']['invalidEvidence']);self.assertTrue(progress['flags']['sqlFailure'])
+                self.assertEqual(progress['committedFrames'],5);self.assertEqual(result['status'],'FAIL')
+                retained=json.loads((root/'capture'/'segment-0001.jsonl').read_text().splitlines()[0])
+                self.assertTrue(any(p['snapshot']['sample']['Failure']==1 for p in retained['pods']))
