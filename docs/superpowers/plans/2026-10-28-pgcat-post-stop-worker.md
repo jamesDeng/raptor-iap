@@ -31,7 +31,7 @@
 
 ### Task1: Bounded exact worker finish
 
-**Files:** Modify `test-assets/traffic/pgcat_rehearsal_contract.py`, `pgcat_rehearsal_worker.py`, `finish_clients.py`, `worker_capture.py`; matching four fixture modules. No collector-control/segmented implementation/source-map/release/local-lane changes without concrete dependency report. Execute only after previous witness source review.
+**Files:** Modify `test-assets/traffic/pgcat_rehearsal_contract.py`, `pgcat_rehearsal_worker.py`, `finish_clients.py`, `worker_capture.py`; matching four fixture modules; additionally one test-only clock-origin correction in test_pgcat_rehearsal_controller.py as parent ruling below. No collector-control/segmented implementation/source-map/release/local-lane changes without concrete dependency report. Execute only after previous witness source review.
 
 **Interfaces:** `post_stop_finish(contract_dir,run_id,target,stop_context,*,source_hashes,kubectl=None,clock=None,monotonic=None)` uses spec's exact six-key stop context, eleven-key verified source map and six-key result. `post-stop-finish contract runId kubeconfig hashes target stop_context` fixed seven-value argv, source-verified before/after, exact baseline kubeconfig, fixed two-line worker output as spec. Existing nine-key calls stay unchanged. Build exact expected progress context from original sealed baseline/provider (read full bundleSha256 from fixed provider-source/run-context.json; fresh_provider_source validates it but does not return this field) and passed hashes/actual collector; match actual proc tuple to retained child without PID adoption. Reuse bounded read_progress and existing exact_clients/complete_metrics/fixed-original inventory checks; no whole-capture reader.
 
@@ -46,3 +46,7 @@
 ## Downstream
 
 Fixed local post-stop role/admission must independently derive this stop context from Journal.rehearsal_stop(), reserve once before dispatch, enforce frozen receipt identity/freshness and five-second result deadline, and seal worker result. Abort/ordinary verdict/restoration/exact credential cleanup/independent finish, closure cutoff headroom, native observer and session handoff remain explicit later gates.
+
+## Parent fixture-clock ruling during final verification
+
+After21:30, full normal761 showed two existing controller tests fail because ControllerTests.setUp seeds self.wall=time.time() from real evening. _china_now correctly converts this patched wall to Shanghai and refuses actual21:30 cutoff; production guard is correct. Extend owned test scope only to pin this base fixture wall to a fixed explicit daytime datetime, same style as existing PaidStartTests. Reproduce reported two failures focused before edit; no cutoff predicate bypass/production change/timeout widening. Run controller fixture normal/O then one new final full normal/O sequentially because fixture changed. Retain failed prior runs. Nine owned files total. Independent review includes this hermetic clock correction.
