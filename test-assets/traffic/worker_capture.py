@@ -1,5 +1,5 @@
 """Run on the verified ACK worker. Read-only; no cloud credentials or mutations."""
-import argparse, concurrent.futures, datetime, json, math, os, subprocess, sys, time, urllib.parse, urllib.request
+import argparse, concurrent.futures, datetime, json, math, os, re, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 from typing import Optional
 from segmented_capture import SegmentedCapture
@@ -26,12 +26,13 @@ def query_metrics(base,stamp):
         return key,r['data']['result']
     with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:results=dict(pool.map(fetch,queries.items()))
     nodes=[r['metric']['ecs_instance_id'] for r in results['up']]
-    if not nodes or any(not isinstance(n,str) or not n for n in nodes) or len(set(nodes))!=len(nodes):raise ValueError('invalid scrape evidence')
+    if not 1<=len(nodes)<=4 or any(type(n) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',n) for n in nodes) or len(set(nodes))!=len(nodes):raise ValueError('invalid scrape evidence')
     def numeric(value, count=False):
         value=float(value)
         if not math.isfinite(value) or (count and (value<0 or not value.is_integer() or value>2**53)):raise ValueError('invalid raw observation')
         return value
     up_stamps=[numeric(r['value'][1]) for r in results['up']]
+    up_source=dict(zip(nodes,up_stamps))
     raw=[]
     for kind in ('active','idle','waiting'):
         def key(row):return (row['metric']['ecs_instance_id'],row['metric']['pool'],row['metric']['user'])
@@ -45,7 +46,8 @@ def query_metrics(base,stamp):
     triplets={}
     for row in raw:triplets.setdefault((row['node'],row['pool'],row['user']),set()).add(row['kind'])
     if any(k!={'active','idle','waiting'} for k in triplets.values()) or any((n,'test','poc_app') not in triplets for n in nodes):raise ValueError('missing expected raw triplets')
-    return {'observedAt':utc(),'sourceAt':min(up_stamps),'nodes':nodes,'available':True,'raw':raw}
+    return {'observedAt':utc(),'sourceAt':min(up_stamps),'upSourceAt':up_source,
+            'nodes':nodes,'available':True,'raw':raw}
 def container_id(p):
     statuses=p['status'].get('containerStatuses',[])
     if len(statuses)!=1 or not statuses[0].get('containerID'):raise ValueError('exact client container identity unavailable')
@@ -56,7 +58,11 @@ def read_pod(p,final_snapshots):
     if snapshot is None:
         snapshot=get('http://'+p['status']['podIP']+':9090/evidence')
         if snapshot.get('final') is True:final_snapshots[key]=snapshot
-    return {'uid':uid,'name':p['metadata'].get('name',''),'containerId':cid,'snapshot':snapshot}
+    conditions=p['status'].get('conditions',[])
+    ready_rows=[row for row in conditions if isinstance(row,dict) and row.get('type')=='Ready'] if isinstance(conditions,list) else []
+    status=ready_rows[0].get('status') if len(ready_rows)==1 else None
+    ready=True if status=='True' else False if status=='False' else None
+    return {'uid':uid,'name':p['metadata'].get('name',''),'containerId':cid,'ready':ready,'snapshot':snapshot}
 def capture_frame(inventory_path,final_snapshots=None):
     if final_snapshots is None:final_snapshots={}
     stamp=utc();pods=kubectl('get','pods','-l','app.kubernetes.io/name=rdev-test-client-client','-o','json')['items']
@@ -69,9 +75,14 @@ def capture_frame(inventory_path,final_snapshots=None):
     rows=[row for row in observations if row is not None]
     # Zero is an invalid roster expectation in the retained evidence contract.
     # Keep successful observations while ensuring incomplete reads cannot PASS.
-    expected=0
+    expected=0;deployment_identity=None
     try:
         deployment=kubectl('get','deployment','rdev-test-client-client','-o','json')
+        if not isinstance(deployment,dict) or any(not isinstance(deployment.get(key),dict) for key in ('metadata','status','spec')):
+            raise ValueError('Deployment identity mappings unavailable')
+        deployment_identity={'uid':deployment['metadata'].get('uid'),'generation':deployment['metadata'].get('generation'),
+                             'observedGeneration':deployment.get('status',{}).get('observedGeneration'),
+                             'desired':deployment['spec'].get('replicas'),'ready':deployment.get('status',{}).get('readyReplicas')}
         if all(row is not None for row in observations):expected=deployment['spec']['replicas']
     except unavailable:pass
     inventory=clean_inventory({'schemaVersion':2})
@@ -84,7 +95,7 @@ def capture_frame(inventory_path,final_snapshots=None):
         svc=kubectl('get','service','rdev-test-metrics-metrics','-o','json');base='http://'+svc['spec']['clusterIP']+':9090'
         metrics=query_metrics(base,stamp)
     except (ValueError,KeyError,TypeError,IndexError,OverflowError,OSError,RuntimeError):pass
-    return {'at':stamp,'expectedReplicas':expected,'pods':rows,'inventory':inventory,'metrics':metrics}
+    return {'at':stamp,'expectedReplicas':expected,'pods':rows,'deployment':deployment_identity,'inventory':inventory,'metrics':metrics}
 def run_capture(output: Path, inventory: Path, seconds: int, boundary_dir: Optional[Path] = None, timing_output: Optional[Path] = None) -> dict:
     from finish_clients import private_directory, read_json, atomic_json, validate_roster
     if not 5<=seconds<=5400:raise ValueError('bounded capture duration required')

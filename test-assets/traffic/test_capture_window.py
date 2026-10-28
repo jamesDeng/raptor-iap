@@ -1,6 +1,6 @@
 import copy, tempfile, unittest
 from pathlib import Path
-from capture_window import CaptureWindow, assess as raw_assess, retain
+from capture_window import CaptureWindow, assess as raw_assess, retain, clean
 def assess(frames,**kwargs):
     kwargs.setdefault("completed",True);return raw_assess(frames,**kwargs)
 
@@ -127,6 +127,40 @@ def transition_frame(t, members=('a','b'), backends=None, pending=(), metrics=No
     f['metrics'].update(nodes=list(metrics),raw=[dict(node=n,pool='test',user='poc_app',kind=k,value=0,sourceAt=t) for n in metrics for k in ('active','idle','waiting')])
     return f
 
+class UpScrapeEvidenceTests(unittest.TestCase):
+    def test_per_node_scrapes_survive_cleaning_without_extra_metrics(self):
+        f=transition_frame(1)
+        f['metrics']['upSourceAt']={'a':1000.0,'b':1001.0}
+        f['metrics']['private']='do not retain'
+        cleaned=clean(f)
+        self.assertEqual(cleaned['metrics'].get('upSourceAt'),{'a':1000.0,'b':1001.0})
+        self.assertNotIn('private',cleaned['metrics'])
+        self.assertEqual(clean(cleaned),cleaned)
+        self.assertNotIn('upSourceAt',clean(transition_frame(1))['metrics'])
+        with tempfile.TemporaryDirectory() as directory:
+            window=CaptureWindow(Path(directory)/'capture.jsonl')
+            window.append(f)
+            self.assertEqual(next(window.read())['metrics']['upSourceAt'],{'a':1000.0,'b':1001.0})
+            self.assertNotIn('do not retain',window.path.read_text())
+        from segmented_capture import SegmentedCapture
+        with tempfile.TemporaryDirectory() as directory:
+            window=SegmentedCapture(Path(directory)/'capture')
+            window.append(f)
+            self.assertEqual(next(window.window.read())['metrics']['upSourceAt'],{'a':1000.0,'b':1001.0})
+
+    def test_invalid_per_node_scrapes_do_not_look_available(self):
+        for invalid in ({'a':1000.0}, {'a':1000.0,'b':float('nan')},
+                        {'a':1000.0,'b':1001.0,'extra':1001.0},
+                        {'a':1000.0,'b':True}, {'a':1000.0,'b':10**1000},
+                        {'a':1000.0,'b':1001.0,'https://private.example/secret':1002.0}):
+            with self.subTest(invalid=invalid):
+                f=transition_frame(1)
+                f['metrics']['upSourceAt']=invalid
+                cleaned=clean(f)
+                self.assertFalse(cleaned['metrics']['available'])
+                self.assertEqual(cleaned['metrics']['raw'],[])
+                self.assertNotIn('upSourceAt',cleaned['metrics'])
+
 
 def transition_window():
     frames=[transition_frame(0),transition_frame(1,('a','b','c','d'),('a','b'),('c','d')),
@@ -138,6 +172,15 @@ def transition_window():
 
 
 class TransitionWindowTests(unittest.TestCase):
+    def test_lane_opt_out_skips_only_transition_completion(self):
+        fs=[transition_frame(t) for t in range(3)]
+        for f in fs:f['inventory']['mode']='disabled-rehearsal'
+        self.assertEqual(raw_assess(fs,completed=True)['status'],'INCONCLUSIVE')
+        self.assertEqual(raw_assess(fs,completed=True,require_transition=False)['status'],'PASS')
+        self.assertEqual(raw_assess(fs,completed=True,cancelled=True,require_transition=False)['status'],'INCONCLUSIVE')
+        fs[-1]['at']=9
+        self.assertEqual(raw_assess(fs,completed=True,require_transition=False)['status'],'INCONCLUSIVE')
+
     def test_complete_transition_and_pending_addressless_members(self):
         self.assertEqual(assess(transition_window())['status'],'PASS')
     def test_schema_two_retained_allowlist(self):
@@ -405,4 +448,93 @@ class ProviderMinimumBounds(unittest.TestCase):
         self.assertEqual(assess(fs)['status'],'INCONCLUSIVE')
 
 
-if __name__=='__main__':unittest.main()
+
+
+class LaneIdentityRetention(unittest.TestCase):
+    def identity_frame(self):
+        f=transition_frame(1)
+        f['deployment']={'uid':'deployment-uid','generation':7,'observedGeneration':7,'desired':2,'ready':2}
+        f['pods'][0].update(name='client-0',containerId='containerd://abc',ready=True)
+        return f
+
+    def test_retains_only_valid_bounded_identity_and_round_trips(self):
+        f=self.identity_frame()
+        f['deployment']['metadata']={'secret':'opaque'}
+        f['pods'][0].update(podIP='10.0.0.1',status={'secret':'opaque'})
+        got=clean(f)
+        self.assertEqual(got.get('deployment'),{'uid':'deployment-uid','generation':7,'observedGeneration':7,'desired':2,'ready':2})
+        self.assertEqual({k:got['pods'][0].get(k) for k in ('name','containerId','ready')},
+                         {'name':'client-0','containerId':'containerd://abc','ready':True})
+        self.assertNotIn('10.0.0.1',str(got));self.assertNotIn('opaque',str(got))
+        self.assertEqual(clean(got),got)
+        with tempfile.TemporaryDirectory() as directory:
+            w=CaptureWindow(Path(directory)/'frames.jsonl');w.append(f)
+            self.assertEqual(next(w.read()),got)
+
+    def test_malformed_or_partial_identity_is_incomplete_without_losing_sql(self):
+        cases=[('deployment',key,value) for key,values in {
+            'uid':['','x'*257,{},'bad token'],
+            'generation':[True,-1,2**53+1,1.0],
+            'observedGeneration':[False,-1,2**53+1],
+            'desired':[True,-1,17,2.0], 'ready':[True,-1,17]}.items() for value in values]
+        cases += [('pod',key,value) for key,values in {
+            'name':['','x'*257,{},'bad token'], 'containerId':['','x'*257,[], 'bad token'],
+            'ready':[1,'True',None]}.items() for value in values]
+        for owner,key,value in cases:
+            with self.subTest(owner=owner,key=key,value=value):
+                f=self.identity_frame();target=f['deployment'] if owner=='deployment' else f['pods'][0]
+                target[key]=value
+                got=clean(f)
+                self.assertEqual(got['expectedReplicas'],0)
+                self.assertEqual(got['pods'][0]['snapshot'],f['pods'][0]['snapshot'])
+                self.assertIsNone((got.get('deployment') or {}).get(key) if owner=='deployment' else got['pods'][0].get(key))
+        for owner,keys in [('deployment',('uid','generation','observedGeneration','desired','ready')),
+                           ('pod',('name','containerId','ready'))]:
+            for key in keys:
+                with self.subTest(missing=key,owner=owner):
+                    f=self.identity_frame();del (f['deployment'] if owner=='deployment' else f['pods'][0])[key]
+                    self.assertEqual(clean(f)['expectedReplicas'],0)
+        for invalid in (None,[],{'uid':'only'}):
+            f=self.identity_frame();f['deployment']=invalid
+            self.assertEqual(clean(f)['expectedReplicas'],0)
+
+    def test_valid_adverse_values_and_bounds_remain_visible(self):
+        f=self.identity_frame();f['deployment'].update(uid='u'*256,generation=0,observedGeneration=2**53,desired=0,ready=16)
+        f['pods'][0].update(name='n'*256,containerId='c'*256,ready=False)
+        got=clean(f)
+        self.assertEqual(got.get('deployment'),f['deployment'])
+        self.assertIs(got['pods'][0].get('ready'),False)
+        self.assertEqual(got['expectedReplicas'],1)
+
+    def test_historical_v2_absence_and_v1_allowlist_remain_compatible(self):
+        f=transition_frame(1);got=clean(f)
+        self.assertEqual(got['expectedReplicas'],1)
+        self.assertNotIn('deployment',got)
+        self.assertNotIn('ready',got['pods'][0])
+        f=self.identity_frame();f['inventory']=frame(1,1)['inventory']
+        got=clean(f)
+        self.assertNotIn('deployment',got)
+        self.assertNotIn('name',got['pods'][0]);self.assertNotIn('containerId',got['pods'][0]);self.assertNotIn('ready',got['pods'][0])
+
+
+    def test_invalid_new_identity_cannot_hide_observed_sql_failure(self):
+        frames=[self.identity_frame(),self.identity_frame()]
+        frames[1]['at']=2;frames[1]['pods'][0]['ready']='invalid'
+        frames[1]['pods'][0]['snapshot']['sample']['Failure']=1
+        self.assertEqual(assess(frames)['status'],'FAIL')
+
+    def test_historical_v2_ordinary_assessment_still_passes(self):
+        self.assertEqual(assess(transition_window())['status'],'PASS')
+
+
+    def test_partial_new_contract_cannot_masquerade_as_historical_absence(self):
+        for missing in ('deployment','pod fields'):
+            with self.subTest(missing=missing):
+                f=self.identity_frame()
+                if missing=='deployment':del f['deployment']
+                else:
+                    for key in ('name','containerId','ready'):del f['pods'][0][key]
+                self.assertEqual(clean(f)['expectedReplicas'],0)
+
+if __name__ == '__main__':
+    unittest.main()

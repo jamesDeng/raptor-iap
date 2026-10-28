@@ -2,6 +2,10 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
+import hashlib
+import json
+import os
+import uuid
 from datetime import datetime, timezone
 
 spec = importlib.util.spec_from_file_location('feed', pathlib.Path(__file__).with_name('provider_feed.py'))
@@ -10,6 +14,161 @@ if pathlib.Path(spec.origin).exists():
     spec.loader.exec_module(feed)
 
 class FeedTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        guard=patch.object(feed,'_require_verified');guard.start();self.addCleanup(guard.stop)
+        wrapper=patch.object(feed,'_wrapper_command',side_effect=lambda path,args:[path]+args)
+        wrapper.start();self.addCleanup(wrapper.stop)
+
+    def test_private_publication_is_immutable_and_precedes_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory)); root.chmod(0o700)
+            contract=root/'contract'; contract.mkdir(mode=0o700)
+            run=root/'run'; run.mkdir(mode=0o700)
+            inventory=run/'provider-inventory.json'
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            session=str(uuid.uuid4())
+            raw=json.dumps(dict(schemaVersion=2,feedSession=session,sequence=1,
+                observedAt=123.0,members=['i-one']),separators=(',',':')).encode('ascii')
+            feed.write_private_publication(str(contract),context,session,1,123.0,
+                {'i-one':'10.0.0.1','i-two':'10.0.0.2'},str(inventory),raw)
+            private=contract/'provider-source'
+            self.assertEqual(private.stat().st_mode & 0o777,0o700)
+            sidecar=private/'000001.json'
+            self.assertEqual(sidecar.stat().st_mode & 0o777,0o600)
+            self.assertEqual(json.loads(sidecar.read_text()),dict(schemaVersion=1,runId=context['runId'],
+                supervisorId=context['supervisorId'],contextNonce=context['nonce'],
+                targetSha256=context['targetSha256'],bundleSha256=context['bundleSha256'],
+                feedSession=session,sequence=1,observedAt=123.0,
+                inventorySha256=hashlib.sha256(raw).hexdigest(),
+                inventorySemanticSha256=hashlib.sha256(json.dumps(json.loads(raw),
+                    sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')).hexdigest(),
+                privateAddresses={'i-one':'10.0.0.1','i-two':'10.0.0.2'}))
+            self.assertEqual(inventory.read_bytes(),raw)
+            inventory.unlink()
+            with self.assertRaises(ValueError):
+                feed.write_private_publication(str(contract),context,session,1,123.0,
+                    {'i-one':'10.0.0.1','i-two':'10.0.0.2'},str(inventory),raw)
+            self.assertFalse(inventory.exists())
+
+    def test_historical_cleaned_frame_matches_semantic_hash_and_tamper_differs(self):
+        from capture_window import clean_inventory
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory));root.chmod(0o700)
+            contract=root/'contract';contract.mkdir(mode=0o700)
+            run=root/'run';run.mkdir(mode=0o700)
+            inventory_path=run/'provider-inventory.json'
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            session=str(uuid.uuid4())
+            observed=self.take(self.fixture())
+            observed.update(feedSession=session,sequence=1,mode='disabled-rehearsal')
+            inventory={key:observed[key] for key in feed.FIELDS}
+            inventory['mode']=observed['mode']
+            raw=json.dumps(inventory,indent=2).encode('ascii')
+            feed.write_private_publication(str(contract),context,session,1,
+                observed['observedAt'],observed['privateAddresses'],str(inventory_path),raw)
+            sidecar=json.loads((contract/'provider-source'/'000001.json').read_text())
+            selected_frame=clean_inventory(json.loads(raw))
+            semantic=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True,
+                separators=(',',':'),allow_nan=False).encode('ascii')).hexdigest()
+            self.assertEqual(sidecar['inventorySemanticSha256'],semantic(selected_frame))
+            self.assertEqual(sidecar['inventorySha256'],hashlib.sha256(raw).hexdigest())
+            self.assertNotEqual(sidecar['inventorySemanticSha256'],sidecar['inventorySha256'])
+            altered=dict(selected_frame,desired=3)
+            self.assertNotEqual(sidecar['inventorySemanticSha256'],semantic(altered))
+
+    def test_bound_feed_single_remote_write_keeps_unacknowledged_worker_files(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory)); root.chmod(0o700)
+            contract=root/'contract'; contract.mkdir(mode=0o700)
+            run=root/'run'; run.mkdir(mode=0o700)
+            inventory=run/'provider-inventory.json'; receipt=root/'status.json'
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            args=SimpleNamespace(mode='disabled-rehearsal',status_file=str(receipt),
+                run_context=str(root/'run-context.json'),contract_dir=str(contract),
+                worker_inventory=str(inventory))
+            validation=patch.object(feed,'validate_run_context',return_value=context)
+            validation.start();self.addCleanup(validation.stop)
+            op=feed.Operator(args)
+            calls=[]
+            def remote(script,*arguments):
+                calls.append((script,arguments))
+                return subprocess.run(['python3','-c',script,*arguments],check=True,
+                    capture_output=True,text=True).stdout
+            op.remote=remote; op.update_targets=lambda targets:None
+            with patch.object(feed,'write_status_receipt',side_effect=OSError('local failure')):
+                with self.assertRaises(feed.FeedStop) as error:
+                    op.write(self.take(self.fixture()))
+            self.assertEqual(error.exception.stage,'status-write')
+            self.assertEqual(len(calls),1)
+            import ast
+            ast.parse(calls[0][0],feature_version=(3,6))
+            self.assertTrue(inventory.exists())
+            self.assertTrue((contract/'provider-source'/'000001.json').exists())
+            self.assertFalse(receipt.exists())
+            with self.assertRaises(feed.FeedStop):op.write(self.take(self.fixture()))
+            self.assertEqual(len(calls),1)
+
+    def test_inactive_supervisor_before_publication_prevents_worker_call(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory));root.chmod(0o700)
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            args=SimpleNamespace(mode='disabled-rehearsal',status_file=str(root/'status.json'),
+                run_context=str(root/'run-context.json'),contract_dir=str(root/'contract'),
+                worker_inventory=str(root/'run'/'provider-inventory.json'))
+            with patch.object(feed,'validate_run_context',side_effect=[context,ValueError('inactive')]):
+                op=feed.Operator(args)
+                calls=[];op.remote=lambda *parts:calls.append(parts)
+                op.update_targets=lambda *parts:calls.append(parts)
+                with self.assertRaises(feed.FeedStop):op.write(self.take(self.fixture()))
+            self.assertEqual(calls,[])
+            self.assertFalse((root/'status.json').exists())
+
+    def test_partial_prior_inventory_refuses_next_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory)); root.chmod(0o700)
+            contract=root/'contract';contract.mkdir(mode=0o700)
+            run=root/'run'; run.mkdir(mode=0o700)
+            inventory=run/'provider-inventory.json'; session=str(uuid.uuid4())
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            def raw(sequence):
+                return json.dumps(dict(schemaVersion=2,feedSession=session,sequence=sequence,
+                    observedAt=float(sequence)),separators=(',',':')).encode('ascii')
+            addresses={'i-one':'10.0.0.1','i-two':'10.0.0.2'}
+            feed.write_private_publication(str(contract),context,session,1,1.0,
+                addresses,str(inventory),raw(1))
+            inventory.unlink()
+            with self.assertRaises(ValueError):
+                feed.write_private_publication(str(contract),context,session,2,2.0,
+                    addresses,str(inventory),raw(2))
+            self.assertFalse((contract/'provider-source'/'000002.json').exists())
+
+    def test_private_publication_rejects_symlinked_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(os.path.realpath(directory));root.chmod(0o700)
+            actual=root/'actual';actual.mkdir(mode=0o700)
+            (actual/'contract').mkdir(mode=0o700)
+            (actual/'run').mkdir(mode=0o700)
+            alias=root/'alias';alias.symlink_to(actual,target_is_directory=True)
+            context=dict(schemaVersion=1,runId=str(uuid.uuid4()),supervisorId=str(uuid.uuid4()),
+                targetSha256='a'*64,bundleSha256='b'*64,nonce=str(uuid.uuid4()))
+            session=str(uuid.uuid4())
+            raw=json.dumps(dict(feedSession=session,sequence=1,observedAt=1.0)).encode('ascii')
+            with self.assertRaises(ValueError):
+                feed.write_private_publication(str(alias/'contract'),context,session,1,1.0,
+                    {'a':'10.0.0.1','b':'10.0.0.2'},str(alias/'run'/'provider-inventory.json'),raw)
+            self.assertFalse((actual/'contract'/'provider-source').exists())
+
     def fixture(self, count=2):
         ids = ['i-'+str(n) for n in range(count)]
         pages = [{'TotalCount':count,'PageNumber':n+1,'ScalingInstances':{'ScalingInstance':[{'InstanceId':node,'ScalingGroupId':'asg','LifecycleState':'Protected','HealthStatus':'Healthy'}]}} for n,node in enumerate(ids)]
@@ -50,7 +209,8 @@ class FeedTests(unittest.TestCase):
                     self.assertTrue(path.exists(), 'successful worker publication needs a receipt')
                     self.assertEqual(json.loads(path.read_text()),{
                         'feedSession':op.feedSession,'sequence':sequence,'mode':mode,
-                        'desired':2,'observedAt':1792108800.0})
+                        'desired':2,'observedAt':1792108800.0,
+                        'rosterSha256':feed.roster_sha(value)})
                     self.assertEqual(path.stat().st_mode & 0o777,0o600)
                     for private in (b'10.0.0.',b'synthetic-secret',b'privateAddresses',b'i-0'):
                         self.assertNotIn(private,path.read_bytes())
@@ -156,13 +316,17 @@ class FeedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=pathlib.Path(directory)/'status.json'
             argv=['provider_feed.py','--status-file',str(path),'--workbench','offline',
-                  '--worker-inventory','/private/inventory','--kubeconfig','/private/kubeconfig']
+                  '--worker-inventory','/private/run/provider-inventory.json','--kubeconfig','/private/kubeconfig',
+                  '--run-context',str(path.parent/'run-context.json'),'--contract-dir','/private/contract']
             def once(read,write,**kwargs):write(self.take(self.fixture()))
             with patch.object(sys,'argv',argv),patch.object(feed.Operator,'existing_targets',return_value=()), \
                     patch.object(feed.Operator,'update_targets'),patch.object(feed.Operator,'atomic_worker_write'), \
-                    patch.object(feed,'run_loop',side_effect=once):
+                    patch.object(feed,'run_loop',side_effect=once), \
+                    patch.object(feed,'validate_run_context',return_value={}):
                 feed.main()
             self.assertEqual(json.loads(path.read_text())['sequence'],1)
+            self.assertEqual(json.loads(path.read_text())['rosterSha256'],
+                feed.roster_sha(self.take(self.fixture())))
 
     def test_complete_two_three_four(self):
         for count in (2,3,4):
@@ -466,11 +630,15 @@ class FeedTests(unittest.TestCase):
         import sys
         from unittest.mock import patch
         output=io.StringIO()
-        argv=['provider_feed.py','--interval','16','--workbench','/private/workbench',
-              '--worker-inventory','/private/inventory','--kubeconfig','/private/kubeconfig']
-        with patch.object(sys,'argv',argv), patch.object(feed.Operator,'existing_targets',return_value=()), \
-                contextlib.redirect_stderr(output), self.assertRaises(SystemExit):
-            feed.main()
+        with tempfile.TemporaryDirectory() as directory:
+            argv=['provider_feed.py','--interval','16','--workbench','/private/workbench',
+                  '--worker-inventory','/private/run/provider-inventory.json','--kubeconfig','/private/kubeconfig',
+                  '--run-context','/private/lane/run-context.json','--contract-dir','/private/contract',
+                  '--status-file',str(pathlib.Path(directory)/'status.json')]
+            with patch.object(sys,'argv',argv), patch.object(feed.Operator,'existing_targets',return_value=()), \
+                    patch.object(feed,'validate_run_context',return_value={}), \
+                    contextlib.redirect_stderr(output), self.assertRaises(SystemExit):
+                feed.main()
         self.assertIn('stopped at loop',output.getvalue())
         self.assertNotIn('targets-read',output.getvalue())
 
@@ -695,5 +863,269 @@ class FeedTests(unittest.TestCase):
         with self.assertRaises(ValueError):feed.run_loop(fail,lambda x:calls.append(x),interval=15,max_seconds=5400)
         self.assertEqual(calls,[])
         with self.assertRaises(ValueError):feed.run_loop(lambda:{},lambda x:None,interval=16,max_seconds=5401)
+
+class NoScaleFeedTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        admission=patch('pgcat_lane_protocol._release_admission');admission.start();self.addCleanup(admission.stop)
+        guard=patch.object(feed,'_require_verified');guard.start();self.addCleanup(guard.stop)
+        wrapper=patch.object(feed,'_wrapper_command',side_effect=lambda path,args:[path]+args)
+        wrapper.start();self.addCleanup(wrapper.stop)
+
+    fixture = FeedTests.fixture
+    take = FeedTests.take
+    def operator(self, root, **changes):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from pgcat_lane_protocol import encode
+        target=dict(accountId='account',regionId=feed.REGION,workerId=feed.WORKER_ID,
+            scalingGroupId=feed.GROUP_ID,nlbServerGroupId=feed.SERVER_GROUP_ID,
+            originalInstanceIds=['i-0','i-1'])
+        context=dict(runId=str(uuid.uuid4()),targetSha256=hashlib.sha256(encode(target)).hexdigest())
+        args=dict(mode='disabled-rehearsal',status_file=str(root/'status.json'),
+            run_context=str(root/'lane'/'run-context.json'),contract_dir='/fresh/contract',
+            worker_inventory='/fresh/run/provider-inventory.json',no_scale_target=json.dumps(target),
+            interval=15,max_seconds=180)
+        args.update(changes)
+        with patch.object(feed,'validate_run_context',return_value=context):
+            op=feed.Operator(SimpleNamespace(**args))
+        op.verify_run_context=lambda:None
+        op.atomic_worker_write=lambda *a:None
+        op.update_targets=lambda *a:None
+        op.previous=tuple(sorted(self.take(self.fixture())['privateAddresses'].items()))
+        return op,context
+
+    def intent(self, op, context, **changes):
+        from pgcat_lane_supervisor import save_once
+        value=dict(schemaVersion=1,runId=context['runId'],feedSession=op.feedSession,
+            minimumSequence=op.sequence,verdictSha256='b'*64)
+        value.update(changes)
+        save_once(op.status_file.parent,'no-scale-stop.intent',value,atomic=True)
+        return value
+
+    def sealed_context(self, root, mode):
+        from pgcat_lane_protocol import Journal,encode
+        from pgcat_lane_supervisor import save_once
+        lane=root/'lane';lane.mkdir(mode=0o700)
+        active=root/'global';active.mkdir(mode=0o700)
+        target=dict(accountId='account',regionId=feed.REGION,workerId=feed.WORKER_ID,
+            scalingGroupId=feed.GROUP_ID,nlbServerGroupId=feed.SERVER_GROUP_ID,
+            originalInstanceIds=['i-0','i-1'])
+        hashes={'providerFeed':'a'*64};bundle=hashlib.sha256(encode(hashes)).hexdigest()
+        run_id=str(uuid.uuid4());supervisor_id=str(uuid.uuid4());nonce=str(uuid.uuid4())
+        from unittest.mock import patch
+        with patch('pgcat_lane_protocol._release_admission'):
+            Journal(lane).create_run(run_id,mode,target,dict(hashes,bundleSha256=bundle))
+        context=dict(schemaVersion=1,runId=run_id,supervisorId=supervisor_id,nonce=nonce,
+            targetSha256=hashlib.sha256(encode(target)).hexdigest(),bundleSha256=bundle)
+        save_once(lane,'run-context.json',context)
+        save_once(lane,'supervisor-startup.json',dict(runId=run_id,supervisorId=supervisor_id,contextNonce=nonce))
+        save_once(active,'active-run',dict(runId=run_id,supervisorId=supervisor_id,laneRoot=str(lane)))
+        return active,lane,target
+
+    def test_direct_no_scale_feed_requires_target_before_any_provider_operation(self):
+        import contextlib,io,sys
+        from unittest.mock import patch
+        import pgcat_lane_supervisor as supervisor
+        for mode,include_target,refuse in (('no-scale',False,True),
+                ('no-scale',True,False),('disabled-rehearsal',False,False),
+                ('disabled-rehearsal',True,True)):
+            with self.subTest(mode=mode,include_target=include_target),tempfile.TemporaryDirectory() as d:
+                root=pathlib.Path(d);root.chmod(0o700)
+                active,lane,target=self.sealed_context(root,mode)
+                argv=['provider_feed.py','--mode','disabled-rehearsal','--interval','15','--max-seconds','180',
+                    '--workbench','offline-workbench','--worker-inventory','/fresh/run/provider-inventory.json',
+                    '--run-context',str(lane/'run-context.json'),'--contract-dir','/fresh/contract',
+                    '--status-file',str(root/'status.json'),'--kubeconfig','/fresh/kubeconfig']
+                if include_target:argv+=['--no-scale-target',json.dumps(target)]
+                with patch.object(sys,'argv',argv),patch.object(supervisor,'GLOBAL_ROOT',active), \
+                        patch.object(feed.Operator,'existing_targets',return_value=()) as existing, \
+                        patch.object(feed.Operator,'read') as read,patch.object(feed.Operator,'update_targets') as update, \
+                        patch.object(feed,'run_loop') as loop,contextlib.redirect_stderr(io.StringIO()):
+                    if refuse:
+                        with self.assertRaises(SystemExit) as stopped:feed.main()
+                        self.assertEqual(stopped.exception.code,1)
+                        existing.assert_not_called();read.assert_not_called();update.assert_not_called();loop.assert_not_called()
+                    else:
+                        existing.return_value=(('i-0','10.0.0.1'),('i-1','10.0.0.2'))
+                        feed.main();existing.assert_called_once();loop.assert_called_once()
+
+    def test_stop_is_terminal_and_no_scale_targets_can_never_be_patched(self):
+        with tempfile.TemporaryDirectory() as d:
+            op,context=self.operator(pathlib.Path(d));updates=[]
+            op.update_targets=lambda *args:updates.append(args)
+            op.write(self.take(self.fixture()))
+            self.assertEqual(updates,[])
+            self.intent(op,context);self.assertTrue(op.stop_no_scale())
+            with self.assertRaises(ValueError):op.write(self.take(self.fixture()))
+        with tempfile.TemporaryDirectory() as d:
+            op,_=self.operator(pathlib.Path(d));updates=[]
+            op.update_targets=lambda *args:updates.append(args)
+            value=self.take(self.fixture());value['privateAddresses']['i-0']='10.0.1.1'
+            with self.assertRaises(ValueError):op.write(value)
+            self.assertEqual(updates,[])
+
+    def test_targets_configmap_address_drift_is_refused_before_mutation(self):
+        for mutate in ('initial-id','initial-address','later-address'):
+            with self.subTest(mutate=mutate),tempfile.TemporaryDirectory() as d:
+                op,_=self.operator(pathlib.Path(d));writes=[];updates=[]
+                op.atomic_worker_write=lambda *args:writes.append(args)
+                op.update_targets=lambda *args:updates.append(args)
+                if mutate=='later-address':op.write(self.take(self.fixture()))
+                before=len(writes)
+                if mutate=='initial-id':op.previous=(('another','10.0.0.1'),('i-1','10.0.0.2'))
+                if mutate=='initial-address':op.previous=(('i-0','10.0.1.1'),('i-1','10.0.0.2'))
+                value=self.take(self.fixture())
+                if mutate=='later-address':value['privateAddresses']['i-0']='10.0.1.1'
+                with self.assertRaises(ValueError):op.write(value)
+                self.assertEqual(len(writes),before);self.assertEqual(updates,[])
+
+    def test_well_formed_different_target_hash_is_rejected(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(feed,'validate_run_context',return_value=dict(runId=str(uuid.uuid4()),targetSha256='0'*64)):
+                # operator() has its own context patch, so build first and reuse its validated arguments.
+                op,_=self.operator(pathlib.Path(d))
+                with self.assertRaises(ValueError):feed.Operator(op.args)
+
+    def test_target_hash_and_fixed_window_refuse_before_provider_read(self):
+        for change in (dict(no_scale_target='{}'),dict(interval=14),dict(max_seconds=181),
+                       dict(mode='full-replacement')):
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(ValueError):
+                    self.operator(pathlib.Path(d),**change)
+
+    def test_successor_after_worker_credential_deletion_uses_only_inventory(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=pathlib.Path(d);op,_=self.operator(root,kubeconfig=str(root/'kubeconfig'))
+            self.assertFalse(pathlib.Path(op.args.kubeconfig).exists())
+            # Exercise the production publication command builder. Its remote
+            # stdlib writer gets inventory/context arguments, never kubeconfig.
+            op.args.worker_inventory=str(root/'provider-inventory.json')
+            calls=[]
+            op.atomic_worker_write=feed.Operator.atomic_worker_write.__get__(op)
+            op.remote=lambda script,*args:calls.append((script,args))
+            op.update_targets=lambda *args:self.fail('no-scale target update')
+            value=self.take(self.fixture());op.write(value)
+            self.assertEqual(op.sequence,1);self.assertEqual(len(calls),1)
+            self.assertNotIn(op.args.kubeconfig,calls[0][1])
+            self.assertNotIn('kubectl',calls[0][0])
+            value['privateAddresses']['i-0']='10.0.0.99'
+            with self.assertRaises(ValueError):op.write(value)
+            self.assertEqual(len(calls),1)
+
+    def test_exact_two_every_publication(self):
+        for mutation in ('desired','third','protection','health','weight','backend','roster'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as d:
+                op,_=self.operator(pathlib.Path(d)); writes=[]
+                op.atomic_worker_write=lambda *args:writes.append(args)
+                value=self.take(self.fixture())
+                if mutation=='desired':value['desired']=3
+                elif mutation=='third':value=self.take(self.fixture(3))
+                elif mutation=='protection':value['memberStates'][0]['lifecycle']='InService'
+                elif mutation=='health':value['memberStates'][0]['health']='Unhealthy'
+                elif mutation=='weight':value['backendStates'][0]['weight']=99
+                elif mutation=='backend':value['backendStates'][0]['status']='Removing'
+                else:value['members']=['different','i-1']
+                with self.assertRaises(ValueError):op.write(value)
+                self.assertEqual(writes,[])
+                self.assertFalse(op.status_file.exists())
+
+    def test_changed_fleet_read_stops_before_publication(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            op,_=self.operator(pathlib.Path(d));op.fetch_group=lambda:dict(DesiredCapacity=3)
+            with patch.object(feed,'snapshot',return_value=self.take(self.fixture(3))):
+                with self.assertRaises(ValueError):op.read()
+            self.assertFalse(op.status_file.exists())
+
+    def test_no_scale_cannot_reuse_stop_control_files(self):
+        for name in ('no-scale-stop.intent','no-scale-stop.ack'):
+            with self.subTest(name=name),tempfile.TemporaryDirectory() as d:
+                root=pathlib.Path(d);(root/name).write_text('{}')
+                with self.assertRaises(ValueError):self.operator(root)
+
+    def test_stop_before_read_and_in_tick_publish_at_most_once(self):
+        for in_tick in (False,True):
+            with self.subTest(in_tick=in_tick),tempfile.TemporaryDirectory() as d:
+                op,context=self.operator(pathlib.Path(d)); op.write(self.take(self.fixture()))
+                calls=[]; clock=[0.]
+                if not in_tick:self.intent(op,context)
+                def read(**kwargs):
+                    calls.append('read'); self.intent(op,context)
+                    return self.take(self.fixture())
+                feed.run_loop(read,op.write,interval=15,max_seconds=180,
+                    monotonic=lambda:clock[0],sleep=lambda n:clock.__setitem__(0,clock[0]+n),
+                    stop=op.stop_no_scale)
+                self.assertEqual(len(calls),int(in_tick))
+                self.assertEqual(op.sequence,1+int(in_tick))
+                ack=json.loads((op.status_file.parent/'no-scale-stop.ack').read_text())
+                self.assertEqual(ack['sequence'],op.sequence)
+                self.assertTrue(op.stop_no_scale())
+                changed=json.loads((op.status_file.parent/'no-scale-stop.intent').read_text())
+                changed['verdictSha256']='c'*64
+                feed.atomic_write(op.status_file.parent/'no-scale-stop.intent',changed)
+                with self.assertRaises(ValueError):op.stop_no_scale()
+
+    def test_wrong_or_unsafe_intent_cannot_acknowledge(self):
+        for mutation in ('session','run','future','mode','symlink','extra'):
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as d:
+                op,context=self.operator(pathlib.Path(d)); op.write(self.take(self.fixture()))
+                changes={}
+                if mutation=='session':changes['feedSession']=str(uuid.uuid4())
+                if mutation=='run':changes['runId']=str(uuid.uuid4())
+                if mutation=='future':changes['minimumSequence']=op.sequence+1
+                if mutation=='extra':changes['command']='arbitrary'
+                self.intent(op,context,**changes)
+                path=op.status_file.parent/'no-scale-stop.intent'
+                if mutation=='mode':path.chmod(0o644)
+                if mutation=='symlink':path.rename(path.with_name('other'));path.symlink_to(path.with_name('other'))
+                with self.assertRaises(ValueError):op.stop_no_scale()
+                self.assertFalse((path.parent/'no-scale-stop.ack').exists())
+
+    def test_stop_during_sleep_does_not_reuse_expired_publication_deadline(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            op,context=self.operator(pathlib.Path(d));clock=[0.];ticks=[]
+            op.verify_run_context=feed.Operator.verify_run_context.__get__(op)
+            def read(**kwargs):ticks.append(clock[0]);return self.take(self.fixture())
+            def sleep(seconds):
+                self.intent(op,context)
+                clock[0]+=seconds
+            with patch.object(feed,'validate_run_context',return_value=context):
+                feed.run_loop(read,op.write,interval=15,max_seconds=180,
+                    monotonic=lambda:clock[0],sleep=sleep,stop=op.stop_no_scale)
+            self.assertEqual(ticks,[0.])
+            self.assertTrue((op.status_file.parent/'no-scale-stop.ack').exists())
+
+    def test_stop_in_final_sleep_acknowledges_without_another_provider_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            op,context=self.operator(pathlib.Path(d));clock=[0.];ticks=[]
+            def read(**kwargs):
+                ticks.append(clock[0]);value=self.take(self.fixture());value['observedAt']=clock[0]
+                return value
+            def sleep(seconds):
+                if clock[0] == 165.:
+                    self.intent(op,context)
+                clock[0]+=seconds
+            feed.run_loop(read,op.write,interval=15,max_seconds=180,
+                monotonic=lambda:clock[0],sleep=sleep,stop=op.stop_no_scale)
+            self.assertEqual(clock[0],180.)
+            self.assertEqual(ticks,list(range(0,180,15)))
+            ack=json.loads((op.status_file.parent/'no-scale-stop.ack').read_text())
+            final=json.loads(op.status_file.read_text())
+            self.assertEqual(ack['sequence'],12)
+            self.assertEqual(final['observedAt'],165.)
+            self.assertEqual(final['sequence'],12)
+
+    def test_natural_cap_has_no_ack_and_preserves_15_second_ticks(self):
+        with tempfile.TemporaryDirectory() as d:
+            op,_=self.operator(pathlib.Path(d));clock=[0.];ticks=[]
+            def read(**kwargs):ticks.append(clock[0]);return self.take(self.fixture())
+            feed.run_loop(read,op.write,interval=15,max_seconds=180,
+                monotonic=lambda:clock[0],sleep=lambda n:clock.__setitem__(0,clock[0]+n),
+                stop=op.stop_no_scale)
+            self.assertEqual(ticks,list(range(0,180,15)))
+            self.assertFalse((op.status_file.parent/'no-scale-stop.ack').exists())
 
 if __name__=='__main__':unittest.main()

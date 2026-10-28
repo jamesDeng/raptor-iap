@@ -1,7 +1,10 @@
 """Bounded, fail-closed provider evidence. No cloud provisioning operations."""
 import argparse
 import copy
+import hashlib
 from capture_window import InventoryMode
+from pgcat_lane_protocol import (roster_sha, encode, target_valid, original_roster,
+    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK, Refused)
 import ipaddress
 import json
 import math
@@ -49,6 +52,17 @@ class FeedStop(ValueError):
         super().__init__('Provider feed stopped at '+self.stage+'; evidence is no longer refreshed')
 
 
+
+
+def _wrapper_command(path, arguments):
+    from pgcat_source_bootstrap import command, current_hashes
+    return command(current_hashes(), 'laneWrapper', arguments)
+
+
+def _require_verified():
+    from pgcat_source_bootstrap import require_verified
+    try: require_verified(__name__)
+    except (ValueError, KeyError): raise ValueError('source') from None
 
 def require(condition):
     if not condition:
@@ -119,7 +133,7 @@ def snapshot(fetch_ess, fetch_group, fetch_ecs, fetch_nlb, *, group_id, server_g
     """Read adapters return raw, complete scoped provider observations.
 
     fetch_nlb returns Servers (fully paginated), Listener and Health. Addresses
-    are transient; publish strips them before the worker evidence write.
+    stay in the private worker sidecar; the published inventory omits them.
     """
     try:
         require(now.tzinfo is not None)
@@ -277,11 +291,222 @@ def write_status_receipt(path, value, *, deadline=None):
             os.unlink(temporary)
 
 
-def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monotonic, sleep=time.sleep):
+def _unique_pairs(pairs):
+    value = {}
+    for key, item in pairs:
+        require(key not in value)
+        value[key] = item
+    return value
+
+
+def validate_run_context(root, path, *, no_scale=False):
+    """Bind context and requested feed guards to the active journal mode."""
+    from pgcat_lane_protocol import Journal, encode, identifier, private, read_private
+    import pgcat_lane_supervisor as supervisor
+    root, path = Path(root), Path(path)
+    require(root.is_absolute() and path == root/'run-context.json')
+    private(root, True)
+    folder = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        raw = read_private(folder, 'run-context.json', 2048)
+        startup = json.loads(read_private(folder, 'supervisor-startup.json', 2048,
+                                          publication_marker=True).decode('ascii'),
+                             object_pairs_hook=_unique_pairs)
+    finally:
+        os.close(folder)
+    context = json.loads(raw.decode('ascii'), object_pairs_hook=_unique_pairs)
+    require(type(context) is dict and set(context) == {
+        'schemaVersion','runId','supervisorId','targetSha256','bundleSha256','nonce'})
+    require(type(context['schemaVersion']) is int and context['schemaVersion'] == 1)
+    for key in ('runId','supervisorId','nonce'):
+        identifier(context[key])
+    require(type(startup) is dict and set(startup) == {'runId','supervisorId','contextNonce'})
+    require((context['runId'],context['supervisorId'],context['nonce']) ==
+            (startup['runId'],startup['supervisorId'],startup['contextNonce']))
+    private(supervisor.GLOBAL_ROOT, True)
+    active_folder = os.open(supervisor.GLOBAL_ROOT,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        active = json.loads(read_private(active_folder, 'active-run', 2048).decode('ascii'),
+                            object_pairs_hook=_unique_pairs)
+    finally:
+        os.close(active_folder)
+    require(active == {'runId':context['runId'],'supervisorId':context['supervisorId'],
+                       'laneRoot':str(root)})
+    journal = Journal(root).run_snapshot()
+    from pgcat_lane_protocol import _release_admission
+    _release_admission(journal['mode'])
+    require(journal['runState'] == 'active' and journal['runId'] == context['runId'])
+    require(type(no_scale) is bool and journal['mode'] in ('no-scale', 'disabled-rehearsal')
+            and (journal['mode'] == 'no-scale') == no_scale)
+    target = journal['target']
+    require(target['scalingGroupId'] == GROUP_ID and target['nlbServerGroupId'] == SERVER_GROUP_ID
+            and target['workerId'] == WORKER_ID and target['regionId'] == REGION)
+    require(context['targetSha256'] == hashlib.sha256(encode(target)).hexdigest())
+    hashes = dict(journal['hashes'])
+    bundle = hashes.pop('bundleSha256')
+    require(context['bundleSha256'] == bundle == hashlib.sha256(encode(hashes)).hexdigest())
+    return context
+
+
+def write_private_publication(contract_dir, context, session, sequence, observed_at,
+                              addresses, inventory_path, inventory_raw, deadline=None):
+    """Worker-side, single-call private sidecar then address-free inventory."""
+    def check(value):
+        if not value:
+            raise ValueError('Worker publication rejected')
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            check(key not in value)
+            value[key] = item
+        return value
+    def directory(fd):
+        info = os.fstat(fd)
+        check(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+              and info.st_uid == os.getuid())
+    def open_private_directory(path):
+        parts = Path(path).parts
+        check(parts and parts[0] == '/' and '..' not in parts)
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[1:]:
+                next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                  dir_fd=fd)
+                os.close(fd)
+                fd = next_fd
+            directory(fd)
+            return fd
+        except Exception:
+            os.close(fd)
+            raise ValueError('Worker publication rejected') from None
+    def write_once(fd, name, raw):
+        item = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                       0o600, dir_fd=fd)
+        try:
+            os.fchmod(item, 0o600)
+            while raw:
+                raw = raw[os.write(item, raw):]
+            os.fsync(item)
+        finally:
+            os.close(item)
+        os.fsync(fd)
+    def read_once(fd, name, maximum):
+        try:
+            item = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        except OSError:
+            raise ValueError('Worker publication rejected') from None
+        try:
+            before = os.fstat(item)
+            check(stat.S_ISREG(before.st_mode) and stat.S_IMODE(before.st_mode) == 0o600
+                  and before.st_uid == os.getuid() and before.st_nlink == 1
+                  and before.st_size <= maximum)
+            raw = os.read(item, maximum + 1)
+            after = os.fstat(item)
+            current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            check(len(raw) <= maximum and
+                  (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns) ==
+                  (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns) ==
+                  (current.st_dev,current.st_ino,current.st_size,current.st_mtime_ns,current.st_ctime_ns))
+            return raw
+        finally:
+            os.close(item)
+    check(type(context) is dict and set(context) == {'schemaVersion','runId','supervisorId',
+          'targetSha256','bundleSha256','nonce'} and context['schemaVersion'] == 1)
+    check(type(session) is str and type(sequence) is int and 1 <= sequence <= 999999)
+    check(type(observed_at) in (int,float) and type(addresses) is dict and
+          2 <= len(addresses) <= 4 and len(set(addresses.values())) == len(addresses))
+    check(type(inventory_raw) is bytes and len(inventory_raw) <= 16384)
+    contract_path = Path(contract_dir)
+    inventory_file = Path(inventory_path)
+    check(contract_path.is_absolute() and contract_path.name == 'contract' and
+          inventory_file.is_absolute() and inventory_file.name == 'provider-inventory.json' and
+          inventory_file.parent.name == 'run' and
+          inventory_file.parent.parent == contract_path.parent)
+    inventory = json.loads(inventory_raw.decode('ascii'), object_pairs_hook=unique)
+    check(type(inventory) is dict and inventory.get('feedSession') == session and
+          inventory.get('sequence') == sequence and inventory.get('observedAt') == observed_at)
+    semantic_raw = json.dumps(inventory, sort_keys=True, separators=(',', ':'),
+                              allow_nan=False).encode('ascii')
+    record = {'schemaVersion':1,'runContext':context,'feedSession':session}
+    record_raw = json.dumps(record,sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')
+    sidecar = {'schemaVersion':1,'runId':context['runId'],
+        'supervisorId':context['supervisorId'],'contextNonce':context['nonce'],
+        'targetSha256':context['targetSha256'],'bundleSha256':context['bundleSha256'],
+        'feedSession':session,'sequence':sequence,'observedAt':observed_at,
+        'inventorySha256':hashlib.sha256(inventory_raw).hexdigest(),
+        'inventorySemanticSha256':hashlib.sha256(semantic_raw).hexdigest(),
+        'privateAddresses':addresses}
+    sidecar_raw = json.dumps(sidecar,sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')
+    check(len(record_raw) <= 2048 and len(sidecar_raw) <= 4096)
+    parent = open_private_directory(contract_dir)
+    try:
+        directory(parent)
+        if sequence == 1:
+            try:
+                os.mkdir('provider-source', 0o700, dir_fd=parent)
+            except FileExistsError:
+                raise ValueError('Worker publication rejected') from None
+            os.fsync(parent)
+        source = os.open('provider-source', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                         dir_fd=parent)
+        try:
+            directory(source)
+            if sequence == 1:
+                write_once(source, 'run-context.json', record_raw)
+            else:
+                check(read_once(source, 'run-context.json', 2048) == record_raw)
+                previous = json.loads(read_once(source, '%06d.json' % (sequence-1), 4096)
+                                      .decode('ascii'), object_pairs_hook=unique)
+                check(type(previous) is dict and previous.get('feedSession') == session and
+                      previous.get('sequence') == sequence-1 and
+                      previous.get('runId') == context['runId'] and
+                      previous.get('contextNonce') == context['nonce'])
+                prior_path = Path(inventory_path)
+                prior_folder = open_private_directory(str(prior_path.parent))
+                try:
+                    directory(prior_folder)
+                    prior_raw = read_once(prior_folder, prior_path.name, 16384)
+                finally:
+                    os.close(prior_folder)
+                prior_inventory = json.loads(prior_raw.decode('ascii'), object_pairs_hook=unique)
+                check(type(prior_inventory) is dict and
+                      prior_inventory.get('feedSession') == session and
+                      prior_inventory.get('sequence') == sequence-1 and
+                      hashlib.sha256(prior_raw).hexdigest() == previous.get('inventorySha256'))
+            write_once(source, '%06d.json' % sequence, sidecar_raw)
+        finally:
+            os.close(source)
+    finally:
+        os.close(parent)
+    check(deadline is None or time.monotonic() < deadline)
+    path = Path(inventory_path)
+    folder = open_private_directory(str(path.parent))
+    try:
+        directory(folder)
+        try:
+            existing = os.stat(path.name, dir_fd=folder, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            check(stat.S_ISREG(existing.st_mode) and stat.S_IMODE(existing.st_mode) == 0o600
+                  and existing.st_uid == os.getuid() and existing.st_nlink == 1)
+        temporary = '.' + path.name + '.' + str(sequence) + '.staging'
+        write_once(folder, temporary, inventory_raw)
+        check(deadline is None or time.monotonic() < deadline)
+        os.replace(temporary, path.name, src_dir_fd=folder, dst_dir_fd=folder)
+        os.fsync(folder)
+    finally:
+        os.close(folder)
+
+
+def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monotonic, sleep=time.sleep, stop=None):
     require(type(interval) is int and 1 <= interval <= 15 and type(max_seconds) is int and 1 <= max_seconds <= 5400)
     started = monotonic()
     runtime_end = started + max_seconds
     while monotonic() < runtime_end:
+        if stop is not None and stop():
+            return
         tick = monotonic()
         deadline = Deadline(min(tick + interval, runtime_end), monotonic=monotonic)
         try:
@@ -293,9 +518,15 @@ def run_loop(read, write, *, interval=15, max_seconds=5400, monotonic=time.monot
             raise
         except Exception:
             raise FeedStop('loop') from None
+        if stop is not None and stop():
+            return
         delay = min(tick + interval, runtime_end) - monotonic()
         if delay > 0:
             sleep(delay)
+    # The final sleep can contain a stop intent. Acknowledge it without
+    # extending the provider window or fabricating another observation.
+    if stop is not None:
+        stop()
 
 
 class Operator:
@@ -325,11 +556,99 @@ class Operator:
             parent = self.status_file.parent.lstat()
             require(stat.S_ISDIR(parent.st_mode) and stat.S_IMODE(parent.st_mode) == 0o700
                     and parent.st_uid == os.getuid())
+        run_context = getattr(args, 'run_context', None)
+        self.run_context = None
+        if run_context is not None:
+            context_path = Path(run_context)
+            contract = Path(args.contract_dir)
+            inventory = Path(args.worker_inventory)
+            require(context_path.is_absolute() and contract.is_absolute() and
+                    '..' not in contract.parts and contract.name == 'contract' and
+                    inventory.name == 'provider-inventory.json' and
+                    inventory.parent.name == 'run' and
+                    inventory.parent.parent == contract.parent)
+            self.run_context = validate_run_context(context_path.parent, context_path,
+                no_scale=getattr(args, 'no_scale_target', None) is not None)
+        self.no_scale_target = None
+        self.stop_ack = None
+        raw_target = getattr(args, 'no_scale_target', None)
+        if raw_target is not None:
+            try:
+                require(self.mode == 'disabled-rehearsal' and self.run_context is not None
+                        and self.status_file is not None)
+                require(type(args.interval) is int and args.interval == 15 and
+                        type(args.max_seconds) is int and args.max_seconds == 180)
+                target = json.loads(raw_target, object_pairs_hook=_unique_pairs)
+                target_valid(target)
+                original_roster(target['originalInstanceIds'])
+                require(target['scalingGroupId'] == GROUP_ID and target['nlbServerGroupId'] == SERVER_GROUP_ID
+                        and target['workerId'] == WORKER_ID and target['regionId'] == REGION)
+                require(hashlib.sha256(encode(target)).hexdigest() == self.run_context['targetSha256'])
+                for name in (NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK):
+                    require(not os.path.lexists(self.status_file.parent/name))
+                self.no_scale_target = target
+            except (Refused, ValueError, TypeError, KeyError):
+                raise FeedStop('startup') from None
+
+    def exact_no_scale(self, value):
+        if self.no_scale_target is not None:
+            require(type(value.get('desired')) is int and value['desired'] == 2 and
+                    {key:value.get(key) for key in original_roster(self.no_scale_target['originalInstanceIds'])}
+                    == original_roster(self.no_scale_target['originalInstanceIds']))
+
+    def stop_no_scale(self):
+        """Check at both tick boundaries, then acknowledge the actual last receipt."""
+        if self.no_scale_target is None:
+            return False
+        from pgcat_lane_supervisor import read_json, save_once
+        path = self.status_file.parent/NO_SCALE_STOP_INTENT
+        try:
+            if not os.path.lexists(path):
+                require(self.stop_ack is None)
+                return False
+            # This local stop boundary is outside a provider publication. A
+            # request arriving during sleep must not inherit the expired tick.
+            self.deadline = None
+            self.verify_run_context()
+            intent = read_json(path, publication_marker=True)
+            validate_no_scale_stop(intent)
+            require(intent['runId'] == self.run_context['runId'] and
+                    intent['feedSession'] == self.feedSession and
+                    intent['minimumSequence'] <= self.sequence <= intent['minimumSequence']+1)
+            receipt = read_json(self.status_file)
+            require(receipt['sequence'] == self.sequence and receipt['desired'] == 2 and
+                    receipt['mode'] == 'disabled-rehearsal' and
+                    receipt['rosterSha256'] == roster_sha(original_roster(self.no_scale_target['originalInstanceIds'])))
+            ack = no_scale_stop_ack(intent, receipt)
+            if self.stop_ack is None:
+                save_once(path.parent, NO_SCALE_STOP_ACK, ack, atomic=True)
+                self.stop_ack = ack
+            require(encode(self.stop_ack) == encode(ack) and
+                    encode(read_json(path.parent/NO_SCALE_STOP_ACK, publication_marker=True)) == encode(ack))
+            self.stopped = True
+            return True
+        except (Refused, OSError, ValueError, TypeError, KeyError):
+            self.stopped = True
+            raise FeedStop('loop') from None
+
+    def verify_run_context(self):
+        if self.run_context is not None:
+            path = Path(self.args.run_context)
+            require(validate_run_context(path.parent, path,
+                no_scale=getattr(self.args, 'no_scale_target', None) is not None) == self.run_context)
+            if self.deadline is not None:
+                self.deadline.remaining()
 
     def command(self, argv):
         try:
             timeout = min(10, self.deadline.remaining()) if self.deadline is not None else 10
-            result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=timeout).stdout
+            environment = dict(os.environ)
+            # Python <3.10 on macOS has a process-relative monotonic().
+            # Startup reads precede the first tick and retain their 10s timeout.
+            environment['PGCAT_LANE_DEADLINE_MONOTONIC'] = str(
+                time.clock_gettime(time.CLOCK_MONOTONIC) +
+                (self.deadline.remaining() if self.deadline is not None else timeout))
+            result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=timeout, env=environment).stdout
             if self.deadline is not None:
                 self.deadline.remaining()
             return result
@@ -386,10 +705,12 @@ class Operator:
             now = datetime.now(timezone.utc)
             group = self.fetch_group()
             allowance = self.departures_for(group.get('DesiredCapacity'))
-            return snapshot(self.fetch_ess,lambda:group,self.fetch_ecs,self.fetch_nlb,
+            value = snapshot(self.fetch_ess,lambda:group,self.fetch_ecs,self.fetch_nlb,
                             group_id=GROUP_ID,server_group_id=SERVER_GROUP_ID,now=now,
                             known_ids=self.known_ids,allowed_departures=allowance,
                             required_address_ids=self.required_address_ids)
+            self.exact_no_scale(value)
+            return value
         except FeedStop:
             raise
         except Exception:
@@ -403,8 +724,10 @@ class Operator:
         return self.allowed_departures
 
     def workbench(self, script, *arguments):
+        self.verify_run_context()
         command = shlex.join(['python3','-c',script,*arguments])
-        return self.command([self.args.workbench,'exec','-P',PROFILE,'-r',REGION,'-i',WORKER_ID,'-c',command])
+        return self.command(_wrapper_command(self.args.workbench,
+            ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER_ID,'-c',command]))
 
     def remote(self, script, *arguments):
         # Worker monotonic time is independent of Mac/worker wall-clock skew.
@@ -430,9 +753,23 @@ class Operator:
                   '\nif time.monotonic() >= _remote_deadline: raise ValueError(\"Remote deadline exceeded\")\n')
         return self.workbench(prefix + script,*arguments)
 
-    def atomic_worker_write(self, value):
+    def atomic_worker_write(self, value, snapshot=None):
         self.stage = 'inventory-write'
         # The remote worker needs only stdlib Python; no repository deployment.
+        if self.run_context is not None:
+            require(snapshot is not None)
+            raw = json.dumps(value,separators=(',',':'),allow_nan=False).encode('ascii')
+            script = ('import hashlib,json,os,stat,sys,time; from pathlib import Path\n' +
+                      _PRIVATE_PUBLICATION_SOURCE + '\nwrite_private_publication('
+                      'sys.argv[1],json.loads(sys.argv[2]),sys.argv[3],int(sys.argv[4]),'
+                      'float(sys.argv[5]),json.loads(sys.argv[6]),sys.argv[7],'
+                      'sys.argv[8].encode("ascii"),deadline=globals().get("_remote_deadline"))')
+            self.remote(script,self.args.contract_dir,
+                        json.dumps(self.run_context,sort_keys=True,separators=(',',':')),
+                        self.feedSession,str(snapshot['sequence']),str(snapshot['observedAt']),
+                        json.dumps(snapshot['privateAddresses'],sort_keys=True,separators=(',',':')),
+                        self.args.worker_inventory,raw.decode('ascii'))
+            return
         script = 'import json,os,tempfile,sys,time; from pathlib import Path\n' + _ATOMIC_SOURCE + '\natomic_write(sys.argv[1],json.loads(sys.argv[2]),deadline=globals().get(\"_remote_deadline\"))'
         self.remote(script,self.args.worker_inventory,json.dumps(value,separators=(',',':')))
 
@@ -463,13 +800,20 @@ class Operator:
         self.deadline = deadline
         self.stage = 'publish'
         try:
+            self.verify_run_context()
             require(value.get('mode', self.mode) == self.mode)
             require(value.get('feedSession', self.feedSession) == self.feedSession)
+            self.exact_no_scale(value)
+            if self.no_scale_target is not None:
+                require(tuple(sorted(value['privateAddresses'].items())) == self.previous and
+                        [node for node,_ in self.previous] == self.no_scale_target['originalInstanceIds'])
             candidate = dict(value, feedSession=self.feedSession, sequence=self.sequence + 1)
             if self.mode == 'disabled-rehearsal':candidate['mode'] = self.mode
             mode_state = copy.deepcopy(self.inventory_mode)
             mode_state.observe(candidate)
-            targets = publish(candidate,self.previous,self.atomic_worker_write,self.update_targets,
+            worker_write = self.atomic_worker_write if self.run_context is None else (
+                lambda inventory:self.atomic_worker_write(inventory,candidate))
+            targets = publish(candidate,self.previous,worker_write,self.update_targets,
                               deadline=deadline,retain_targets=self.retained_targets)
             self.inventory_mode = mode_state
             self.previous = self.retained_targets = targets
@@ -484,9 +828,11 @@ class Operator:
             self.sequence += 1
             if self.status_file is not None:
                 self.stage = 'status-write'
+                self.verify_run_context()
                 receipt = {'feedSession':self.feedSession, 'sequence':self.sequence,
                            'mode':self.mode, 'desired':candidate['desired'],
-                           'observedAt':candidate['observedAt']}
+                           'observedAt':candidate['observedAt'],
+                           'rosterSha256':roster_sha(candidate)}
                 write_status_receipt(self.status_file, receipt, deadline=deadline)
         except Exception:
             # Neither uncertain worker writes nor a later local failure may
@@ -498,50 +844,60 @@ class Operator:
 # Keep the remote write identical to the locally tested implementation.
 import inspect
 _ATOMIC_SOURCE = inspect.getsource(atomic_write)
+_PRIVATE_PUBLICATION_SOURCE = inspect.getsource(write_private_publication)
 _CLOCK_PROBE = '''import json,time
 boot=open('/proc/sys/kernel/random/boot_id').read().strip()
 print(json.dumps({'monotonic':time.monotonic(),'boot':boot}))
 '''
 _TARGET_SCRIPT = '''import json,os,stat,subprocess,sys,time
 path=sys.argv[1]
-assert stat.S_ISREG(os.stat(path).st_mode) and stat.S_IMODE(os.stat(path).st_mode)==0o600
+if not (stat.S_ISREG(os.stat(path).st_mode) and stat.S_IMODE(os.stat(path).st_mode)==0o600): raise ValueError('Invalid kubeconfig mode')
 args=['kubectl','--kubeconfig',path,'-n','raptor-test']
 def run(extra):
  remaining=_remote_deadline-time.monotonic()
  if remaining<=0: raise ValueError('Remote deadline exceeded')
  return subprocess.run(args+extra,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=min(8,remaining)).stdout
 body=json.loads(run(['get','configmap','pgcat-provider-inventory','-o','json']))
-assert body['metadata']['name']=='pgcat-provider-inventory' and body['metadata']['namespace']=='raptor-test'
-assert 'targets.json' in body['data']
+if not (body['metadata']['name']=='pgcat-provider-inventory' and body['metadata']['namespace']=='raptor-test'): raise ValueError('Unexpected ConfigMap identity')
+if not ('targets.json' in body['data']): raise ValueError('Missing targets key')
 if len(sys.argv)==2:
  print(body['data']['targets.json']); sys.exit(0)
 patch={'metadata':{'resourceVersion':body['metadata']['resourceVersion']},'data':{'targets.json':sys.argv[2]}}
 run(['patch','configmap','pgcat-provider-inventory','--type=merge','-p',json.dumps(patch)])
 verified=json.loads(run(['get','configmap','pgcat-provider-inventory','-o','json']))
-assert verified['metadata']['name']=='pgcat-provider-inventory' and verified['metadata']['namespace']=='raptor-test'
-assert json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])
+if not (verified['metadata']['name']=='pgcat-provider-inventory' and verified['metadata']['namespace']=='raptor-test'): raise ValueError('Unexpected readback identity')
+if not (json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])): raise ValueError('Target readback mismatch')
 '''
 
 
 def main():
+    _require_verified()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode',choices=('full-replacement','disabled-rehearsal'),default='full-replacement',
                         help='bind this feed to the full replacement or disabled 2-to-3-to-2 rehearsal')
+    parser.add_argument('--no-scale-target',help='fixed address-free target, only for the finite no-scale proof')
     parser.add_argument('--interval',type=int,default=15)
     parser.add_argument('--max-seconds',type=int,default=5400)
     parser.add_argument('--listener-id',default=LISTENER_ID)
     parser.add_argument('--workbench',required=True)
     parser.add_argument('--worker-inventory',required=True)
-    parser.add_argument('--status-file',metavar='ABSOLUTE_PATH',
-                        help='optional initially absent local receipt in an existing mode-0700 directory')
+    parser.add_argument('--run-context',required=True,
+                        help='fixed supervisor context at laneRoot/run-context.json')
+    parser.add_argument('--contract-dir',required=True,
+                        help='reviewed private worker contract directory')
+    parser.add_argument('--status-file',required=True,metavar='ABSOLUTE_PATH',
+                        help='initially absent local receipt in an existing mode-0700 directory')
     parser.add_argument('--kubeconfig',required=True,help='already authorized private worker path; never transferred by this tool')
     args = parser.parse_args()
     try:
         require(args.worker_inventory.startswith('/') and args.kubeconfig.startswith('/') and args.worker_inventory != args.kubeconfig)
         operator = Operator(args)
         operator.previous = operator.existing_targets()
+        if operator.no_scale_target is not None:
+            require([node for node,_ in operator.previous] == operator.no_scale_target['originalInstanceIds'])
         operator.stage = 'loop'
-        run_loop(operator.read,operator.write,interval=args.interval,max_seconds=args.max_seconds)
+        run_loop(operator.read,operator.write,interval=args.interval,max_seconds=args.max_seconds,
+                 **({'stop':operator.stop_no_scale} if operator.no_scale_target is not None else {}))
     except FeedStop as error:
         parser.exit(1,str(error)+'\n')
     except Exception:

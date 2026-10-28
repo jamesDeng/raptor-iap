@@ -1,0 +1,253 @@
+from pgcat_lane_protocol import monotonic
+import copy
+import json
+from pathlib import Path
+import tempfile
+import time
+import unittest
+import uuid
+
+from pgcat_lane_protocol import Journal, Refused, publish_request, publish_finish
+
+
+class ProtocolTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.target = dict(accountId='account', regionId='region', workerId='worker',
+                           scalingGroupId='asg-t4necb4dfmu6o3z2rn0g', nlbServerGroupId='nlb',
+                           originalInstanceIds=['instance-a', 'instance-b'])
+        self.run = str(uuid.uuid4())
+        self.session = str(uuid.uuid4())
+        self.supervisor = str(uuid.uuid4())
+        self.journal = Journal(self.root)
+        self.journal.create_run(self.run, 'no-scale', self.target, {'bundleSha256': 'a'*64})
+
+    def request(self, **changes):
+        value = dict(requestId=str(uuid.uuid4()), runId=self.run,
+                     supervisorId=self.supervisor, action='baseline-status',
+                     feedSession=self.session, minimumSequence=1,
+                     receiptIdentity='b'*64, target=copy.deepcopy(self.target),
+                     bundleSha256='a'*64, nonce=str(uuid.uuid4()),
+                     deadlineMonotonic=monotonic()+5.0)
+        value.update(changes)
+        return value
+
+    def admit(self, request):
+        self.assertEqual(publish_request(self.root, request), request['requestId'])
+        self.journal.admit(request)
+
+    def test_no_scale_stop_binds_only_run_session_sequence_verdict(self):
+        from pgcat_lane_protocol import validate_no_scale_stop,no_scale_stop_ack,encode
+        import hashlib
+        intent=dict(schemaVersion=1,runId=self.run,feedSession=self.session,
+            minimumSequence=3,verdictSha256='a'*64)
+        validate_no_scale_stop(intent)
+        final=dict(feedSession=self.session,sequence=4,observedAt=123.)
+        ack=no_scale_stop_ack(intent,final)
+        self.assertEqual(ack['intentSha256'],hashlib.sha256(encode(intent)).hexdigest())
+        self.assertEqual(ack['finalReceiptSha256'],hashlib.sha256(encode(final)).hexdigest())
+        for changes in (dict(schemaVersion=True),dict(minimumSequence=True),dict(minimumSequence=0),
+                        dict(verdictSha256='wrong'),dict(command='arbitrary'),dict(runId='wrong')):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                validate_no_scale_stop(dict(intent,**changes))
+        for changes in (dict(sequence=2),dict(sequence=5),dict(sequence=True),dict(feedSession=str(uuid.uuid4()))):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                no_scale_stop_ack(intent,dict(final,**changes))
+
+    def test_deadline_clock_is_shared_with_detached_process(self):
+        import subprocess
+        import sys
+        import pgcat_lane_protocol as protocol
+        before = protocol.monotonic()
+        child = float(subprocess.check_output([sys.executable, '-c',
+            'from pgcat_lane_protocol import monotonic; print(monotonic())'],
+            cwd=Path(__file__).resolve().parent))
+        after = protocol.monotonic()
+        self.assertLessEqual(before, child)
+        self.assertLessEqual(child, after)
+
+    def finish_receipts(self):
+        from pgcat_lane_protocol import digest,no_scale_assessment,encode
+        from pgcat_lane_supervisor import save_once
+        feed = dict(pid=123, exitCode=0, category='ok', feedSession=self.session, sequence=1)
+        hashes=dict(lane={},local=dict(controller='a'*64,client='b'*64,runner='c'*64))
+        with self.journal._transaction() as db:
+            db.execute('UPDATE run SET hashes=?',(encode(dict(bundleSha256=digest({}))).decode(),))
+        record=dict(schemaVersion=1,day='2026-10-27',runId=self.run,feedSession=self.session,
+            targetSha256=digest(self.target),sourceSha256=digest(hashes),sourceHashes=hashes,
+            clientIdentitySha256=None,bindingSha256='d'*64,workerVerdict=None,stop=None,localCredentialCleanup=False)
+        save_once(self.root,'no-scale-proof.json',record)
+        assessment=no_scale_assessment(record,self.journal.run_snapshot(),None,feed)
+        binding=dict(runId=self.run,feedId=str(uuid.uuid4()),pid=123,bindingSha256='d'*64,argvSha256='a'*64)
+        self.journal.bind_feed(binding)
+        self.journal.confirm_feed_exit(dict(runId=self.run,feedId=binding['feedId'],pid=123,exitCode=0))
+        publish_finish(self.root, self.run, feed, assessment)
+
+    def test_finish_is_monotonic_with_valid_marker(self):
+        self.finish_receipts()
+        self.journal.cancel('incomplete')
+        with self.assertRaises(Refused): self.journal.finish()
+        self.assertEqual(self.journal.run_snapshot()['runState'], 'uncertain')
+
+    def test_finish_rejects_unsealed_request_with_valid_marker(self):
+        self.admit(self.request())
+        self.finish_receipts()
+        with self.assertRaises(Refused): self.journal.finish()
+        self.assertEqual(self.journal.run_snapshot()['runState'], 'active')
+
+    def test_finish_rejects_unpublished_staging_file(self):
+        folder = self.root/'requests'; folder.mkdir(mode=0o700)
+        (folder/'partial.request.json').write_text('{}')
+        self.finish_receipts()
+        with self.assertRaises(Refused): self.journal.finish()
+
+    def test_finish_rejects_receipt_digest_change(self):
+        self.finish_receipts()
+        (self.root/'assessment.json').write_text('{}')
+        with self.assertRaises(Refused): self.journal.finish()
+
+    def test_finished_remains_closed_and_preserves_assessment(self):
+        request = self.request(); self.admit(request)
+        self.journal.seal(request['requestId'], dict(state='complete',category='ok',payload={}))
+        self.finish_receipts()
+        result = self.journal.finish()
+        self.assertEqual(result['runState'], 'finished')
+        self.assertEqual(result['assessment']['status'], 'INCONCLUSIVE')
+        self.journal.cancel('cancelled')
+        self.assertEqual(self.journal.run_snapshot()['runState'], 'finished')
+        with self.assertRaises(Refused): self.journal.finish()
+        with self.assertRaises(Refused): self.admit(self.request())
+
+    def test_private_publication_and_database(self):
+        request = self.request()
+        self.admit(request)
+        for path, mode in [(self.root/'requests', 0o700),
+                           (self.root/'requests'/(request['requestId']+'.request.json'), 0o600),
+                           (self.root/'requests'/(request['requestId']+'.ready'), 0o600),
+                           (self.root/'journal.sqlite3', 0o600)]:
+            self.assertEqual(path.stat().st_mode & 0o777, mode)
+        self.assertEqual(self.journal.snapshot(request['requestId'])['state'], 'dispatching')
+
+    def test_unpublished_request_never_admits(self):
+        request = self.request()
+        folder = self.root/'requests'
+        folder.mkdir(mode=0o700, exist_ok=True)
+        path = folder/(request['requestId']+'.request.json')
+        path.write_text(json.dumps(request))
+        path.chmod(0o600)
+        with self.assertRaises(Refused):
+            self.journal.admit(request)
+        with self.assertRaises(Refused):
+            self.journal.snapshot(request['requestId'])
+
+    def test_duplicate_id_and_one_terminal_result(self):
+        request = self.request()
+        self.admit(request)
+        with self.assertRaises(Refused):
+            publish_request(self.root, request)
+        with self.assertRaises(Refused):
+            self.journal.admit(request)
+        self.journal.seal(request['requestId'], {'state':'complete', 'category':'ok', 'payload':{'status':'done'}})
+        with self.assertRaises(Refused):
+            self.journal.seal(request['requestId'], {'state':'uncertain', 'category':'timeout', 'payload':{}})
+        self.assertEqual(self.journal.snapshot(request['requestId'])['state'], 'complete')
+
+    def test_run_bindings_are_immutable(self):
+        for mode, target, hashes in [('disabled-rehearsal', self.target, {'bundleSha256':'a'*64}),
+                                     ('no-scale', dict(self.target, workerId='different'), {'bundleSha256':'a'*64}),
+                                     ('no-scale', self.target, {'bundleSha256':'c'*64})]:
+            with self.assertRaises(Refused):
+                self.journal.create_run(self.run, mode, target, hashes)
+        for changes in [dict(target=dict(self.target, workerId='different')), dict(bundleSha256='c'*64),
+                        dict(action='scaleout-two-to-three')]:
+            request = self.request(**changes)
+            publish_request(self.root, request)
+            with self.assertRaises(Refused):
+                self.journal.admit(request)
+
+    def test_cancel_is_monotonic_and_blocks_success(self):
+        request = self.request()
+        self.admit(request)
+        self.journal.cancel('cancelled')
+        self.journal.cancel('timeout')
+        with self.assertRaises(Refused):
+            self.journal.seal(request['requestId'], {'state':'complete','category':'ok','payload':{}})
+        self.journal.seal(request['requestId'], {'state':'uncertain','category':'cancelled','payload':{}})
+        self.assertEqual(self.journal.snapshot(request['requestId'])['runState'], 'cancelled')
+        with self.assertRaises(Refused):
+            self.journal.create_run(self.run, 'no-scale', self.target, {'bundleSha256':'a'*64})
+        later = self.request()
+        publish_request(self.root, later)
+        with self.assertRaises(Refused):
+            self.journal.admit(later)
+
+    def test_invalid_records_refused_without_leaking_fields(self):
+        for changes in [dict(extra='secret'), dict(deadlineMonotonic=float('nan')),
+                        dict(minimumSequence=True), dict(action=[]), dict(requestId='../escape')]:
+            with self.assertRaises(Refused):
+                publish_request(self.root, self.request(**changes))
+        request = self.request()
+        self.admit(request)
+        for result in [dict(state='complete',category='ok',payload={'stderr':'secret'}),
+                       dict(state='complete',category='ok',payload={'status':'192.0.2.1'}),
+                       dict(state='complete',category='remote',payload={}),
+                       dict(state='uncertain',category=[],payload={}),
+                       dict(state='uncertain',category='remote',payload={'identity':{'pid':1}})]:
+            with self.assertRaises(Refused):
+                self.journal.seal(request['requestId'], result)
+
+    def test_symlinks_modes_and_modified_publication_refused(self):
+        request = self.request()
+        publish_request(self.root, request)
+        path = self.root/'requests'/(request['requestId']+'.request.json')
+        path.chmod(0o644)
+        with self.assertRaises(Refused):
+            self.journal.admit(request)
+        path.chmod(0o600)
+        path.write_text(json.dumps(self.request(requestId=request['requestId'])))
+        with self.assertRaises(Refused):
+            self.journal.admit(request)
+        path.unlink()
+        path.symlink_to(self.root/'journal.sqlite3')
+        with self.assertRaises(Refused):
+            self.journal.admit(request)
+
+    def test_rehearsal_scaleout_requires_fixed_group(self):
+        from unittest.mock import patch
+        admission=patch("pgcat_lane_protocol._release_admission");admission.start();self.addCleanup(admission.stop)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            journal = Journal(root)
+            wrong_target = dict(self.target, scalingGroupId='wrong-group')
+            journal.create_run(self.run, 'disabled-rehearsal', wrong_target, {'bundleSha256':'a'*64})
+            request = self.request(action='scaleout-two-to-three', target=wrong_target)
+            publish_request(root, request)
+            with self.assertRaises(Refused):
+                journal.admit(request)
+
+    def test_invalid_mode_and_nonprivate_root_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            journal = Journal(root)
+            with self.assertRaises(Refused):
+                journal.create_run(self.run, 'rehearsal', self.target, {'bundleSha256':'a'*64})
+            root.chmod(0o755)
+            with self.assertRaises(Refused):
+                publish_request(root, self.request())
+
+    def test_outstanding_and_reused_nonce_refused(self):
+        request = self.request()
+        self.admit(request)
+        later = self.request(nonce=request['nonce'])
+        publish_request(self.root, later)
+        with self.assertRaises(Refused):
+            self.journal.admit(later)
+        self.journal.seal(request['requestId'], dict(state='complete',category='ok',payload={}))
+        with self.assertRaises(Refused):
+            self.journal.admit(later)
+
+
+if __name__ == '__main__':
+    unittest.main()

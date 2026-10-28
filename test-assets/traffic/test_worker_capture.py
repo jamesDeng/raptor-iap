@@ -17,6 +17,23 @@ class MetricsExtraction(unittest.TestCase):
         with patch.object(worker,'get',side_effect=self.response):
             m=worker.query_metrics('http://fixture',1000)
         self.assertTrue(m['available']);self.assertEqual(len(m['raw']),6);self.assertTrue(all(x['sourceAt']==1000 for x in m['raw']))
+    def test_per_node_up_timestamps_reveal_stale_candidate_when_min_advances(self):
+        from urllib.parse import urlparse, parse_qs
+        def sample(up):
+            def get(url):
+                response=self.response(url)
+                query=parse_qs(urlparse(url).query)['query'][0]
+                if query.startswith('timestamp(up{'):
+                    for row in response['data']['result']:
+                        row['value'][1]=str(up[row['metric']['ecs_instance_id']])
+                return response
+            with patch.object(worker,'get',side_effect=get):
+                return worker.query_metrics('http://fixture',1000)
+        first=sample({'a':1000,'b':1001})
+        second=sample({'a':1002,'b':1001})
+        self.assertEqual((first['sourceAt'],second['sourceAt']),(1000,1001))
+        self.assertEqual(first.get('upSourceAt'),{'a':1000,'b':1001})
+        self.assertEqual(second.get('upSourceAt'),{'a':1002,'b':1001})
     def test_up_only_cannot_pass(self):
         def get(url):
             r=self.response(url)
@@ -51,6 +68,10 @@ class StrictMetrics(MetricsExtraction):
             if case=='duplicate up' and 'up{' in q:rows.append(rows[0])
             if case=='missing up' and 'up{' in q:rows.pop()
             if case=='foreign up' and 'up{' in q:rows[0]['metric']['ecs_instance_id']='foreign'
+            if case=='nonfinite up timestamp' and 'up{' in q:rows[0]['value'][1]='NaN'
+            if case=='invalid up identity' and 'up{' in q:rows[0]['metric']['ecs_instance_id']='https://private.example/secret'
+            if case=='too many up identities' and 'up{' in q:
+                for i in range(3):rows.append({'metric':{'ecs_instance_id':'extra'+str(i)},'value':[1000,'1000']})
             if case=='duplicate value' and q.startswith('pgcat_pools_cl_idle'):rows.append(rows[0])
             if case=='missing timestamp' and q.startswith('timestamp(pgcat_pools_cl_idle'):rows.pop()
             if case=='missing triplet' and 'pgcat_pools_cl_idle' in q:rows.pop()
@@ -58,7 +79,7 @@ class StrictMetrics(MetricsExtraction):
                 for row in rows:row['metric']['pool']='other'
             if case in ('NaN','inf','0.5','-1') and q.startswith('pgcat_pools_cl_active'):rows[0]['value'][1]=case
             if case=='nonfinite timestamp' and q.startswith('timestamp(pgcat_pools'):rows[0]['value'][1]='NaN'
-        for case in ('duplicate up','missing up','foreign up','duplicate value','missing timestamp','missing triplet','wrong identity','NaN','inf','0.5','-1','nonfinite timestamp'):
+        for case in ('duplicate up','missing up','foreign up','nonfinite up timestamp','invalid up identity','too many up identities','duplicate value','missing timestamp','missing triplet','wrong identity','NaN','inf','0.5','-1','nonfinite timestamp'):
             with self.subTest(case=case),self.assertRaises(ValueError):self.query(lambda q,rows:alter(q,rows,case))
     def test_raw_allowlist(self):
         m=self.query(lambda q,rows:None)
@@ -80,7 +101,7 @@ class FrameMetricsFailure(unittest.TestCase):
             for error in (ValueError('invalid series'),KeyError('label'),TypeError('malformed result')):
                 with self.subTest(error=type(error).__name__),patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'query_metrics',side_effect=error):
                     frame=worker.capture_frame(str(path),{('old','container'):final})
-                self.assertEqual(frame['pods'],[{'uid':'old','name':'','containerId':'container','snapshot':final}])
+                self.assertEqual(frame['pods'],[{'uid':'old','name':'','containerId':'container','ready':None,'snapshot':final}])
                 self.assertFalse(frame['metrics']['available'])
                 self.assertEqual(frame['metrics']['raw'],[])
 
@@ -325,4 +346,76 @@ class PartialPodWorkerEvidence(unittest.TestCase):
                 self.assertEqual(sum(s['frames'] for s in completion['segments']),6)
 
 
-if __name__=='__main__':unittest.main()
+
+
+class LaneIdentityCapture(unittest.TestCase):
+    def capture(self, conditions, deployment_change=None, sql_failure=False):
+        import tempfile, json
+        from pathlib import Path
+        from test_capture_window import transition_frame
+        fixture=transition_frame(1)
+        if sql_failure:
+            fixture['pods'][0]['snapshot']['sample'].update(Success=0,Failure=1)
+            fixture['pods'][0]['snapshot']['events'][-1]['outcome']='failure'
+        pod={'metadata':{'uid':'pod','name':'client-0','private':'opaque'},
+             'status':{'podIP':'10.0.0.1','phase':'Running','conditions':conditions,
+                       'containerStatuses':[{'containerID':'containerd://abc'}]}}
+        deployment={'metadata':{'uid':'deployment-uid','generation':7,'private':'opaque'},
+                    'spec':{'replicas':2},'status':{'observedGeneration':7,'readyReplicas':2}}
+        if deployment_change:deployment_change(deployment)
+        def kube(*args):
+            if args[1]=='pods':return {'items':[pod]}
+            if args[1]=='deployment':return deployment
+            return {'spec':{'clusterIP':'10.0.0.2'}}
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'inventory.json';path.write_text(json.dumps(fixture['inventory']))
+            with patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'get',return_value=fixture['pods'][0]['snapshot']),patch.object(worker,'query_metrics',return_value=fixture['metrics']):
+                return worker.capture_frame(path)
+
+    def test_capture_exact_identity_and_ready_without_kubernetes_dump(self):
+        got=self.capture([{'type':'Ready','status':'True'},{'type':'ContainersReady','status':'True'}])
+        self.assertEqual(got.get('deployment'),{'uid':'deployment-uid','generation':7,'observedGeneration':7,'desired':2,'ready':2})
+        self.assertEqual({k:got['pods'][0].get(k) for k in ('name','containerId','ready')},
+                         {'name':'client-0','containerId':'containerd://abc','ready':True})
+        self.assertNotIn('10.0.0.1',str(got));self.assertNotIn('opaque',str(got))
+
+    def test_ready_is_exact_condition_with_uncertainty_visible(self):
+        for conditions,want in [([{'type':'Ready','status':'False'}],False),
+                                ([{'type':'Ready','status':'Unknown'}],None),([],None),
+                                ([{'type':'Ready','status':True}],None),
+                                ([{'type':'Ready','status':'True'}]*2,None)]:
+            with self.subTest(conditions=conditions):
+                got=self.capture(conditions)
+                self.assertIn('ready',got['pods'][0]);self.assertIs(got['pods'][0]['ready'],want)
+
+    def test_partial_deployment_read_remains_explicit(self):
+        got=self.capture([],lambda d:d['status'].pop('observedGeneration'))
+        self.assertIn('deployment',got)
+        self.assertIsNone((got['deployment'] or {}).get('observedGeneration'))
+        from capture_window import clean
+        self.assertEqual(clean(got)['expectedReplicas'],0)
+
+
+    def test_malformed_deployment_mappings_retain_observed_sql_failure(self):
+        import tempfile, json
+        from pathlib import Path
+        from segmented_capture import SegmentedCapture, assess_manifest
+        for field in ('metadata','status','spec'):
+            for invalid in (None,[], 'opaque', 1):
+                with self.subTest(field=field,invalid=invalid):
+                    got=self.capture([{'type':'Ready','status':'True'}],
+                                     lambda d:d.__setitem__(field,invalid),sql_failure=True)
+                    self.assertIsNone(got['deployment'])
+                    self.assertEqual(got['pods'][0]['snapshot']['sample']['Failure'],1)
+                    with tempfile.TemporaryDirectory() as directory:
+                        writer=SegmentedCapture(Path(directory)/'capture')
+                        writer.append(got)
+                        result=writer.finish(completed=True,cancelled=False,errors=[])
+                        self.assertEqual(result['status'],'FAIL')
+                        self.assertEqual(assess_manifest(Path(directory)/'capture')['status'],'FAIL')
+                        retained=json.loads(next((Path(directory)/'capture').glob('segment-*.jsonl')).read_text())
+                        self.assertEqual(retained['expectedReplicas'],0)
+                        self.assertEqual(retained['pods'][0]['snapshot']['sample']['Failure'],1)
+
+if __name__ == '__main__':
+    unittest.main()

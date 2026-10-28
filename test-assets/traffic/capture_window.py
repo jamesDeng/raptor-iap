@@ -226,9 +226,14 @@ def clean_client_pods(rows):
             if 'durationSeconds' in event:
                 row['durationSeconds']=pick(event['durationSeconds'],lambda v:type(v) in (int,float) and math.isfinite(v) and v>=0)
             events.append(row)
-        pods.append({'uid':pick(p.get('uid'),identity),'snapshot':{'sample':cleaned,'events':events,
+        pod={'uid':pick(p.get('uid'),identity),'snapshot':{'sample':cleaned,'events':events,
                      'connected':pick(snap.get('connected'),integer),'truncated':pick(snap.get('truncated'),lambda v:type(v) is bool),
-                     'final':pick(snap.get('final',False),lambda v:type(v) is bool)}})
+                     'final':pick(snap.get('final',False),lambda v:type(v) is bool)}}
+        # Entirely absent fields belong to readable historical schema-2 frames.
+        if any(k in p for k in ('name','containerId','ready')):
+            pod.update(name=pick(p.get('name'),identity),containerId=pick(p.get('containerId'),identity),
+                       ready=pick(p.get('ready'),lambda v:type(v) is bool))
+        pods.append(pod)
     return pods,complete[0]
 
 
@@ -250,10 +255,34 @@ def clean(frame):
             pods.append({'uid':p['uid'],'snapshot':{'sample':{k:a[k] for k in ('processId','at','sequence')+COUNTERS},'events':[{k:e[k] for k in EVENT_FIELDS if k in e} for e in s['events']], 'connected':s['connected'],'truncated':s['truncated'],'final':s.get('final',False)}})
     try:
         metrics=dict({k:frame['metrics'][k] for k in ('observedAt','sourceAt','nodes','available')},raw=[{k:r[k] for k in ('node','pool','user','kind','value','sourceAt')} for r in frame['metrics']['raw']])
-    except (KeyError,TypeError):
+        if 'upSourceAt' in frame['metrics']:
+            nodes=metrics['nodes'];stamps=frame['metrics']['upSourceAt']
+            if (type(nodes) is not list or not 1<=len(nodes)<=4 or
+                any(type(node) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',node) for node in nodes) or
+                len(set(nodes))!=len(nodes) or type(stamps) is not dict or set(stamps)!=set(nodes) or
+                any(type(stamps[node]) not in (int,float) or not math.isfinite(stamps[node]) for node in nodes)):
+                raise ValueError('invalid per-node scrape evidence')
+            metrics['upSourceAt']={node:stamps[node] for node in sorted(nodes)}
+    except (KeyError,TypeError,ValueError,OverflowError):
         if inventory.get('schemaVersion')!=2:raise
         metrics=dict(observedAt=0,sourceAt=0,nodes=[],available=False,raw=[])
-    return {'at':frame['at'],'phase':frame.get('phase','measurement'),'expectedReplicas':frame.get('expectedReplicas',len(pods)) if complete else 0,'pods':pods,'inventory':inventory,'metrics':metrics}
+    result={'at':frame['at'],'phase':frame.get('phase','measurement'),'expectedReplicas':frame.get('expectedReplicas',len(pods)) if complete else 0,'pods':pods,'inventory':inventory,'metrics':metrics}
+    if inventory.get('schemaVersion')==2:
+        identity_fields=('name','containerId','ready')
+        new_identity='deployment' in frame or any(any(k in p for k in identity_fields) for p in pods)
+        if new_identity and ('deployment' not in frame or any(not all(k in p for k in identity_fields) for p in pods)):
+            result['expectedReplicas']=0
+    if inventory.get('schemaVersion')==2 and 'deployment' in frame:
+        source=frame['deployment'];source=source if isinstance(source,dict) else {}
+        deployment={}
+        for key in ('uid','generation','observedGeneration','desired','ready'):
+            value=source.get(key)
+            if key=='uid':valid=isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_.:/-]{1,256}',value) is not None
+            else:valid=type(value) is int and 0<=value<=(2**53 if key in ('generation','observedGeneration') else 16)
+            deployment[key]=value if valid else None
+            if not valid:result['expectedReplicas']=0
+        result['deployment']=deployment
+    return result
 class CaptureWindow:
     def __init__(self,path):
         self._sequences={};self._started=False
@@ -316,7 +345,7 @@ def observed_sql_failure(frame,start):
     return False
 
 
-def assess(frames,cancelled=False,completed=False,max_gap=3):
+def assess(frames,cancelled=False,completed=False,max_gap=3,require_transition=True):
     reasons=[];failure=False;success=0;processes={};seen_pods={};last_poll=None;first_poll=None;process_pods={};settling_start=None
     transitions=TransitionEvidence();schema=None
     def issue(reason):
@@ -427,7 +456,7 @@ def assess(frames,cancelled=False,completed=False,max_gap=3):
             if not roster or type(frame['expectedReplicas'])!=int or frame['expectedReplicas']<1 or len(roster)<frame['expectedReplicas']:issue('incomplete client roster')
             for (uid,pid),s in processes.items():
                 if (uid not in roster or seen_pods.get(uid)!=pid) and not s['final']:issue('old process lost without final counters')
-        if schema==2 and not transitions.mode.complete(transitions.previous):issue('incomplete rehearsal transition')
+        if require_transition and schema==2 and not transitions.mode.complete(transitions.previous):issue('incomplete rehearsal transition')
         for s in processes.values():
             if s['pending'] or s['baselinePending'] or s['last']['Scheduled']!=s['last']['Attempts']+s['last']['Skipped']:issue('operations in flight at boundary')
         if first_poll is None or first_poll==last_poll or success==0:issue('no covered successful traffic')

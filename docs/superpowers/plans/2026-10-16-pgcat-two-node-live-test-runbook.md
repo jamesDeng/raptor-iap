@@ -425,15 +425,11 @@ replacement, use the reviewed one-use worker control for finish while the feed
 is active and check its latest successful publication afterward. The continuity
 no-scale long check and disabled 2→3→2 rehearsal follow the explicit post-stop
 validation-then-finish sequence above.
-Start the provider feed on the Mac from this repository (placeholders must be
-resolved and authorized, not pasted literally):
-
-```sh
-python3 test-assets/traffic/provider_feed.py \
-  --workbench /absolute/project-root/working/tools/workbench/workbench \
-  --worker-inventory /root/PRIVATE_RUN/provider-inventory.json \
-  --kubeconfig /root/PRIVATE_RUN/kubeconfig --interval 15 --max-seconds 5400
-```
+The earlier direct provider-feed command is retired. The guarded controller
+starts the feed only after its supervisor creates `laneRoot/run-context.json`
+from the active journal and startup identity. The feed requires that fixed
+context path and the reviewed worker `contractDir` before any worker call.
+Direct invocations without this binding refuse at startup.
 
 This reads authoritative ESS/ECS/NLB scope and listener health, atomically publishes
 inventory and reconciles only the existing `raptor-test/pgcat-provider-inventory`
@@ -871,3 +867,322 @@ this receipt, not a fresh cluster preflight or proof of the live runtime.
 Live image identity, runtime flag state, disabled-mode finish behavior and retained
 traffic acceptance have not been proven. No live execution or traffic acceptance
 is claimed by this release preparation; full-run assessment remains NOT_RUN.
+
+### Tracked no-scale controller integration (2026-10-27; not live proof)
+
+`test-assets/traffic/pgcat_rehearsal_controller.py` supplies the tracked
+`Controller(binding_path)` API, obtained only through the verified entry below.
+Ordinary imports are refused at runtime. Integration tests use fake process boundaries;
+implementation or an orderly `finished` journal is not a live PASS. Independent
+source/binding review and the action-day preflight above remain hard stops.
+Keep `replacementEnabled=false`, the historical `RUN_BINDINGS_REVIEWED=False`
+and `SIGNAL_LIFECYCLE_REVIEWED=False`; the old detached local pending helper is
+not part of this path. No credential staging or live action is authorized by
+this documentation update.
+
+Supply a new owner-only mode-0600 JSON manifest in a mode-0700 directory. Its
+exact keys are `laneBindings`, `laneRoot`, `captureRoot`, `workerInventory`,
+`workerKubeconfig`, and `sourceHashes`; no-scale also requires `localKubeconfig`.
+The paid binding omits `localKubeconfig`. Unknown/missing keys refuse launch.
+The no-scale local credential must be the regular mode-0600 `kubeconfig` in
+`captureRoot`'s private mode-0700 parent, with no symlinked path. Its identity is
+retained at startup, and only that exact file may be removed after feed exit.
+`laneBindings` follows the exact schema in `pgcat_lane_actions.py`, including
+reviewed account, region, worker, scaling group, NLB group, two protected original
+IDs and the complete current source-hash set, including collector control,
+lane-timing assessor, `sourceBootstrap`, `controller`, `client`, and `runner`.
+The fixed lane map is exactly `pgcat_source_bootstrap.SOURCES`; all 20 modules
+are staged together locally. The repeated three outer hashes must equal their
+lane-map values. The outer `sourceHashes` has exactly
+`controller`, `client`, and `runner`, each a lowercase SHA-256 of the current
+local source bytes. All declared hashes are checked before either process starts.
+The feed executable binding must be a regular executable named `aliyun`; its
+directory leads the minimal feed PATH and exact resolution is checked before
+spawn. Scaling-group and NLB bindings must match the fixed provider targets.
+Local `captureRoot` must not exist; `laneRoot`, provider status, lane lock,
+intent directory, scale-out intent, NLB deregistration intent and proof paths are distinct direct children
+of that new root. All worker paths are explicit fresh reviewed bindings;
+local validation does not establish remote freshness or staging correctness.
+Never reuse retired scratch paths, copy credentials into the manifest, or put
+this private manifest in Git.
+
+The reviewed worker layout has sibling `run` and `contract` directories under
+one private run root. `workerInventory` is exactly `run/provider-inventory.json`;
+the private provider source is `contract/provider-source`, outside the retained
+capture tree. Each sequence writes an immutable ECS address sidecar there before
+publishing the unchanged address-free inventory in the same remote write call.
+The sidecar seals both the exact raw inventory bytes and the canonical parsed
+inventory (`sort_keys=True`, compact JSON) so a selected cleaned collector frame
+can be compared after the live inventory file has advanced.
+The local success receipt follows both writes. A sidecar left by a failed local
+receipt publication is unacknowledged and does not clear Pending proof. The
+Pending consumer and retired producer still need their separate source review;
+this local change supplies no live clearance.
+
+The reviewed no-scale timing correction replaces the previous 75-second blocked
+path with a **180-second maximum** feed loop at the unchanged 15-second interval.
+Admission closes at **22:24 Shanghai**, reserving 120 seconds startup, 180 seconds
+feed and 60 seconds cleanup before 22:30. No second feed or automatic extension
+is permitted. This is a local implementation contract, not a live PASS receipt.
+
+`start_no_scale()` starts one `LaneClient` in immutable `no-scale` mode before
+one detached provider feed (`disabled-rehearsal`, 15-second interval, 180-second
+maximum). The feed validates its exact-two target against sealed run context on
+every publication. The fixed sequence is baseline start/status until PREPARED,
+one finite **65-second collector** launch, exact ALIVE status, exact completed
+EXITED status, then the source-pinned worker `lane-verdict`. The lane-timing
+assessor requires at least 60 seconds of authenticated measurement within the
+planned 65-second span, followed by an ordered terminal settling tail of at
+most five seconds (total retained span at most 70 seconds). Every retained
+frame remains subject to the three-second gap, identity and failure checks;
+an authenticated SQL failure in the tail is FAIL. Clients, sources and the
+protected original fleet must remain stable. Ordinary transition assessment
+remains separate and cannot PASS from this capture alone.
+
+Each worker call has a five-second absolute deadline from the shared protocol
+clock, additionally bounded by `observedAt + 12 seconds`, and requires a strictly
+later successful same-session desired-two publication. Existing receipt
+freshness and one-use intent gates remain. Changed identity, missing evidence,
+uncertain exit, failure to receive a successor or feed exit during a call stops
+the run. No-scale admits no Pending, pre-drain, NLB, ESS, Gateway, client finish
+or ConfigMap mutation.
+
+No-scale feed launch uses `LaneClient.start_feed(argv, env, outer_binding_path)`.
+The fixed reviewed command waits behind an inherited pipe before any provider
+execution. The client retains the actual live `Popen` and seals the one-use
+journal `feed_binding` (`runId`, fresh `feedId`, `pid`, original outer manifest
+SHA-256 and argv SHA-256) before releasing one byte. EOF, startup timeout or a
+failed binding prevents provider execution. Only the same retained handle with
+an actual integer `poll()` result can seal `feed_exit_confirmation`. Direct
+supervisor finish and the paid proof verifier require both independent records;
+copies of caller-supplied PID, exit status or binding hash cannot substitute.
+The paid feed launch path is unchanged.
+
+After the verdict's successor, `stop_no_scale(verdict_result)` writes one private
+fsynced stop intent, waits on its exact retained feed `Popen`, and checks the
+matching acknowledgement and actual final receipt. At most one additional
+publication is allowed during an in-progress tick. Natural timeout is not a PASS
+path. The actual final receipt must be under 30 seconds old, and its sequence
+is the final assessment's `endSequence`; no inventory timestamp is synthesized.
+The fixed worker `lane-verdict` action seals its read-only assessment, then
+removes only the bound worker `kubeconfig` under the contract's private parent,
+fsyncs that directory, verifies absence, and seals a separate cleanup receipt.
+The sanitized result contains status/category plus verdict, client-identity and
+worker-credential-cleanup SHA-256 values. FAIL and INCONCLUSIVE can carry null
+client/cleanup hashes when identity or cleanup is incomplete; the sealed SQL
+FAIL and verdict digest remain intact even if unlink or fsync fails. PASS
+requires valid hashes and verified cleanup. The required successor publication
+uses the private inventory writer and does not need kubeconfig; any target drift
+is refused before a ConfigMap update. A missing cleanup response is uncertainty,
+not permission to retry the one-use action.
+
+`finish_no_scale(feed_exit, assessment=None)` computes the final assessment from
+the journaled worker result, exact stop intent/acknowledgement, actual final
+receipt and feed exit. If an assessment is supplied, every field must equal the
+derived result. It attempts exact local credential removal after feed exit on
+all verdicts, preserves evidence, and never removes a replacement file. Cleanup
+uncertainty prevents PASS. The private mode-0600 `lane/no-scale-proof.json`
+records the Shanghai date, run/feed IDs, stable target/source/client hashes,
+original binding-file hash, worker result, stop evidence and cleanup outcome.
+Its exact canonical bytes determine `evidenceSha256`. The supervisor independently
+compares the journaled worker result and current sealed final records before
+committing finish. Retain the proof, journal and sealed finish receipts together.
+
+A worker FAIL remains FAIL even when another check is incomplete. A `finished`
+journal state never turns FAIL or INCONCLUSIVE into PASS. The client reconciles
+a supervisor exit only against the exact durable journal and sealed final
+receipts; process exit alone proves nothing about the assessment.
+
+`close()` disconnects the supervisor on cancellation, retains the exact feed
+handle and waits through the 180-second feed cap plus 60 seconds bounded grace
+from feed launch. After confirmed exit it removes and verifies only the exact
+unchanged local credential. Uncertain exit or cleanup writes a private mode-0600
+`lane/cleanup-pending.json` with the bound path, PID and required operator action;
+it never claims remote cancellation or signals a numeric PID. Controller death can leave the
+already detached feed running to its existing bound. Preserve the global active
+record and private evidence for exact feed/child/process/credential cleanup;
+never clear them or start another run based only on terminal text. No-scale
+proof cannot certify the later paid 3-to-2 reconciliation. Paid rehearsal and
+full replacement remain blocked until their separate existing gates pass.
+
+### Current release boundary and verified entry (2026-10-28)
+
+This release structurally refuses `start_rehearsal`, paid `LaneClient.start`,
+paid supervisor/feed entry, paid journal creation and admission from an existing
+paid journal. There is no configuration enable flag. The paid component
+contracts below remain offline development material. Re-enabling them requires
+a separate reviewed implementation of the matching long boundary-driven capture,
+Task 6D close/abort, and whole-path tests. A prior no-scale PASS cannot enable them.
+
+Enter only from `python3 -I -S -c` with the following reviewed stdlib root.
+Arguments are the absolute reviewed `pgcat_source_bootstrap.py` path, its
+independently reviewed SHA-256, and the fresh private outer binding path. Do not
+obtain the bootstrap by ordinary import, use `runpy`, or substitute `-B` (which
+still reads caches). The root opens/hashes/compiles the bootstrap before any
+application import; `load_controller` verifies and executes every reachable
+application module from its opened source snapshot, preserves `__file__`, and
+refuses preloaded/unlisted local modules. The finder stays installed for the
+process lifetime. Runner, pipe-gated feed, and both Workbench wrapper roles enter
+that same isolated boundary. The wrapper still execs the CLI in the same PID
+with the inherited lock FD and original absolute deadline. Worker baseline,
+Pending/pre-drain and zero-proof entries use the pinned phase dispatcher; direct
+legacy proof scripts refuse execution. Collector/verdict retain their pinned entry.
+
+The following is the complete `-c` program (the three paths/hash are arguments,
+not interpolated code). This procedure is a release contract, **not current live
+authorization**; all source review, staged-byte and action-day gates still apply.
+
+```python
+import hashlib, os, stat, sys, types
+p, h, binding_path = sys.argv[1:4]
+f = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+try:
+    s = os.fstat(f)
+    b = os.read(f, 262145)
+    if not (stat.S_ISREG(s.st_mode) and s.st_uid == os.geteuid()
+            and len(b) == s.st_size and len(b) <= 262144
+            and hashlib.sha256(b).hexdigest() == h):
+        raise ValueError('source')
+finally:
+    os.close(f)
+m = types.ModuleType('pgcat_source_bootstrap')
+m.__file__ = p
+m.__verified_root_sha256__ = h
+sys.modules[m.__name__] = m
+exec(compile(b, p, 'exec', dont_inherit=True), m.__dict__)
+controller = m.load_controller(binding_path)
+try:
+    controller.start_no_scale()
+    while controller.call_no_scale('collector-status')['status'] != 'EXITED':
+        pass
+    verdict = controller.call_no_scale('lane-verdict')
+    feed_exit = controller.stop_no_scale(verdict)
+    print(controller.finish_no_scale(feed_exit))
+finally:
+    controller.close()
+```
+
+### Tracked guarded paid start (2026-10-27; offline component contract, disabled)
+
+`Controller.start_rehearsal(preflight_path)` now refuses before preflight. The
+following describes retained offline component logic, not a usable entry: independent source/binding review, separate
+action-time authorization, a clean no-scale timing proof, staged recovery and
+the earlier human/evidence gates remain mandatory. Keep Gateway
+`replacementEnabled=false` and both historical scratch review flags false.
+Task 5 stages nothing and provides no paid rehearsal PASS.
+
+The argument names a fresh private mode-0600 `preflight.json` in a mode-0700
+directory. The receipt has exactly these fields, rejects duplicate JSON keys,
+and must be generated at action time from actual observations in Task 7:
+
+- `target`: exactly the reviewed `laneBindings.target`.
+- `checkedAt`, `expiresAt`: UTC ISO timestamps; age is nonnegative and under
+  300 seconds, expiry is after the check and at most 300 seconds later.
+- `gateway`: exactly `{replacementEnabled:false,idle:true}`.
+- `clients`: exactly `{ready:2,sqlFailures:0,identitySha256:<SHA-256>}`.
+- `metrics`: exactly `{fresh:true,complete:true}`; `singleOperator`: `true`.
+- `noScaleProof`: exactly `{status:"PASS",evidenceSha256:<SHA-256>,proofPath:<absolute path>}`.
+  Open the prior run's exact mode-0600, non-symlink `no-scale-proof.json` under its
+  mode-0700 directory, outside the new paid capture root. Match its exact bytes,
+  same-day date, stable target/source/client hashes and authenticated finished
+  journal/receipts. The paid run uses a fresh binding-file hash, checked separately;
+  its paths need not match the prior binding's provenance hash.
+- `cost`: exactly `{day,net,reserve,allowance,ceiling}`. The day is today's
+  Shanghai date; amounts are finite, nonnegative, ceiling is CNY 1,800 and
+  `net + reserve + allowance <= ceiling`. Reuse the day's billing observation;
+  this code does not query billing.
+- `bindingSha256`: SHA-256 of the exact private binding file bytes.
+
+Compute `clients.identitySha256` from current verified observations using the
+same canonical JSON/SHA-256 formula as the worker: `{roster: sorted([[podUid,
+podName,containerId,processId], ...]), deployment: {uid,generation,
+observedGeneration,desired,ready}}`. Include exactly the two Ready clients.
+A restarted process, changed Pod/container or changed Deployment invalidates the
+prior proof. A guessed or manually chosen hash does not establish live identity.
+
+This is an operator evidence receipt, not independent proof of live state.
+Preserve its underlying evidence and authorization separately; never populate
+it from guessed values, manual success flags or terminal output. It contains no
+credentials, private addresses or raw provider responses. The start validates
+it before any process, then re-reads it unchanged and unexpired immediately
+before the proof, scale-out intent and request. Source hashes and fresh roots
+remain enforced by the existing binding manifest.
+
+Before starting the feed, the controller performs read-only STS account,
+ESS/ECS/NLB snapshot, group desired/min/max and in-progress activity checks via
+the exact bound Alibaba CLI. The exact originals must both be Protected/Healthy
+and Available/Normal NLB backends of weight 100; desired/min are two, max four,
+and no scaling activity may be in progress. The probe timestamp must remain
+under five minutes old at intent and dispatch. Its environment preserves only
+PATH/HOME/locale and the same allowlisted proxy keys as the provider feed.
+Once the feed is live, the controller never makes a direct Alibaba or Workbench
+call: worker actions and the single mutation go through `LaneClient`.
+
+The fresh supervisor uses immutable `disabled-rehearsal` mode. The provider
+feed keeps its 15-second publication interval. At actual feed spawn, its loop
+cap is the smaller of 5,400 seconds and the remaining time to 22:30 Shanghai
+minus a 120-second startup allowance; refuse unless allowance plus at least
+75 seconds fits. The 21:30 paid cutoff is checked before the probe, after it,
+at feed spawn, before intent and immediately before dispatch. **This scheduling
+margin is not a guaranteed 22:30 child exit:** provider initialization precedes
+its loop cap, and process startup/cleanup can overrun. Task 6/7 must own bounded
+feed observation, stop and exact cleanup; do not infer cleanup from this cap.
+
+The fixed sequence is baseline start/status to PREPARED, collector launch and
+identity status, pre-scale start/status to PREPARED, then the same collector's
+status again. Every worker call requires a strictly newer successful same-feed
+publication observed after that call returned. Pre-scale proof must match the
+feed and have a sequence from this pre-scale phase. Write exactly one private
+`{feedSession,sequence}` proof and one exact 2-to-3 `scaleout.intent` using
+O_EXCL plus file/directory fsync; neither can be overwritten. Intent binds
+ModifyScalingGroup, account, group, desired two to three, feed session, current
+sequence and UTC time. Its publication must be under 3.5 seconds old.
+
+Submit `scaleout-two-to-three` once with an absolute 20-second deadline from the
+shared protocol clock. Supervisor durable admission and shared one-use sequence
+reservation remain authoritative. Only a complete journal acknowledgement plus
+a strictly newer desired-three publication observed after ACK returns the
+controller to `scaled-three`. Intermediate desired-two publications cannot
+satisfy that gate. The ACK is not convergence evidence or rehearsal PASS.
+Timeout, malformed/missing ACK, feed/session change, controller or supervisor
+death, or any uncertain worker result leaves the run INCONCLUSIVE. Disconnect
+the owner, retain the bounded feed handle and all private evidence; never retry
+ESS, automatically reconcile/reverse, clear the global active-run record, or
+claim cleanup. The paid continuation/close is the separate Task 6 boundary.
+
+The local Task 6B NLB continuation binds one immutable Pending candidate in the
+journal, then seals a separate worker pre-drain proof of two protected originals,
+that sole unprotected candidate, unchanged clients and a healthy three-node
+ESS/NLB roster. Its address-free summary is tied to the Pending proof and
+reviewed worker source hash. The provider status receipt now includes
+`rosterSha256`, computed from `{members,healthyRegistered,memberStates,backendStates}`
+in the same successful publication. The NLB action requires its newest receipt
+under 3.5 seconds old to equal the exact healthy three-node digest, plus a
+same-session pre-drain proof under 30 seconds old. It reads a private, fsynced
+one-use `nlb-deregister.intent` bound to that proof, candidate, group, session,
+sequence and digest. The fixed local CLI request removes only the journal-bound
+candidate as `Ecs` on port `6432`; it accepts only sanitized `RequestId` and
+`JobId` within 20 seconds. A durable `(run, action)` key and the existing
+sequence intent prevent retry under another request UUID. Unknown ACK stops;
+there is no automatic retry or re-registration. Later same-session publications
+may briefly retain the exact healthy three-node roster, then show only the
+candidate as NLB `Removing` with its bounded weight/health states; once
+`Removing` appears, a return to three Available backends refuses. A final
+successful publication observed after ACK must show exactly the two healthy
+protected originals in NLB, while the candidate remains the sole healthy
+unprotected ESS member, before the controller records NLB absence. The ACK
+alone is insufficient.
+
+This is locally tested code, not live clearance. Paid start remains blocked
+until the separate ESS 3-to-2, final close and abort stages have reviewed
+implementation and the full action-day gates pass. ConfigMap `reconcile-close`
+cannot substitute for either provider operation.
+
+Receipt waiting also checks the retained supervisor process and active journal
+through the client's existing identity-bound validator, including after a
+matching receipt read and immediately before returning `scaled-three`. A
+complete ESS acknowledgement cannot substitute for an active supervisor run;
+death or cancellation observed at any of those boundaries is INCONCLUSIVE,
+with no retry or automatic reversal. These checks are observations, not an
+atomic guarantee against a later supervisor death or permission for the next
+action, whose admission still belongs to the supervisor transaction.
