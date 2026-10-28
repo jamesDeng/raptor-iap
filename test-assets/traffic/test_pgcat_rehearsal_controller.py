@@ -21,6 +21,7 @@ class ControllerTests(unittest.TestCase):
             self.module = importlib.import_module('pgcat_rehearsal_controller')
         except ImportError:
             self.fail('missing tracked Controller/load_bindings interface')
+        guard=patch.object(self.module,'_require_verified');guard.start();self.addCleanup(guard.stop)
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.base = Path(os.path.realpath(self.tmp.name)); self.base.chmod(0o700)
         self.capture = self.base/'capture'; here = Path(__file__).resolve().parent
@@ -45,7 +46,8 @@ class ControllerTests(unittest.TestCase):
                 nlbServerGroupId='sgp-xs5s42tihtl6ja2a67', originalInstanceIds=['original-one','original-two']))
         names = dict(laneWrapper='pgcat_workbench_lane.py', providerFeed='provider_feed.py',
             laneProtocol='pgcat_lane_protocol.py', laneSupervisor='pgcat_lane_supervisor.py',
-            laneActions='pgcat_lane_actions.py',pendingProofWorker='pgcat_pending_proof_worker.py',
+            laneActions='pgcat_lane_actions.py',sourceBootstrap='pgcat_source_bootstrap.py',
+            controller='pgcat_rehearsal_controller.py',client='pgcat_lane_client.py',runner='pgcat_lane_runner.py',pendingProofWorker='pgcat_pending_proof_worker.py',
             preDrainProofWorker='pgcat_pre_drain_proof_worker.py',
             zeroProofWorker='pgcat_zero_proof_worker.py',
             rehearsalWorker='pgcat_rehearsal_worker.py',
@@ -976,6 +978,7 @@ class PaidStartTests(unittest.TestCase):
         with self.assertRaises(Refused):controller._paid_evidence(self.preflight)
 
     def prepare(self):
+        admission=patch('pgcat_lane_protocol._release_admission');admission.start();self.addCleanup(admission.stop)
         from datetime import datetime, timezone
         self.assertTrue(hasattr(self.module.Controller, 'start_rehearsal'), 'missing guarded paid start')
         self.binding.pop('localKubeconfig',None);self.write_binding()

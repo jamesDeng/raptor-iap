@@ -91,13 +91,20 @@ def assess_lane_timing(capture_dir,collector_identity,target,run_context,source_
                       cancelled=manifest.get('cancelled') is not False,require_transition=False)
         failure=failure or shared['status']=='FAIL'
         for reason in shared['reasons']:issue(reason)
-        if not frames or not 60<=seconds(frames[-1]['at'])-seconds(frames[0]['at'])<=65:
+        measurement=[f for f in frames if f['phase']=='measurement']
+        tail=[f for f in frames if f['phase']=='settling']
+        if (not measurement or frames != measurement+tail or
+            not 60<=seconds(measurement[-1]['at'])-seconds(measurement[0]['at'])<=65):
             issue('insufficient authenticated timing coverage')
+        if tail and (not measurement or
+                     seconds(tail[-1]['at'])-seconds(tail[0]['at'])>5 or
+                     seconds(tail[-1]['at'])-seconds(measurement[0]['at'])>70):
+            issue('invalid terminal settling tail')
         roster=None;deployment=None;previous_inventory=None;first_success={};last_success={}
         for f in frames:
             try:
                 now=seconds(f['at']);inv=f['inventory'];met=f['metrics'];pods=f['pods'];dep=f['deployment']
-                check(f['phase']=='measurement' and f['expectedReplicas']==2)
+                check(f['phase'] in ('measurement','settling') and f['expectedReplicas']==2)
                 check(inv['schemaVersion']==2 and inv['mode']=='disabled-rehearsal' and
                       inv['feedSession']==run_context['feedSession'] and
                       type(inv['sequence']) is int and inv['sequence']>0 and

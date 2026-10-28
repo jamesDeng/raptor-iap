@@ -53,6 +53,17 @@ class FeedStop(ValueError):
 
 
 
+
+def _wrapper_command(path, arguments):
+    from pgcat_source_bootstrap import command, current_hashes
+    return command(current_hashes(), 'laneWrapper', arguments)
+
+
+def _require_verified():
+    from pgcat_source_bootstrap import require_verified
+    try: require_verified(__name__)
+    except (ValueError, KeyError): raise ValueError('source') from None
+
 def require(condition):
     if not condition:
         raise ValueError('Provider evidence rejected')
@@ -323,6 +334,8 @@ def validate_run_context(root, path, *, no_scale=False):
     require(active == {'runId':context['runId'],'supervisorId':context['supervisorId'],
                        'laneRoot':str(root)})
     journal = Journal(root).run_snapshot()
+    from pgcat_lane_protocol import _release_admission
+    _release_admission(journal['mode'])
     require(journal['runState'] == 'active' and journal['runId'] == context['runId'])
     require(type(no_scale) is bool and journal['mode'] in ('no-scale', 'disabled-rehearsal')
             and (journal['mode'] == 'no-scale') == no_scale)
@@ -713,7 +726,8 @@ class Operator:
     def workbench(self, script, *arguments):
         self.verify_run_context()
         command = shlex.join(['python3','-c',script,*arguments])
-        return self.command([self.args.workbench,'exec','-P',PROFILE,'-r',REGION,'-i',WORKER_ID,'-c',command])
+        return self.command(_wrapper_command(self.args.workbench,
+            ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER_ID,'-c',command]))
 
     def remote(self, script, *arguments):
         # Worker monotonic time is independent of Mac/worker wall-clock skew.
@@ -857,6 +871,7 @@ if not (json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])): 
 
 
 def main():
+    _require_verified()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode',choices=('full-replacement','disabled-rehearsal'),default='full-replacement',
                         help='bind this feed to the full replacement or disabled 2-to-3-to-2 rehearsal')

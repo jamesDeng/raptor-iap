@@ -29,6 +29,9 @@ class SupervisorTests(unittest.TestCase):
             with self.assertRaises(Refused):supervisor.read_json(path,publication_marker=True)
 
     def setUp(self):
+        from unittest.mock import patch
+        admission=patch('pgcat_lane_protocol._release_admission');admission.start();self.addCleanup(admission.stop)
+        guard=patch.object(supervisor,'_require_verified');guard.start();self.addCleanup(guard.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
@@ -83,6 +86,8 @@ class SupervisorTests(unittest.TestCase):
         sources = dict(laneWrapper=here/'pgcat_workbench_lane.py', providerFeed=here/'provider_feed.py',
                        laneProtocol=here/'pgcat_lane_protocol.py', laneSupervisor=here/'pgcat_lane_supervisor.py',
                        laneActions=here/'pgcat_lane_actions.py',
+            sourceBootstrap=here/'pgcat_source_bootstrap.py',controller=here/'pgcat_rehearsal_controller.py',
+            client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py',
                        pendingProofWorker=here/'pgcat_pending_proof_worker.py',
                        preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
                        zeroProofWorker=here/'pgcat_zero_proof_worker.py',
@@ -470,7 +475,8 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaises(Refused):
             actions.ActionCatalog.command('baseline-status',dict(self.bindings,command='echo unsafe'))
         args, env, budget = actions.ActionCatalog.command('baseline-status',self.bindings,self.run)
-        self.assertIn('python3 /reviewed/run/pgcat_rehearsal_worker.py status baseline',args[-1])
+        self.assertIn('python3 -I -S -c',args[-1])
+        self.assertIn(' status baseline ',args[-1])
         self.assertIn(self.run,args[-1])
         self.assertEqual(budget,5.0)
         self.assertNotIn('AWS_SECRET_ACCESS_KEY',env)

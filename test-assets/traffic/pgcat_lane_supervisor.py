@@ -25,6 +25,12 @@ from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
 from pgcat_lane_actions import ActionCatalog, validate_bindings, unique
 import pgcat_workbench_lane as lane
 
+def _require_verified():
+    from pgcat_source_bootstrap import require_verified
+    try: require_verified(__name__)
+    except (ValueError, KeyError): raise Refused('source') from None
+
+
 GLOBAL_ROOT = Path('/private/tmp/pgcat-lane-'+str(os.getuid()))
 GRACEFUL = {signal.SIGINT,signal.SIGTERM,signal.SIGHUP}
 
@@ -69,6 +75,9 @@ def read_json(path, publication_marker=False):
 
 class LaneSupervisor:
     def __init__(self, root: Path, bindings: dict, journal: Journal):
+        _require_verified()
+        from pgcat_lane_protocol import _release_admission
+        _release_admission(journal.run_snapshot()['mode'])
         require(threading.current_thread() is threading.main_thread())
         self.root=Path(root); private(self.root,True)
         require(journal.root == self.root)
@@ -110,6 +119,8 @@ class LaneSupervisor:
         paths=dict(laneWrapper=Path(b['laneWrapper']),providerFeed=Path(b['providerFeedPath']),
             laneProtocol=here/'pgcat_lane_protocol.py',laneSupervisor=here/'pgcat_lane_supervisor.py',
             laneActions=here/'pgcat_lane_actions.py',
+            sourceBootstrap=here/'pgcat_source_bootstrap.py',controller=here/'pgcat_rehearsal_controller.py',
+            client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py',
             pendingProofWorker=here/'pgcat_pending_proof_worker.py',
             preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
             zeroProofWorker=here/'pgcat_zero_proof_worker.py',

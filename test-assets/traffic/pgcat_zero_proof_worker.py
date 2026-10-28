@@ -13,6 +13,10 @@ import re
 import sys
 import time
 
+# Use the source-pinned phase dispatcher; legacy direct scripts are not runtime entries.
+if __name__ == '__main__':
+    raise SystemExit(1)
+
 import capture_window as capture
 import finish_clients
 import pgcat_pending_proof_worker as pending

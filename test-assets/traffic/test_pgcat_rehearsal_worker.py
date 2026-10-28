@@ -243,6 +243,8 @@ class DetachedWorkerTests(unittest.TestCase):
                         'laneProtocol': 'pgcat_lane_protocol.py',
                         'laneSupervisor': 'pgcat_lane_supervisor.py',
                         'laneActions': 'pgcat_lane_actions.py',
+                        'sourceBootstrap':'pgcat_source_bootstrap.py','controller':'pgcat_rehearsal_controller.py',
+                        'client':'pgcat_lane_client.py','runner':'pgcat_lane_runner.py',
                         'collectorControl': 'pgcat_collector_control.py',
                         'laneTimingAssessor': 'pgcat_lane_timing_assessor.py'}
         hashes = {key: hashlib.sha256((here / name).read_bytes()).hexdigest()
@@ -279,7 +281,10 @@ class DetachedWorkerTests(unittest.TestCase):
             with self.assertRaises(Refused):
                 ActionCatalog.command(action, bindings)
             argv, _, timeout = ActionCatalog.command(action, bindings, self.run_id)
-            command = shlex.split(argv[-1])
+            raw = shlex.split(argv[-1])
+            self.assertEqual(raw[:4],['python3','-I','-S','-c'])
+            self.assertEqual(raw[6],self.hashes['rehearsalWorker'])
+            command=[raw[0],raw[5]]+raw[7:]
             self.assertEqual(command[:6], ['python3', str(self.worker), verb, stage,
                                            str(self.contract), self.run_id])
             self.assertEqual(command[6], str(self.kubeconfig))
@@ -302,7 +307,9 @@ class DetachedWorkerTests(unittest.TestCase):
         pre = {'runId': self.run_id, 'feedSession': self.feed_session,
                'newId': 'candidate', 'originalInstanceIds': self.target['originalInstanceIds']}
         argv, _, timeout = ActionCatalog.command('zero-proof', bindings, self.run_id, pre)
-        command = shlex.split(argv[-1])
+        raw = shlex.split(argv[-1])
+        self.assertEqual(raw[:4],['python3','-I','-S','-c'])
+        command=[raw[0],raw[5]]+raw[7:]
         self.assertEqual(command[:5], ['python3', str(self.worker), 'zero-proof',
                                        str(self.contract), self.run_id])
         self.assertEqual(command[5], str(self.kubeconfig))
@@ -312,7 +319,7 @@ class DetachedWorkerTests(unittest.TestCase):
         self.assertEqual(timeout, 5.0)
         sealed = dict(pre, sealedAt=time.time())
         argv, _, _ = ActionCatalog.command('zero-proof', bindings, self.run_id, sealed)
-        self.assertEqual(json.loads(shlex.split(argv[-1])[8]), pre)
+        self.assertEqual(json.loads(shlex.split(argv[-1])[13]), pre)
 
     def test_zero_worker_executes_only_after_transitive_source_hash_check(self):
         marker=self.root/'zero-executed'
@@ -460,6 +467,46 @@ class DetachedWorkerTests(unittest.TestCase):
             ActionCatalog.parse('zero-proof', json.dumps(value).encode(), request,
                                 receipt, source_sha='e'*64, pending_binding=pre)
 
+
+
+
+class BaselineSnapshotTests(unittest.TestCase):
+    setUp = DetachedWorkerTests.setUp
+    def test_actual_start_child_baseline_executes_direct_and_transitive_reviewed_bytes(self):
+        from test_pgcat_source_bootstrap import stale_cache
+        import pgcat_rehearsal_worker as worker
+        contract=self.run/'pgcat_rehearsal_contract.py'
+        source=contract.read_text().replace('def baseline(contract,*args): done(contract,"baseline")',
+            'def baseline(contract,*args):\n import capture_window\n done(contract,"baseline",{"direct":"NEW","transitive":capture_window.PROBE})')
+        stale_cache(contract,source.replace('"direct":"NEW"','"direct":"OLD"'),source)
+        stale_cache(self.run/'capture_window.py','PROBE="OLD"\n','PROBE="NEW"\n')
+        self.hashes={k:hashlib.sha256((self.run/name).read_bytes()).hexdigest() for k,name in SOURCES.items()}
+        launched=[]
+        worker.start(self.contract,self.run_id,'baseline',str(self.kubeconfig),self.hashes,self.target,
+                     worker_path=self.worker,spawn=lambda args,**kw:launched.append((args,kw)))
+        args,kw=launched[0];kw.update(stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        # Explicit private cache prefix also exercises Apple's site default safely.
+        args[1:1]=['-X','pycache_prefix='+str(self.run/'fixture-pycache')]
+        child=subprocess.run(args,timeout=5,**kw)
+        self.assertEqual(child.returncode,0,child.stderr)
+        value=json.loads((self.contract/'baseline.json').read_text())
+        self.assertEqual(value,dict(direct='NEW',transitive='NEW'))
+
+    def test_pending_and_pre_drain_dispatch_execute_reviewed_direct_and_transitive_bytes(self):
+        from test_pgcat_source_bootstrap import stale_cache
+        from pgcat_rehearsal_worker import BOOTSTRAP
+        for verb,name in [('pending-proof','pgcat_pending_proof_worker.py'),('pre-drain-proof','pgcat_pre_drain_proof_worker.py')]:
+            with self.subTest(verb=verb):
+                source='import capture_window\ndef produce(*args):return {"direct":"NEW","transitive":capture_window.PROBE}\n'
+                stale_cache(self.run/name,source.replace('"direct":"NEW"','"direct":"OLD"'),source)
+                stale_cache(self.run/'capture_window.py','PROBE="OLD"\n','PROBE="NEW"\n')
+                hashes={k:hashlib.sha256((self.run/n).read_bytes()).hexdigest() for k,n in SOURCES.items()}
+                bound=dict(runId=self.run_id,originalInstanceIds=self.target['originalInstanceIds'],newId='candidate')
+                argv=[sys.executable,'-I','-S','-c',BOOTSTRAP,str(self.worker),hashes['rehearsalWorker'],verb,
+                      str(self.contract),self.run_id,str(self.kubeconfig),json.dumps(hashes),json.dumps(self.target),json.dumps(bound)]
+                got=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+                self.assertEqual(got.returncode,0,got.stderr)
+                self.assertEqual(json.loads(got.stdout),dict(direct='NEW',transitive='NEW'))
 
 if __name__ == '__main__':
     unittest.main()

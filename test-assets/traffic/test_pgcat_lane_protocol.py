@@ -214,6 +214,8 @@ class ProtocolTest(unittest.TestCase):
             self.journal.admit(request)
 
     def test_rehearsal_scaleout_requires_fixed_group(self):
+        from unittest.mock import patch
+        admission=patch("pgcat_lane_protocol._release_admission");admission.start();self.addCleanup(admission.stop)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             journal = Journal(root)

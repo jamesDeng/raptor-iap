@@ -28,6 +28,12 @@ import provider_feed as provider
 import pgcat_workbench_lane as lane
 from provider_feed import GROUP_ID, SERVER_GROUP_ID
 
+def _require_verified():
+    from pgcat_source_bootstrap import require_verified
+    try: require_verified(__name__)
+    except (ValueError, KeyError): raise Refused('source') from None
+
+
 BINDING_KEYS = frozenset(('laneBindings','laneRoot','captureRoot','workerInventory',
                           'workerKubeconfig','sourceHashes'))
 NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status','collector-launch','collector-status','lane-verdict'))
@@ -94,6 +100,8 @@ def load_bindings(path):
         _hashes(b['sourceHashes'],dict(laneWrapper=Path(b['laneWrapper']),
             providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
             laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py',
+            sourceBootstrap=here/'pgcat_source_bootstrap.py',controller=here/'pgcat_rehearsal_controller.py',
+            client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py',
             pendingProofWorker=here/'pgcat_pending_proof_worker.py',
             preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
             zeroProofWorker=here/'pgcat_zero_proof_worker.py',
@@ -113,6 +121,7 @@ def load_bindings(path):
 
 class Controller:
     def __init__(self, binding_path):
+        _require_verified()
         self.binding_path=Path(binding_path)
         self.bindings=load_bindings(self.binding_path)
         self.binding_sha=hashlib.sha256(self.binding_path.read_bytes()).hexdigest()
@@ -282,6 +291,8 @@ class Controller:
         _hashes(b['sourceHashes'],dict(laneWrapper=Path(b['laneWrapper']),
             providerFeed=Path(b['providerFeedPath']),laneProtocol=here/'pgcat_lane_protocol.py',
             laneSupervisor=here/'pgcat_lane_supervisor.py',laneActions=here/'pgcat_lane_actions.py',
+            sourceBootstrap=here/'pgcat_source_bootstrap.py',controller=here/'pgcat_rehearsal_controller.py',
+            client=here/'pgcat_lane_client.py',runner=here/'pgcat_lane_runner.py',
             pendingProofWorker=here/'pgcat_pending_proof_worker.py',
             preDrainProofWorker=here/'pgcat_pre_drain_proof_worker.py',
             zeroProofWorker=here/'pgcat_zero_proof_worker.py',
@@ -523,6 +534,8 @@ class Controller:
         The private operator receipt attests action-day evidence; this API does
         not produce that evidence or turn an acknowledgement into rehearsal PASS.
         """
+        from pgcat_lane_protocol import _release_admission
+        _release_admission('disabled-rehearsal')
         try:
             require(self.state == 'new')
             require(load_bindings(self.binding_path) == self.bindings,'source')

@@ -14,10 +14,19 @@ from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
 from pgcat_lane_supervisor import read_json, save_once, receipt_identity
 import pgcat_workbench_lane as lane
 
+def _require_verified():
+    from pgcat_source_bootstrap import require_verified
+    try: require_verified(__name__)
+    except (ValueError, KeyError): raise Refused('source') from None
+
+
 
 class LaneClient:
     @classmethod
     def start(cls, bindings: dict, mode: str, root: Path):
+        from pgcat_lane_protocol import _release_admission
+        _release_admission(mode)
+        _require_verified()
         bindings = copy.deepcopy(bindings)
         validate_bindings(bindings)
         root = Path(root).absolute()
@@ -40,8 +49,8 @@ class LaneClient:
             for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY',
                         'http_proxy','https_proxy','all_proxy','no_proxy'):
                 if key in os.environ: env[key] = os.environ[key]
-            self.process = subprocess.Popen([sys.executable,
-                str(Path(__file__).resolve().with_name('pgcat_lane_runner.py')), str(root), str(reader)],
+            from pgcat_source_bootstrap import command
+            self.process = subprocess.Popen(command(bindings['sourceHashes'],'runner',[str(root),str(reader)]),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 close_fds=True, pass_fds=(reader,), start_new_session=True, env=env)
             os.close(reader); reader = None
@@ -79,6 +88,9 @@ class LaneClient:
             '--run-context',str(self.root/'run-context.json'),'--contract-dir',b['contractDir'],
             '--no-scale-target',encode(b['target']).decode('ascii')]
         require(argv==expected,'source')
+        _require_verified()
+        from pgcat_source_bootstrap import command
+        verified_argv=command(b['sourceHashes'],'providerFeed',argv[3:])
         require(hashlib.sha256(Path(b['providerFeedPath']).read_bytes()).hexdigest()==b['sourceHashes']['providerFeed'],'source')
         here=Path(__file__).resolve().parent
         for key,name in dict(client='pgcat_lane_client.py',controller='pgcat_rehearsal_controller.py',runner='pgcat_lane_runner.py').items():
@@ -92,14 +104,14 @@ class LaneClient:
               'sys.exit(125) if token!=b"1" else None; '
               'os.execv(sys.argv[2],sys.argv[2:])')
         try:
-            self.feed_process=subprocess.Popen([sys.executable,'-I','-S','-c',gate,str(reader)]+argv,
+            self.feed_process=subprocess.Popen([sys.executable,'-I','-S','-c',gate,str(reader)]+verified_argv,
                 stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                 start_new_session=True,close_fds=True,pass_fds=(reader,),env=env)
             os.close(reader);reader=None
             require(self.feed_process.poll() is None,'child')
             _,current=private_json(Path(outer_binding_path));require(current==raw,'source')
             self.feed_binding=dict(runId=self.run_id,feedId=str(uuid.uuid4()),pid=self.feed_process.pid,
-                bindingSha256=hashlib.sha256(raw).hexdigest(),argvSha256=digest(argv))
+                bindingSha256=hashlib.sha256(raw).hexdigest(),argvSha256=digest(verified_argv))
             self.journal.bind_feed(self.feed_binding)
             self._active();require(self.feed_process.poll() is None,'child')
             require(os.write(writer,b'1')==1,'child')

@@ -137,13 +137,17 @@ class CollectorTests(unittest.TestCase):
         case = self
         class FakeChild:
             pid = 1234
+            waits = 0
+            kills = 0
             def wait(self, timeout=None):
+                self.waits += 1
                 if timeout is not None:
                     case.assertLessEqual(timeout, 80)
-                    if timeout_flag:
+                    if timeout_flag and (timeout_flag != "once" or self.waits == 1):
                         raise subprocess.TimeoutExpired('fixture', timeout)
                 return code
             def kill(self):
+                self.kills += 1
                 case.killed = True
         timeout_flag = timeout
         def spawn(args, **kwargs):
@@ -206,6 +210,13 @@ class CollectorTests(unittest.TestCase):
                 self.setUp(); self.launch(); self.child(**case); self.observe()
                 self.assertEqual(self.status(), {'status':'INCONCLUSIVE'})
         self.assertTrue(self.killed)
+
+    def test_timeout_once_kills_reaps_and_seals_timeout_without_completed_status(self):
+        self.launch();self.assertEqual(self.child(code=-9,timeout='once'),1);self.observe()
+        self.assertEqual(self.spawned.kills,1);self.assertEqual(self.spawned.waits,2)
+        sealed=json.loads((self.run/'collector-job'/'exit.json').read_text())
+        self.assertEqual(sealed,dict(identity=IDENTITY,exitCode=-9,category='timeout',completionSha256=None))
+        self.assertEqual(self.status(),{'status':'INCONCLUSIVE'})
 
     def test_reused_pid_or_changed_completion_is_inconclusive(self):
         self.launch(); self.child(); self.observe()

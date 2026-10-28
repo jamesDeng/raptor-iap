@@ -20,9 +20,9 @@ TARGET=dict(accountId='account',regionId='region',workerId='worker',scalingGroup
             nlbServerGroupId='nlb',originalInstanceIds=['a','b'])
 
 
-def lane_frames():
+def lane_frames(count=66):
     frames=[]
-    for t in range(66):
+    for t in range(count):
         f=transition_frame(t)
         f['inventory'].update(mode='disabled-rehearsal',sequence=t//15+1,observedAt=(t//15)*15)
         f['deployment']=dict(uid='deployment',generation=1,observedGeneration=1,desired=2,ready=2)
@@ -68,6 +68,48 @@ class TimingTests(unittest.TestCase):
             f['metrics']['upSourceAt']={'a':stamp,'b':stamp}
             for row in f['metrics']['raw']:row['sourceAt']=stamp
         got=self.result(self.capture(frames));self.assertEqual(got['status'],'PASS',got)
+
+    def test_actual_capture_loop_clean_delayed_and_adverse_tail(self):
+        from unittest.mock import patch
+        import worker_capture
+        for delay, failure in [(0., False), (.2, False), (.2, True)]:
+            with self.subTest(delay=delay, failure=failure):
+                clock=[0.]; observations=lane_frames(72)
+                path=self.root/('real-%s-%s' % (delay,failure))
+                def sleep(seconds): clock[0]+=seconds+delay
+                def capture(*args):
+                    t=int(clock[0]); frame=copy.deepcopy(observations[t])
+                    frame['at']=clock[0]
+                    if clock[0]>=65 and failure:
+                        frame['pods'][0]['snapshot']['sample']['Failure']=1
+                    return frame
+                with patch.object(worker_capture.time,'monotonic',side_effect=lambda:clock[0]), \
+                     patch.object(worker_capture.time,'sleep',side_effect=sleep), \
+                     patch.object(worker_capture,'capture_frame',side_effect=capture):
+                    worker_capture.run_capture(path,'unused',65)
+                completion=json.loads((path/'completion.json').read_text())
+                last=json.loads((path/completion['segments'][-1]['path']).read_text().splitlines()[-1])
+                self.assertEqual(last['phase'],'settling')
+                got=self.result(path)
+                self.assertEqual(got['status'],'FAIL' if failure else 'PASS',got)
+
+    def test_tail_order_duration_and_measurement_span_are_bounded(self):
+        for case in ('reentry','long-tail','late-measurement'):
+            with self.subTest(case=case):
+                frames=lane_frames(71)
+                for f in frames[65:]: f['phase']='settling'
+                path=self.capture(frames)
+                manifest=json.loads((path/'completion.json').read_text())
+                for segment in manifest['segments']:
+                    file=path/segment['path'];rows=[json.loads(x) for x in file.read_text().splitlines()]
+                    for row in rows:
+                        if case=='reentry' and row['at']==66: row['phase']='measurement'
+                        if case=='long-tail' and row['at']==64: row['phase']='settling'
+                        if case=='late-measurement': row['phase']='measurement'
+                    raw=(''.join(json.dumps(row)+'\n' for row in rows)).encode()
+                    file.write_bytes(raw);segment['sha256']=hashlib.sha256(raw).hexdigest()
+                (path/'completion.json').write_text(json.dumps(manifest))
+                self.assertEqual(self.result(path)['status'],'INCONCLUSIVE')
 
     def test_transition_opt_out_defaults_to_required(self):
         frames=lane_frames()

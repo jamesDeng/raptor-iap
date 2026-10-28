@@ -22,6 +22,10 @@ class ClientTests(unittest.TestCase):
     receipt = supervisor_tests.SupervisorTests.receipt
 
     def setUp(self):
+        guard=patch.object(client_module,'_require_verified');guard.start();self.addCleanup(guard.stop)
+        command=patch('pgcat_source_bootstrap.command',side_effect=lambda hashes,entry,args:
+            [sys.executable,str(Path(__file__).with_name({'runner':'pgcat_lane_runner.py','laneWrapper':'pgcat_workbench_lane.py'}[entry]))]+args)
+        command.start();self.addCleanup(command.stop)
         supervisor_tests.SupervisorTests.setUp(self)
         self.owner.close()
         (self.global_dir/'active-run').unlink()  # Only this test's isolated fake owner.
@@ -29,7 +33,8 @@ class ClientTests(unittest.TestCase):
         global_dir = str(self.global_dir)
         def spawn(argv, **kwargs):
             bootstrap = ('import runpy,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).parent)); '
-                'import pgcat_lane_supervisor as s; s.GLOBAL_ROOT=Path('+repr(global_dir)+'); '
+                'import pgcat_lane_protocol as p; p._release_admission=lambda *a: None; '
+                'import pgcat_lane_supervisor as s; s._require_verified=lambda: None; s.GLOBAL_ROOT=Path('+repr(global_dir)+'); '
                 'p=sys.argv[1]; sys.argv=sys.argv[1:]; runpy.run_path(p,run_name="__main__")')
             return real_spawn([sys.executable, '-c', bootstrap] + argv[1:], **kwargs)
         with patch.object(client_module.subprocess, 'Popen', spawn):
@@ -138,7 +143,8 @@ class ClientTests(unittest.TestCase):
         def spawn(argv, **kwargs):
             bootstrap = ("import runpy,sys,time,os; from pathlib import Path; "
                 "sys.path.insert(0,str(Path(sys.argv[1]).parent)); "
-                "import pgcat_lane_supervisor as s; s.GLOBAL_ROOT=Path("+repr(str(self.global_dir))+"); "
+                "import pgcat_lane_protocol as p; p._release_admission=lambda *a:None; "
+                "import pgcat_lane_supervisor as s; s._require_verified=lambda:None; s.GLOBAL_ROOT=Path("+repr(str(self.global_dir))+"); "
                 "original=s.write_all; "
                 "s.write_all=lambda fd,raw:(time.sleep(.15),original(fd,raw))[1] "
                 "if b'supervisorId' in raw else original(fd,raw); "

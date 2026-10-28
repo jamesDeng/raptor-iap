@@ -15,6 +15,23 @@ import time
 import uuid
 
 
+BOOTSTRAP = '''import hashlib,os,stat,sys
+try:
+ p,h=sys.argv[1:3]
+ f=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+ try:
+  s=os.fstat(f);b=os.read(f,262145)
+  ok=(stat.S_ISREG(s.st_mode) and s.st_uid==os.geteuid() and stat.S_IMODE(s.st_mode)==384 and s.st_nlink==1 and len(b)==s.st_size and len(b)<=262144 and hashlib.sha256(b).hexdigest()==h)
+ finally: os.close(f)
+ if not ok: raise ValueError()
+ sys.argv=[p]+sys.argv[3:]
+ exec(compile(b,p,'exec',dont_inherit=True),{'__name__':'__main__','__file__':p})
+except BaseException as e:
+ if isinstance(e,SystemExit): raise
+ print('{"status":"INCONCLUSIVE"}')
+ sys.exit(1)
+'''
+
 SOURCES = {
     'rehearsalWorker': 'pgcat_rehearsal_worker.py',
     'rehearsalContract': 'pgcat_rehearsal_contract.py',
@@ -158,6 +175,10 @@ class _VerifiedSourceFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def __init__(self, run, verified):
         self.run = run
         self.verified = verified
+        for name,module in list(sys.modules.items()):
+            location=getattr(module,'__file__',None)
+            _check(name=='__main__' or (name not in verified and not
+                   (location and run in Path(location).absolute().parents)))
 
     def find_spec(self, fullname, path=None, target=None):
         if fullname in self.verified:
@@ -166,7 +187,7 @@ class _VerifiedSourceFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             spec.has_location = True
             return spec
         # A future local import needs an explicit reviewed source entry.
-        if (self.run / (fullname + '.py')).exists():
+        if (self.run / (fullname.split('.')[0] + '.py')).exists() or (self.run / fullname.split('.')[0]).is_dir():
             raise ValueError('worker')
         return None
 
@@ -249,7 +270,8 @@ def start(contract, run_id, stage, kubeconfig, expected, target, *, worker_path=
         launcher = subprocess.Popen if spawn is None else spawn
         env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                'HOME': '/root', 'LANG': 'C.UTF-8'}
-        arguments = [sys.executable, str(worker_path), '_run', stage, str(contract),
+        arguments = [sys.executable, '-I', '-S', '-c', BOOTSTRAP, str(worker_path),
+                     expected['rehearsalWorker'], '_run', stage, str(contract),
                      run_id, str(kubeconfig), json.dumps(expected, sort_keys=True,
                          separators=(',', ':')),
                      json.dumps(target, sort_keys=True, separators=(',', ':')), nonce]
@@ -270,6 +292,7 @@ def run_child(contract, run_id, stage, kubeconfig, expected, target, nonce,
     result = {'version': 1, 'runId': run_id, 'stage': stage,
               'nonce': nonce, 'status': 'INCONCLUSIVE'}
     jobs = None
+    finder = None
     try:
         _check(stage in STAGES)
         _uuid(run_id)
@@ -277,7 +300,10 @@ def run_child(contract, run_id, stage, kubeconfig, expected, target, nonce,
         target_sha = _target(target)
         worker_path = Path(__file__).resolve() if worker_path is None else Path(worker_path)
         run = _paths(contract, worker_path)
-        _verify_sources(run, expected)
+        verified = _verify_sources(run, expected)
+        _check(not any(name in sys.modules for name in verified))
+        finder = _VerifiedSourceFinder(run, verified)
+        sys.meta_path.insert(0, finder)
         jobs = _jobs(run)
         intent = _intent(jobs, stage, run_id)
         _check(intent['nonce'] == nonce and intent['targetSha256'] == target_sha)
@@ -301,6 +327,7 @@ def run_child(contract, run_id, stage, kubeconfig, expected, target, nonce,
     except BaseException:
         return 1
     finally:
+        if finder is not None: sys.meta_path.remove(finder)
         if jobs is not None:
             os.close(jobs)
     return 0 if result['status'] == 'PREPARED' else 1
@@ -349,25 +376,27 @@ def main():
     os.umask(0o077)
     try:
         args = sys.argv[1:]
-        if len(args) == 7 and args[0] == 'zero-proof':
-            _, contract, run_id, kubeconfig, hashes, target_raw, binding_raw = args
+        if len(args) == 7 and args[0] in ('pending-proof','pre-drain-proof','zero-proof'):
+            verb, contract, run_id, kubeconfig, hashes, target_raw, binding_raw = args
             _uuid(run_id)
             expected = _decode(hashes.encode('ascii'))
             target = _decode(target_raw.encode('ascii'))
             binding = _decode(binding_raw.encode('ascii'))
             _target(target)
-            _check(type(binding) is dict and binding.get('runId') == run_id and
+            _check(verb=='pending-proof' or (type(binding) is dict and binding.get('runId') == run_id and
                    binding.get('originalInstanceIds') == target['originalInstanceIds'] and
                    type(binding.get('newId')) is str and
-                   binding['newId'] not in target['originalInstanceIds'])
+                   binding['newId'] not in target['originalInstanceIds']))
             run = _paths(contract, Path(__file__))
             verified = _verify_sources(run, expected)
             _check(not any(name in sys.modules for name in verified))
             finder = _VerifiedSourceFinder(run, verified)
             sys.meta_path.insert(0, finder)
             try:
-                module = importlib.import_module('pgcat_zero_proof_worker')
-                result = module.produce(contract, run_id, binding)
+                module = importlib.import_module({'pending-proof':'pgcat_pending_proof_worker',
+                    'pre-drain-proof':'pgcat_pre_drain_proof_worker','zero-proof':'pgcat_zero_proof_worker'}[verb])
+                result = (module.produce(contract, run_id) if verb=='pending-proof' else
+                          module.produce(contract, run_id, binding))
             finally:
                 sys.meta_path.remove(finder)
             _verify_sources(run, expected)

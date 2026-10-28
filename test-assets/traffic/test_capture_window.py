@@ -448,7 +448,6 @@ class ProviderMinimumBounds(unittest.TestCase):
         self.assertEqual(assess(fs)['status'],'INCONCLUSIVE')
 
 
-if __name__=='__main__':unittest.main()
 
 
 class LaneIdentityRetention(unittest.TestCase):
@@ -536,3 +535,6 @@ class LaneIdentityRetention(unittest.TestCase):
                 else:
                     for key in ('name','containerId','ready'):del f['pods'][0][key]
                 self.assertEqual(clean(f)['expectedReplicas'],0)
+
+if __name__ == '__main__':
+    unittest.main()

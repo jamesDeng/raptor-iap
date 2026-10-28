@@ -14,6 +14,8 @@ from pgcat_lane_protocol import (Journal, Refused, encode, expected_roster,
 
 class ScaleinJournalTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        admission=patch('pgcat_lane_protocol._release_admission');admission.start();self.addCleanup(admission.stop)
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.run = str(uuid.uuid4()); self.session = str(uuid.uuid4())

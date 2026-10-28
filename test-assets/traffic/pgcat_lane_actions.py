@@ -20,7 +20,7 @@ BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerF
     'contractDir', 'pendingProofWorker', 'preDrainProofWorker', 'zeroProofWorker',
     'workerKubeconfig', 'scaleoutIntentPath', 'scaleinIntentPath',
     'nlbIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
-SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions',
+SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions','sourceBootstrap','controller','client','runner',
                           'pendingProofWorker','preDrainProofWorker','zeroProofWorker','collectorControl','laneTimingAssessor')) | frozenset(WORKER_SOURCES)
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'
@@ -98,22 +98,22 @@ class ActionCatalog:
             identifier(run_id)
             phase, verb = action.rsplit('-',1)
             hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
-            parts=['python3',bindings['phaseWorker'],verb,phase,bindings['contractDir'],
+            parts=['python3','-I','-S','-c',BOOTSTRAP,bindings['phaseWorker'],hashes['rehearsalWorker'],verb,phase,bindings['contractDir'],
                    run_id,bindings['workerKubeconfig'],
                    json.dumps(hashes,sort_keys=True,separators=(',',':')),
                    encode(bindings['target']).decode('ascii')]
             command=' '.join(q(part) for part in parts)
         elif action.startswith('zero-gate-'):
             raise Refused('source')
-        elif action == 'pending-proof':
+        elif action in ('pending-proof','pre-drain-proof'):
             identifier(run_id)
-            command = ('python3 '+q(bindings['pendingProofWorker'])+' '+q(bindings['contractDir'])+
-                       ' '+q(run_id))
-        elif action == 'pre-drain-proof':
-            identifier(run_id)
-            require(type(pending_binding) is dict,'target')
-            command = ('python3 '+q(bindings['preDrainProofWorker'])+' '+q(bindings['contractDir'])+
-                       ' '+q(run_id)+' '+q(encode(pending_binding).decode('ascii')))
+            if action=='pre-drain-proof':require(type(pending_binding) is dict,'target')
+            hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
+            parts=['python3','-I','-S','-c',BOOTSTRAP,bindings['phaseWorker'],hashes['rehearsalWorker'],
+                   action,bindings['contractDir'],run_id,bindings['workerKubeconfig'],
+                   json.dumps(hashes,sort_keys=True,separators=(',',':')),
+                   encode(bindings['target']).decode('ascii'),encode(pending_binding).decode('ascii')]
+            command=' '.join(q(part) for part in parts)
         elif action == 'zero-proof':
             identifier(run_id)
             require(type(pending_binding) is dict,'target')
@@ -123,7 +123,7 @@ class ActionCatalog:
                     token(bound.get('newId')) and
                     bound['newId'] not in bound['originalInstanceIds'],'target')
             hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
-            parts=['python3',bindings['phaseWorker'],'zero-proof',bindings['contractDir'],
+            parts=['python3','-I','-S','-c',BOOTSTRAP,bindings['phaseWorker'],hashes['rehearsalWorker'],'zero-proof',bindings['contractDir'],
                    run_id,bindings['workerKubeconfig'],
                    json.dumps(hashes,sort_keys=True,separators=(',',':')),
                    encode(bindings['target']).decode('ascii'),encode(bound).decode('ascii')]
@@ -131,7 +131,7 @@ class ActionCatalog:
         elif action.startswith('pending-'):
             identifier(run_id)
             hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
-            parts=['python3',bindings['pendingWorker'],action.split('-')[1],
+            parts=['python3','-I','-S','-c',BOOTSTRAP,bindings['pendingWorker'],hashes['rehearsalWorker'],action.split('-')[1],
                    'pending-ready',bindings['contractDir'],run_id,
                    bindings['workerKubeconfig'],
                    json.dumps(hashes,sort_keys=True,separators=(',',':')),
@@ -162,7 +162,9 @@ class ActionCatalog:
         env.update(PGCAT_LANE_ROLE='external', PGCAT_LANE_REAL_CLI=bindings['workbenchCli'],
             PGCAT_LANE_LOCK=bindings['laneLockPath'], PGCAT_LANE_RECEIPT=bindings['receiptPath'],
             PGCAT_LANE_INTENT_DIR=bindings['laneIntentDir'])
-        return ([sys.executable,bindings['laneWrapper'],'exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',command],env,5.0)
+        from pgcat_source_bootstrap import command as source_command
+        return (source_command(bindings['sourceHashes'],'laneWrapper',
+                ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',command]),env,5.0)
 
     @staticmethod
     def parse(action, raw, request, receipt=None, source_sha=None, pending_binding=None):

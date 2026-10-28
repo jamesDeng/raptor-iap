@@ -52,6 +52,12 @@ def require(value, category='configuration'):
         raise Refused(category)
 
 
+def _release_admission(mode, action=None):
+    """This release has only the completed no-scale runtime capability."""
+    require(mode == 'no-scale', 'configuration')
+    require(action is None or action in NO_SCALE_ACTIONS, 'configuration')
+
+
 def encode(value):
     try:
         return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')
@@ -553,6 +559,7 @@ class Journal:
                 raise
 
     def create_run(self, run_id: str, mode: str, target: dict, hashes: dict) -> None:
+        _release_admission(mode)
         identifier(run_id)
         require(mode in ('no-scale', 'disabled-rehearsal'))
         target_valid(target)
@@ -570,6 +577,7 @@ class Journal:
         with self._transaction() as db:
             run = db.execute('SELECT * FROM run').fetchone()
             require(run is not None and run['state'] == 'active')
+            _release_admission(run['mode'], request['action'])
             require(request['runId'] == run['run_id'])
             require(request['target'] == json.loads(run['target']), 'target')
             require(request['bundleSha256'] == json.loads(run['hashes'])['bundleSha256'], 'source')

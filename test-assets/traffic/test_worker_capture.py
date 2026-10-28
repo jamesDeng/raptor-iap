@@ -346,7 +346,6 @@ class PartialPodWorkerEvidence(unittest.TestCase):
                 self.assertEqual(sum(s['frames'] for s in completion['segments']),6)
 
 
-if __name__=='__main__':unittest.main()
 
 
 class LaneIdentityCapture(unittest.TestCase):
@@ -417,3 +416,6 @@ class LaneIdentityCapture(unittest.TestCase):
                         retained=json.loads(next((Path(directory)/'capture').glob('segment-*.jsonl')).read_text())
                         self.assertEqual(retained['expectedReplicas'],0)
                         self.assertEqual(retained['pods'][0]['snapshot']['sample']['Failure'],1)
+
+if __name__ == '__main__':
+    unittest.main()

@@ -14,6 +14,12 @@ if pathlib.Path(spec.origin).exists():
     spec.loader.exec_module(feed)
 
 class FeedTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        guard=patch.object(feed,'_require_verified');guard.start();self.addCleanup(guard.stop)
+        wrapper=patch.object(feed,'_wrapper_command',side_effect=lambda path,args:[path]+args)
+        wrapper.start();self.addCleanup(wrapper.stop)
+
     def test_private_publication_is_immutable_and_precedes_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(os.path.realpath(directory)); root.chmod(0o700)
@@ -859,6 +865,13 @@ class FeedTests(unittest.TestCase):
         with self.assertRaises(ValueError):feed.run_loop(lambda:{},lambda x:None,interval=16,max_seconds=5401)
 
 class NoScaleFeedTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        admission=patch('pgcat_lane_protocol._release_admission');admission.start();self.addCleanup(admission.stop)
+        guard=patch.object(feed,'_require_verified');guard.start();self.addCleanup(guard.stop)
+        wrapper=patch.object(feed,'_wrapper_command',side_effect=lambda path,args:[path]+args)
+        wrapper.start();self.addCleanup(wrapper.stop)
+
     fixture = FeedTests.fixture
     take = FeedTests.take
     def operator(self, root, **changes):
@@ -900,7 +913,9 @@ class NoScaleFeedTests(unittest.TestCase):
             originalInstanceIds=['i-0','i-1'])
         hashes={'providerFeed':'a'*64};bundle=hashlib.sha256(encode(hashes)).hexdigest()
         run_id=str(uuid.uuid4());supervisor_id=str(uuid.uuid4());nonce=str(uuid.uuid4())
-        Journal(lane).create_run(run_id,mode,target,dict(hashes,bundleSha256=bundle))
+        from unittest.mock import patch
+        with patch('pgcat_lane_protocol._release_admission'):
+            Journal(lane).create_run(run_id,mode,target,dict(hashes,bundleSha256=bundle))
         context=dict(schemaVersion=1,runId=run_id,supervisorId=supervisor_id,nonce=nonce,
             targetSha256=hashlib.sha256(encode(target)).hexdigest(),bundleSha256=bundle)
         save_once(lane,'run-context.json',context)

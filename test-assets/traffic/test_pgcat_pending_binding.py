@@ -14,6 +14,8 @@ from pgcat_lane_protocol import ACTIONS, Journal, Refused, encode, monotonic, pu
 
 class PendingBindingTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        admission=patch('pgcat_lane_protocol._release_admission');admission.start();self.addCleanup(admission.stop)
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         self.run=str(uuid.uuid4()); self.session=str(uuid.uuid4()); self.supervisor=str(uuid.uuid4())
@@ -193,14 +195,15 @@ class PendingBindingTests(unittest.TestCase):
             target=dict(self.target,workerId='i-t4nj1bitmcz7cuoch82h'))
         argv,env,budget=ActionCatalog.command('pending-proof',bindings,self.run)
         self.assertEqual(budget,5.)
-        self.assertIn('/fixed/run/pgcat_pending_proof_worker.py /fixed/contract '+self.run,argv[-1])
+        self.assertIn(' pending-proof /fixed/contract '+self.run,argv[-1])
+        self.assertIn('python3 -I -S -c',argv[-1])
         self.assertNotIn('10.0.0.',repr(argv))
         self.assertNotIn('AWS_SECRET_ACCESS_KEY',env)
         with self.assertRaises(Refused):
             ActionCatalog.command('pending-proof',bindings,self.run+'; touch /tmp/bad')
         argv,_,budget=ActionCatalog.command('pre-drain-proof',bindings,self.run,self.proof)
         self.assertEqual(budget,5.)
-        self.assertIn('/fixed/run/pgcat_pre_drain_proof_worker.py /fixed/contract '+self.run,argv[-1])
+        self.assertIn(' pre-drain-proof /fixed/contract '+self.run,argv[-1])
         self.assertIn('i-new-c',argv[-1]);self.assertNotIn('10.0.0.',argv[-1])
         pre=dict(self.proof,sequence=5,observedAt=time.time(),
             pendingBindingSha256=hashlib.sha256(encode(self.proof)).hexdigest())

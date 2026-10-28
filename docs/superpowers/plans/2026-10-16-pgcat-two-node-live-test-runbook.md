@@ -871,7 +871,8 @@ is claimed by this release preparation; full-run assessment remains NOT_RUN.
 ### Tracked no-scale controller integration (2026-10-27; not live proof)
 
 `test-assets/traffic/pgcat_rehearsal_controller.py` supplies the tracked
-`Controller(binding_path)` API. Integration tests use fake process boundaries;
+`Controller(binding_path)` API, obtained only through the verified entry below.
+Ordinary imports are refused at runtime. Integration tests use fake process boundaries;
 implementation or an orderly `finished` journal is not a live PASS. Independent
 source/binding review and the action-day preflight above remain hard stops.
 Keep `replacementEnabled=false`, the historical `RUN_BINDINGS_REVIEWED=False`
@@ -888,8 +889,11 @@ The no-scale local credential must be the regular mode-0600 `kubeconfig` in
 retained at startup, and only that exact file may be removed after feed exit.
 `laneBindings` follows the exact schema in `pgcat_lane_actions.py`, including
 reviewed account, region, worker, scaling group, NLB group, two protected original
-IDs and the complete current source-hash set, including collector control and
-lane-timing assessor. The outer `sourceHashes` has exactly
+IDs and the complete current source-hash set, including collector control,
+lane-timing assessor, `sourceBootstrap`, `controller`, `client`, and `runner`.
+The fixed lane map is exactly `pgcat_source_bootstrap.SOURCES`; all 20 modules
+are staged together locally. The repeated three outer hashes must equal their
+lane-map values. The outer `sourceHashes` has exactly
 `controller`, `client`, and `runner`, each a lowercase SHA-256 of the current
 local source bytes. All declared hashes are checked before either process starts.
 The feed executable binding must be a regular executable named `aliyun`; its
@@ -927,8 +931,12 @@ maximum). The feed validates its exact-two target against sealed run context on
 every publication. The fixed sequence is baseline start/status until PREPARED,
 one finite **65-second collector** launch, exact ALIVE status, exact completed
 EXITED status, then the source-pinned worker `lane-verdict`. The lane-timing
-assessor requires at least 60 seconds of authenticated coverage and stable
-clients, sources and protected original fleet. Ordinary transition assessment
+assessor requires at least 60 seconds of authenticated measurement within the
+planned 65-second span, followed by an ordered terminal settling tail of at
+most five seconds (total retained span at most 70 seconds). Every retained
+frame remains subject to the three-second gap, identity and failure checks;
+an authenticated SQL failure in the tail is FAIL. Clients, sources and the
+protected original fleet must remain stable. Ordinary transition assessment
 remains separate and cannot PASS from this capture alone.
 
 Each worker call has a five-second absolute deadline from the shared protocol
@@ -997,10 +1005,67 @@ never clear them or start another run based only on terminal text. No-scale
 proof cannot certify the later paid 3-to-2 reconciliation. Paid rehearsal and
 full replacement remain blocked until their separate existing gates pass.
 
-### Tracked guarded paid start (2026-10-27; local implementation only)
+### Current release boundary and verified entry (2026-10-28)
 
-`Controller.start_rehearsal(preflight_path)` adds the paid start boundary. This
-is not permission to run it: independent source/binding review, separate
+This release structurally refuses `start_rehearsal`, paid `LaneClient.start`,
+paid supervisor/feed entry, paid journal creation and admission from an existing
+paid journal. There is no configuration enable flag. The paid component
+contracts below remain offline development material. Re-enabling them requires
+a separate reviewed implementation of the matching long boundary-driven capture,
+Task 6D close/abort, and whole-path tests. A prior no-scale PASS cannot enable them.
+
+Enter only from `python3 -I -S -c` with the following reviewed stdlib root.
+Arguments are the absolute reviewed `pgcat_source_bootstrap.py` path, its
+independently reviewed SHA-256, and the fresh private outer binding path. Do not
+obtain the bootstrap by ordinary import, use `runpy`, or substitute `-B` (which
+still reads caches). The root opens/hashes/compiles the bootstrap before any
+application import; `load_controller` verifies and executes every reachable
+application module from its opened source snapshot, preserves `__file__`, and
+refuses preloaded/unlisted local modules. The finder stays installed for the
+process lifetime. Runner, pipe-gated feed, and both Workbench wrapper roles enter
+that same isolated boundary. The wrapper still execs the CLI in the same PID
+with the inherited lock FD and original absolute deadline. Worker baseline,
+Pending/pre-drain and zero-proof entries use the pinned phase dispatcher; direct
+legacy proof scripts refuse execution. Collector/verdict retain their pinned entry.
+
+The following is the complete `-c` program (the three paths/hash are arguments,
+not interpolated code). This procedure is a release contract, **not current live
+authorization**; all source review, staged-byte and action-day gates still apply.
+
+```python
+import hashlib, os, stat, sys, types
+p, h, binding_path = sys.argv[1:4]
+f = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+try:
+    s = os.fstat(f)
+    b = os.read(f, 262145)
+    if not (stat.S_ISREG(s.st_mode) and s.st_uid == os.geteuid()
+            and len(b) == s.st_size and len(b) <= 262144
+            and hashlib.sha256(b).hexdigest() == h):
+        raise ValueError('source')
+finally:
+    os.close(f)
+m = types.ModuleType('pgcat_source_bootstrap')
+m.__file__ = p
+m.__verified_root_sha256__ = h
+sys.modules[m.__name__] = m
+exec(compile(b, p, 'exec', dont_inherit=True), m.__dict__)
+controller = m.load_controller(binding_path)
+try:
+    controller.start_no_scale()
+    while controller.call_no_scale('collector-status')['status'] != 'EXITED':
+        pass
+    verdict = controller.call_no_scale('lane-verdict')
+    feed_exit = controller.stop_no_scale(verdict)
+    print(controller.finish_no_scale(feed_exit))
+finally:
+    controller.close()
+```
+
+### Tracked guarded paid start (2026-10-27; offline component contract, disabled)
+
+`Controller.start_rehearsal(preflight_path)` now refuses before preflight. The
+following describes retained offline component logic, not a usable entry: independent source/binding review, separate
 action-time authorization, a clean no-scale timing proof, staged recovery and
 the earlier human/evidence gates remain mandatory. Keep Gateway
 `replacementEnabled=false` and both historical scratch review flags false.

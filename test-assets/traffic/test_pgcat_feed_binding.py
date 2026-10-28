@@ -19,6 +19,9 @@ class FeedBindingTests(unittest.TestCase):
     def setUp(self):
         fixture=controller_tests.ControllerTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
         patch.stopall()
+        guard=patch('pgcat_lane_client._require_verified');guard.start();self.addCleanup(guard.stop)
+        command=patch('pgcat_source_bootstrap.command',side_effect=lambda hashes,entry,args:self.argv)
+        command.start();self.addCleanup(command.stop)
         self.base=fixture.base;self.manifest=fixture.manifest
         self.marker=self.base/'provider-executed'
         feed=self.base/'reviewed-feed.py'
