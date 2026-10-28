@@ -551,5 +551,235 @@ class RehearsalContractTests(unittest.TestCase):
                                'receipt': {'feedSession': self.session}}, 'i-0')
 
 
+    def _reconcile_fixture(self):
+        self.__dict__.pop('_reconcile_kubectl', None)
+        import pgcat_pending_proof_worker as pending_proof
+        roster = self._finished_pending_source()
+        self.pending_binding = pending_proof.produce(self.contract, self.run_id,
+            kubectl=self._kubectl, live_roster=lambda: roster, now=lambda: 128.5)
+        self._advance_provider(20, 220.0)
+        self.close_context = dict(feedSession=self.session, sequence=20, observedAt=220.0,
+            scaleinRequestId=str(uuid.uuid4()), scaleinAcknowledgedAt=219.0,
+            pendingBindingSha256=hashlib.sha256(json.dumps(self.pending_binding,
+                sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')).hexdigest())
+        self.reconcile_calls = []
+        self.patch_failure = False
+        self.readback_failure = False
+
+    def _reconcile_kubectl(self, *args):
+        self.assertEqual(os.environ.get('KUBECONFIG'), str(self.kubeconfig))
+        self.reconcile_calls.append(args)
+        if args[0] == 'patch':
+            self.assertEqual(args[:5], ('patch', 'configmap', 'pgcat-provider-inventory', '--type=merge', '-p'))
+            self.assertEqual(args[6:], ('-o', 'json'))
+            self.assertEqual(len(args), 8)
+            body = json.loads(args[5])
+            self.assertEqual(set(body), {'metadata', 'data'})
+            self.assertEqual(body['metadata'], {'uid': 'cm-uid', 'resourceVersion': self.cm['metadata']['resourceVersion']})
+            self.assertEqual(set(body['data']), {'targets.json'})
+            self.assertTrue((self.contract / 'reconcile-close.intent').is_file())
+            if self.patch_failure:
+                raise RuntimeError('private patch failure 10.0.0.3')
+            self.cm['data'] = body['data']
+            self.cm['metadata']['resourceVersion'] = str(int(self.cm['metadata']['resourceVersion']) + 1)
+        else:
+            self.assertEqual(args, ('get', 'configmap', 'pgcat-provider-inventory', '-o', 'json'))
+            if self.readback_failure and len(self.reconcile_calls) > 1:
+                raise RuntimeError('private readback failure 10.0.0.3')
+        return copy.deepcopy(self.cm)
+
+    def _reconcile(self, **kwargs):
+        from pgcat_rehearsal_contract import reconcile_close
+        return reconcile_close(self.contract, self.run_id, self.target,
+            self.pending_binding, self.close_context, kubectl=self._reconcile_kubectl,
+            clock=kwargs.get('clock', lambda: 220.5))
+
+    def _reseal(self, name, value):
+        raw = (json.dumps(value, sort_keys=True, allow_nan=False) + '\n').encode('ascii')
+        (self.contract / name).write_bytes(raw)
+        (self.contract / (name + '.sha256')).write_text(json.dumps({'sha256': hashlib.sha256(raw).hexdigest()}))
+
+    def _rewrite_current_inventory(self, change):
+        value = json.loads(self.inventory.read_text())
+        change(value)
+        raw = json.dumps(value, separators=(',', ':')).encode('ascii')
+        self.inventory.write_bytes(raw)
+        sidecar = json.loads((self.source / '000020.json').read_text())
+        sidecar.update(inventorySha256=hashlib.sha256(raw).hexdigest(),
+            inventorySemanticSha256=hashlib.sha256(json.dumps(value, sort_keys=True,
+                separators=(',', ':')).encode('ascii')).hexdigest())
+        (self.source / '000020.json').write_text(json.dumps(sidecar))
+
+    def test_reconcile_exact_patch_readback_seal_and_old_pending_equal_live_rv(self):
+        self._reconcile_fixture()
+        self.assertGreater(220.5 - self.pending_binding['observedAt'], 30)
+        self.assertEqual(self.cm['metadata']['resourceVersion'], self.pending_binding['resourceVersion'])
+        with patch('pgcat_rehearsal_contract.proof.verified_frames', side_effect=AssertionError('capture must not be read')):
+            self.assertEqual(self._reconcile(), dict(feedSession=self.session, sequence=20, resourceVersion='12'))
+        self.assertEqual([call[0] for call in self.reconcile_calls], ['get', 'patch', 'get'])
+        expected = [{'targets': [address + ':9930'], 'labels': dict(env='rdev.ali',
+            db_proxy_code='DP00001', target_db_code='D00002', ecs_instance_id=node)}
+            for node, address in self.originals]
+        self.assertEqual(json.loads(self.cm['data']['targets.json']), expected)
+        from pgcat_rehearsal_contract import _directory, _sealed_read
+        fd = _directory(self.contract)
+        try:
+            sealed = _sealed_read(fd, 'reconcile-close.json')
+        finally:
+            os.close(fd)
+        self.assertEqual(sealed['runId'], self.run_id)
+        self.assertEqual(sealed['closeContext'], self.close_context)
+        self.assertEqual(sealed['oldResourceVersion'], '11')
+        self.assertEqual(sealed['resourceVersion'], '12')
+        self.assertEqual(sealed['newTargetsSha256'], hashlib.sha256(json.dumps(expected,
+            sort_keys=True, separators=(',', ':')).encode('ascii')).hexdigest())
+        with self.assertRaises(ValueError):
+            self._reconcile()
+        self.assertEqual(sum(call[0] == 'patch' for call in self.reconcile_calls), 1)
+
+    def test_reconcile_default_helper_uses_fixed_namespace_bounded_json_subprocess(self):
+        self._reconcile_fixture()
+        import pgcat_rehearsal_contract as contract
+        def fake_run(argv, **kwargs):
+            self.assertEqual(argv[:3], ['kubectl', '-n', 'raptor-test'])
+            self.assertEqual(kwargs['timeout'], 3)
+            self.assertEqual(set(kwargs), {'stdout', 'stderr', 'timeout'})
+            value = self._reconcile_kubectl(*argv[3:])
+            return type('Result', (), dict(returncode=0,
+                stdout=json.dumps(value).encode('ascii'), stderr=b'private diagnostic'))()
+        with patch.object(contract.worker_capture.subprocess, 'run', side_effect=fake_run):
+            result = contract.reconcile_close(self.contract, self.run_id, self.target,
+                self.pending_binding, self.close_context, clock=lambda: 220.5)
+        self.assertEqual(result, dict(feedSession=self.session, sequence=20, resourceVersion='12'))
+        self.assertEqual([call[0] for call in self.reconcile_calls], ['get', 'patch', 'get'])
+
+    def test_reconcile_accepts_live_version_newer_than_pending_and_uses_live_precondition(self):
+        self._reconcile_fixture()
+        self.cm['metadata']['resourceVersion'] = '15'
+        self.assertEqual(self._reconcile()['resourceVersion'], '16')
+        body = json.loads(self.reconcile_calls[1][5])
+        self.assertEqual(body['metadata']['resourceVersion'], '15')
+        sealed = json.loads((self.contract / 'reconcile-close.json').read_text())
+        self.assertEqual(sealed['oldResourceVersion'], '15')
+
+    def test_reconcile_refuses_publication_advance_during_live_get_before_patch(self):
+        self._reconcile_fixture()
+        real = self._reconcile_kubectl
+        def advance(*args):
+            result = real(*args)
+            self._advance_provider(21, 220.2)
+            return result
+        self._reconcile_kubectl = advance
+        with self.assertRaises(ValueError): self._reconcile()
+        self.assertEqual([call[0] for call in self.reconcile_calls], ['get'])
+        self.assertFalse((self.contract / 'reconcile-close.intent').exists())
+
+    def test_reconcile_refuses_summary_bundle_input_or_source_hash_mismatch(self):
+        for case in ('summary', 'bundle-run', 'input', 'source'):
+            with self.subTest(case=case):
+                self.setUp(); self._reconcile_fixture()
+                if case == 'summary':
+                    self.pending_binding['newId'] = 'wrong'
+                elif case == 'input':
+                    value = json.loads((self.contract / 'pending-ready.json').read_text())
+                    value['address'] = '10.0.0.99'
+                    self._reseal('pending-ready.json', value)
+                else:
+                    bundle = json.loads((self.contract / 'pending-proof.bundle.json').read_text())
+                    if case == 'bundle-run':
+                        bundle['runId'] = str(uuid.uuid4())
+                    else:
+                        bundle['summary']['sourceSha256'] = '0' * 64
+                        self.pending_binding['sourceSha256'] = '0' * 64
+                    self._reseal('pending-proof.bundle.json', bundle)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(self.reconcile_calls, [])
+
+    def test_reconcile_refuses_context_types_sequence_time_digest_and_ack_order(self):
+        changes = [dict(sequence=19), dict(sequence=21), dict(sequence=True),
+            dict(observedAt=219.9), dict(observedAt=float('nan')),
+            dict(scaleinAcknowledgedAt=220.0), dict(scaleinAcknowledgedAt=True),
+            dict(scaleinRequestId='bad'), dict(feedSession=str(uuid.uuid4())),
+            dict(pendingBindingSha256='0' * 64), dict(extra='forbidden')]
+        for change in changes:
+            with self.subTest(change=change):
+                self.setUp(); self._reconcile_fixture(); self.close_context.update(change)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(self.reconcile_calls, [])
+
+    def test_reconcile_refuses_stale_future_or_nonfinite_current_clock(self):
+        for stamp in (250.0, 218.9, float('nan'), True):
+            with self.subTest(stamp=stamp):
+                self.setUp(); self._reconcile_fixture()
+                with self.assertRaises(ValueError): self._reconcile(clock=lambda: stamp)
+                self.assertEqual(self.reconcile_calls, [])
+
+    def test_reconcile_refuses_wrong_current_fleet_protection_or_backend(self):
+        changes = [lambda v: v.update(desired=3),
+            lambda v: v['memberStates'][0].update(lifecycle='InService'),
+            lambda v: v['memberStates'][0].update(health='Unhealthy'),
+            lambda v: v['backendStates'][0].update(weight=0),
+            lambda v: v['backendStates'][0].update(status='Removing'),
+            lambda v: v.update(healthyRegistered=['i-a'])]
+        for change in changes:
+            with self.subTest(change=change):
+                self.setUp(); self._reconcile_fixture(); self._rewrite_current_inventory(change)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(self.reconcile_calls, [])
+
+    def test_reconcile_refuses_changed_configmap_identity_version_or_data(self):
+        for case in ('uid', 'name', 'namespace', 'deletion', 'rv', 'rv-type',
+                     'extra-key', 'address', 'labels', 'port', 'row-key', 'already-two', 'duplicate'):
+            with self.subTest(case=case):
+                self.setUp(); self._reconcile_fixture()
+                meta = self.cm['metadata']; rows = json.loads(self.cm['data']['targets.json'])
+                if case in ('uid', 'name', 'namespace'): meta[case] = 'changed'
+                elif case == 'deletion': meta['deletionTimestamp'] = 'now'
+                elif case == 'rv': meta['resourceVersion'] = '10'
+                elif case == 'rv-type': meta['resourceVersion'] = 11
+                elif case == 'extra-key': self.cm['data']['unexpected'] = 'x'
+                elif case == 'address': rows[-1]['targets'] = ['10.0.0.99:9930']
+                elif case == 'labels': rows[-1]['labels']['env'] = 'other'
+                elif case == 'port': rows[-1]['targets'] = ['10.0.0.3:9931']
+                elif case == 'row-key': rows[-1]['extra'] = 'x'
+                elif case == 'already-two': rows = rows[:2]
+                elif case == 'duplicate': rows[-1] = rows[0]
+                self.cm['data']['targets.json'] = json.dumps(rows)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual([call[0] for call in self.reconcile_calls], ['get'])
+
+    def test_reconcile_duplicate_intent_and_patch_or_readback_failure_never_retry(self):
+        for case in ('intent', 'patch', 'readback'):
+            with self.subTest(case=case):
+                self.setUp(); self._reconcile_fixture()
+                if case == 'intent':
+                    path = self.contract / 'reconcile-close.intent'
+                    path.write_text('{}'); path.chmod(0o600)
+                self.patch_failure = case == 'patch'; self.readback_failure = case == 'readback'
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertFalse((self.contract / 'reconcile-close.json').exists())
+                before = sum(call[0] == 'patch' for call in self.reconcile_calls)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(sum(call[0] == 'patch' for call in self.reconcile_calls), before)
+
+    def test_reconcile_readback_requires_newer_version_and_exact_complete_targets(self):
+        for case in ('unchanged-rv', 'uid', 'data', 'extra-key'):
+            with self.subTest(case=case):
+                self.setUp(); self._reconcile_fixture()
+                real = self._reconcile_kubectl
+                def bad_readback(*args):
+                    result = real(*args)
+                    if args[0] == 'get' and len(self.reconcile_calls) == 3:
+                        if case == 'unchanged-rv': result['metadata']['resourceVersion'] = '11'
+                        elif case == 'uid': result['metadata']['uid'] = 'changed'
+                        elif case == 'extra-key': result['data']['extra'] = 'forbidden'
+                        else: result['data']['targets.json'] = '[]'
+                    return result
+                self._reconcile_kubectl = bad_readback
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(sum(call[0] == 'patch' for call in self.reconcile_calls), 1)
+                self.assertFalse((self.contract / 'reconcile-close.json').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

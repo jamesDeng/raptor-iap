@@ -376,6 +376,36 @@ def main():
     os.umask(0o077)
     try:
         args = sys.argv[1:]
+        if len(args) == 8 and args[0] == 'reconcile-close':
+            _, contract, run_id, kubeconfig, hashes, target_raw, binding_raw, context_raw = args
+            _uuid(run_id)
+            expected = _decode(hashes.encode('ascii'))
+            target = _decode(target_raw.encode('ascii'))
+            binding = _decode(binding_raw.encode('ascii'))
+            context = _decode(context_raw.encode('ascii'))
+            _target(target)
+            run = _paths(contract, Path(__file__))
+            verified = _verify_sources(run, expected)
+            _check(not any(name in sys.modules for name in verified))
+            # The private phase argument cannot substitute a different credential.
+            _check(_sealed_stage(contract, 'baseline')['paths']['kubeconfig'] == kubeconfig)
+            finder = _VerifiedSourceFinder(run, verified)
+            sys.meta_path.insert(0, finder)
+            try:
+                module = importlib.import_module('pgcat_rehearsal_contract')
+                result = module.reconcile_close(contract, run_id, target, binding, context)
+            finally:
+                sys.meta_path.remove(finder)
+            _verify_sources(run, expected)
+            _check(type(result) is dict and set(result) == {'feedSession', 'sequence', 'resourceVersion'})
+            _uuid(result['feedSession'])
+            _check(type(result['sequence']) is int and 1 <= result['sequence'] <= 999999 and
+                   type(result['resourceVersion']) is str and
+                   re.fullmatch(r'[1-9][0-9]{0,31}', result['resourceVersion']) is not None)
+            print(json.dumps(dict(status='PREPARED', stage='reconcile', category='rehearsal-only'),
+                             sort_keys=True, separators=(',', ':')))
+            print(json.dumps(result, sort_keys=True, separators=(',', ':'), allow_nan=False))
+            return 0
         if len(args) == 7 and args[0] in ('pending-proof','pre-drain-proof','zero-proof'):
             verb, contract, run_id, kubeconfig, hashes, target_raw, binding_raw = args
             _uuid(run_id)

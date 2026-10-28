@@ -651,3 +651,180 @@ def pending_ready(contract_dir, run_id, target, *, kubectl=None, read_pod=None,
     except (OSError, ValueError, TypeError, KeyError, IndexError,
             OverflowError, UnicodeError, AttributeError, StopIteration):
         raise ValueError('pending') from None
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'),
+                      allow_nan=False).encode('ascii')
+
+
+def _target_rows(addresses):
+    _require(len(set(addresses.values())) == len(addresses))
+    for address in addresses.values():
+        proof.private_address(address)
+    return [dict(targets=[addresses[node] + ':9930'], labels=dict(
+        env='rdev.ali', db_proxy_code='DP00001', target_db_code='D00002',
+        ecs_instance_id=node)) for node in sorted(addresses)]
+
+
+def _reconcile_configmap(cm, baseline_value, expected, minimum, newer=False):
+    meta = cm['metadata']
+    _require(all(meta.get(key) == baseline_value['configMap'][key] for key in
+                 ('name', 'namespace', 'uid')) and
+             meta.get('name') == 'pgcat-provider-inventory' and
+             meta.get('namespace') == 'raptor-test' and
+             type(meta.get('uid')) is str and meta['uid'] and
+             not meta.get('deletionTimestamp'))
+    rv = meta.get('resourceVersion')
+    _require(type(rv) is str and re.fullmatch(r'[1-9][0-9]{0,31}', rv) is not None and
+             (int(rv) > int(minimum) if newer else int(rv) >= int(minimum)))
+    _require(type(cm['data']) is dict and set(cm['data']) == {'targets.json'})
+    rows = _decode(cm['data']['targets.json'].encode('ascii'))
+    _require(type(rows) is list and
+             sorted(rows, key=lambda row: row['labels']['ecs_instance_id']) == expected)
+    return rv
+
+
+def reconcile_close(contract_dir, run_id, target, pending_binding, close_context, *,
+                    kubectl=None, clock=None):
+    """Reconcile one asserted post-ACK receipt; local journal ACK proof is separate.
+
+    Any attempted patch consumes the exclusive intent, including an unknown
+    timeout outcome. Never retry, reverse, or inspect the whole traffic capture.
+    """
+    try:
+        _uuid(run_id)
+        target_sha = _bound_target(target)
+        contract = Path(contract_dir)
+        _require(contract.is_absolute() and contract.name == 'contract')
+        fd = _directory(contract)
+        try:
+            _require(not any(name.startswith('reconcile-close.') for name in os.listdir(fd)))
+            inputs = {}
+            values = {}
+            for name in ('baseline', 'pre-scale', 'pending-ready'):
+                values[name] = _sealed_read(fd, name + '.json')
+                raw = _read_at(fd, name + '.json', 65536)
+                _require(_decode(raw) == values[name])
+                inputs[name] = hashlib.sha256(raw).hexdigest()
+                _require(_decode(_read_at(fd, name + '.intent', 256)) ==
+                         {'version': 1, 'runId': run_id})
+            baseline_value, pre, pending = (values[name] for name in
+                                           ('baseline', 'pre-scale', 'pending-ready'))
+            bundle = _sealed_read(fd, 'pending-proof.bundle.json')
+            bundle_sha = hashlib.sha256(_read_at(fd, 'pending-proof.bundle.json', 65536)).hexdigest()
+            _require(type(bundle) is dict and set(bundle) == {'schemaVersion', 'runId',
+                'feedSession', 'summary', 'sealedInputsSha256', 'providerRunContextSha256'} and
+                type(bundle['schemaVersion']) is int and bundle['schemaVersion'] == 1 and
+                bundle['runId'] == run_id and bundle['sealedInputsSha256'] == inputs)
+            _require(baseline_value['purpose'] == 'disabled-rehearsal-post-stop' and
+                     baseline_value['mode'] == 'disabled-rehearsal' and
+                     type(baseline_value['version']) is int and baseline_value['version'] == 1)
+            originals = baseline_value['originals']
+            ids = target['originalInstanceIds']
+            _require(type(originals) is list and len(originals) == 2 and
+                     all(type(row) is dict and set(row) == {'id', 'address'} for row in originals) and
+                     [row['id'] for row in originals] == ids)
+            addresses = {row['id']: row['address'] for row in originals}
+            new_rows = _target_rows(addresses)
+            receipt = baseline_value['receipt']
+            session = receipt['feedSession']
+            _uuid(session)
+            _require(receipt['mode'] == 'disabled-rehearsal' and receipt['desired'] == 2 and
+                     type(receipt['sequence']) is int and receipt['sequence'] > 0 and
+                     type(pre['sequence']) is int and pre['sequence'] > receipt['sequence'] and
+                     pre['feedSession'] == bundle['feedSession'] == session and
+                     type(pending['sequence']) is int and pending['sequence'] > pre['sequence'] and
+                     type(pending['postReadbackSequence']) is int and
+                     pending['postReadbackSequence'] >= pending['sequence'])
+            for value in (baseline_value, pre, pending, bundle):
+                _require(value['providerRunContextSha256'] == baseline_value['providerRunContextSha256'])
+            _sha(baseline_value['providerRunContextSha256'])
+            for value in (baseline_value, pre, pending):
+                _require(value['targetSha256'] == target_sha)
+            new_id = proof.text(pending['newId'])
+            _require(new_id not in ids)
+            old_addresses = dict(addresses)
+            old_addresses[new_id] = pending['address']
+            old_rows = _target_rows(old_addresses)
+            pending_rv = pending['configMapResourceVersion']
+            _require(type(pending_rv) is str and
+                     re.fullmatch(r'[1-9][0-9]{0,31}', pending_rv) is not None and
+                     type(baseline_value['configMap']['resourceVersion']) is str and
+                     re.fullmatch(r'[1-9][0-9]{0,31}', baseline_value['configMap']['resourceVersion']) is not None and
+                     int(pending_rv) > int(baseline_value['configMap']['resourceVersion']))
+            source_sha = hashlib.sha256(Path(proof.__file__).read_bytes()).hexdigest()
+            expected_summary = dict(runId=run_id, feedSession=session, newId=new_id,
+                originalInstanceIds=ids, sequence=pending['sequence'],
+                observedAt=pending['observedAt'], resourceVersion=pending_rv,
+                clientRosterSha256=hashlib.sha256(_canonical(baseline_value['roster'])).hexdigest(),
+                evidenceSha256=inputs['pending-ready'], sourceSha256=source_sha)
+            _require(type(pending_binding) is dict and pending_binding == expected_summary and
+                     bundle['summary'] == expected_summary)
+            _require(type(close_context) is dict and set(close_context) == {
+                'feedSession', 'sequence', 'observedAt', 'scaleinRequestId',
+                'scaleinAcknowledgedAt', 'pendingBindingSha256'})
+            _uuid(close_context['feedSession'])
+            _uuid(close_context['scaleinRequestId'])
+            _sha(close_context['pendingBindingSha256'])
+            _require(close_context['feedSession'] == session and
+                     type(close_context['sequence']) is int and
+                     pending['postReadbackSequence'] < close_context['sequence'] <= 999999 and
+                     close_context['pendingBindingSha256'] ==
+                     hashlib.sha256(_canonical(pending_binding)).hexdigest())
+            for value in (pending['observedAt'], pending['postReadbackObservedAt'],
+                          close_context['observedAt'], close_context['scaleinAcknowledgedAt']):
+                _require(type(value) in (int, float) and math.isfinite(value))
+            _require(close_context['observedAt'] > max(pending['observedAt'],
+                     pending['postReadbackObservedAt'], close_context['scaleinAcknowledgedAt']))
+            inventory = contract.parent / 'run' / 'provider-inventory.json'
+            _require(baseline_value['inventoryPath'] == str(inventory))
+            source = fresh_provider_source(contract, run_id, inventory, require_fresh=False)
+            _require(source['providerRunContextSha256'] == baseline_value['providerRunContextSha256'] and
+                     source['targetSha256'] == target_sha and source['feedSession'] == session and
+                     source['sequence'] == close_context['sequence'] and
+                     source['observedAt'] == close_context['observedAt'] and
+                     source['privateAddresses'] == addresses)
+            now = time.time if clock is None else clock
+            current = now()
+            _require(type(current) in (int, float) and math.isfinite(current) and
+                     -1 <= current - source['observedAt'] < 30)
+            _current_inventory(inventory, source, current)
+            kube = baseline_value['paths']['kubeconfig']
+            _private_file(kube)
+            read = worker_capture.kubectl if kubectl is None else kubectl
+            live = _with_kubeconfig(kube, read, 'get', 'configmap',
+                                    'pgcat-provider-inventory', '-o', 'json')
+            old_rv = _reconcile_configmap(live, baseline_value, old_rows, pending_rv)
+            # Refuse a concurrent publication or changed sealed input before claiming mutation.
+            _require(fresh_provider_source(contract, run_id, inventory, require_fresh=False) == source)
+            for name in inputs:
+                _require(hashlib.sha256(_read_at(fd, name + '.json', 65536)).hexdigest() == inputs[name])
+                _sealed_read(fd, name + '.json')
+            _require(_sealed_read(fd, 'pending-proof.bundle.json') == bundle)
+            current = now()
+            _require(type(current) in (int, float) and math.isfinite(current) and
+                     -1 <= current - source['observedAt'] < 30)
+            provenance = dict(version=1, runId=run_id, closeContext=close_context,
+                pendingBinding=pending_binding, pendingBundleSha256=bundle_sha,
+                sealedInputsSha256=inputs, providerSource=source,
+                oldResourceVersion=old_rv, configMapUid=live['metadata']['uid'],
+                oldTargetsSha256=hashlib.sha256(_canonical(old_rows)).hexdigest(),
+                newTargetsSha256=hashlib.sha256(_canonical(new_rows)).hexdigest())
+            _write_once(fd, 'reconcile-close.intent', provenance)
+            patch = dict(metadata=dict(uid=live['metadata']['uid'], resourceVersion=old_rv),
+                         data={'targets.json': _canonical(new_rows).decode('ascii')})
+            _with_kubeconfig(kube, read, 'patch', 'configmap', 'pgcat-provider-inventory',
+                             '--type=merge', '-p', _canonical(patch).decode('ascii'), '-o', 'json')
+            readback = _with_kubeconfig(kube, read, 'get', 'configmap',
+                                        'pgcat-provider-inventory', '-o', 'json')
+            new_rv = _reconcile_configmap(readback, baseline_value, new_rows, old_rv, newer=True)
+            sealed = dict(provenance, resourceVersion=new_rv)
+            _sealed_write(fd, 'reconcile-close.json', sealed)
+            return dict(feedSession=session, sequence=source['sequence'], resourceVersion=new_rv)
+        finally:
+            os.close(fd)
+    except Exception:
+        # Patch errors/timeouts can contain private diagnostics. Preserve the intent
+        # and evidence, and never infer that a failed local call cancelled the patch.
+        raise ValueError('reconcile') from None
