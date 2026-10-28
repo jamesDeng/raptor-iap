@@ -1036,3 +1036,143 @@ class SupervisorTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class PostStopSupervisorTests(unittest.TestCase):
+    def setUp(self):
+        import test_pgcat_lane_protocol as fixtures
+        f=fixtures.PostStopJournalTests();f.setUp();self.addCleanup(f.doCleanups);self.f=f
+        guard=patch.object(supervisor,'_require_verified');guard.start();self.addCleanup(guard.stop)
+        self.owner=supervisor.LaneSupervisor.__new__(supervisor.LaneSupervisor)
+        o=self.owner;o.root=f.root;o.bindings=f.f.outer['laneBindings'];o.journal=f.journal
+        o.supervisor_id=f.supervisor;o.run_id=f.f.run;o.bundle=f.request['bundleSha256']
+        o.child=None;o.cancelled=None;o.liveness_fd=None
+        o.owner_fd=os.open(f.root/'test-owner.lock',os.O_CREAT|os.O_RDWR,0o600);self.addCleanup(o.close)
+        self.global_dir=f.root.parent/'global';self.global_dir.mkdir(mode=0o700)
+        override=patch.object(supervisor,'GLOBAL_ROOT',self.global_dir);override.start();self.addCleanup(override.stop)
+        supervisor.save_once(self.global_dir,'active-run',dict(runId=f.f.run,supervisorId=f.supervisor,laneRoot=str(f.root)))
+
+    def test_dedicated_path_admits_before_spawn_and_ignores_consumed_publication(self):
+        f=self.f;intents=Path(self.owner.bindings['laneIntentDir']);intents.mkdir(mode=0o700)
+        lane.consume_intent(str(intents),f.f.session,10)
+        publish_request(f.root,f.request)
+        real_spawn=subprocess.Popen
+        # Mock only actual external spawn; retain the owner's communication and seal path.
+        def local_spawn(argv,**kwargs):
+            admission=f.journal.post_stop_admission(f.request['requestId']);self.assertEqual(admission['request'],f.request)
+            f.journal.post_stop_dispatch(f.request['requestId'])
+            raw=encode(dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'))+b'\n'+encode(f.result()['payload'])
+            return real_spawn([sys.executable,'-c','import sys;sys.stdout.buffer.write('+repr(raw)+')'],**kwargs)
+        with patch.object(supervisor.subprocess,'Popen',side_effect=local_spawn), \
+             patch.object(self.owner,'_receipt',side_effect=AssertionError('live receipt')):
+            result=self.owner.run_once(f.request['requestId'])
+        self.assertEqual(result['state'],'complete');self.assertEqual(f.journal.post_stop_binding()['workerResult'],f.result()['payload'])
+        self.assertIsNotNone(self.owner.owner_fd)
+
+    def test_supervisor_actual_wrapper_exec_seals_the_source_bound_result(self):
+        f=self.f;marker=f.root.parent/'actual-cli-pid';b=self.owner.bindings
+        cli=Path(b['workbenchCli']);header=dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only')
+        raw=encode(header)+b'\n'+encode(f.result()['payload'])+b'\n'
+        cli.write_text('#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\nPath('+repr(str(marker))+').write_text(str(os.getpid()))\nsys.stdout.buffer.write('+repr(raw)+')\n')
+        cli.chmod(0o700)
+        driver=('import sys;from pathlib import Path;sys.path.insert(0,'+repr(str(Path(__file__).parent))+');'
+            'import pgcat_lane_protocol as p;p._release_admission=lambda *a:None;'
+            'import pgcat_source_bootstrap as b;b.require_verified=lambda *a:None;'
+            'b.current_hashes=lambda:'+repr(b['sourceHashes'])+';'
+            'import pgcat_lane_supervisor as s;s.GLOBAL_ROOT=Path(sys.argv[1]);'
+            'import pgcat_workbench_lane as w;sys.argv=sys.argv[2:];sys.exit(w.main())')
+        def command(hashes,entry,args):
+            self.assertEqual(entry,'laneWrapper')
+            return [sys.executable,'-c',driver,str(self.global_dir),'wrapper']+args
+        publish_request(f.root,f.request)
+        with patch('pgcat_source_bootstrap.command',side_effect=command):
+            snapshot=self.owner.run_once(f.request['requestId'])
+        self.assertTrue(marker.exists());self.assertEqual(snapshot['state'],'complete')
+        self.assertEqual(f.journal.post_stop_binding()['workerResult'],f.result()['payload'])
+
+    def test_unknown_worker_attempt_retains_admission_and_dispatch_claim(self):
+        f=self.f;publish_request(f.root,f.request);real_spawn=subprocess.Popen
+        def spawn(argv,**kwargs):
+            f.journal.post_stop_dispatch(f.request['requestId'])
+            return real_spawn([sys.executable,'-c','raise SystemExit(3)'],**kwargs)
+        with patch.object(supervisor.subprocess,'Popen',side_effect=spawn):
+            snapshot=self.owner.run_once(f.request['requestId'])
+        self.assertEqual(snapshot['state'],'uncertain');self.assertEqual(snapshot['runState'],'uncertain')
+        with f.journal._connection() as db:self.assertEqual(db.execute('SELECT dispatch_claimed FROM post_stop_admission').fetchone()[0],1)
+
+    def test_changed_global_owner_on_result_cannot_seal_success(self):
+        f=self.f;publish_request(f.root,f.request);real_spawn=subprocess.Popen
+        def spawn(argv,**kwargs):
+            f.journal.post_stop_dispatch(f.request['requestId'])
+            (self.global_dir/'active-run').write_bytes(encode(dict(runId=f.f.run,supervisorId=str(uuid.uuid4()),laneRoot=str(f.root))))
+            raw=encode(dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'))+b'\n'+encode(f.result()['payload'])
+            return real_spawn([sys.executable,'-c','import sys;sys.stdout.buffer.write('+repr(raw)+')'],**kwargs)
+        with patch.object(supervisor.subprocess,'Popen',side_effect=spawn):snapshot=self.owner.run_once(f.request['requestId'])
+        self.assertEqual(snapshot['state'],'uncertain')
+        with self.assertRaises(Refused):f.journal.post_stop_binding()
+
+    def test_returned_worker_result_at_original_deadline_cannot_seal(self):
+        f=self.f;publish_request(f.root,f.request);real_spawn=subprocess.Popen
+        late=[False]
+        def now():return f.request['deadlineMonotonic'] if late[0] else monotonic()
+        def spawn(argv,**kwargs):
+            f.journal.post_stop_dispatch(f.request['requestId'])
+            return real_spawn([sys.executable,'-c','pass'],**kwargs)
+        def returned(deadline):
+            late[0]=True
+            return encode(dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'))+b'\n'+encode(f.result()['payload'])
+        with patch.object(supervisor.subprocess,'Popen',side_effect=spawn), \
+             patch.object(self.owner,'_communicate',side_effect=returned),patch.object(supervisor,'monotonic',side_effect=now):
+            snapshot=self.owner.run_once(f.request['requestId'])
+        self.assertEqual(snapshot['state'],'uncertain')
+        with self.assertRaises(Refused):f.journal.post_stop_binding()
+
+    def test_wrong_owner_ordinary_request_keeps_original_cancellation_semantics(self):
+        f=self.f;request=dict(f.request,action='baseline-status',supervisorId=str(uuid.uuid4()))
+        with f.journal._transaction() as db:db.execute('DELETE FROM rehearsal_stop')
+        publish_request(f.root,request)
+        with self.assertRaises(Refused):self.owner.run_once(request['requestId'])
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+
+    def test_malformed_request_keeps_original_cancellation_semantics(self):
+        f=self.f;publish_request(f.root,f.request)
+        (f.root/'requests'/(f.request['requestId']+'.ready')).write_text('0'*64)
+        with self.assertRaises(Refused):self.owner.run_once(f.request['requestId'])
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+
+    def test_forged_fixed_action_duplicate_is_not_a_failure_bypass(self):
+        f=self.f;f.admit()
+        request=dict(f.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()),receiptIdentity='0'*64)
+        publish_request(f.root,request)
+        with self.assertRaises(Refused):self.owner.run_once(request['requestId'])
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+
+    def test_authenticated_ordinary_request_after_stop_preserves_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status')
+        publish_request(f.root,request)
+        with patch.object(supervisor.time,'time',return_value=f.f.receipt['observedAt']+121):
+            with self.assertRaises(Refused):self.owner.run_once(request['requestId'])
+        self.assertEqual(f.journal.run_snapshot()['runState'],'active')
+        self.assertIsNone(self.owner.cancelled);self.assertIsNotNone(self.owner.owner_fd)
+
+    def test_served_authenticated_stopped_refusal_preserves_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status')
+        publish_request(f.root,request)
+        reader,writer=os.pipe()
+        original=self.owner._alive;calls=[0]
+        class EndServing(Exception):pass
+        def alive():
+            original();calls[0]+=1
+            # A benign refusal should reach serve's next liveness check.
+            # End the test there without EOF, owner cancellation or another dispatch.
+            if calls[0] == 3:raise EndServing()
+        try:
+            with patch.object(self.owner,'_alive',side_effect=alive):
+                try:self.owner.serve(reader)
+                except EndServing:pass
+            self.assertEqual(f.journal.run_snapshot()['runState'],'active',
+                'Authenticated stopped refusal reached serve outer cancellation')
+            self.assertIsNone(self.owner.cancelled)
+            self.assertIsNotNone(self.owner.owner_fd)
+        finally:
+            os.close(reader);os.close(writer)

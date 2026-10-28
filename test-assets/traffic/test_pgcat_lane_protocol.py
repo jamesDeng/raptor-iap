@@ -643,3 +643,183 @@ class PaidStopJournalTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+from pgcat_lane_protocol import encode
+
+
+class PostStopJournalTests(unittest.TestCase):
+    def setUp(self):
+        from pgcat_lane_protocol import digest,monotonic
+        f=PaidStopJournalTests();f.setUp();self.addCleanup(f.doCleanups)
+        self.f=f;self.journal=f.journal;self.root=f.root;self.supervisor=str(uuid.uuid4())
+        self.identity=dict(pid=44,bootId='boot',startTicks=23,commandSha256='a'*64)
+        self.request=dict(requestId=str(uuid.uuid4()),runId=f.run,supervisorId=self.supervisor,
+            action='rehearsal-finish',feedSession=f.session,minimumSequence=10,receiptIdentity='a'*64,
+            target=f.outer['laneBindings']['target'],bundleSha256=digest(f.outer['laneBindings']['sourceHashes']),
+            nonce=str(uuid.uuid4()),deadlineMonotonic=monotonic()+5.)
+        with f.journal._transaction() as db:
+            db.execute('UPDATE run SET supervisor=?',(self.supervisor,))
+            for action,payload in [('rehearsal-collector-launch',{'status':'LAUNCHED'}),
+                                   ('rehearsal-collector-status',dict(status='ALIVE',identity=self.identity))]:
+                req=dict(self.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()),action=action,minimumSequence=7)
+                db.execute('INSERT INTO requests VALUES (?,?,?,?,?,?)',(req['requestId'],f.run,req['nonce'],
+                    encode(req).decode(),'complete',encode(dict(state='complete',category='ok',payload=payload)).decode()))
+        f.bind();f.controls();self.stop=f.journal.record_rehearsal_stop()
+        self.request['receiptIdentity']=self.stop['receiptIdentity']
+
+    def admit(self):
+        publish_request(self.root,self.request);self.journal.admit(self.request)
+
+    def result(self):
+        return dict(state='complete',category='ok',payload=dict(feedSession=self.f.session,sequence=10,
+            boundaryRequestId='a'*32,boundarySha256='b'*64,evidenceSha256='c'*64,
+            sourceSha256=self.f.outer['laneBindings']['sourceHashes']['rehearsalContract']))
+
+    def test_context_is_derived_and_one_semantic_dispatch_and_seal(self):
+        from pgcat_lane_protocol import digest
+        context=self.journal.post_stop_context(self.request)
+        self.assertEqual(context,dict(schemaVersion=1,requestId=self.request['requestId'],
+            stopProofSha256=digest(self.stop),receipt=self.f.receipt,
+            reconcileBinding=self.f.proof,collectorIdentity=self.identity))
+        self.admit();proof=self.journal.post_stop_admission(self.request['requestId'])
+        self.assertEqual(set(proof),{'request','admission','bindings'})
+        self.assertEqual(set(proof['admission']),{'schemaVersion','requestId','runId','feedSession',
+            'requestSha256','receiptIdentity','stopProofSha256','context'})
+        self.assertEqual(proof['admission']['requestSha256'],digest(self.request))
+        self.assertEqual(self.journal.post_stop_dispatch(self.request['requestId']),proof)
+        with self.assertRaises(Refused):self.journal.post_stop_dispatch(self.request['requestId'])
+        self.journal.seal(self.request['requestId'],self.result(),post_stop_source_sha=self.result()['payload']['sourceSha256'])
+        bound=self.journal.post_stop_binding()
+        self.assertEqual(set(bound),{'schemaVersion','requestId','runId','feedSession','stopProofSha256',
+            'admissionSha256','workerResult','sealedAt'})
+        self.assertEqual(bound['workerResult'],self.result()['payload'])
+        replay=dict(self.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()))
+        publish_request(self.root,replay)
+        with self.assertRaises(Refused):self.journal.admit(replay)
+
+    def test_context_refuses_new_receipt_inode_identical_bytes(self):
+        path=Path(self.f.outer['laneBindings']['receiptPath']);other=path.with_name('new-receipt')
+        other.write_bytes(path.read_bytes());other.chmod(0o600);other.replace(path)
+        with self.assertRaises(Refused):self.journal.post_stop_context(self.request)
+
+    def test_context_rederives_original_artifacts_and_actual_collector(self):
+        from unittest.mock import patch
+        for table in ('feed_manifest','feed_exit_confirmation','reconcile_binding','feed_binding'):
+            with self.subTest(table=table):
+                with self.journal._transaction() as db:
+                    row=dict(db.execute('SELECT * FROM '+table).fetchone());db.execute('DELETE FROM '+table)
+                with self.assertRaises(Refused):self.journal.post_stop_context(self.request)
+                with self.journal._transaction() as db:
+                    db.execute('INSERT INTO '+table+' VALUES ('+','.join('?' for _ in row)+')',tuple(row.values()))
+        with self.journal._transaction() as db:db.execute("DELETE FROM requests WHERE json_extract(request,'$.action')='rehearsal-collector-status'")
+        with self.assertRaises(Refused):self.journal.post_stop_context(self.request)
+
+    def test_admission_getter_rejects_request_context_source_and_mode_changes(self):
+        self.admit()
+        with self.journal._transaction() as db:
+            raw=db.execute('SELECT proof FROM post_stop_admission').fetchone()['proof']
+            value=json.loads(raw);value['context']['collectorIdentity']['pid']=45
+            db.execute('UPDATE post_stop_admission SET proof=?',(encode(value).decode(),))
+        with self.assertRaises(Refused):self.journal.post_stop_admission(self.request['requestId'])
+        with self.journal._transaction() as db:
+            db.execute('UPDATE post_stop_admission SET proof=?',(raw,));db.execute("UPDATE run SET mode='no-scale'")
+        with self.assertRaises(Refused):self.journal.post_stop_admission(self.request['requestId'])
+
+    def test_dispatch_claim_and_source_are_required_for_complete_seal(self):
+        self.admit();source=self.result()['payload']['sourceSha256']
+        with self.assertRaises(Refused):self.journal.seal(self.request['requestId'],self.result(),post_stop_source_sha=source)
+        self.journal.post_stop_dispatch(self.request['requestId'])
+        for changes,source_value in (({},None),({},'0'*64),({'sequence':11},source),({'boundaryRequestId':'x'},source)):
+            result=self.result();result['payload'].update(changes)
+            with self.subTest(changes=changes,source=source_value),self.assertRaises(Refused):
+                self.journal.seal(self.request['requestId'],result,post_stop_source_sha=source_value)
+
+    def test_original_deadline_and_final_age_apply_at_dispatch_and_seal(self):
+        from unittest.mock import patch
+        self.admit()
+        with patch('pgcat_lane_protocol.monotonic',return_value=self.request['deadlineMonotonic']):
+            with self.assertRaises(Refused):self.journal.post_stop_dispatch(self.request['requestId'])
+        self.journal.post_stop_dispatch(self.request['requestId'])
+        with patch('pgcat_lane_protocol.time.time',return_value=self.f.receipt['observedAt']+30):
+            with self.assertRaises(Refused):self.journal.seal(self.request['requestId'],self.result(),post_stop_source_sha=self.result()['payload']['sourceSha256'])
+
+    def test_context_refuses_changed_fields_manifest_nonzero_exit_and_source(self):
+        for changes in (dict(minimumSequence=11),dict(receiptIdentity='0'*64),dict(supervisorId=str(uuid.uuid4())),
+                        dict(bundleSha256='0'*64),dict(action='baseline-status')):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                self.journal.post_stop_context(dict(self.request,**changes))
+        for table,column in [('feed_exit_confirmation','proof'),('feed_manifest','raw')]:
+            with self.journal._transaction() as db:
+                old=db.execute('SELECT '+column+' FROM '+table).fetchone()[column]
+                if table=='feed_manifest':value=bytes(old)+b' '
+                else:
+                    value=json.loads(old);value['exitCode']=1;value=encode(value).decode()
+                db.execute('UPDATE '+table+' SET '+column+'=?',(value,))
+            with self.subTest(table=table),self.assertRaises(Refused):self.journal.post_stop_context(self.request)
+            with self.journal._transaction() as db:db.execute('UPDATE '+table+' SET '+column+'=?',(old,))
+        path=self.root/'bindings.json';raw=path.read_bytes();value=json.loads(raw)
+        value['sourceHashes']['rehearsalContract']='0'*64;path.write_bytes(encode(value))
+        with self.assertRaises(Refused):self.journal.post_stop_context(self.request)
+        path.write_bytes(raw)
+
+    def test_changed_original_request_file_or_admission_hash_cannot_dispatch(self):
+        self.admit()
+        path=self.root/'requests'/(self.request['requestId']+'.request.json')
+        raw=path.read_bytes();path.write_bytes(encode(dict(self.request,nonce=str(uuid.uuid4()))))
+        with self.assertRaises(Refused):self.journal.post_stop_dispatch(self.request['requestId'])
+        path.write_bytes(raw)
+        with self.journal._transaction() as db:
+            raw=db.execute('SELECT proof FROM post_stop_admission').fetchone()['proof']
+            value=json.loads(raw);value['requestSha256']='0'*64
+            db.execute('UPDATE post_stop_admission SET proof=?',(encode(value).decode(),))
+        with self.assertRaises(Refused):self.journal.post_stop_dispatch(self.request['requestId'])
+
+    def test_concurrent_new_ids_reserve_only_one_semantic_admission(self):
+        import concurrent.futures
+        requests=[dict(self.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4())) for _ in range(2)]
+        for request in requests:publish_request(self.root,request)
+        def admit(request):
+            try:self.journal.admit(request);return True
+            except Refused:return False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes=list(pool.map(admit,requests))
+        self.assertEqual(sorted(outcomes),[False,True])
+        with self.journal._connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM post_stop_admission').fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT count(*) FROM mutation_keys WHERE action='rehearsal-finish'").fetchone()[0],1)
+
+    def test_direct_ordinary_admission_after_successful_stop_refuses_without_cancelling_owner(self):
+        ordinary=dict(self.request,action='baseline-status')
+        publish_request(self.root,ordinary)
+        with self.assertRaises(Refused):self.journal.admit(ordinary)
+        self.assertEqual(self.journal.run_snapshot()['runState'],'active')
+
+    def test_prior_finish_request_excludes_a_new_admission_even_without_cached_claim(self):
+        prior=dict(self.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()))
+        with self.journal._transaction() as db:
+            db.execute('INSERT INTO requests VALUES (?,?,?,?,?,?)',(prior['requestId'],self.f.run,prior['nonce'],
+                encode(prior).decode(),'complete',encode(self.result()).decode()))
+        publish_request(self.root,self.request)
+        with self.assertRaises(Refused):self.journal.admit(self.request)
+
+    def test_sealed_binding_getter_rejects_a_forged_result_source(self):
+        self.admit();self.journal.post_stop_dispatch(self.request['requestId'])
+        self.journal.seal(self.request['requestId'],self.result(),post_stop_source_sha=self.result()['payload']['sourceSha256'])
+        with self.journal._transaction() as db:
+            raw=json.loads(db.execute('SELECT proof FROM post_stop_binding').fetchone()['proof'])
+            result=self.result();result['payload']['sourceSha256']='0'*64;raw['workerResult']=result['payload']
+            db.execute('UPDATE post_stop_binding SET proof=?',(encode(raw).decode(),))
+            db.execute('UPDATE requests SET result=? WHERE request_id=?',(encode(result).decode(),self.request['requestId']))
+        with self.assertRaises(Refused):self.journal.post_stop_binding()
+
+    def test_sealed_binding_remains_authentic_after_freshness_and_deadline_expire(self):
+        from unittest.mock import patch
+        self.admit();self.journal.post_stop_dispatch(self.request['requestId'])
+        self.journal.seal(self.request['requestId'],self.result(),post_stop_source_sha=self.result()['payload']['sourceSha256'])
+        expected=self.journal.post_stop_binding()
+        with patch('pgcat_lane_protocol.time.time',return_value=self.f.receipt['observedAt']+121), \
+             patch('pgcat_lane_protocol.monotonic',return_value=self.request['deadlineMonotonic']+121):
+            self.assertEqual(self.journal.post_stop_binding(),expected)
+            with self.assertRaises(Refused):self.journal.post_stop_context(self.request)
+            with self.assertRaises(Refused):self.journal.post_stop_dispatch(self.request['requestId'])

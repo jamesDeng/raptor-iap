@@ -66,9 +66,11 @@ def unique(pairs):
 
 class ActionCatalog:
     @staticmethod
-    def command(action, bindings, run_id=None, pending_binding=None, run_context=None):
+    def command(action, bindings, run_id=None, pending_binding=None, run_context=None,
+                *, lane_root=None, request_id=None):
         require(type(action) is str and action in ACTIONS)
         validate_bindings(bindings)
+        require(action == 'rehearsal-finish' or lane_root is None and request_id is None)
         # No ambient credentials, shell startup files or arbitrary environment.
         env = {'PATH':os.defpath, 'HOME':os.path.expanduser('~'), 'LANG':'C', 'LC_ALL':'C'}
         for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY',
@@ -96,7 +98,12 @@ class ActionCatalog:
                      '--Servers.1.Port','6432',
                      '--profile',PROFILE,'--region',REGION],env,20.0)
         q = shlex.quote
-        if action.startswith(('baseline-','pre-scale-')):
+        if action == 'rehearsal-finish':
+            identifier(request_id)
+            require(type(lane_root) is str and Path(lane_root).is_absolute() and '..' not in Path(lane_root).parts,'source')
+            require(type(run_context) is dict and run_context.get('requestId') == request_id,'source')
+            command=ActionCatalog.post_stop_worker_command(bindings,run_id,run_context)
+        elif action.startswith(('baseline-','pre-scale-')):
             identifier(run_id)
             phase, verb = action.rsplit('-',1)
             hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
@@ -194,9 +201,25 @@ class ActionCatalog:
         env.update(PGCAT_LANE_ROLE='external', PGCAT_LANE_REAL_CLI=bindings['workbenchCli'],
             PGCAT_LANE_LOCK=bindings['laneLockPath'], PGCAT_LANE_RECEIPT=bindings['receiptPath'],
             PGCAT_LANE_INTENT_DIR=bindings['laneIntentDir'])
+        if action == 'rehearsal-finish':
+            env.update(PGCAT_LANE_ROLE='post-stop',PGCAT_LANE_ROOT=lane_root,PGCAT_LANE_REQUEST_ID=request_id)
         from pgcat_source_bootstrap import command as source_command
         return (source_command(bindings['sourceHashes'],'laneWrapper',
                 ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',command]),env,5.0)
+
+    @staticmethod
+    def post_stop_worker_command(bindings, run_id, context):
+        validate_bindings(bindings);identifier(run_id)
+        require(type(context) is dict and set(context) == {'schemaVersion','requestId','stopProofSha256',
+            'receipt','reconcileBinding','collectorIdentity'} and type(context['schemaVersion']) is int and context['schemaVersion'] == 1,'source')
+        identifier(context['requestId']);require(sha(context['stopProofSha256']),'source')
+        require(type(context['receipt']) is dict and type(context['reconcileBinding']) is dict,'source')
+        validate_result(dict(state='complete',category='ok',payload=dict(status='ALIVE',identity=context['collectorIdentity'])))
+        hashes={key:bindings['sourceHashes'][key] for key in set(WORKER_SOURCES) | {'collectorControl','laneTimingAssessor'}}
+        parts=['python3','-I','-S','-c',BOOTSTRAP,bindings['phaseWorker'],hashes['rehearsalWorker'],
+            'post-stop-finish',bindings['contractDir'],run_id,bindings['workerKubeconfig'],
+            json.dumps(hashes,sort_keys=True,separators=(',',':')),encode(bindings['target']).decode('ascii'),encode(context).decode('ascii')]
+        return ' '.join(shlex.quote(part) for part in parts)
 
     @staticmethod
     def parse(action, raw, request, receipt=None, source_sha=None, pending_binding=None):
@@ -212,7 +235,16 @@ class ActionCatalog:
             rows = [json.loads(line,object_pairs_hook=unique) for line in raw.decode('ascii').splitlines()]
         except (ValueError,UnicodeError):
             raise Refused('parse') from None
-        if action == 'reconcile-close':
+        if action == 'rehearsal-finish':
+            require(len(rows) == 2 and rows[0] == dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'),'parse')
+            value=rows[1]
+            require(type(value) is dict and set(value) == {'feedSession','sequence','boundaryRequestId',
+                'boundarySha256','evidenceSha256','sourceSha256'} and value['feedSession'] == request['feedSession'] and
+                type(value['sequence']) is int and value['sequence'] == request['minimumSequence'] and
+                type(value['boundaryRequestId']) is str and re.fullmatch(r'[0-9a-f]{32}',value['boundaryRequestId']) is not None and
+                all(sha(value[key]) for key in ('boundarySha256','evidenceSha256','sourceSha256')) and
+                sha(source_sha) and value['sourceSha256'] == source_sha,'parse')
+        elif action == 'reconcile-close':
             require(len(rows) == 2 and rows[0] == dict(status='PREPARED',stage='reconcile',category='rehearsal-only'),'parse')
             value=rows[1]
             require(type(value) is dict and set(value) == {'feedSession','sequence','resourceVersion'},'parse')

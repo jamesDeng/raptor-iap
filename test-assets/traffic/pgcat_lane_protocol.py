@@ -15,7 +15,7 @@ MAX_REQUEST = 16384
 ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'pre-scale-status', 'zero-gate-start', 'zero-gate-status', 'pending-start',
     'pending-status', 'pending-proof', 'collector-launch', 'collector-status',
-    'rehearsal-collector-launch', 'rehearsal-collector-status', 'lane-verdict', 'reconcile-close',
+    'rehearsal-collector-launch', 'rehearsal-collector-status', 'lane-verdict', 'reconcile-close', 'rehearsal-finish',
     'scaleout-two-to-three', 'pre-drain-proof', 'deregister-new-node',
     'zero-proof', 'scaling-activity-check', 'scalein-three-to-two'))
 NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status',
@@ -277,7 +277,7 @@ def validate_result(result):
     require(set(payload) <= {'status','stage','phase','feedSession','sequence','resourceVersion','requestId','jobId','identity',
                             'runId','newId','originalInstanceIds','observedAt','clientRosterSha256',
                             'evidenceSha256','sourceSha256','pendingBindingSha256',
-                            'preDrainBindingSha256','exit','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'})
+                            'preDrainBindingSha256','boundaryRequestId','boundarySha256','exit','category','verdictSha256','clientIdentitySha256','workerCredentialCleanupSha256'})
     for key, value in payload.items():
         if key == 'exit':
             require(type(value) is dict and set(value)=={'category','exitCode','completionSha256'})
@@ -300,7 +300,7 @@ def validate_result(result):
         elif key in ('clientIdentitySha256','workerCredentialCleanupSha256'):
             require(sha(value) or (value is None and payload.get('category')=='lane-timing' and
                     payload.get('status') in ('FAIL','INCONCLUSIVE')))
-        elif key=='verdictSha256':
+        elif key in ('verdictSha256','boundarySha256'):
             require(sha(value))
         elif key in ('clientRosterSha256','evidenceSha256','sourceSha256','pendingBindingSha256'):
             require(sha(value))
@@ -579,6 +579,11 @@ class Journal:
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS reconcile_binding (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS post_stop_admission (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL,
+                dispatch_claimed INTEGER NOT NULL DEFAULT 0 CHECK(dispatch_claimed IN (0,1)));
+                CREATE TABLE IF NOT EXISTS post_stop_binding (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS mutation_keys (
                 run_id TEXT NOT NULL, action TEXT NOT NULL,
                 PRIMARY KEY (run_id,action));
@@ -658,6 +663,21 @@ class Journal:
             require(run['supervisor'] in (None, request['supervisorId']))
             require(run['session'] in (None, request['feedSession']))
             require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None)
+            require(request['action'] == 'rehearsal-finish' or
+                    db.execute('SELECT 1 FROM rehearsal_stop').fetchone() is None,'incomplete')
+            if request['action'] == 'rehearsal-finish':
+                context,bindings,stop=self._post_stop_context_in_tx(db,request)
+                require(db.execute("SELECT 1 FROM requests WHERE json_extract(request,'$.action')='rehearsal-finish'").fetchone() is None and
+                        db.execute('SELECT 1 FROM post_stop_admission').fetchone() is None and
+                        db.execute('SELECT 1 FROM post_stop_binding').fetchone() is None and
+                        db.execute('SELECT 1 FROM finish_receipts').fetchone() is None and
+                        db.execute('SELECT 1 FROM mutation_keys WHERE run_id=? AND action=?',
+                            (request['runId'],'rehearsal-finish')).fetchone() is None,'incomplete')
+                proof=dict(schemaVersion=1,requestId=request['requestId'],runId=request['runId'],
+                    feedSession=request['feedSession'],requestSha256=digest(request),
+                    receiptIdentity=request['receiptIdentity'],stopProofSha256=digest(stop),context=context)
+                db.execute('INSERT INTO post_stop_admission VALUES (1,?,0)',(encode(proof).decode(),))
+                db.execute('INSERT INTO mutation_keys VALUES (?,?)',(request['runId'],'rehearsal-finish'))
             if request['action']=='lane-verdict':
                 require(run['mode']=='no-scale','configuration')
                 prior=self._collector_exit_in_tx(db)
@@ -806,7 +826,7 @@ class Journal:
     def seal(self, request_id: str, result: dict, pending_source_sha=None,
              pre_drain_source_sha=None, zero_source_sha=None,
              lane_verdict_source_sha=None, lane_verdict_result=None,
-             reconcile_source_sha=None) -> None:
+             reconcile_source_sha=None, post_stop_source_sha=None) -> None:
         identifier(request_id)
         validate_result(result)
         with self._transaction() as db:
@@ -815,6 +835,26 @@ class Journal:
             run = db.execute('SELECT state FROM run').fetchone()
             require(result['state'] != 'complete' or run['state'] == 'active')
             request = json.loads(row['request'])
+            require(post_stop_source_sha is None or
+                    (request['action'] == 'rehearsal-finish' and result['state'] == 'complete'),'source')
+            if result['state'] == 'complete' and request['action'] == 'rehearsal-finish':
+                require(all(value is None for value in (pending_source_sha,pre_drain_source_sha,
+                    zero_source_sha,lane_verdict_source_sha,lane_verdict_result,reconcile_source_sha)),'source')
+                admitted=self._post_stop_admission_in_tx(db,request_id)
+                row=db.execute('SELECT dispatch_claimed FROM post_stop_admission').fetchone()
+                require(row['dispatch_claimed'] == 1,'incomplete')
+                source=admitted['bindings']['sourceHashes']['rehearsalContract']
+                require(sha(post_stop_source_sha) and post_stop_source_sha == source,'source')
+                from pgcat_lane_actions import ActionCatalog
+                header=dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only')
+                payload=ActionCatalog.parse('rehearsal-finish',encode(header)+b'\n'+encode(result['payload']),
+                    request,source_sha=source)
+                require(db.execute('SELECT 1 FROM post_stop_binding').fetchone() is None,'incomplete')
+                proof=dict(schemaVersion=1,requestId=request_id,runId=request['runId'],
+                    feedSession=request['feedSession'],stopProofSha256=admitted['admission']['stopProofSha256'],
+                    admissionSha256=digest(admitted['admission']),workerResult=payload,sealedAt=time.time())
+                require(monotonic() < request['deadlineMonotonic'],'timeout')
+                db.execute('INSERT INTO post_stop_binding VALUES (1,?)',(encode(proof).decode(),))
             require(request['action']=='lane-verdict' or
                     lane_verdict_source_sha is None and lane_verdict_result is None,'source')
             require(request['action'] == 'reconcile-close' or reconcile_source_sha is None, 'source')
@@ -1234,46 +1274,50 @@ class Journal:
             require(db.execute('SELECT 1 FROM feed_exit_confirmation').fetchone() is None,'child')
             db.execute('INSERT INTO feed_exit_confirmation VALUES (1,?)',(encode(confirmation).decode(),))
 
+    def _current_rehearsal_stop_in_tx(self, db):
+        run=db.execute('SELECT * FROM run').fetchone()
+        require(run is not None and run['mode'] == 'disabled-rehearsal' and run['state'] == 'active','incomplete')
+        def proof(table):
+            row=db.execute('SELECT proof FROM '+table).fetchone()
+            require(row is not None,'incomplete')
+            return json.loads(row['proof'])
+        binding=proof('feed_binding');exited=proof('feed_exit_confirmation');reconcile=proof('reconcile_binding')
+        manifest=db.execute('SELECT raw FROM feed_manifest').fetchone();require(manifest is not None,'source')
+        bound=dict(runId=run['run_id'],runState=run['state'],mode=run['mode'],
+            target=json.loads(run['target']),hashes=json.loads(run['hashes']))
+        outer=self._feed_manifest(bytes(manifest['raw']),binding,bound)
+        require(type(exited) is dict and set(exited) == {'runId','feedId','pid','exitCode'} and
+                type(exited['pid']) is int,'child')
+        require(binding['runId'] == run['run_id'] and type(binding['pid']) is int and binding['pid'] > 0 and
+                all(exited[k] == binding[k] for k in ('runId','feedId','pid')) and
+                type(exited['exitCode']) is int and exited['exitCode'] == 0,'child')
+        capture=Path(outer['captureRoot']);receipt_path=Path(outer['laneBindings']['receiptPath'])
+        intent,intent_raw=private_json(capture/REHEARSAL_STOP_INTENT)
+        ack,ack_raw=private_json(capture/REHEARSAL_STOP_ACK)
+        require(intent_raw == encode(intent) and ack_raw == encode(ack),'receipt')
+        import pgcat_workbench_lane as lane
+        before=lane.identity(os.lstat(receipt_path));receipt,raw=private_json(receipt_path)
+        require(before == lane.identity(os.lstat(receipt_path)),'receipt')
+        validate_rehearsal_stop_receipt(intent,receipt,reconcile,bound)
+        require(run['session'] == receipt['feedSession'] and encode(ack) == encode(rehearsal_stop_ack(intent,receipt)),'receipt')
+        feed_exit=dict(pid=binding['pid'],exitCode=0,category='ok',feedSession=receipt['feedSession'],sequence=receipt['sequence'])
+        from pgcat_lane_supervisor import receipt_identity
+        result=dict(schemaVersion=1,runId=run['run_id'],feedSession=receipt['feedSession'],
+            receipt=receipt,receiptIdentity=receipt_identity((before,raw)),feedExit=feed_exit,
+            feedBinding=binding,exitConfirmation=exited,reconcileBinding=reconcile,intent=intent,ack=ack)
+        # Refuse replacement during independent validation, including identical JSON in a new inode.
+        require(private_json(capture/REHEARSAL_STOP_INTENT)[1] == intent_raw and
+                private_json(capture/REHEARSAL_STOP_ACK)[1] == ack_raw and
+                private_json(receipt_path)[1] == raw and lane.identity(os.lstat(receipt_path)) == before,'receipt')
+        self._feed_manifest(bytes(manifest['raw']),binding,bound)
+        return result
+
     def record_rehearsal_stop(self):
         """Derive one proof solely from this run's original bound private artifacts."""
         try:
             with self._transaction() as db:
-                run=db.execute('SELECT * FROM run').fetchone()
-                require(run is not None and run['mode'] == 'disabled-rehearsal' and run['state'] == 'active','incomplete')
                 require(db.execute('SELECT 1 FROM rehearsal_stop').fetchone() is None,'incomplete')
-                def proof(table):
-                    row=db.execute('SELECT proof FROM '+table).fetchone()
-                    require(row is not None,'incomplete')
-                    return json.loads(row['proof'])
-                binding=proof('feed_binding');exited=proof('feed_exit_confirmation');reconcile=proof('reconcile_binding')
-                manifest=db.execute('SELECT raw FROM feed_manifest').fetchone();require(manifest is not None,'source')
-                bound=dict(runId=run['run_id'],runState=run['state'],mode=run['mode'],
-                    target=json.loads(run['target']),hashes=json.loads(run['hashes']))
-                outer=self._feed_manifest(bytes(manifest['raw']),binding,bound)
-                require(type(exited) is dict and set(exited) == {'runId','feedId','pid','exitCode'} and
-                        type(exited['pid']) is int,'child')
-                require(binding['runId'] == run['run_id'] and type(binding['pid']) is int and binding['pid'] > 0 and
-                        all(exited[k] == binding[k] for k in ('runId','feedId','pid')) and
-                        type(exited['exitCode']) is int and exited['exitCode'] == 0,'child')
-                capture=Path(outer['captureRoot']);receipt_path=Path(outer['laneBindings']['receiptPath'])
-                intent,intent_raw=private_json(capture/REHEARSAL_STOP_INTENT)
-                ack,ack_raw=private_json(capture/REHEARSAL_STOP_ACK)
-                require(intent_raw == encode(intent) and ack_raw == encode(ack),'receipt')
-                import pgcat_workbench_lane as lane
-                before=lane.identity(os.lstat(receipt_path));receipt,raw=private_json(receipt_path)
-                require(before == lane.identity(os.lstat(receipt_path)),'receipt')
-                validate_rehearsal_stop_receipt(intent,receipt,reconcile,bound)
-                require(run['session'] == receipt['feedSession'] and encode(ack) == encode(rehearsal_stop_ack(intent,receipt)),'receipt')
-                feed_exit=dict(pid=binding['pid'],exitCode=0,category='ok',feedSession=receipt['feedSession'],sequence=receipt['sequence'])
-                from pgcat_lane_supervisor import receipt_identity
-                result=dict(schemaVersion=1,runId=run['run_id'],feedSession=receipt['feedSession'],
-                    receipt=receipt,receiptIdentity=receipt_identity((before,raw)),feedExit=feed_exit,
-                    feedBinding=binding,exitConfirmation=exited,reconcileBinding=reconcile,intent=intent,ack=ack)
-                # Refuse replacement during independent validation, including identical JSON in a new inode.
-                require(private_json(capture/REHEARSAL_STOP_INTENT)[1] == intent_raw and
-                        private_json(capture/REHEARSAL_STOP_ACK)[1] == ack_raw and
-                        private_json(receipt_path)[1] == raw and lane.identity(os.lstat(receipt_path)) == before,'receipt')
-                self._feed_manifest(bytes(manifest['raw']),binding,bound)
+                result=self._current_rehearsal_stop_in_tx(db)
                 db.execute('INSERT INTO rehearsal_stop VALUES (1,?)',(encode(result).decode(),))
                 return result
         except (OSError,ValueError,UnicodeError,KeyError,TypeError):raise Refused('receipt') from None
@@ -1283,6 +1327,138 @@ class Journal:
             row=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
             require(row is not None,'incomplete')
             return json.loads(row['proof'])
+
+    def _post_stop_context_in_tx(self, db, request):
+        validate_request(request)
+        run=db.execute('SELECT * FROM run').fetchone()
+        require(run is not None and run['state'] == 'active' and run['mode'] == 'disabled-rehearsal','incomplete')
+        _release_admission(run['mode'],request['action'])
+        require(request['action'] == 'rehearsal-finish' and request['runId'] == run['run_id'] and
+                request['supervisorId'] == run['supervisor'] and
+                request['target'] == json.loads(run['target']) and
+                request['bundleSha256'] == json.loads(run['hashes'])['bundleSha256'],'source')
+        require(0 < request['deadlineMonotonic']-monotonic() <= 5.,'timeout')
+        stop=self._current_rehearsal_stop_in_tx(db)
+        stored=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
+        require(stored is not None and encode(stop) == encode(json.loads(stored['proof'])),'source')
+        require(request['feedSession'] == stop['feedSession'] == run['session'] and
+                request['minimumSequence'] == stop['receipt']['sequence'] and
+                request['receiptIdentity'] == stop['receiptIdentity'],'receipt')
+        bindings,_=private_json(self.root/'bindings.json')
+        from pgcat_source_bootstrap import SOURCES
+        here=Path(__file__).resolve().parent
+        for key,name in SOURCES.items():
+            path=Path(bindings['laneWrapper'] if key == 'laneWrapper' else
+                      bindings['providerFeedPath'] if key == 'providerFeed' else here/name)
+            require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == bindings['sourceHashes'][key],'source')
+        launched=False;collector=None
+        for row in db.execute("SELECT request,result FROM requests WHERE state='complete' ORDER BY rowid"):
+            prior=json.loads(row['request'])
+            if prior['action'] not in ('rehearsal-collector-launch','rehearsal-collector-status'):continue
+            validate_request(prior);result=json.loads(row['result']);validate_result(result)
+            require(prior['runId'] == request['runId'] and prior['supervisorId'] == request['supervisorId'] and
+                    prior['feedSession'] == request['feedSession'] and prior['target'] == request['target'] and
+                    prior['bundleSha256'] == request['bundleSha256'] and
+                    prior['minimumSequence'] <= request['minimumSequence'],'source')
+            if prior['action'] == 'rehearsal-collector-launch':
+                require(not launched and result['payload'] == {'status':'LAUNCHED'},'source');launched=True
+            else:
+                payload=result['payload']
+                require(launched and set(payload) == {'status','identity'} and payload['status'] == 'ALIVE','child')
+                require(collector is None or collector == payload['identity'],'child')
+                collector=payload['identity']
+        require(launched and collector is not None,'child')
+        context=dict(schemaVersion=1,requestId=request['requestId'],stopProofSha256=digest(stop),
+            receipt=stop['receipt'],reconcileBinding=stop['reconcileBinding'],collectorIdentity=collector)
+        return context,bindings,stop
+
+    def post_stop_context(self, request):
+        try:
+            with self._connection() as db:return self._post_stop_context_in_tx(db,request)[0]
+        except (OSError,ValueError,UnicodeError,KeyError,TypeError):raise Refused('source') from None
+
+    def _post_stop_admission_in_tx(self, db, request_id, *, complete=False):
+        identifier(request_id)
+        row=db.execute('SELECT * FROM requests WHERE request_id=?',(request_id,)).fetchone()
+        require(row is not None and row['state'] == ('complete' if complete else 'dispatching'),'incomplete')
+        request=json.loads(row['request'])
+        require(encode(read_request(self.root,request_id)) == encode(request),'source')
+        context,bindings,stop=self._post_stop_context_in_tx(db,request)
+        row=db.execute('SELECT proof FROM post_stop_admission').fetchone()
+        require(row is not None,'incomplete');proof=json.loads(row['proof'])
+        expected=dict(schemaVersion=1,requestId=request_id,runId=request['runId'],feedSession=request['feedSession'],
+            requestSha256=digest(request),receiptIdentity=request['receiptIdentity'],stopProofSha256=digest(stop),context=context)
+        require(encode(proof) == encode(expected) and db.execute(
+            'SELECT 1 FROM mutation_keys WHERE run_id=? AND action=?',(request['runId'],'rehearsal-finish')).fetchone() is not None,'source')
+        return dict(request=request,admission=proof,bindings=bindings)
+
+    def post_stop_admission(self, request_id):
+        try:
+            with self._connection() as db:return self._post_stop_admission_in_tx(db,request_id)
+        except (OSError,ValueError,UnicodeError,KeyError,TypeError):raise Refused('source') from None
+
+    def post_stop_dispatch(self, request_id):
+        try:
+            with self._transaction() as db:
+                proof=self._post_stop_admission_in_tx(db,request_id)
+                require(db.execute('SELECT dispatch_claimed FROM post_stop_admission').fetchone()['dispatch_claimed'] == 0,'incomplete')
+                db.execute('UPDATE post_stop_admission SET dispatch_claimed=1 WHERE singleton=1 AND dispatch_claimed=0')
+                require(monotonic() < proof['request']['deadlineMonotonic'],'timeout')
+                return proof
+        except (OSError,ValueError,UnicodeError,KeyError,TypeError):raise Refused('source') from None
+
+    def post_stop_binding(self):
+        """Authenticate a sealed historical boundary; this read grants no dispatch."""
+        try:
+            with self._connection() as db:
+                row=db.execute('SELECT proof FROM post_stop_binding').fetchone()
+                require(row is not None,'incomplete');proof=json.loads(row['proof'])
+                require(type(proof) is dict and set(proof) == {'schemaVersion','requestId','runId','feedSession',
+                    'stopProofSha256','admissionSha256','workerResult','sealedAt'} and
+                    type(proof['schemaVersion']) is int and proof['schemaVersion'] == 1,'source')
+                row=db.execute('SELECT * FROM requests WHERE request_id=?',(proof['requestId'],)).fetchone()
+                run=db.execute('SELECT * FROM run').fetchone()
+                admission=db.execute('SELECT * FROM post_stop_admission').fetchone()
+                stopped=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
+                require(row is not None and row['state'] == 'complete' and run is not None and
+                    run['mode'] == 'disabled-rehearsal' and admission is not None and
+                    admission['dispatch_claimed'] == 1 and stopped is not None,'incomplete')
+                request=json.loads(row['request']);validate_request(request)
+                result=json.loads(row['result']);validate_result(result)
+                admitted=json.loads(admission['proof']);stop=json.loads(stopped['proof'])
+                hashes=json.loads(run['hashes'])
+                require(request['action'] == 'rehearsal-finish' and request['requestId'] == proof['requestId'] and
+                    request['runId'] == row['run_id'] == run['run_id'] == proof['runId'] == stop['runId'] and
+                    request['nonce'] == row['nonce'] and request['supervisorId'] == run['supervisor'] and
+                    request['feedSession'] == run['session'] == proof['feedSession'] == stop['feedSession'] and
+                    request['target'] == json.loads(run['target']) and request['bundleSha256'] == hashes['bundleSha256'] and
+                    request['minimumSequence'] == stop['receipt']['sequence'] and
+                    request['receiptIdentity'] == stop['receiptIdentity'],'source')
+                require(type(admitted) is dict and set(admitted) == {'schemaVersion','requestId','runId','feedSession',
+                    'requestSha256','receiptIdentity','stopProofSha256','context'} and
+                    type(admitted['schemaVersion']) is int and admitted['schemaVersion'] == 1,'source')
+                context=admitted['context']
+                require(type(context) is dict and set(context) == {'schemaVersion','requestId','stopProofSha256',
+                    'receipt','reconcileBinding','collectorIdentity'} and
+                    type(context['schemaVersion']) is int and context['schemaVersion'] == 1,'source')
+                validate_result(dict(state='complete',category='ok',payload=dict(status='ALIVE',identity=context['collectorIdentity'])))
+                require(admitted['requestId'] == request['requestId'] == context['requestId'] and
+                    admitted['runId'] == request['runId'] and admitted['feedSession'] == request['feedSession'] and
+                    admitted['requestSha256'] == digest(request) and admitted['receiptIdentity'] == request['receiptIdentity'] and
+                    admitted['stopProofSha256'] == context['stopProofSha256'] == proof['stopProofSha256'] == digest(stop) and
+                    context['receipt'] == stop['receipt'] and context['reconcileBinding'] == stop['reconcileBinding'] and
+                    proof['admissionSha256'] == digest(admitted) and result == dict(state='complete',category='ok',payload=proof['workerResult']) and
+                    type(proof['sealedAt']) in (int,float) and math.isfinite(proof['sealedAt']) and
+                    stop['receipt']['observedAt'] <= proof['sealedAt'] <= time.time() and
+                    proof['sealedAt']-stop['receipt']['observedAt'] < 30 and
+                    db.execute('SELECT 1 FROM mutation_keys WHERE run_id=? AND action=?',
+                        (request['runId'],'rehearsal-finish')).fetchone() is not None,'source')
+                from pgcat_lane_actions import ActionCatalog
+                header=dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only')
+                ActionCatalog.parse('rehearsal-finish',encode(header)+b'\n'+encode(proof['workerResult']),
+                    request,source_sha=hashes['rehearsalContract'])
+                return proof
+        except (OSError,ValueError,UnicodeError,KeyError,TypeError):raise Refused('source') from None
 
     def _verify_feed_closure(self, db, record, feed_exit):
         bound=db.execute('SELECT proof FROM feed_binding').fetchone()

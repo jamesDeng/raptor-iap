@@ -466,3 +466,46 @@ class PaidFeedBarrierTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class PostStopClientTests(unittest.TestCase):
+    def setUp(self):
+        import test_pgcat_lane_protocol as fixtures
+        from unittest.mock import Mock
+        from pgcat_lane_protocol import digest
+        f=fixtures.PostStopJournalTests();f.setUp();self.addCleanup(f.doCleanups);self.f=f
+        c=LaneClient();self.client=c;c.root=f.root;c.bindings=f.f.outer['laneBindings'];c.mode='disabled-rehearsal'
+        c.run_id=f.f.run;c.supervisor_id=f.supervisor;c.bundle=digest(c.bindings['sourceHashes']);c.journal=f.journal
+        c.process=Mock();c.process.poll.return_value=None
+        reader,c.liveness_fd=os.pipe();os.close(reader);self.addCleanup(c.close)
+
+    def finish_published(self,root,request):
+        publish_request(root,request);self.f.request=request
+        self.f.journal.admit(request);self.f.journal.post_stop_dispatch(request['requestId'])
+        result=self.f.result();self.f.journal.seal(request['requestId'],result,post_stop_source_sha=result['payload']['sourceSha256'])
+        return request['requestId']
+
+    def test_noarg_client_uses_frozen_stop_and_returns_sealed_result(self):
+        with patch.object(client_module,'publish_request',side_effect=self.finish_published), \
+             patch.object(client_module.lane,'read_receipt',side_effect=AssertionError('live receipt')):
+            result=self.client.post_stop_call()
+        self.assertEqual(result,self.f.result());self.assertIsNotNone(self.client.liveness_fd)
+        with self.assertRaises(Refused):self.client.post_stop_call()
+        self.assertIsNotNone(self.client.liveness_fd)
+        with self.assertRaises(Refused):self.client.call('baseline-status',self.f.f.receipt,monotonic()+5.)
+        self.assertIsNotNone(self.client.liveness_fd)
+
+    def test_pre_call_final_age_and_late_return_refuse(self):
+        with patch.object(client_module.time,'time',return_value=self.f.f.receipt['observedAt']+24):
+            with self.assertRaises(Refused):self.client.post_stop_call()
+        self.assertIsNone(self.client.liveness_fd)
+
+    def test_uncertain_first_attempt_closes_and_never_retries(self):
+        def timeout(root,request):
+            publish_request(root,request);self.f.journal.admit(request)
+            self.f.journal.post_stop_dispatch(request['requestId']);self.f.journal.cancel('timeout')
+        with patch.object(client_module,'publish_request',side_effect=timeout):
+            with self.assertRaises(Refused):self.client.post_stop_call()
+        self.assertIsNone(self.client.liveness_fd)
+        with self.f.journal._connection() as db:
+            self.assertEqual(db.execute('SELECT dispatch_claimed FROM post_stop_admission').fetchone()[0],1)

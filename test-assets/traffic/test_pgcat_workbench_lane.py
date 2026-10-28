@@ -264,3 +264,95 @@ with p.open('a') as stream:
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PostStopWrapperTests(unittest.TestCase):
+    def setUp(self):
+        import test_pgcat_lane_protocol as fixtures
+        from pgcat_lane_actions import ActionCatalog
+        from pgcat_lane_protocol import encode
+        f=fixtures.PostStopJournalTests();f.setUp();self.addCleanup(f.doCleanups);self.f=f
+        self.global_dir=f.root.parent/'global';self.global_dir.mkdir(mode=0o700)
+        self.marker=f.root.parent/'cli-pid';self.sleep=f.root.parent/'cli-sleep'
+        self.sleep.write_text('0')
+        cli=Path(f.f.outer['laneBindings']['workbenchCli'])
+        cli.write_text('#!'+sys.executable+'\nimport os,time\nfrom pathlib import Path\nPath('+repr(str(self.marker))+').write_text(str(os.getpid()))\ntime.sleep(float(Path('+repr(str(self.sleep))+').read_text()))\n')
+        cli.chmod(0o700)
+        from pgcat_lane_supervisor import save_once
+        save_once(self.global_dir,'active-run',dict(runId=f.f.run,supervisorId=f.supervisor,laneRoot=str(f.root)))
+        f.admit()
+        b=f.f.outer['laneBindings'];self.argv=['exec','-P','infra-ops-poc','-r','ap-southeast-1','-i',WORKER_ID,'-c',
+            ActionCatalog.post_stop_worker_command(b,f.f.run,f.journal.post_stop_context(f.request))]
+        self.env=dict(os.environ,PGCAT_LANE_ROLE='post-stop',PGCAT_LANE_ROOT=str(f.root),
+            PGCAT_LANE_REQUEST_ID=f.request['requestId'],PGCAT_LANE_REAL_CLI=str(cli),
+            PGCAT_LANE_LOCK=b['laneLockPath'])
+        self.driver=('import sys;from pathlib import Path;import pgcat_lane_protocol as p;'
+            'p._release_admission=lambda *a:None;import pgcat_source_bootstrap as b;b.require_verified=lambda *a:None;'
+            'b.current_hashes=lambda:'+repr(b['sourceHashes'])+';'
+            'import pgcat_lane_supervisor as s;s.GLOBAL_ROOT=Path(sys.argv[1]);'
+            'import pgcat_workbench_lane as w;sys.argv=sys.argv[2:];sys.exit(w.main())')
+        self.env['PYTHONPATH']=str(Path(__file__).parent)
+
+    def launch(self,argv=None,env=None):
+        process=subprocess.Popen([sys.executable,'-c',self.driver,str(self.global_dir),'wrapper']+(argv or self.argv),
+            env=env or self.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        self.addCleanup(lambda:self.clean(process));return process
+
+    def clean(self,process):
+        if process.poll() is None:process.kill()
+        process.communicate()
+
+    def test_fixed_exec_preserves_same_pid_and_inherited_flock(self):
+        self.sleep.write_text('1')
+        process=self.launch();until=time.time()+2
+        while not self.marker.exists() and time.time()<until:time.sleep(.01)
+        self.assertTrue(self.marker.exists(),process.communicate() if process.poll() is not None else 'no exec')
+        self.assertEqual(int(self.marker.read_text()),process.pid)
+        fd=os.open(self.env['PGCAT_LANE_LOCK'],os.O_RDWR)
+        try:
+            with self.assertRaises(BlockingIOError):fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        finally:os.close(fd)
+        self.assertEqual(process.wait(timeout=2),0)
+        from pgcat_lane_protocol import Refused
+        with self.assertRaises(Refused):self.f.journal.post_stop_dispatch(self.f.request['requestId'])
+
+    def test_forged_argv_cli_lock_and_global_owner_refuse_without_claim(self):
+        for key,value in [('PGCAT_LANE_REAL_CLI',sys.executable),('PGCAT_LANE_LOCK',str(self.f.root.parent/'other.lock')),
+                          ('PGCAT_LANE_ROOT',str(self.f.root.parent))]:
+            with self.subTest(key=key):
+                process=self.launch(env=dict(self.env,**{key:value}));out,err=process.communicate(timeout=2)
+                self.assertNotEqual(process.returncode,0);self.assertFalse(self.marker.exists())
+        process=self.launch(argv=self.argv[:-1]+['echo forged']);process.communicate(timeout=2)
+        self.assertNotEqual(process.returncode,0)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.f.journal.post_stop_dispatch(self.f.request['requestId'])['request'],self.f.request)
+
+    def test_timeout_kills_exact_exec_and_claim_cannot_replay(self):
+        from pgcat_lane_protocol import Refused
+        self.sleep.write_text('3')
+        self.driver='import time;time.sleep(.7);'+self.driver
+        process=self.launch()
+        # Start the short execution timeout only after actual exec has claimed admission.
+        # The production request still has its unchanged original five-second deadline.
+        until=self.f.request['deadlineMonotonic']
+        from pgcat_lane_protocol import monotonic
+        while not self.marker.exists() and process.poll() is None and monotonic() < until:time.sleep(.01)
+        self.assertTrue(self.marker.exists())
+        with self.assertRaises(subprocess.TimeoutExpired):process.communicate(timeout=.5)
+        process.kill();process.communicate()
+        self.assertEqual(int(self.marker.read_text()),process.pid)
+        with self.assertRaises(Refused):self.f.journal.post_stop_dispatch(self.f.request['requestId'])
+
+    def test_role_environment_without_verified_loading_refuses(self):
+        process=subprocess.run([sys.executable,str(WRAPPER)]+self.argv,env=self.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        self.assertNotEqual(process.returncode,0);self.assertFalse(self.marker.exists())
+
+    def test_verified_loader_snapshot_must_match_the_original_admitted_sources(self):
+        b=self.f.f.outer['laneBindings']
+        self.driver=self.driver.replace('b.current_hashes=lambda:'+repr(b['sourceHashes'])+';',
+            'b.current_hashes=lambda:{};')
+        process=self.launch();process.communicate(timeout=2)
+        self.assertNotEqual(process.returncode,0);self.assertFalse(self.marker.exists())
+
+
+WORKER_ID = 'i-t4nj1bitmcz7cuoch82h'

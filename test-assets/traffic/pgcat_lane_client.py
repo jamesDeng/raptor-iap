@@ -186,6 +186,12 @@ class LaneClient:
         return row is not None
 
     def call(self, action: str, receipt: dict, deadline: float) -> dict:
+        # Proven stopped calls refuse before the uncertainty/owner-close path.
+        with self.journal._connection() as db:
+            stopped=db.execute('SELECT 1 FROM rehearsal_stop').fetchone() is not None
+        if stopped:
+            self._active();raise Refused('incomplete')
+        require(action != 'rehearsal-finish','configuration')
         try:
             self._active()
             require(type(receipt) is dict, 'receipt')
@@ -218,6 +224,41 @@ class LaneClient:
             category = error.category if isinstance(error, Refused) else 'receipt'
             self._cancel_and_close(category)
             raise Refused(category) from None
+
+    def post_stop_call(self):
+        """One fixed journal-derived finish; never refresh a frozen publication."""
+        with self.journal._connection() as db:
+            duplicate=db.execute('SELECT 1 FROM post_stop_admission').fetchone() is not None
+        if duplicate:
+            self._active();raise Refused('incomplete')
+        deadline=monotonic()+5.
+        try:
+            self._active();require(self.mode == 'disabled-rehearsal','configuration')
+            stopped=self.journal.rehearsal_stop();receipt=stopped['receipt']
+            require(0 <= time.time()-receipt['observedAt'] < 24,'receipt')
+            request=dict(requestId=str(uuid.uuid4()),runId=self.run_id,supervisorId=self.supervisor_id,
+                action='rehearsal-finish',feedSession=receipt['feedSession'],minimumSequence=receipt['sequence'],
+                receiptIdentity=stopped['receiptIdentity'],target=copy.deepcopy(self.bindings['target']),
+                bundleSha256=self.bundle,nonce=str(uuid.uuid4()),deadlineMonotonic=float(deadline))
+            self.journal.post_stop_context(request)
+            require(monotonic() < deadline,'timeout');publish_request(self.root,request)
+            while True:
+                self._active();require(monotonic() < deadline,'timeout')
+                with self.journal._connection() as db:
+                    row=db.execute('SELECT 1 FROM requests WHERE request_id=?',(request['requestId'],)).fetchone()
+                if row is not None:
+                    snapshot=self.journal.snapshot(request['requestId'])
+                    require(snapshot['request'] == request and snapshot['runState'] == 'active' and snapshot['state'] != 'uncertain','source')
+                    if snapshot['state'] == 'complete':
+                        binding=self.journal.post_stop_binding()
+                        require(binding['requestId'] == request['requestId'] and binding['runId'] == self.run_id and
+                            binding['workerResult'] == snapshot['result']['payload'],'source')
+                        self._active();require(monotonic() < deadline and 0 <= time.time()-receipt['observedAt'] < 30,'timeout')
+                        return snapshot['result']
+                time.sleep(.01)
+        except (Refused,OSError,ValueError,KeyError,TypeError) as error:
+            category=error.category if isinstance(error,Refused) else 'source'
+            self._cancel_and_close(category);raise Refused(category) from None
 
     def finish(self, feed_process: subprocess.Popen, feed_exit: dict, assessment: dict) -> dict:
         try:

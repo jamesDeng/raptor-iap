@@ -1582,3 +1582,46 @@ class PaidControllerStopTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class PostStopControllerTests(unittest.TestCase):
+    def setUp(self):
+        fixture=PaidControllerStopTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        self.f=fixture;self.c=fixture.c
+        fixture.feed.wait.side_effect=lambda timeout:fixture.acknowledge()
+        self.c.stop_rehearsal()
+
+    def test_finalized_clients_keep_owner_and_stop_proof_on_duplicates(self):
+        from pgcat_lane_protocol import digest
+        c=self.c;result=dict(state='complete',category='ok',payload=dict(feedSession=self.f.fixture.session,sequence=10,
+            boundaryRequestId='a'*32,boundarySha256='b'*64,evidenceSha256='c'*64,
+            sourceSha256=c.bindings['laneBindings']['sourceHashes']['rehearsalContract']))
+        binding=dict(schemaVersion=1,requestId=str(uuid.uuid4()),runId=c.client.run_id,
+            feedSession=self.f.fixture.session,stopProofSha256=digest(c.rehearsal_stop),admissionSha256='a'*64,
+            workerResult=result['payload'],sealedAt=time.time())
+        with patch.object(c.client,'post_stop_call',return_value=result,create=True), \
+             patch.object(self.f.module.Journal,'post_stop_binding',return_value=binding,create=True):
+            self.assertEqual(c.finish_rehearsal_clients(),binding)
+            self.assertEqual(c.state,'clients-finalized')
+            owner=c.client.liveness_fd
+            for op in (c.finish_rehearsal_clients,c.stop_rehearsal,lambda:c._worker_call('baseline-status')):
+                with self.assertRaises(Refused):op()
+                self.assertEqual(c.client.liveness_fd,owner);self.assertEqual(c.state,'clients-finalized')
+
+    def test_nonzero_retained_exit_cannot_finish_clients(self):
+        self.f.feed.poll.return_value=1
+        with self.assertRaises(Refused):self.c.finish_rehearsal_clients()
+        self.assertEqual(self.c.state,'uncertain')
+
+    def test_stopped_duplicate_and_ordinary_refusal_after_121_seconds_keep_owner(self):
+        c=self.c;owner=c.client.liveness_fd;proof=copy.deepcopy(c.rehearsal_stop)
+        with patch.object(self.f.module.time,'time',return_value=proof['receipt']['observedAt']+121):
+            for state in ('feed-stopped','clients-finalized'):
+                c.state=state
+                operations=[c.stop_rehearsal,lambda:c._worker_call('baseline-status'),
+                    lambda:c.client.call('baseline-status',c.receipt,999999.)]
+                if state=='clients-finalized':operations.append(c.finish_rehearsal_clients)
+                for operation in operations:
+                    with self.subTest(state=state),self.assertRaises(Refused):operation()
+                    self.assertEqual(c.client.liveness_fd,owner);self.assertEqual(c.rehearsal_stop,proof)
+                    self.assertEqual(c.state,state)

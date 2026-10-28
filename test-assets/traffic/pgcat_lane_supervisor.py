@@ -289,10 +289,54 @@ class LaneSupervisor:
         require(child.returncode == 0 and not streams[child.stderr],'child')
         return streams[child.stdout]
 
+    def _post_stop_owner(self):
+        require(self.owner_fd is not None,'incomplete')
+        active,_=private_json(GLOBAL_ROOT/'active-run')
+        require(active == dict(runId=self.run_id,supervisorId=self.supervisor_id,laneRoot=str(self.root)),'source')
+
+    def _post_stop(self, req):
+        with self.journal._connection() as db:
+            require(db.execute('SELECT 1 FROM post_stop_admission').fetchone() is None,'incomplete')
+        admitted=False;deadline=req['deadlineMonotonic']
+        try:
+            self._alive();self._verify_sources()
+            self._post_stop_owner()
+            context=self.journal.post_stop_context(req)
+            argv,env,budget=ActionCatalog.command('rehearsal-finish',self.bindings,self.run_id,
+                run_context=context,lane_root=str(self.root),request_id=req['requestId'])
+            require(0 < deadline-monotonic() <= budget,'timeout')
+            with self._masked() as old_mask:
+                self._alive();self._post_stop_owner();self._verify_sources();self.journal.admit(req);admitted=True
+                self.journal.post_stop_admission(req['requestId'])
+                require(monotonic() < deadline,'timeout')
+                child_mask=set(old_mask)-GRACEFUL
+                self.child=subprocess.Popen(argv,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,start_new_session=True,close_fds=True,
+                    preexec_fn=lambda:signal.pthread_sigmask(signal.SIG_SETMASK,child_mask))
+            raw=self._communicate(deadline)
+            payload=ActionCatalog.parse('rehearsal-finish',raw,req,
+                source_sha=self.bindings['sourceHashes']['rehearsalContract'])
+            self._alive();require(monotonic() < deadline,'timeout');self._cleanup()
+            with self._masked():
+                self._alive();self._post_stop_owner();self._verify_sources();self.journal.post_stop_admission(req['requestId'])
+                require(monotonic() < deadline,'timeout')
+                self.journal.seal(req['requestId'],dict(state='complete',category='ok',payload=payload),
+                    post_stop_source_sha=self.bindings['sourceHashes']['rehearsalContract'])
+            require(monotonic() < deadline,'timeout')
+            return self.journal.snapshot(req['requestId'])
+        except (Refused,lane.Refused,OSError,ValueError,KeyError,TypeError) as error:
+            category=error.category if isinstance(error,Refused) else 'configuration'
+            self._cleanup();self.cancel(category)
+            if not admitted:raise Refused(category) from None
+            with self._masked():
+                if self.journal.snapshot(req['requestId'])['state'] == 'dispatching':
+                    self.journal.seal(req['requestId'],dict(state='uncertain',category=category,payload={}))
+            return self.journal.snapshot(req['requestId'])
+
     def run_once(self, request_id):
         require(self.owner_fd is not None,'incomplete')
         with self._handlers():
-            admitted=False
+            admitted=False;preserve_owner=False
             try:
                 self._alive(); req=read_request(self.root,request_id)
                 require(req['supervisorId'] == self.supervisor_id and req['runId'] == self.run_id)
@@ -306,6 +350,20 @@ class LaneSupervisor:
                         'pre-drain-proof','deregister-new-node','zero-proof',
                         'scaling-activity-check','scalein-three-to-two','reconcile-close') or
                             run['mode'] == 'disabled-rehearsal')
+                with self.journal._connection() as db:
+                    stopped=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
+                    duplicate=db.execute('SELECT 1 FROM post_stop_admission').fetchone() is not None
+                if stopped is not None:
+                    stop=json.loads(stopped['proof'])
+                    require(run['mode'] == 'disabled-rehearsal' and req['feedSession'] == stop['feedSession'] and
+                        req['minimumSequence'] == stop['receipt']['sequence'] and
+                        req['receiptIdentity'] == stop['receiptIdentity'],'source')
+                    self._post_stop_owner()
+                    if req['action'] != 'rehearsal-finish' or duplicate:
+                        # Only authenticated stopped calls bypass the existing failure cancellation.
+                        preserve_owner=True
+                        raise Refused('incomplete')
+                if req['action'] == 'rehearsal-finish':return self._post_stop(req)
                 identity,receipt=self._receipt(req); self._unused(req,receipt)
                 if req['action'] in ('pending-proof','pre-drain-proof','zero-proof',
                                      'scaling-activity-check','scalein-three-to-two'):
@@ -403,6 +461,7 @@ class LaneSupervisor:
                 return self.journal.snapshot(request_id)
             except (Refused,lane.Refused,OSError,ValueError,KeyError,TypeError) as error:
                 category=error.category if isinstance(error,Refused) else 'configuration'
+                if preserve_owner:raise Refused(category) from None
                 self._cleanup()
                 self.cancel(category)
                 if not admitted: raise Refused(category) from None

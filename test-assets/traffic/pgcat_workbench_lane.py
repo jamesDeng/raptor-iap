@@ -111,19 +111,51 @@ def consume_intent(directory, session, sequence):
         os.close(folder)
 
 
+def _post_stop_authority(argv, env, *, claim=False):
+    """Environment locates a private admission; it never grants execution."""
+    try:
+        from pgcat_source_bootstrap import require_verified, current_hashes
+        require_verified(__name__)
+        from pathlib import Path
+        from pgcat_lane_protocol import Journal, private, private_json, monotonic
+        from pgcat_lane_actions import ActionCatalog
+        from pgcat_lane_supervisor import GLOBAL_ROOT
+        root=Path(env['PGCAT_LANE_ROOT'])
+        require(root.is_absolute() and '..' not in root.parts,'source')
+        private(root,True);private(root/'journal.sqlite3')
+        journal=Journal(root);request_id=env['PGCAT_LANE_REQUEST_ID']
+        admitted=journal.post_stop_admission(request_id)
+        request=admitted['request'];bindings=admitted['bindings']
+        require(current_hashes() == bindings['sourceHashes'],'source')
+        active,_=private_json(GLOBAL_ROOT/'active-run')
+        require(active == dict(runId=request['runId'],supervisorId=request['supervisorId'],laneRoot=str(root)),'source')
+        require(env['PGCAT_LANE_REAL_CLI'] == bindings['workbenchCli'] and
+                env['PGCAT_LANE_LOCK'] == bindings['laneLockPath'],'source')
+        expected=ActionCatalog.post_stop_worker_command(bindings,request['runId'],admitted['admission']['context'])
+        require(argv == ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',expected],'source')
+        require(monotonic() < request['deadlineMonotonic'],'deadline')
+        if claim:require(journal.post_stop_dispatch(request_id) == admitted,'source')
+        return request['deadlineMonotonic']
+    except Refused:raise
+    except Exception as error:
+        raise Refused(getattr(error,'category','source')) from None
+
+
 def execute(argv, env):
     require(len(argv) == 9 and argv[:8] ==
             ['exec', '-P', PROFILE, '-r', REGION, '-i', WORKER, '-c']
             and bool(argv[8]))
     role = env.get('PGCAT_LANE_ROLE')
-    require(role in ('provider', 'external'))
+    require(role in ('provider', 'external', 'post-stop'))
     real_cli = env['PGCAT_LANE_REAL_CLI']
     require(os.path.isabs(real_cli) and os.path.isfile(real_cli)
             and os.access(real_cli, os.X_OK))
     lock_path = env['PGCAT_LANE_LOCK']
     require(os.path.isabs(lock_path))
     private_directory(os.path.dirname(lock_path))
-    if role == 'provider':
+    if role == 'post-stop':
+        deadline=_post_stop_authority(argv,env)
+    elif role == 'provider':
         deadline = float(env['PGCAT_LANE_DEADLINE_MONOTONIC'])
         require(math.isfinite(deadline))
     else:
@@ -160,6 +192,8 @@ def execute(argv, env):
             consume_intent(intent_dir, session, value['sequence'])
             latest, _, _ = read_receipt(receipt_path, session, minimum)
             require(latest == original, 'receipt')
+        if role == 'post-stop':
+            require(_post_stop_authority(argv,env,claim=True) == deadline,'source')
         # No context manager, subprocess, helper child or early unlock after exec.
         os.set_inheritable(fd, True)
         try:

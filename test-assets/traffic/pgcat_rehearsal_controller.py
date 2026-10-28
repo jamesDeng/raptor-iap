@@ -217,7 +217,7 @@ class Controller:
             self.close(); raise
 
     def _refuse_stopped(self):
-        if self.state != 'feed-stopped':return
+        if self.state not in ('feed-stopped','clients-finalized'):return
         try:
             require(self.mode == 'disabled-rehearsal' and self.rehearsal_stop is not None and
                     Journal(Path(self.bindings['laneRoot'])).rehearsal_stop() == self.rehearsal_stop,'source')
@@ -880,6 +880,28 @@ class Controller:
             return copy.deepcopy(stopped['feedExit'])
         except (OSError,ValueError,UnicodeError,KeyError,TypeError):
             self.close();raise Refused('receipt') from None
+        except BaseException:
+            self.close();raise
+
+    def finish_rehearsal_clients(self):
+        """Seal the fixed worker boundary while retaining this run's owner."""
+        if self.state == 'clients-finalized':self._refuse_stopped()
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.state == 'feed-stopped','incomplete')
+            self.client._active()
+            require(isinstance(self.feed,Popen) and self.feed is getattr(self.client,'feed_process',None) and
+                    type(self.feed.poll()) is int and self.feed.poll() == 0,'child')
+            journal=Journal(Path(self.bindings['laneRoot']));stopped=journal.rehearsal_stop()
+            require(stopped == self.rehearsal_stop and self.feed.pid == stopped['feedExit']['pid'] and
+                    hashlib.sha256(self.binding_path.read_bytes()).hexdigest() == self.binding_sha,'source')
+            result=self.client.post_stop_call();binding=journal.post_stop_binding()
+            require(result == dict(state='complete',category='ok',payload=binding['workerResult']) and
+                    binding['runId'] == self.client.run_id and binding['feedSession'] == stopped['feedSession'] and
+                    binding['stopProofSha256'] == digest(stopped) and
+                    binding['workerResult']['sourceSha256'] == self.bindings['laneBindings']['sourceHashes']['rehearsalContract'],'source')
+            self.client._active()
+            self.post_stop_proof=copy.deepcopy(binding);self.state='clients-finalized'
+            return copy.deepcopy(binding)
         except BaseException:
             self.close();raise
 
