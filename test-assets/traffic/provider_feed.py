@@ -779,7 +779,16 @@ class Operator:
 
     def workbench(self, script, *arguments):
         self.verify_run_context()
-        command = shlex.join(['python3','-c',script,*arguments])
+        flags=[]
+        if self.mode=='full-replacement-direct-v2' and self.run_context is not None:
+            from pgcat_lane_protocol import Journal
+            from pgcat_native_controller import prepared_source_prefix
+            journal=Journal(Path(self.args.run_context).parent)
+            plan=journal.native_plan();prepared=journal.native_prepared()
+            require(plan['runId']==self.run_context['runId'] and prepared['workerCredential']['path']==self.args.kubeconfig)
+            script=prepared_source_prefix(Path(self.args.worker_inventory).parent,plan,prepared)+script
+            flags=['-I','-S']
+        command = shlex.join(['python3']+flags+['-c',script,*arguments])
         return self.command(_wrapper_command(self.args.workbench,
             ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER_ID,'-c',command]))
 

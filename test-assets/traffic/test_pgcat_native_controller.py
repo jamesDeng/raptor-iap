@@ -32,6 +32,8 @@ def Fixture(root,kind='native-replacement'):
     with patch('test_pgcat_native_ingress.plan',side_effect=pinned):value=IngressFixture(root,kind)
     for name in sources.values():
         shutil.copyfile(here/name,value.run/name);(value.run/name).chmod(0o600)
+    credential=root/'kubeconfig';credential.write_bytes(b'private-offline-fixture');credential.chmod(0o600)
+    value.prepared=dict(planFile=file_record(value.run/'native-plan.json'),baselineFile=file_record(value.run/'native-baseline.json'),gatewayRuntimeFile=file_record(value.run/'native-gateway-runtime.json'),workerCredential=native.credential_identity(credential))
     return value
 
 
@@ -83,27 +85,28 @@ class NativeStartupTests(unittest.TestCase):
         reader=native.FixedWorkerReads(template,path,run_id=run_id)
         self.assertEqual(reader.run_id,run_id)
         self.assertNotIn('runId',reader.plan);self.assertNotIn('baselineSha256',reader.plan)
-        self.assertEqual(native.FixedWorkerReads(value,path).run_id,run_id)
+        self.assertEqual(native.FixedWorkerReads(value,path,credential=reader.credential).run_id,run_id)
+        with self.assertRaises(ValueError):native.FixedWorkerReads(value,path)
         with self.assertRaises(ValueError):native.FixedWorkerReads(template,path)
         with self.assertRaises(ValueError):native.FixedWorkerReads(value,path,run_id='00000000-0000-0000-0000-000000000000')
 
     def test_native_ready_requires_committed_frames_and_live_processes(self):
         f=Fixture(self.root);(f.run/'native-ready.json').unlink()
-        ready=native.seal_ready(f.run,guardian_identity=f.guardian,probe_process=f.probe_process,
+        ready=native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,probe_process=f.probe_process,
             live_clients=f.live_clients,now=lambda:f.now)
         self.assertEqual(ready['frames'],f.ready['frames'])
         self.assertEqual(ready['sources'],f.ready['sources'])
-        with self.assertRaises((OSError,ValueError)):native.seal_ready(f.run,guardian_identity=f.guardian,
+        with self.assertRaises((OSError,ValueError)):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,
             probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
         (f.run/'native-ready.json').unlink();f.append(5)
-        with self.assertRaises(ValueError):native.seal_ready(f.run,guardian_identity=f.guardian,
+        with self.assertRaises(ValueError):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,
             probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
         self.assertFalse((f.run/'native-ready.json').exists())
 
     def test_ready_rejects_process_reuse_and_changed_sources_before_publish(self):
         f=Fixture(self.root);(f.run/'native-ready.json').unlink()
         for probe in (lambda pid:None,lambda pid:dict(f.probe_process(pid),startTicks=999)):
-            with self.assertRaises(ValueError):native.seal_ready(f.run,guardian_identity=f.guardian,
+            with self.assertRaises(ValueError):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,
                 probe_process=probe,live_clients=f.live_clients,now=lambda:f.now)
         self.assertFalse((f.run/'native-ready.json').exists())
 
@@ -253,7 +256,95 @@ class NativeBaselineTests(unittest.TestCase):
         self.assertNotIn('planSha256',baseline);self.assertEqual(result['planFile'],file_record(target/'native-plan.json'))
         with self.assertRaises(FileExistsError):native.prepare_records(target,template,f.plan['runId'],**self.readers())
 
+    def test_collection_uses_advancing_observation_clock_and_keeps_freshness(self):
+        f=self.f
+        for offset in (0,-4,2):
+            with self.subTest(sample_offset=offset):
+                readers=self.readers();clock=[f.now];pod=readers['read_pod'];metrics=readers['read_metrics']
+                def advancing_pod(value):
+                    clock[0]+=.1;row=pod(value);row['snapshot']['sample']['at']=clock[0]+offset;return row
+                def advancing_metrics(origin):
+                    clock[0]+=1.2;row=metrics(origin);row['observedAt']=clock[0];return row
+                readers.update(read_pod=advancing_pod,read_metrics=advancing_metrics,now=lambda:clock[0])
+                if offset:
+                    with self.assertRaises(ValueError):native.collect_baseline(f.plan['runId'],f.plan,**readers)
+                else:
+                    result=native.collect_baseline(f.plan['runId'],f.plan,**readers)
+                    self.assertEqual(result['observedAt'],clock[0]);self.assertGreater(clock[0],f.now+1)
+
+    def test_collection_rejects_stale_or_future_metrics_on_current_clock(self):
+        f=self.f
+        for offset in (-4,2):
+            readers=self.readers();original=readers['read_metrics']
+            readers['read_metrics']=lambda origin:dict(original(origin),observedAt=f.now+offset)
+            with self.subTest(offset=offset),self.assertRaises(ValueError):native.collect_baseline(f.plan['runId'],f.plan,**readers)
+
 class NativeCaptureContextTests(unittest.TestCase):
+    def test_native_feed_checks_originals_before_first_actual_publication(self):
+        import provider_feed as feed
+        for name in (None,'native-plan.json','native-baseline.json','native-gateway-runtime.json','kubeconfig'):
+            with self.subTest(replaced=name),tempfile.TemporaryDirectory() as d:
+                root=Path(d).resolve();root.chmod(0o700);f=Fixture(root)
+                context=json.loads((f.source/'run-context.json').read_bytes())['runContext']
+                inventory=f.run/'provider-inventory.json';value=json.loads(inventory.read_bytes());value['sequence']=1
+                raw=json.dumps(value,separators=(',',':')).encode('ascii');shutil.rmtree(f.source);inventory.unlink()
+                prefix=native.prepared_source_prefix(f.run,f.plan,f.prepared)
+                if name is not None:
+                    path=(root if name=='kubeconfig' else f.run)/name;data=path.read_bytes()
+                    path.rename(path.with_name('held-'+name));path.write_bytes(data);path.chmod(0o600)
+                script=prefix+'import hashlib,json,os,stat,sys,time; from pathlib import Path\n'+feed._PRIVATE_PUBLICATION_SOURCE+'\nwrite_private_publication('+','.join(repr(v) for v in (
+                    str(root/'contract'),context,f.context['feedSession'],1,f.now,{'a':'10.1.0.1','b':'10.1.0.2'},str(inventory),raw))+')\n'
+                result=subprocess.run([sys.executable,'-I','-S','-c',script],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+                if name is None:
+                    self.assertEqual(result.returncode,0,result.stderr);self.assertTrue((f.source/'000001.json').exists())
+                    self.assertEqual(inventory.read_bytes(),raw)
+                else:
+                    self.assertNotEqual(result.returncode,0);self.assertFalse(f.source.exists());self.assertFalse(inventory.exists())
+
+    def test_actual_child_keeps_original_digest_when_intent_and_objects_are_replaced(self):
+        from segmented_capture import canonical,sha
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d).resolve();root.chmod(0o700);f=Fixture(root)
+            job=f.run/'collector-job';job.mkdir(mode=0o700)
+            started=dict(runId=f.plan['runId'],startedAt=int(f.now),profile=native.MODE,captureMaxSeconds=75,prepared=f.prepared)
+            write(job/'intent.json',started);expected=sha(canonical(f.prepared))
+            script=bootstrap.ROOT.replace('sys.exit(m.main())',
+                "m.install(__import__('json').loads(sys.argv[1]));c=__import__('pgcat_collector_control');from pathlib import Path;"
+                "c.native_prepared(Path(sys.argv[2]),__import__('json').loads((Path(sys.argv[2])/'collector-job'/'intent.json').read_bytes()),sys.argv[3]);print('BOUND')")
+            argv=[sys.executable,'-I','-S','-c',script,str(f.run/'pgcat_source_bootstrap.py'),f.plan['sourceHashes']['sourceBootstrap'],json.dumps(f.plan['sourceHashes']),str(f.run),expected]
+            healthy=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+            self.assertEqual(healthy.returncode,0,healthy.stderr);self.assertEqual(healthy.stdout,b'BOUND\n')
+            replaced=copy.deepcopy(f.prepared)
+            for key,name in (('planFile','native-plan.json'),('baselineFile','native-baseline.json'),('gatewayRuntimeFile','native-gateway-runtime.json'),('workerCredential','kubeconfig')):
+                path=(root if key=='workerCredential' else f.run)/name;raw=path.read_bytes()
+                path.rename(path.with_name('held-'+name));path.write_bytes(raw);path.chmod(0o600)
+                replaced[key]=native.credential_identity(path) if key=='workerCredential' else file_record(path)
+            # Each newly adopted identity is self-consistent, but none was in
+            # the original source-fixed launch digest inherited by this child.
+            native.verify_prepared(f.run,f.plan,replaced)
+            (job/'intent.json').rename(job/'held-intent.json');write(job/'intent.json',dict(started,prepared=replaced))
+            refused=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+            self.assertNotEqual(refused.returncode,0);self.assertEqual(refused.stdout,b'')
+
+    def test_original_prepared_objects_reject_each_same_byte_inode_replacement(self):
+        for name in ('native-plan.json','native-baseline.json','native-gateway-runtime.json','kubeconfig'):
+            with self.subTest(name=name),tempfile.TemporaryDirectory() as d:
+                root=Path(d).resolve();root.chmod(0o700);f=Fixture(root)
+                native.verify_prepared(f.run,f.plan,f.prepared)
+                path=(root if name=='kubeconfig' else f.run)/name
+                raw=path.read_bytes();old=path.stat().st_ino;path.rename(path.with_name('held-'+name));path.write_bytes(raw);path.chmod(0o600)
+                self.assertNotEqual(old,path.stat().st_ino)
+                with self.assertRaises(ValueError):native.verify_prepared(f.run,f.plan,f.prepared)
+                (f.run/'native-ready.json').unlink()
+                with self.assertRaises(ValueError):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
+                self.assertFalse((f.run/'native-ready.json').exists())
+                (f.run/'native-context.json').unlink();job=f.run/'collector-job';job.mkdir(mode=0o700)
+                identity=dict(f.context['collectorIdentity'],pid=os.getpid());write(job/'identity.json',identity)
+                with self.assertRaises(ValueError):native.seal_capture_context(f.run,f.plan['sourceHashes'],prepared=f.prepared,probe_process=lambda pid:identity,live_clients=f.live_clients,now=lambda:f.now)
+                self.assertFalse((f.run/'native-context.json').exists())
+                if name=='kubeconfig':
+                    with self.assertRaises(ValueError):native.FixedWorkerReads(f.plan,path,credential=f.prepared['workerCredential'])
+
     def test_child_seals_own_context_and_rejects_first_publication_mismatch(self):
         self.assertTrue(hasattr(native,'seal_capture_context'),'capture child context missing')
         with tempfile.TemporaryDirectory() as d:
@@ -262,19 +353,19 @@ class NativeCaptureContextTests(unittest.TestCase):
             job=f.run/'collector-job';job.mkdir(mode=0o700)
             identity=dict(f.context['collectorIdentity'],pid=os.getpid())
             write(job/'identity.json',identity)
-            result=native.seal_capture_context(f.run,f.plan['sourceHashes'],probe_process=lambda pid:identity,live_clients=f.live_clients,now=lambda:f.now)
+            result=native.seal_capture_context(f.run,f.plan['sourceHashes'],prepared=f.prepared,probe_process=lambda pid:identity,live_clients=f.live_clients,now=lambda:f.now)
             self.assertEqual(result['collectorIdentity']['pid'],os.getpid())
             self.assertEqual(result['sourceHashes'],{k:f.plan['sourceHashes'][k] for k in native.collector_sources()})
             self.assertEqual(result['providerRunContextSha256'],hashlib.sha256((f.source/'run-context.json').read_bytes()).hexdigest())
             (f.run/'native-context.json').unlink();(f.run/'pgcat_native_ingress.py').write_text('changed')
-            with self.assertRaises(ValueError):native.seal_capture_context(f.run,f.plan['sourceHashes'],probe_process=lambda pid:identity,live_clients=f.live_clients,now=lambda:f.now)
+            with self.assertRaises(ValueError):native.seal_capture_context(f.run,f.plan['sourceHashes'],prepared=f.prepared,probe_process=lambda pid:identity,live_clients=f.live_clients,now=lambda:f.now)
             self.assertFalse((f.run/'native-context.json').exists())
 
     def test_ready_rejects_pinned_source_tamper(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(os.path.realpath(d));root.chmod(0o700);f=Fixture(root)
             (f.run/'native-ready.json').unlink();(f.run/'pgcat_native_evidence.py').write_text('changed')
-            with self.assertRaises(ValueError):native.seal_ready(f.run,guardian_identity=f.guardian,probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
+            with self.assertRaises(ValueError):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
             self.assertFalse((f.run/'native-ready.json').exists())
 
 class NativeProfileTests(unittest.TestCase):
@@ -311,7 +402,17 @@ class NativeJournalTests(unittest.TestCase):
             with journal._transaction() as db:
                 db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?)',(f.plan['runId'],native.MODE,encode(f.plan['target']).decode(),encode(dict(f.plan['sourceHashes'],bundleSha256=digest(f.plan['sourceHashes']))).decode(),'active',None,None))
                 db.execute('INSERT INTO native_plan VALUES (1,?,?)',(raw,encode(file_record(lane/'native-plan.json')).decode()))
+                db.execute('INSERT INTO native_prepared VALUES (1,?)',(encode(f.prepared).decode(),))
+                db.execute('INSERT INTO feed_binding VALUES (1,?)',(encode(f.feed).decode(),))
             self.assertEqual(journal.native_plan(),f.plan)
+            request=dict(requestId=f.admitted['localRequestId'],action='native-baseline',deadlineMonotonic=123.)
+            write(lane/('native-selector-'+request['requestId']+'.json'),{})
+            with journal._transaction() as db:
+                journal._native_admit_in_tx(db,request)
+                actual=json.loads(db.execute('SELECT proof FROM native_admission').fetchone()['proof'])
+                self.assertEqual(actual['envelope']['prepared'],f.prepared)
+                self.assertEqual(journal._native_prepared_in_tx(db,f.plan),f.prepared)
+                self.assertNotEqual(file_record(lane/'native-plan.json'),f.prepared['planFile'])
             changed=copy.deepcopy(f.plan);changed['executionKind']='disabled-proof';write(lane/'native-plan.json',changed)
             with self.assertRaises((Refused,ValueError)):journal.native_plan()
 
@@ -331,7 +432,7 @@ class NativeDispatchTests(unittest.TestCase):
             root=Path(os.path.realpath(d));root.chmod(0o700);f=Fixture(root)
             envelope=dict(schemaVersion=1,action='native-ingress',localRequestId=f.admitted['localRequestId'],runId=f.plan['runId'],
                 executionKind=f.plan['executionKind'],planSha256=f.admitted['planSha256'],baselineSha256=f.plan['baselineSha256'],
-                feedBinding=f.feed,deadlineMonotonic=1.0,readySha256=f.admitted['readySha256'],feedBindingSha256=f.ready['feedBindingSha256'])
+                feedBinding=f.feed,prepared=f.prepared,deadlineMonotonic=1.0,readySha256=f.admitted['readySha256'],feedBindingSha256=f.ready['feedBindingSha256'])
             selector=dict(requestId=REQUEST,approvalIds=[])
             result=native.stage_action(f.run,f.plan,envelope,selector)
             self.assertEqual(result['admission']['sha256'],hashlib.sha256((f.run/('native-admission-'+f.admitted['localRequestId']+'.json')).read_bytes()).hexdigest())

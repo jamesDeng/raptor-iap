@@ -25,7 +25,7 @@ def _require_verified():
 
 class LaneClient:
     @classmethod
-    def start(cls, bindings: dict, mode: str, root: Path, *, native_plan=None):
+    def start(cls, bindings: dict, mode: str, root: Path, *, native_plan=None,native_prepared=None):
         from pgcat_lane_protocol import _release_admission
         _release_admission(mode)
         _require_verified()
@@ -34,7 +34,10 @@ class LaneClient:
         if mode=='full-replacement-direct-v2':
             from pgcat_native_controller import validate_start_plan
             native_plan=validate_start_plan(bindings,native_plan)
-        else:require(native_plan is None)
+            from pgcat_native_controller import validate_prepared
+            native_prepared=validate_prepared(native_plan,native_prepared)
+            require(native_prepared['workerCredential']['path']==bindings['workerKubeconfig'],'source')
+        else:require(native_plan is None and native_prepared is None)
         root = Path(root).absolute()
         try: root.mkdir(mode=0o700)
         except OSError: raise Refused('storage') from None
@@ -46,7 +49,7 @@ class LaneClient:
         self.bundle = hashlib.sha256(encode(bindings['sourceHashes'])).hexdigest()
         if native_plan is not None:save_once(root,'native-plan.json',native_plan)
         self.journal.create_run(self.run_id, mode, bindings['target'],
-                                dict(bindings['sourceHashes'], bundleSha256=self.bundle),native_plan=native_plan)
+                                dict(bindings['sourceHashes'], bundleSha256=self.bundle),native_plan=native_plan,native_prepared=native_prepared)
         save_once(root, 'bindings.json', bindings)
         reader, self.liveness_fd = os.pipe()
         os.set_inheritable(reader, False); os.set_inheritable(self.liveness_fd, False)

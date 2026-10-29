@@ -83,7 +83,7 @@ def collect_baseline(run_id,expected,*,provider_read,kube_read,read_pod,read_met
     """Derive the pre-feed baseline from bounded raw observations, no context."""
     import re
     from types import SimpleNamespace
-    from pgcat_native_ingress import (_Calls,_gateway_config,_baseline,_fleet,identifier,private_ip,deployment,detached)
+    from pgcat_native_ingress import (_Calls,_gateway_config,_baseline,_fleet,identifier,private_ip,deployment,detached,number)
     from pgcat_lane_protocol import target_valid
     from pgcat_rehearsal_contract import _read_configmap
     from pgcat_pending_proof_worker import complete_metrics
@@ -92,10 +92,10 @@ def collect_baseline(run_id,expected,*,provider_read,kube_read,read_pod,read_met
     from capture_window import clean_client_pods,seconds
     from segmented_capture import canonical,sha
     identifier(run_id);target_valid(expected['target']);check(expected['executionKind'] in ('native-replacement','disabled-proof'))
-    calls=_Calls();started=now();ids=expected['target']['originalInstanceIds']
+    calls=_Calls();started=now();check(number(started));ids=expected['target']['originalInstanceIds']
     provider=calls.call(provider_read)
     check(set(provider)=={'schemaVersion','observedAt','privateAddresses','desired','members','healthyRegistered','memberStates','backendStates'} and type(provider['schemaVersion']) is int and provider['schemaVersion']==2)
-    check(0<=started-provider['observedAt']<30)
+    check(0<=now()-provider['observedAt']<30)
     fleet={k:provider[k] for k in ('desired','members','healthyRegistered','memberStates','backendStates')};_fleet(fleet,ids)
     addresses=provider['privateAddresses'];check(type(addresses) is dict and sorted(addresses)==ids and len(set(addresses.values()))==2)
     for address in addresses.values():private_ip(address)
@@ -126,14 +126,15 @@ def collect_baseline(run_id,expected,*,provider_read,kube_read,read_pod,read_met
     for reading in readings:
         snapshot=reading['snapshot'];sample=snapshot['sample']
         check(reading['ready'] is True and snapshot['final'] is False and snapshot['truncated'] is False and snapshot['connected']>0)
-        check(0<=started-seconds(sample['at'])<=3 and sample['Attempts']>0 and sample['Success']>0)
+        check(0<=now()-seconds(sample['at'])<=3 and sample['Attempts']>0 and sample['Success']>0)
         check(all(sample[k]==0 for k in ('Failure','Timeout','Ambiguous','Skipped')))
     roster=validate_roster([dict(name=r['name'],uid=r['uid'],containerId=r['containerId'],processId=r['snapshot']['sample']['processId']) for r in readings])
     service=calls.call(kube_read,'Service','raptor-test','rdev-test-metrics-metrics')
     check(service['metadata']['name']=='rdev-test-metrics-metrics' and service['metadata']['namespace']=='raptor-test')
     private_ip(service['spec']['clusterIP']);check(any(type(p.get('port')) is int and p['port']==9090 for p in service['spec']['ports']))
     metrics=calls.call(read_metrics,'http://'+service['spec']['clusterIP']+':9090')
-    try:complete_metrics(dict(metrics=metrics,at=started),ids,now())
+    metrics_at=now()
+    try:complete_metrics(dict(metrics=metrics,at=metrics_at),ids,metrics_at)
     except Exception:raise ValueError('native baseline metrics') from None
     groups=sorted({(r['node'],r['pool'],r['user']) for r in metrics['raw']});check(1<=len(groups)<=256)
     for label in ('gateway','openapi'):
@@ -147,7 +148,12 @@ def collect_baseline(run_id,expected,*,provider_read,kube_read,read_pod,read_met
     latest=calls.call(provider_read);check({k:latest[k] for k in provider if k!='observedAt'}=={k:provider[k] for k in provider if k!='observedAt'} and 0<=now()-latest['observedAt']<30)
     check(calls.call(kube_read,'Deployment','raptor-test','rdev-test-client-client')==dep)
     check(calls.call(kube_read,'Pod','raptor-test',None)['items']==pods)
-    result=dict(schemaVersion=1,mode=MODE,executionKind=expected['executionKind'],runId=run_id,observedAt=started,
+    ended=now();check(number(ended) and 0<=ended-started<30)
+    check(all(0<=ended-seconds(r['snapshot']['sample']['at'])<=3 for r in readings))
+    check(0<=ended-latest['observedAt']<30)
+    try:complete_metrics(dict(metrics=metrics,at=ended),ids,ended)
+    except Exception:raise ValueError('native baseline metrics') from None
+    result=dict(schemaVersion=1,mode=MODE,executionKind=expected['executionKind'],runId=run_id,observedAt=ended,
         targetSha256=sha(canonical(expected['target'])),originals=[dict(id=n,address=addresses[n]) for n in ids],
         configMap=cm,roster=roster,metricGroups=[dict(node=n,pool=p,user=u) for n,p,u in groups],deployment=bound,fleet=fleet,
         gateway=dict(deploymentUid=expected['serviceBindings']['gateway']['deploymentUid'],replacementEnabled=False))
@@ -198,7 +204,7 @@ def verify_source_inventory(run_dir,hashes):
     return identities
 
 
-def seal_capture_context(run_dir,hashes,*,probe_process,live_clients,now):
+def seal_capture_context(run_dir,hashes,*,prepared,probe_process,live_clients,now):
     """Called by the actual capture child after guardian records its PID tuple."""
     from pgcat_native_ingress import _identity,validate_plan,_baseline,_fleet
     from pgcat_native_evidence import validate_context
@@ -209,6 +215,7 @@ def seal_capture_context(run_dir,hashes,*,probe_process,live_clients,now):
     run=Path(run_dir);check(run.is_absolute() and run.name=='run')
     sources=verify_source_inventory(run,hashes)
     plan_raw,plan_file=_identity(run/'native-plan.json');plan=validate_plan(decode_private(plan_raw));check(plan['sourceHashes']==hashes)
+    verify_prepared(run,plan,prepared)
     baseline_raw,baseline_file=_identity(run/'native-baseline.json');baseline=decode_private(baseline_raw);_baseline(baseline,plan)
     check(plan['baselineSha256']==sha(baseline_raw))
     identity=probe_process(os.getpid());valid_identity(identity);check(identity['pid']==os.getpid())
@@ -233,10 +240,11 @@ def seal_capture_context(run_dir,hashes,*,probe_process,live_clients,now):
         initialRoster=baseline['roster'],deployment=baseline['deployment'],collectorIdentity=identity))
     check(verify_source_inventory(run,hashes)==sources and probe_process(os.getpid())==identity)
     check(_identity(run/'native-plan.json')==(plan_raw,plan_file) and _identity(run/'native-baseline.json')==(baseline_raw,baseline_file))
+    verify_prepared(run,plan,prepared)
     _write_bytes(run/'native-context.json',canonical(result));return result
 
 
-def seal_ready(run_dir,*,guardian_identity,probe_process,live_clients,now):
+def seal_ready(run_dir,*,prepared,guardian_identity,probe_process,live_clients,now):
     """Seal exactly the first two committed, active baseline frames.
 
     This pure evidence kernel has no transport or runtime authority. Its caller
@@ -253,6 +261,7 @@ def seal_ready(run_dir,*,guardian_identity,probe_process,live_clients,now):
         progressBinding=run/'native-capture'/'progress-binding.json',gatewayRuntime=run/'native-gateway-runtime.json')
     files={k:_identity(p) for k,p in paths.items()};values={k:decode_private(raw) for k,(raw,_) in files.items()}
     plan=validate_plan(values['plan']);baseline=values['baseline'];_baseline(baseline,plan)
+    verify_prepared(run,plan,prepared)
     source_inventory=verify_source_inventory(run,plan['sourceHashes'])
     context=validate_context(values['context']);at=now()
     check(files['plan'][0]==canonical(plan) and plan['baselineSha256']==sha(files['baseline'][0]))
@@ -302,6 +311,7 @@ def seal_ready(run_dir,*,guardian_identity,probe_process,live_clients,now):
         feedSession=context['feedSession'],collectorIdentity=context['collectorIdentity'],guardianIdentity=guardian_identity,
         sources={k:identity for k,(_,identity) in files.items()},frames={k:progress[k] for k in ('previous','latest')},readyAt=at)
     check(verify_source_inventory(run,plan['sourceHashes'])==source_inventory)
+    verify_prepared(run,plan,prepared)
     _write_bytes(run/'native-ready.json',canonical(ready))
     return ready
 
@@ -402,11 +412,16 @@ class FixedHTTP:
 
 class FixedWorkerReads:
     """Fixed worker-only Kubernetes/read adapters; Secret bytes stay in memory."""
-    def __init__(self,plan,kubeconfig,*,run_id=None):
+    def __init__(self,plan,kubeconfig,*,run_id=None,credential=None):
         from pgcat_native_ingress import validate_plan,identifier
         self.run_id=plan.get('runId') if run_id is None else run_id
         identifier(self.run_id);check('runId' not in plan or plan['runId']==self.run_id)
-        self.plan=validate_plan(plan) if 'runId' in plan else validate_template(plan);self.credential=credential_identity(kubeconfig)
+        self.plan=validate_plan(plan) if 'runId' in plan else validate_template(plan)
+        if 'runId' in plan:
+            check(credential is not None and credential['path']==str(kubeconfig))
+            verify_credential(credential);self.credential=dict(credential)
+        else:
+            check(credential is None);self.credential=credential_identity(kubeconfig)
         self.deadline=time.monotonic()+30.;self.secret_names={'gateway-live-config'}
 
     def read(self,kind,namespace,name=None):
@@ -500,11 +515,12 @@ def validate_action(plan,envelope,selector):
     from pgcat_native_ingress import exact,identifier,number,hashed
     from pgcat_lane_protocol import digest
     action=envelope['action'];validate_selector(plan,action,selector)
-    keys={'schemaVersion','action','localRequestId','runId','executionKind','planSha256','baselineSha256','feedBinding','deadlineMonotonic'}
+    keys={'schemaVersion','action','localRequestId','runId','executionKind','planSha256','baselineSha256','feedBinding','deadlineMonotonic','prepared'}
     if action in ('native-ingress','native-disabled-restart'):keys|={'readySha256','feedBindingSha256'}
     exact(envelope,keys);check(type(envelope['schemaVersion']) is int and envelope['schemaVersion']==1)
     identifier(envelope['localRequestId']);check(envelope['runId']==plan['runId'] and envelope['executionKind']==plan['executionKind'])
     check(envelope['planSha256']==digest(plan) and envelope['baselineSha256']==plan['baselineSha256'] and number(envelope['deadlineMonotonic']))
+    validate_prepared(plan,envelope['prepared'])
     feed=envelope['feedBinding'];exact(feed,{'runId','feedId','pid','bindingSha256','argvSha256'})
     identifier(feed['feedId']);check(feed['runId']==plan['runId'] and type(feed['pid']) is int and feed['pid']>0 and hashed(feed['bindingSha256']) and hashed(feed['argvSha256']))
     if 'readySha256' in envelope:check(hashed(envelope['readySha256']) and hashed(envelope['feedBindingSha256']))
@@ -523,6 +539,41 @@ def file_identity(value):
     from pgcat_native_ingress import integer,hashed,exact
     exact(value,{'device','inode','uid','mode','nlink','size','sha256'})
     check(all(integer(value[k]) for k in set(value)-{'sha256'}) and value['mode']==0o600 and value['nlink']==1 and hashed(value['sha256']))
+
+
+def validate_prepared(plan,prepared):
+    """Exact original preparation anchors, separate from source/content hashes."""
+    from pgcat_native_ingress import exact,integer,hashed,detached
+    from segmented_capture import canonical,sha
+    exact(prepared,{'planFile','baselineFile','gatewayRuntimeFile','workerCredential'})
+    for key in ('planFile','baselineFile','gatewayRuntimeFile'):file_identity(prepared[key])
+    check(prepared['planFile']['sha256']==sha(canonical(plan)) and prepared['baselineFile']['sha256']==plan['baselineSha256'])
+    credential=prepared['workerCredential'];exact(credential,{'path','device','inode','uid','mode','size','sha256'})
+    check(type(credential['path']) is str and Path(credential['path']).is_absolute() and '..' not in Path(credential['path']).parts and Path(credential['path']).name=='kubeconfig')
+    check(all(integer(credential[k]) for k in ('device','inode','uid','mode','size')) and credential['mode']==0o600 and hashed(credential['sha256']))
+    return detached(prepared)
+
+
+def verify_prepared(run,plan,prepared):
+    from pgcat_native_ingress import _identity
+    run=Path(run);prepared=validate_prepared(plan,prepared)
+    for key,name in (('planFile','native-plan.json'),('baselineFile','native-baseline.json'),('gatewayRuntimeFile','native-gateway-runtime.json')):
+        check(_identity(run/name)[1]==prepared[key])
+    check(prepared['workerCredential']['path']==str(run.parent/'kubeconfig'))
+    verify_credential(prepared['workerCredential'])
+    return prepared
+
+
+def prepared_source_prefix(run,plan,prepared):
+    """Fixed verifier prepended to the feed's existing worker scripts only."""
+    from pgcat_native_ingress import validate_plan
+    from pgcat_source_bootstrap import ROOT
+    from segmented_capture import canonical
+    run=Path(run);check(run.is_absolute() and run.name=='run' and '..' not in run.parts)
+    plan=validate_plan(plan);prepared=validate_prepared(plan,prepared)
+    check(prepared['workerCredential']['path']==str(run.parent/'kubeconfig'))
+    setup="import json\n_native_plan=json.loads(%r)\n_native_prepared=json.loads(%r)\nm.install(_native_plan['sourceHashes'])\nfrom pgcat_native_controller import verify_prepared as _verify_native_prepared\n_verify_native_prepared(%r,_native_plan,_native_prepared)\n"%(canonical(plan).decode('ascii'),canonical(prepared).decode('ascii'),str(run))
+    return ROOT.replace('p,h=sys.argv[1:3]', 'p,h='+repr((str(run/'pgcat_source_bootstrap.py'),plan['sourceHashes']['sourceBootstrap']))).replace('sys.argv=[p]+sys.argv[3:]\nsys.exit(m.main())\n',setup)
 
 
 def validate_action_result(value,plan,action,local_request):
@@ -688,6 +739,8 @@ class NativeController:
         from segmented_capture import decode_private,canonical,sha
         prepared=decode_private(result.stdout);check(set(prepared)=={'plan','baseline','planFile','baselineFile','gatewayRuntimeFile','workerCredential'})
         plan=validate_plan(prepared['plan']);check(plan['runId']==run_id and {k:v for k,v in plan.items() if k not in ('runId','baselineSha256')}==template)
+        validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','workerCredential')})
+        check(prepared['workerCredential']['path']==b['workerKubeconfig'])
         for key in ('planFile','baselineFile','gatewayRuntimeFile'):file_identity(prepared[key])
         check(prepared['planFile']['sha256']==sha(canonical(plan)) and prepared['baselineFile']['sha256']==plan['baselineSha256']==sha(canonical(prepared['baseline'])))
         verify_credential(local_credential);validate_preflight(preflight,self.binding_sha,template,time.time())
@@ -731,7 +784,8 @@ class NativeController:
         prepared,_=private_json(Path(self.bindings['captureRoot'])/'native-prepared.json');check(prepared==self.prepared)
         plan=prepared['plan'];verify_credential(prepared['macCredential']);b=self.bindings['laneBindings']
         try:
-            self.client=LaneClient.start(b,MODE,Path(self.bindings['laneRoot']),native_plan=plan)
+            anchors=validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','workerCredential')})
+            self.client=LaneClient.start(b,MODE,Path(self.bindings['laneRoot']),native_plan=plan,native_prepared=anchors)
             _write_bytes(self.client.root/'native-prepared.json',encode(prepared))
             cap=capture_budget(plan,time.time())
             argv=[sys.executable,'-u',b['providerFeedPath'],'--mode',MODE,'--interval','15','--max-seconds',str(cap),
@@ -766,12 +820,13 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
     from pgcat_source_bootstrap import current_hashes
     run=Path(run_dir);plan=validate_plan(decode_private(_identity(run/'native-plan.json')[0]))
     check(plan['sourceHashes']==current_hashes());verify_source_inventory(run,plan['sourceHashes'])
+    prepared=verify_prepared(run,plan,envelope['prepared'])
     check(envelope['action']==action);staged=stage_action(run,plan,envelope,selector)
     request_id=envelope['localRequestId']
     for name,expected in [('admission',envelope),('selector',selector)]:
         raw,identity=_identity(run/('native-'+name+'-'+request_id+'.json'))
         check(raw==canonical(expected) and identity==staged[name])
-    reads=FixedWorkerReads(plan,run.parent/'kubeconfig')
+    reads=FixedWorkerReads(plan,run.parent/'kubeconfig',credential=prepared['workerCredential'])
     gate=WorkerGate(run,plan,envelope,reads)
     if action=='native-baseline':
         raw=canonical(envelope['feedBinding']);feed_path=run/'native-feed-binding.json'
@@ -794,7 +849,7 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
         output=dict(receipt=receipt,receiptFile=_identity(run/'native-restart-receipt.json')[1])
     elif action=='native-collector-status':
         from pgcat_collector_control import status
-        output=status(run.parent/'contract',plan['runId'],plan['sourceHashes'],profile=MODE)
+        output=status(run.parent/'contract',plan['runId'],plan['sourceHashes'],profile=MODE,prepared=prepared)
     elif action=='native-collector-launch':
         from pgcat_collector_control import launch,status,process_identity
         runtime=reads.gateway_disabled()
@@ -803,23 +858,24 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
         _runtime(runtime,plan,time.time());sealed_runtime=decode_private(_identity(run/'native-gateway-runtime.json')[0])
         check({k:v for k,v in runtime.items() if k!='observedAt'}=={k:v for k,v in sealed_runtime.items() if k!='observedAt'})
         check(_gateway_config(SimpleNamespace(plan=plan),_Calls(),reads.read)==dict(secretUid=runtime['secretUid'],secretResourceVersion=runtime['secretResourceVersion'],replacementEnabled=False))
-        launched=launch(run.parent/'contract',plan['runId'],run.parent/'kubeconfig',plan['sourceHashes'],profile=MODE)
+        launched=launch(run.parent/'contract',plan['runId'],run.parent/'kubeconfig',plan['sourceHashes'],profile=MODE,prepared=prepared)
         until=time.monotonic()+5.
         while True:
             check(time.monotonic()<until)
-            observed=status(run.parent/'contract',plan['runId'],plan['sourceHashes'],profile=MODE)
+            observed=status(run.parent/'contract',plan['runId'],plan['sourceHashes'],profile=MODE,prepared=prepared)
             if observed.get('status')=='ALIVE' and (run/'native-context.json').exists():
                 try:
                     from segmented_capture import read_progress
                     context=decode_private(_identity(run/'native-context.json')[0])
                     progress,_,_=read_progress(run/'native-capture',context)
                     if progress['committedFrames']<2:time.sleep(.01);continue
-                    ready=seal_ready(run,guardian_identity=launched['guardianIdentity'],probe_process=process_identity,live_clients=reads.live_clients,now=time.time)
+                    ready=seal_ready(run,prepared=prepared,guardian_identity=launched['guardianIdentity'],probe_process=process_identity,live_clients=reads.live_clients,now=time.time)
                     break
                 except FileNotFoundError:pass
             time.sleep(.01)
         output=dict(ready=ready,readyFile=_identity(run/'native-ready.json')[1])
     else:raise ValueError('native action')
+    verify_prepared(run,plan,prepared)
     value=dict(schemaVersion=1,action=action,runId=plan['runId'],executionKind=plan['executionKind'],planSha256=sha(canonical(plan)),requestId=request_id,staged=staged,outputs=output)
     return validate_action_result(value,plan,action,request_id)
 
