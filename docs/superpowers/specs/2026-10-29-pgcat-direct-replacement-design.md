@@ -65,6 +65,11 @@ at completion, or a replacement leaving. Bind one feed session and capture;
 preserve complete metrics until each old node has its own zero and subsequent
 backend-absence evidence. Failure precedence and freshness/gap limits do not change.
 
+Direct retained acceptance requires both originals' zero/absence obligations
+actually closed, even if their still-nonzero series remain available throughout.
+Later nonzero or backend reappearance invalidates retirement. Topology completion
+alone is insufficient; the native observer separately joins zero/action chronology.
+
 ## Application restart and evidence
 
 Use the existing RollingUpdate strategy, maxUnavailable 0 and maxSurge 1. Verify
@@ -72,7 +77,9 @@ SIGTERM stops scheduling while draining already accepted SQL work under finite
 deadlines and closes active and idle sessions. Retain final counters for retiring
 Pods and all startup/counter events for successor Pods in the same capture. A
 rollout does not reset adverse counters or prove old connections zero. Check the
-termination grace period covers drain, final-evidence hold and server shutdown;
+termination grace is30s for the actual4session/1idle client: two admitted operations
+at5s plus1s rollback each, two1s closes,10s final hold and2s HTTP shutdown give26s
+plus4s margin. Keep those existing SQL/close/hold deadlines unchanged;
 do not forcibly close a running transaction to manufacture zero.
 
 ## Release and proof
