@@ -101,9 +101,11 @@ def _bound_target(value):
         separators=(',', ':'), allow_nan=False).encode('ascii')).hexdigest()
 
 
-def fresh_provider_source(contract_dir, run_id, inventory_path, require_fresh=True):
+def fresh_provider_source(contract_dir, run_id, inventory_path, require_fresh=True,
+                          *, mode='disabled-rehearsal'):
     """Bind an initial worker inventory to the feed-written private context."""
     try:
+        _require(type(mode) is str and mode in ('disabled-rehearsal', 'full-replacement-direct-v2'))
         contract = Path(contract_dir)
         inventory = Path(inventory_path)
         _require(contract.is_absolute() and contract.name == 'contract' and
@@ -142,7 +144,7 @@ def fresh_provider_source(contract_dir, run_id, inventory_path, require_fresh=Tr
                     os.close(inventory_fd)
                 value = _decode(inventory_raw)
                 _require(type(value) is dict and capture_window.clean_inventory(value) == value
-                         and value.get('mode') == 'disabled-rehearsal' and
+                         and value.get('mode') == mode and
                          value.get('feedSession') == record['feedSession'] and
                          type(value.get('sequence')) is int and 1 <= value['sequence'] <= 999999)
                 sidecar = _decode(_read_at(source_fd, '%06d.json' % value['sequence'], 4096))

@@ -41,7 +41,7 @@ class WorkerPython36Tests(unittest.TestCase):
                         eval(compile(ast.Expression(annotation), str(path), 'eval'), namespace)
 
     def test_worker_modules_compile_for_python36_and_import(self):
-        for name in ('capture_window', 'segmented_capture', 'worker_capture', 'finish_clients', 'pgcat_native_evidence'):
+        for name in ('capture_window', 'segmented_capture', 'worker_capture', 'finish_clients', 'pgcat_native_evidence', 'pgcat_native_ingress'):
             with self.subTest(module=name):
                 path = Path(__file__).with_name(name + '.py')
                 tree = ast.parse(path.read_text(), filename=str(path), feature_version=(3, 6))

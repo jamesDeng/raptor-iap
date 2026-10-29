@@ -136,6 +136,22 @@ class RehearsalContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fresh_provider_source(self.contract, self.run_id, self.inventory)
 
+    def test_provider_source_explicit_native_mode_preserves_legacy_and_byte_checks(self):
+        from pgcat_rehearsal_contract import fresh_provider_source
+        self.assertEqual(fresh_provider_source(self.contract,self.run_id,self.inventory)['sequence'],1)
+        self.inventory_data['mode']='full-replacement-direct-v2'
+        raw=json.dumps(self.inventory_data,sort_keys=True,separators=(',',':')).encode('ascii')
+        self.inventory.write_bytes(raw)
+        sidecar=json.loads(self.sidecar.read_text())
+        sidecar.update(inventorySha256=hashlib.sha256(raw).hexdigest(),inventorySemanticSha256=hashlib.sha256(raw).hexdigest())
+        self.sidecar.write_text(json.dumps(sidecar))
+        with self.assertRaises(ValueError):fresh_provider_source(self.contract,self.run_id,self.inventory)
+        self.assertEqual(fresh_provider_source(self.contract,self.run_id,self.inventory,mode='full-replacement-direct-v2')['sequence'],1)
+        for mode in ('unknown',None,True):
+            with self.assertRaises(ValueError):fresh_provider_source(self.contract,self.run_id,self.inventory,mode=mode)
+        sidecar['inventorySha256']='f'*64;self.sidecar.write_text(json.dumps(sidecar))
+        with self.assertRaises(ValueError):fresh_provider_source(self.contract,self.run_id,self.inventory,mode='full-replacement-direct-v2')
+
     def test_cross_run_and_symlinked_context_refuse(self):
         from pgcat_rehearsal_contract import fresh_provider_source
         with self.assertRaises(ValueError):
