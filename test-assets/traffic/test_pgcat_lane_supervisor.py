@@ -1288,3 +1288,42 @@ class PostStopSupervisorTests(unittest.TestCase):
         waits,requests=self.serve_scans(2)
         self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
         self.assertEqual(waits,0);self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_malformed_stop_proof_cancels_without_redispatch(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        original=copy.deepcopy(f.stop)
+        malformed=[('missing-'+key,{name:value for name,value in original.items() if name != key})
+            for key in ('runId','feedSession','receipt','receiptIdentity')]
+        malformed += [('receipt-'+type(value).__name__,dict(original,receipt=value))
+            for value in ({},None,[],7,'receipt')]
+        malformed += [('stop-'+type(value).__name__,value) for value in (None,[],7,'stop')]
+        malformed += [('wrong-sequence-type',dict(original,receipt=dict(original['receipt'],sequence='10')))]
+        for name,proof in malformed:
+            with self.subTest(proof=name):
+                # Each serve starts with the same genuine stopped record and accounts it once.
+                with f.journal._transaction() as db:
+                    db.execute("UPDATE run SET state='active'")
+                    db.execute('UPDATE rehearsal_stop SET proof=?',(encode(original).decode(),))
+                self.owner.cancelled=None
+                def corrupt(wait):
+                    if wait == 1:
+                        with f.journal._transaction() as db:
+                            db.execute('UPDATE rehearsal_stop SET proof=?',(encode(proof).decode(),))
+                waits,requests=self.serve_scans(3,corrupt)
+                self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+                self.assertIsNotNone(self.owner.cancelled)
+                self.assertEqual(waits,1);self.assertEqual(requests,[request['requestId']])
+                self.assertIsNone(self.owner.child)
+                with f.journal._connection() as db:
+                    self.assertIsNone(db.execute('SELECT 1 FROM requests WHERE request_id=?',(request['requestId'],)).fetchone())
+
+    def test_malformed_stopped_proof_is_normalized_to_source_refusal(self):
+        f=self.f;request=dict(f.request,action='baseline-status')
+        for proof in ({name:value for name,value in f.stop.items() if name != 'receipt'},
+                      dict(f.stop,receipt=[]),None,[],'bad-json'):
+            with self.subTest(proof=proof):
+                raw='{' if proof == 'bad-json' else encode(proof).decode()
+                with f.journal._transaction() as db:
+                    db.execute('UPDATE rehearsal_stop SET proof=?',(raw,))
+                with self.assertRaises(Refused) as caught:self.owner._revalidate_stopped_refusal(request)
+                self.assertEqual(caught.exception.category,'source')

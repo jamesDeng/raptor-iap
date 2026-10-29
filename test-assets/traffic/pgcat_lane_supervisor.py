@@ -304,23 +304,26 @@ class LaneSupervisor:
 
     def _revalidate_stopped_refusal(self, req):
         """Authenticate a benign historical refusal without granting execution."""
-        self._alive();self._verify_sources();self._post_stop_owner()
-        require(req['runId'] == self.run_id and req['supervisorId'] == self.supervisor_id and
-                req['target'] == self.bindings['target'] and req['bundleSha256'] == self.bundle,'source')
-        with self.journal._connection() as db:
-            run=db.execute('SELECT * FROM run').fetchone()
-            stopped=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
-            duplicate=db.execute('SELECT 1 FROM post_stop_admission').fetchone() is not None
-        require(run is not None and run['state'] == 'active' and run['mode'] == 'disabled-rehearsal' and
-                run['run_id'] == self.run_id and run['supervisor'] == self.supervisor_id and
-                json.loads(run['target']) == self.bindings['target'] and
-                json.loads(run['hashes']) == dict(self.bindings['sourceHashes'],bundleSha256=self.bundle) and
-                stopped is not None,'source')
-        stop=json.loads(stopped['proof'])
-        require(stop['runId'] == self.run_id and req['feedSession'] == run['session'] == stop['feedSession'] and
-                req['minimumSequence'] == stop['receipt']['sequence'] and
-                req['receiptIdentity'] == stop['receiptIdentity'] and
-                (req['action'] != 'rehearsal-finish' or duplicate),'source')
+        try:
+            self._alive();self._verify_sources();self._post_stop_owner()
+            require(req['runId'] == self.run_id and req['supervisorId'] == self.supervisor_id and
+                    req['target'] == self.bindings['target'] and req['bundleSha256'] == self.bundle,'source')
+            with self.journal._connection() as db:
+                run=db.execute('SELECT * FROM run').fetchone()
+                stopped=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
+                duplicate=db.execute('SELECT 1 FROM post_stop_admission').fetchone() is not None
+            require(run is not None and run['state'] == 'active' and run['mode'] == 'disabled-rehearsal' and
+                    run['run_id'] == self.run_id and run['supervisor'] == self.supervisor_id and
+                    json.loads(run['target']) == self.bindings['target'] and
+                    json.loads(run['hashes']) == dict(self.bindings['sourceHashes'],bundleSha256=self.bundle) and
+                    stopped is not None,'source')
+            stop=json.loads(stopped['proof'])
+            require(stop['runId'] == self.run_id and req['feedSession'] == run['session'] == stop['feedSession'] and
+                    req['minimumSequence'] == stop['receipt']['sequence'] and
+                    req['receiptIdentity'] == stop['receiptIdentity'] and
+                    (req['action'] != 'rehearsal-finish' or duplicate),'source')
+        except (KeyError,TypeError,ValueError,UnicodeError):
+            raise Refused('source') from None
 
     def _post_stop(self, req):
         with self.journal._connection() as db:
