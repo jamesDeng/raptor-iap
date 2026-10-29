@@ -30,6 +30,68 @@ func TestDeregistrationRequiresHealthyMajorityOfDesired(t *testing.T) {
 	}
 }
 
+// Only a complete dedicated cohort may retain an equal, protected healthy pair.
+func TestDeregistrationAllowsOnlyCompleteProtectedReplacementCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*ProxySnapshot)
+		ids    []string
+		want   string
+	}{
+		{name: "batch originals", ids: []string{"old-a", "old-b"}},
+		{name: "second sequential original", change: func(s *ProxySnapshot) { s.Nodes[0].Registered = false }, ids: []string{"old-b"}},
+		{name: "before expansion", change: func(s *ProxySnapshot) { s.Desired = 2; s.Nodes = s.Nodes[:2] }, ids: []string{"old-a"}, want: "InsufficientHealthyCapacity"},
+		{name: "one survivor", ids: []string{"old-a", "old-b", "new-a"}, want: "InsufficientHealthyCapacity"},
+		{name: "unprotected survivor", change: func(s *ProxySnapshot) { s.Nodes[2].Protected = false }, ids: []string{"old-a", "old-b"}, want: "InsufficientHealthyCapacity"},
+		{name: "unhealthy survivor", change: func(s *ProxySnapshot) { s.Nodes[2].Healthy = false }, ids: []string{"old-a", "old-b"}, want: "InsufficientHealthyCapacity"},
+		{name: "unregistered survivor", change: func(s *ProxySnapshot) { s.Nodes[2].Registered = false }, ids: []string{"old-a", "old-b"}, want: "InsufficientHealthyCapacity"},
+		{name: "wrong minimum", change: func(s *ProxySnapshot) { s.Min = 1 }, ids: []string{"old-a", "old-b"}, want: "InsufficientHealthyCapacity"},
+		{name: "wrong maximum", change: func(s *ProxySnapshot) { s.Max = 5 }, ids: []string{"old-a", "old-b"}, want: "InsufficientHealthyCapacity"},
+		{name: "wrong desired", change: func(s *ProxySnapshot) { s.Desired = 5; s.Max = 5 }, ids: []string{"old-a", "old-b"}, want: "InsufficientHealthyCapacity"},
+		{name: "incomplete membership", change: func(s *ProxySnapshot) { s.Nodes = s.Nodes[1:] }, ids: []string{"old-b"}, want: "InsufficientHealthyCapacity"},
+		{name: "extra member", change: func(s *ProxySnapshot) { s.Nodes = append(s.Nodes, Node{ID: "extra"}) }, ids: []string{"old-a", "old-b"}, want: "InsufficientHealthyCapacity"},
+		{name: "foreign id", ids: []string{"foreign"}, want: "ScopeMismatch"},
+		{name: "duplicate requested id", ids: []string{"old-a", "old-a"}, want: "ScopeMismatch"},
+		{name: "duplicate member", change: func(s *ProxySnapshot) { s.Nodes[0].ID = "old-b" }, ids: []string{"old-b"}, want: "TargetChanged"},
+		{name: "blank member", change: func(s *ProxySnapshot) { s.Nodes[0].ID = "" }, ids: []string{"old-b"}, want: "TargetChanged"},
+		{name: "foreign backend", change: func(s *ProxySnapshot) { s.ServerGroupID = "other" }, ids: []string{"old-a", "old-b"}, want: "ScopeMismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := ProxySnapshot{Desired: 4, Min: 2, Max: 4, ServerGroupID: "backend", Nodes: []Node{
+				{ID: "old-a", Registered: true, Healthy: true}, {ID: "old-b", Registered: true, Healthy: true},
+				{ID: "new-a", Protected: true, Registered: true, Healthy: true}, {ID: "new-b", Protected: true, Registered: true, Healthy: true},
+			}}
+			if tc.change != nil {
+				tc.change(&s)
+			}
+			if e := DeregistrationAllowed(s, "backend", tc.ids); code(e) != tc.want {
+				t.Fatalf("want %q, got %v", tc.want, e)
+			}
+		})
+	}
+}
+
+func TestDirectReplacementScaleInGuardDoesNotChangeOtherCapacityPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		s       ProxySnapshot
+		desired int
+	}{
+		{"other minimum", ProxySnapshot{Desired: 4, Min: 1, Max: 4}, 2},
+		{"other maximum", ProxySnapshot{Desired: 4, Min: 2, Max: 5}, 2},
+		{"other current capacity", ProxySnapshot{Desired: 3, Min: 2, Max: 4}, 2},
+		{"staged scale-in", ProxySnapshot{Desired: 4, Min: 2, Max: 4}, 3},
+		{"no change", ProxySnapshot{Desired: 4, Min: 2, Max: 4}, 4},
+		{"scale-out", ProxySnapshot{Desired: 2, Min: 2, Max: 4}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if e := DirectReplacementScaleInAllowed(tc.s, tc.desired); e != nil {
+				t.Fatalf("unrelated capacity operation changed: %v", e)
+			}
+		})
+	}
+}
+
 // Idle clients must block scale-in just as running clients do; protection only
 // exempts protected members, never an arbitrary predicted termination target.
 func TestScaleInRequiresFreshZeroClientsOnEveryUnprotectedNode(t *testing.T) {
