@@ -21,8 +21,10 @@ any pause before dispatch. Never accept arbitrary two-node fleet convergence.
 This direction supersedes the earlier same-Pod/no-restart drain restriction for
 future restart-based runs and the proposed private session-rotation mechanism.
 It does not change historical verdicts or make current fixed-roster code admit a
-restart. The disabled rehearsal must test the same restart behavior before the
-full replacement. No new session-rotation command is required by this choice.
+restart. A replacement-disabled no-scale native observer proof must test startup,
+the same restart behavior, retained evidence and closure before full replacement.
+The superseded paid2→3→2 candidate rehearsal is not a prerequisite for the new
+strategy. No new session-rotation command is required by this choice.
 
 The checked-in client chart uses RollingUpdate, maxUnavailable 0, maxSurge 1 and
 a 20-second termination grace period. Those settings alone do not prove graceful
@@ -717,7 +719,8 @@ never reupload that trigger or assume the mutation did not happen.
    Verification checks effective loaded config, owner chain, new Pod UID and readiness.
 3. Resume only authorized producers to create **one new immutable** signed-in
    `db-proxy.replace-nodes` request, `executionMode: replacement`, model
-   `gpt-6-luna`, pinned `skills-v0.4.0`, resolved exact scope. Record request ID,
+   `gpt-6-luna`, a verified new direct-v2 skill release (candidate
+   `skills-v0.5.0`, only after immutable publication), resolved exact scope. Record request ID,
    definition SHA and skills commit; keep identical across all resumes. Prior
    qualification `87b0ba57-a6d3-487a-96e7-530426e35878` cannot be converted/reused.
 4. Agent records/protects originals; expand once 2→4; qualify both new nodes with

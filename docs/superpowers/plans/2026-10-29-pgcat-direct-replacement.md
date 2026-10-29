@@ -39,7 +39,7 @@
 
 ### Task 2: Versioned native direct sequence and immutable skill contract
 
-**Files:** Harness `replacement-trace.mjs`, `replacement-readiness.mjs`, `replacement-completion.mjs`, `live-replacement.mjs`, `pinned-replacement-skill.mjs`, `observation-tools.mjs`; create `replacement-sequence.mjs` and matching tests. Modify corresponding harness fixtures/helpers only where the contract changes. Gateway `internal/execution/replacement_result.go` and matching result/runtime/journal tests. Skill `agent-skills/pgcat-replacement/{SKILL.md,references/contracts.md,references/recovery.md}`. No Python lane/client source or release pin changes.
+**Files:** Harness `replacement-trace.mjs`, `replacement-readiness.mjs`, `replacement-completion.mjs`, `live-replacement.mjs`, `pinned-replacement-skill.mjs`, `observation-tools.mjs`; create `replacement-sequence.mjs` and matching tests. Modify corresponding harness fixtures/helpers only where the contract changes. Gateway `internal/execution/replacement_result.go`, `Dockerfile`, `internal/runtime/live.go` (fixed harnessFiles staging manifest), matching result/runtime/journal/package tests, and `scripts/rdev/test_qualification_packaging.py` only if needed for module shipment coverage. Skill `agent-skills/pgcat-replacement/{SKILL.md,references/contracts.md,references/recovery.md}`. No Python lane/client source or release pin changes.
 **Interfaces:** New `ReplacementSequence(manager,trace,readiness,profile)` provides `observe(kind,data,args)`, `beforeMutation(tool,args)`, `onMutationResult(tool,args,receipt)`, `cohort()`, `completionEvidence()`. Profile `direct-v2` must derive from an exact verified skill-content marker `replacement-contract: direct-v2`, through new `pinnedReplacementProfile(skills)` export; unsupported/missing marker refuses direct execution before mutation. Existing instruction loader remains bounded and symlink-safe. Historical stored results are readable; old selected skills are not silently upgraded.
 
 Use existing protected session custom entries for minimal allowlisted ordering/generation evidence tied to trace identity. Preserve actual initial exact2 fleet/backend/capacity, complete metrics/SQL and bound Deployment checks before initial writes. readyFour defines the only new pair. Permit protection only of baseline originals or readyFour pair as appropriate, original-only deregistration, restart only after both backend absences and healthy protected replacements, original-only unprotection after observed rollout and fresh zero metrics, and one 4→2 action after rechecking those gates. Allow one batch or two disjoint original withdrawals; submitted/unknown actions are never replayed. No desired3 direct mutation. Exact scope checks/approval/pause remain.
@@ -47,7 +47,7 @@ Use existing protected session custom entries for minimal allowlisted ordering/g
 Hook observations from existing trusted cloud/metrics/Deployment reads and mutation receipts; no model booleans. The current observation-tools Deployment return omits generation: add validated generation and observedGeneration from actual Kubernetes metadata/status, with matching observation tests. Validate raw complete pool triplets, freshness and generation (fresh Deployment observedGeneration>=restart receipt generation, correct UID, ready/updated/available2). Reconstruct minimal persisted state on resume, require fresh current evidence, and retain original trace replay protections. `cohort()` returns exactly `{oldInstanceIds,newInstanceIds}`; `completionEvidence()` adds the actual recorded `restartGeneration` to those fields after validating order/current evidence. `qualifyReplacementConvergence` consumes the cohort/rollout evidence, emits version2 with exactly2 action stages and exact new pair. Gateway validation dispatches exact stages by version (v1=legacy, v2=direct), rejecting mixed action lists, duplicate IDs/actions and PASS acceptance. Instruct bounded resource_wait after restart until rollout is observed; do not query strict two-Ready-client traffic metrics during a surge and mistake that temporary discovery refusal for successful traffic.
 
 - [ ] Add RED tests for every Review Focus item, initial writes after fleet-only, premature restart/one old still registered, wrong new protection pair, nonzero/incomplete/stale pools, wrong app UID/generation, direct desired3, replay/unknown, resume fresh evidence, replaced cohort and absent profile. Include a real harness-produced v2 JSON fixture validated by Gateway plus v1 stored-result compatibility.
-- [ ] Implement the smallest composed sequence gate; update skill to one expansion, both-old withdrawal, bound app restart, both-zero gate, one exact4→2 approval and convergence. Keep new release candidate skills-v0.5.0 documented, do not create/move tags here.
+- [ ] Implement the smallest composed sequence gate; update skill to one expansion, both-old withdrawal, bound app restart, both-zero gate, one exact4→2 approval and convergence. V2 exports required positive safe-integer restartGeneration from the actual receipt, validated by Gateway; v1 stays historical without a fabricated generation. Ship the new module in both image COPY and harnessFiles. Keep new release candidate skills-v0.5.0 documented, do not create/move tags here.
 - [ ] Run focused RED/GREEN; freeze source; run harness `node --test *.test.mjs`, Gateway `go test ./...` and `go vet ./...` once, reporting actual environment/integration limits. No synthetic claim of DB-backed tests if unavailable.
 - [ ] Self-review/commit owned paths, report task-2-report.md, then parent independent review.
 
@@ -76,10 +76,15 @@ Hook observations from existing trusted cloud/metrics/Deployment reads and mutat
 After task reviews, perform whole-branch review and required CI before merge/release.
 Existing PR304 remains draft while its saved serve-loop/closure work is incomplete;
 do not publish a claimed live-ready direct contract by merely merging source.
-Then continue the existing guardian/whole-window verdict/restoration/credential/full
-observer closure work without redispatching completed units. Only a final reviewed
-source graph and actual disabled restart/closure proof can unlock the live direct
-test. Re-discover fresh fleet/scope, perform one daily cost check, deploy immutable
+Then implement native observer closure reusing existing guardian/whole-window
+verdict/restoration/credential gates without redispatching completed units or
+finishing candidate-only no-restart closure before duplicating it for native.
+Native rollout evidence must bind all predecessor finals and the terminal
+successor pair; old originalRoster-only finisher cannot be relabeled. The old
+paid2→3→2 rehearsal is not a prerequisite for the owner-selected new strategy;
+the disabled no-scale native startup/restart/closure proof is mandatory instead.
+Only a final reviewed source graph and that actual proof can unlock the live
+direct test. Re-discover fresh fleet/scope, perform one daily cost check, deploy immutable
 images through GitOps, verify loaded flag remains false, release new immutable
 skill tag and use a fresh request. Record actual findings and stop rather than
 automatically reversing an uncertain cloud action. No source test is native or

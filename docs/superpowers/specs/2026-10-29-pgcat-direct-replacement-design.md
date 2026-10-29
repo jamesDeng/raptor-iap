@@ -44,6 +44,13 @@ identified at ready-four. Acceptance remains pending until retained evidence and
 cleanup are independently assessed. Keep version 1 staged stored results readable;
 never reinterpret three staged actions as a version-2 success.
 
+Version2 also exports `restartGeneration`, a positive safe integer taken from the
+actual request-bound Deployment restart receipt. The external native observer can
+then bind the real rollout to the authenticated Gateway result; generic progress
+events do not carry that generation. Version1 does not acquire a fabricated
+restart generation. Include every new harness module in both the Gateway image
+and fixed sandbox staging manifest.
+
 Publish updated skill instructions in a new immutable release (candidate
 skills-v0.5.0); never move skills-v0.4.0. Bind execution to verified selected
 skill content and a fresh immutable request, without converting an old request.
@@ -72,9 +79,13 @@ do not forcibly close a running transaction to manufacture zero.
 
 Use test-first changes, task review and a whole-graph review. Keep replacement
 disabled and existing public paid admission structurally closed throughout code
-preparation. Complete prior closure/abort/restoration/credential gates, freeze one
-source graph, run the disabled restart/evidence proof, and only then execute the
-new full request through the existing reviewed GitOps release and runtime flow.
+preparation. Implement native observer closure using the reusable owner/abort,
+ordinary verdict, restoration and credential gates; do not finish candidate-only
+original-roster rehearsal stages and then duplicate them for restarting clients.
+Freeze one source graph, run the disabled no-scale restart/evidence/closure proof,
+and only then execute the new full request through the existing reviewed GitOps
+release and runtime flow. The superseded paid 2→3→2 candidate rehearsal is not a
+prerequisite for this new strategy; its historical verdict remains unchanged.
 No live PASS follows from source tests. Any uncertain state stops new mutations.
 
 Use the existing project/checkout; preserve unrelated iCloud files. No new cloud

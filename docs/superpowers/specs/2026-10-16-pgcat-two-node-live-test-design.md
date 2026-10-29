@@ -14,7 +14,9 @@ The active runbook's opening amendment defines the current sequence and identifi
 the incompatible strict-majority deregistration guard, staged pinned skill/native
 completion contract and fixed client-roster assumptions. These need tested,
 reviewed changes before execution; documentation is not an installed contract.
-Keep skills-v0.4.0 immutable and replacement disabled during preparation. Preserve
+Keep skills-v0.4.0 immutable; the new direct-v2 request needs a separately reviewed
+new release (candidate skills-v0.5.0) and exact published SHA. Keep replacement
+disabled during preparation. Preserve
 all old and successor client evidence across restarts, without resetting failures
 or splicing capture windows. Full replacement remains NOT PASS. Current standing
 limits are CNY 1,800 net, once-daily billing checks, 21:30 paid-action cutoff and
