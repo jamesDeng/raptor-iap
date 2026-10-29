@@ -51,6 +51,26 @@ Do not bypass source/runtime admission or mutate immutable skills-v0.4.0.
 Native observer rolling-cohort admission/closure and a fresh disabled proof remain
 required. No live restart or cloud operation was executed by this amendment.
 
+## Current authorization and source binding
+
+The owner has explicitly authorized implementing, reviewing, merging, deploying
+and testing this direct sequence without repeated routine approval pauses.
+Standing authorization also covers a temporary72-hour private-network kubeconfig
+for the exact ACK cluster/worker below, through local Workbench CLI only; reuse a
+valid bound copy first, otherwise create just in time, preserve0600/private paths
+and remove the exact owned copies after completion or failure. Do not request the
+same authorization again. A different destination or broader credential use still
+needs specific authorization. Record actual artifacts, identities and outcomes
+before action; authorization does not replace fresh safety checks.
+
+The committed [native observer design](../specs/2026-10-29-pgcat-native-observer-design.md)
+controls the remaining rolling evidence, authenticated ingress and closure work.
+Its disabled proof has an immutable separate verdict class and cannot become a
+full replacement PASS. Source-hash tables and older rehearsal commands below are
+historical bindings, not pins for the changed direct source. Generate and verify
+the final reviewed transitive source manifest before staging; never copy stale
+hashes or use an older paid-rehearsal command to bypass native admission.
+
 ## Earlier verification and implementation status
 
 2026-10-28 update: reviewed merge `7508dfac` completed a tracked no-scale timing
@@ -139,16 +159,16 @@ and rollout and keep them quiesced until verification. `gateway --idle-check`
 is a database snapshot, not an admission lock. If producers cannot be quiesced,
 STOP. Recheck idle immediately before changes through the guard.
 
-Present exact artifact hashes, targets, time/duration, credential paths, retention
-prefix/expiry and deletion commands for separate authorization of (a) temporary
-kubeconfig Workbench upload, (b) provider ConfigMap reconciliation and disabled
-capture, (c) guarded enable/rollout and one replacement, (d) controlled client
-finalization/restoration, and (e) settled disable/rollout and cleanup. Each requires
-current action-time authorization; approval of this document alone is insufficient.
+Record exact artifact hashes, targets, time/duration, credential paths, retention
+prefix/expiry and deletion commands before (a) temporary kubeconfig Workbench
+upload, (b) provider ConfigMap reconciliation and disabled capture, (c) guarded
+enable/rollout and one replacement, (d) controlled client finalization/restoration,
+and (e) settled disable/rollout and cleanup. Apply the owner's standing scope
+above; ask only for genuinely new scope. This document alone grants no authority.
 New IAM or cloud resources return to the component Terraform PR with sanitized
 plan comment and reviewed apply. Do not provision via CLI or expand IAM here.
 
-## Transition evidence release gate (2026-10-25)
+## Historical transition evidence release gate (2026-10-25)
 
 The recorded replacement request `0bad9b07-625e-42cb-a021-257775e08930`
 was cancelled and settled after its provider feed stopped; its retained result
