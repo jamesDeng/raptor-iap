@@ -496,6 +496,7 @@ class NativeCommittedProgress(unittest.TestCase):
         import subprocess,sys
         script='''
 import sys, unittest
+sys.path.insert(0,sys.argv[1])
 class DenyNative:
     def find_spec(self,fullname,*args):
         if fullname=='pgcat_native_evidence':raise AssertionError('v1 imported unpinned native source')
@@ -510,5 +511,5 @@ assert 'pgcat_native_evidence' not in sys.modules
         import test_worker_capture
         names=[name for name,value in vars(test_worker_capture).items() if isinstance(value,type) and hasattr(value,'test_exact_seals_before_slow_finish_and_original_final_pair')]
         script=script.replace('DurableWitnessBoundary',names[0])
-        result=subprocess.run([sys.executable,'-c',script],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
+        result=subprocess.run([sys.executable,'-c',script,str(Path(__file__).resolve().parent)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
