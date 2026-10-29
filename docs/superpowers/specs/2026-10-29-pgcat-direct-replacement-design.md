@@ -77,9 +77,11 @@ SIGTERM stops scheduling while draining already accepted SQL work under finite
 deadlines and closes active and idle sessions. Retain final counters for retiring
 Pods and all startup/counter events for successor Pods in the same capture. A
 rollout does not reset adverse counters or prove old connections zero. Check the
-termination grace is30s for the actual4session/1idle client: two admitted operations
-at5s plus1s rollback each, two1s closes,10s final hold and2s HTTP shutdown give26s
-plus4s margin. Keep those existing SQL/close/hold deadlines unchanged;
+termination grace is30s for the actual4session/1idle client: two admitted jobs at5s
+(reconnect+Operate sharing each budget),1s rollback each, up to two failed-job1s
+closes plus1idle close,10s final hold and2s HTTP shutdown give27s plus3s margin.
+Initial/idle dials stay signal-bound; add no idle-close concurrency for arithmetic.
+Keep SQL/close/hold deadlines unchanged and reject post-cancellation scheduling;
 do not forcibly close a running transaction to manufacture zero.
 
 ## Release and proof

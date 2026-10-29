@@ -26,9 +26,10 @@ the same restart behavior, retained evidence and closure before full replacement
 The superseded paid2→3→2 candidate rehearsal is not a prerequisite for the new
 strategy. No new session-rotation command is required by this choice.
 
-The checked-in client chart uses RollingUpdate, maxUnavailable 0, maxSurge 1 and
-a 20-second termination grace period. Those settings alone do not prove graceful
-SQL completion: the current SIGTERM path can mark queued operations skipped.
+The reviewed client source/chart now uses RollingUpdate, maxUnavailable 0,
+maxSurge 1 and a 30-second termination grace period, with accepted SQL jobs
+draining under one five-second reconnect-plus-operation budget. Source tests
+and task review passed; this does not establish an actual deployed rollout.
 Verify bounded graceful draining and retain final evidence for every retiring
 Pod/process, plus exact successor identities and advancing SQL, in the same
 continuous capture. Never reset counters, discard failures or splice windows to
@@ -41,15 +42,14 @@ absence evidence before scale-in. A completed rollout or restart receipt is
 not a zero-connection proof. Missing final evidence, remaining connections or an
 uncertain restart blocks scale-in; observed SQL failures remain FAIL.
 
-Status: operator strategy recorded, **not executable under the current contract**.
-`DeregistrationAllowed` currently requires remaining healthy registered capacity
-strictly greater than desired/2: at desired 4, the second withdrawal would leave
-2 and be refused as InsufficientHealthyCapacity. The pinned skill and native
-completion/evidence contract also describe staged 4→3→2. Implement and test an
-explicit replacement-aware capacity rule and direct 4→2 contract; do not bypass
-the guard or mutate the immutable skills-v0.4.0 tag. Restart-aware evidence and
-graceful shutdown also need implementation, review and disabled-mode proof.
-No live restart or cloud operation was executed by this documentation amendment.
+Status: the capacity guard, direct native result/skill contract, topology assessor
+and graceful shutdown source changes are implemented, tested and task-reviewed.
+They have not established deployment or live replacement readiness. The old
+strict-majority-only guard and staged 4→3→2 result contract motivated the update;
+the new source has a narrow protected-pair exception and version2 direct contract.
+Do not bypass source/runtime admission or mutate immutable skills-v0.4.0.
+Native observer rolling-cohort admission/closure and a fresh disabled proof remain
+required. No live restart or cloud operation was executed by this amendment.
 
 ## Earlier verification and implementation status
 
