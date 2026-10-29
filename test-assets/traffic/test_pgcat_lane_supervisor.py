@@ -1158,21 +1158,133 @@ class PostStopSupervisorTests(unittest.TestCase):
     def test_served_authenticated_stopped_refusal_preserves_owner(self):
         f=self.f;request=dict(f.request,action='baseline-status')
         publish_request(f.root,request)
-        reader,writer=os.pipe()
-        original=self.owner._alive;calls=[0]
+        waits,requests=self.serve_scans(1)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'active',
+            'Authenticated stopped refusal reached serve outer cancellation')
+        self.assertEqual(waits,1);self.assertEqual(requests,[request['requestId']])
+        self.assertIsNone(self.owner.cancelled);self.assertIsNotNone(self.owner.owner_fd)
+
+    def serve_scans(self, count, on_wait=None):
+        reader,writer=os.pipe();waits=[0];requests=[]
+        original_select=supervisor.select.select;original_run=self.owner.run_once
         class EndServing(Exception):pass
-        def alive():
-            original();calls[0]+=1
-            # A benign refusal should reach serve's next liveness check.
-            # End the test there without EOF, owner cancellation or another dispatch.
-            if calls[0] == 3:raise EndServing()
+        def wait(readers,writers,errors,timeout):
+            if timeout != .02:return original_select(readers,writers,errors,timeout)
+            waits[0]+=1
+            if on_wait is not None:on_wait(waits[0])
+            if waits[0] == count:raise EndServing()
+            return [],[],[]
+        def run(request_id):
+            requests.append(request_id)
+            return original_run(request_id)
         try:
-            with patch.object(self.owner,'_alive',side_effect=alive):
+            with patch.object(supervisor.select,'select',side_effect=wait),patch.object(self.owner,'run_once',side_effect=run):
                 try:self.owner.serve(reader)
                 except EndServing:pass
-            self.assertEqual(f.journal.run_snapshot()['runState'],'active',
-                'Authenticated stopped refusal reached serve outer cancellation')
-            self.assertIsNone(self.owner.cancelled)
-            self.assertIsNotNone(self.owner.owner_fd)
         finally:
             os.close(reader);os.close(writer)
+        return waits[0],requests
+
+    def test_served_stopped_marker_is_accounted_once_across_scans(self):
+        f=self.f;request=dict(f.request,action='baseline-status')
+        publish_request(f.root,request)
+        waits,requests=self.serve_scans(3)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'active')
+        self.assertEqual(waits,3);self.assertEqual(requests,[request['requestId']])
+        with f.journal._connection() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM requests WHERE request_id=?',(request['requestId'],)).fetchone())
+            self.assertIsNone(db.execute('SELECT 1 FROM post_stop_admission').fetchone())
+        self.assertIsNone(self.owner.child);self.assertIsNone(self.owner.cancelled)
+
+    def test_served_finalized_duplicate_after_121_seconds_preserves_original_binding(self):
+        f=self.f;f.admit();f.journal.post_stop_dispatch(f.request['requestId'])
+        f.journal.seal(f.request['requestId'],f.result(),post_stop_source_sha=f.result()['payload']['sourceSha256'])
+        binding=f.journal.post_stop_binding()
+        request=dict(f.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()))
+        publish_request(f.root,request)
+        with patch.object(supervisor.time,'time',return_value=f.f.receipt['observedAt']+121):
+            waits,requests=self.serve_scans(3)
+            self.assertEqual(f.journal.post_stop_binding(),binding)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'active')
+        self.assertEqual(waits,3);self.assertEqual(requests,[request['requestId']])
+        with f.journal._connection() as db:
+            self.assertEqual(db.execute('SELECT dispatch_claimed FROM post_stop_admission').fetchone()[0],1)
+            self.assertIsNone(db.execute('SELECT 1 FROM requests WHERE request_id=?',(request['requestId'],)).fetchone())
+        self.assertIsNone(self.owner.child)
+
+    def test_accounted_stopped_marker_replacement_cancels_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        marker=f.root/'requests'/(request['requestId']+'.ready')
+        def replace(wait):
+            if wait == 1:
+                replacement=marker.with_suffix('.replacement')
+                replacement.write_bytes(marker.read_bytes());replacement.chmod(0o600);replacement.replace(marker)
+        waits,requests=self.serve_scans(3,replace)
+        self.assertEqual(waits,1)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_stopped_request_bytes_change_cancels_owner(self):
+        import hashlib
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        path=f.root/'requests'/(request['requestId']+'.request.json')
+        marker=f.root/'requests'/(request['requestId']+'.ready')
+        def change(wait):
+            if wait == 1:
+                raw=encode(dict(request,nonce=str(uuid.uuid4())))
+                path.write_bytes(raw);marker.write_text(hashlib.sha256(raw).hexdigest())
+        waits,requests=self.serve_scans(3,change)
+        self.assertEqual(waits,1);self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_stopped_request_rechecks_global_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        def change(wait):
+            if wait == 1:
+                (self.global_dir/'active-run').write_bytes(encode(dict(runId=f.f.run,
+                    supervisorId=str(uuid.uuid4()),laneRoot=str(f.root))))
+        waits,requests=self.serve_scans(3,change)
+        self.assertEqual(waits,1);self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_stopped_request_rechecks_source(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        changed=[False];original=self.owner._verify_sources
+        def verify():
+            if changed[0]:raise Refused('source')
+            return original()
+        with patch.object(self.owner,'_verify_sources',side_effect=verify):
+            waits,requests=self.serve_scans(3,lambda count:changed.__setitem__(0,True))
+        self.assertEqual(waits,1);self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_serve_wrong_run_ordinary_request_still_cancels(self):
+        f=self.f;request=dict(f.request,action='baseline-status',runId=str(uuid.uuid4()))
+        publish_request(f.root,request)
+        waits,requests=self.serve_scans(2)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain');self.assertEqual(waits,0)
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_serve_malformed_ready_still_cancels(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        (f.root/'requests'/(request['requestId']+'.ready')).write_text('0'*64)
+        waits,requests=self.serve_scans(2)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain');self.assertEqual(waits,0)
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_stopped_marker_disappearance_cancels_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        marker=f.root/'requests'/(request['requestId']+'.ready')
+        def remove(wait):
+            if wait == 1:marker.unlink()
+        waits,requests=self.serve_scans(3,remove)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(waits,1);self.assertEqual(requests,[request['requestId']])
+
+    def test_serve_forged_fixed_duplicate_still_cancels(self):
+        f=self.f;f.admit()
+        request=dict(f.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()),receiptIdentity='0'*64)
+        publish_request(f.root,request)
+        waits,requests=self.serve_scans(2)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(waits,0);self.assertEqual(requests,[request['requestId']])

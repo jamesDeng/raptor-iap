@@ -35,6 +35,14 @@ GLOBAL_ROOT = Path('/private/tmp/pgcat-lane-'+str(os.getuid()))
 GRACEFUL = {signal.SIGINT,signal.SIGTERM,signal.SIGHUP}
 
 
+class _StoppedRefusal(Refused):
+    """Only an authenticated stopped request may preserve the live owner."""
+    def __init__(self, request):
+        super().__init__('incomplete')
+        self.request_id=request['requestId']
+        self.request_raw=encode(request)
+
+
 def receipt_identity(identity):
     stat, raw = identity
     return hashlib.sha256(encode({'stat':list(stat),'receipt':raw.decode('ascii')})).hexdigest()
@@ -294,6 +302,26 @@ class LaneSupervisor:
         active,_=private_json(GLOBAL_ROOT/'active-run')
         require(active == dict(runId=self.run_id,supervisorId=self.supervisor_id,laneRoot=str(self.root)),'source')
 
+    def _revalidate_stopped_refusal(self, req):
+        """Authenticate a benign historical refusal without granting execution."""
+        self._alive();self._verify_sources();self._post_stop_owner()
+        require(req['runId'] == self.run_id and req['supervisorId'] == self.supervisor_id and
+                req['target'] == self.bindings['target'] and req['bundleSha256'] == self.bundle,'source')
+        with self.journal._connection() as db:
+            run=db.execute('SELECT * FROM run').fetchone()
+            stopped=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
+            duplicate=db.execute('SELECT 1 FROM post_stop_admission').fetchone() is not None
+        require(run is not None and run['state'] == 'active' and run['mode'] == 'disabled-rehearsal' and
+                run['run_id'] == self.run_id and run['supervisor'] == self.supervisor_id and
+                json.loads(run['target']) == self.bindings['target'] and
+                json.loads(run['hashes']) == dict(self.bindings['sourceHashes'],bundleSha256=self.bundle) and
+                stopped is not None,'source')
+        stop=json.loads(stopped['proof'])
+        require(stop['runId'] == self.run_id and req['feedSession'] == run['session'] == stop['feedSession'] and
+                req['minimumSequence'] == stop['receipt']['sequence'] and
+                req['receiptIdentity'] == stop['receiptIdentity'] and
+                (req['action'] != 'rehearsal-finish' or duplicate),'source')
+
     def _post_stop(self, req):
         with self.journal._connection() as db:
             require(db.execute('SELECT 1 FROM post_stop_admission').fetchone() is None,'incomplete')
@@ -361,6 +389,7 @@ class LaneSupervisor:
                     self._post_stop_owner()
                     if req['action'] != 'rehearsal-finish' or duplicate:
                         # Only authenticated stopped calls bypass the existing failure cancellation.
+                        self._revalidate_stopped_refusal(req)
                         preserve_owner=True
                         raise Refused('incomplete')
                 if req['action'] == 'rehearsal-finish':return self._post_stop(req)
@@ -461,7 +490,7 @@ class LaneSupervisor:
                 return self.journal.snapshot(request_id)
             except (Refused,lane.Refused,OSError,ValueError,KeyError,TypeError) as error:
                 category=error.category if isinstance(error,Refused) else 'configuration'
-                if preserve_owner:raise Refused(category) from None
+                if preserve_owner:raise _StoppedRefusal(req) from None
                 self._cleanup()
                 self.cancel(category)
                 if not admitted: raise Refused(category) from None
@@ -508,6 +537,7 @@ class LaneSupervisor:
     def serve(self, liveness_fd):
         require(self.owner_fd is not None,'incomplete')
         self.liveness_fd=liveness_fd
+        refused={}
         try:
             with self._handlers():
                 while True:
@@ -516,12 +546,28 @@ class LaneSupervisor:
                         self.finish()
                         return
                     folder=self.root/'requests'
-                    if folder.exists():
+                    if folder.exists() or refused:
                         private(folder,True)
-                        for marker in sorted(folder.glob('*.ready')):
-                            request_id=marker.name[:-6]
-                            try: self.journal.snapshot(request_id)
-                            except Refused: self.run_once(request_id)
+                        request_ids={marker.name[:-6] for marker in folder.glob('*.ready')}
+                        for request_id in sorted(request_ids | set(refused)):
+                            marker=folder/(request_id+'.ready')
+                            if request_id in refused:
+                                original,raw=refused[request_id]
+                                require(lane.identity(os.lstat(marker)) == original,'source')
+                                request=read_request(self.root,request_id)
+                                require(encode(request) == raw and lane.identity(os.lstat(marker)) == original,'source')
+                                self._revalidate_stopped_refusal(request)
+                            else:
+                                try: self.journal.snapshot(request_id)
+                                except Refused:
+                                    original=lane.identity(os.lstat(marker))
+                                    try:self.run_once(request_id)
+                                    except _StoppedRefusal as refusal:
+                                        request=read_request(self.root,request_id)
+                                        require(refusal.request_id == request_id and encode(request) == refusal.request_raw and
+                                                lane.identity(os.lstat(marker)) == original,'source')
+                                        self._revalidate_stopped_refusal(request)
+                                        refused[request_id]=(original,refusal.request_raw)
                             self._alive()
                     select.select([liveness_fd],[],[],.02)
         except (Refused, OSError, ValueError, TypeError):
