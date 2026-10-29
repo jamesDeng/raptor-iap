@@ -138,14 +138,30 @@ class _Calls:
         finally:signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous)
 
 
-def _identity(path,limit=MAX_RESPONSE):
-    from segmented_capture import open_directory,read_private,sha,check_directory
+def _read_identity(path,limit=MAX_RESPONSE):
+    """Bind bytes, public identity and private mutation fingerprint to one FD."""
+    from segmented_capture import open_directory,private_info,file_identity,sha,check_directory
     fd=open_directory(path.parent)
     try:
-        raw=read_private(fd,path.name,limit);s=os.stat(path.name,dir_fd=fd,follow_symlinks=False)
-        check_directory(fd,path.parent)
-        return raw,dict(device=s.st_dev,inode=s.st_ino,uid=s.st_uid,mode=s.st_mode&0o777,nlink=s.st_nlink,size=s.st_size,sha256=sha(raw))
+        item=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
+        try:
+            before=os.fstat(item);private_info(before);require(before.st_size<=limit)
+            raw=os.pread(item,limit+1,0)
+            current=os.stat(path.name,dir_fd=fd,follow_symlinks=False)
+            after=os.fstat(item);private_info(current);private_info(after)
+            fingerprint=file_identity(before)
+            require(len(raw)==before.st_size and fingerprint==file_identity(current)==file_identity(after))
+            check_directory(fd,path.parent)
+            identity=dict(device=before.st_dev,inode=before.st_ino,uid=before.st_uid,mode=before.st_mode&0o777,
+                nlink=before.st_nlink,size=before.st_size,sha256=sha(raw))
+            return raw,identity,fingerprint
+        finally:os.close(item)
     finally:os.close(fd)
+
+
+def _identity(path,limit=MAX_RESPONSE):
+    # The public seven-field schema remains stable for Journal/controller callers.
+    return _read_identity(path,limit)[:2]
 
 
 def _process(value):
@@ -234,7 +250,9 @@ class _Chain:
         self.paths=dict(plan=self.run/'native-plan.json',baseline=self.run/'native-baseline.json',context=self.run/'native-context.json',
             feedBinding=self.run/'native-feed-binding.json',providerRunContext=self.run.parent/'contract'/'provider-source'/'run-context.json',
             progressBinding=self.run/'native-capture'/'progress-binding.json',gatewayRuntime=self.run/'native-gateway-runtime.json',ready=self.run/'native-ready.json')
-        self.files={k:_identity(p) for k,p in self.paths.items()}
+        observed={k:_read_identity(p) for k,p in self.paths.items()}
+        self.files={k:value[:2] for k,value in observed.items()}
+        self.fingerprints={k:value[2] for k,value in observed.items()}
         self.values={k:decode_private(raw) for k,(raw,_) in self.files.items()}
         self.plan=validate_plan(self.values['plan']);self.baseline=self.values['baseline'];_baseline(self.baseline,self.plan)
         self.context=validate_context(self.values['context']);self.ready=self.values['ready']
@@ -274,7 +292,7 @@ class _Chain:
         finally:os.close(fd)
         self.ready_sha=sha(self.files['ready'][0])
     def unchanged(self):
-        require(all(_identity(path)==self.files[key] for key,path in self.paths.items()))
+        require(all(_read_identity(path)==self.files[key]+(self.fingerprints[key],) for key,path in self.paths.items()))
 
 
 def _gateway_config(chain,calls,kube_read):
@@ -454,7 +472,7 @@ def _origin_state():
     collections={};seals={}
     def chain_digest(chain):
         from segmented_capture import canonical,sha
-        return sha(canonical({key:identity for key,(_,identity) in chain.files.items()}))
+        return sha(canonical({key:dict(identity=identity,fingerprint=chain.fingerprints[key]) for key,(_,identity) in chain.files.items()}))
     def issue(projection,chain,capture,admission):
         from segmented_capture import canonical
         raw=canonical(dict(projection));key=id(projection)
@@ -467,10 +485,10 @@ def _origin_state():
         entry=collections.pop(id(projection),None)
         require(entry is not None and entry[0]() is projection and entry[1]==os.getpid())
         return entry[2:]
-    def remember(path,identity,chain,admission):
+    def remember(path,identity,fingerprint,chain,admission):
         from segmented_capture import canonical
         key=str(path);require(key not in seals and len(seals)<9999)
-        seals[key]=(os.getpid(),canonical(identity),chain_digest(chain),admission)
+        seals[key]=(os.getpid(),canonical(dict(identity=identity,fingerprint=fingerprint)),chain_digest(chain),admission)
     def take(path,chain):
         entry=seals.pop(str(path),None)
         require(entry is not None and entry[0]==os.getpid() and entry[2]==chain_digest(chain))
@@ -561,7 +579,7 @@ def seal_ingress(run_dir,projection):
     collected,original_chain,capture,admission=_consume_collection(projection)
     require(original_chain.run==Path(run_dir) and canonical(dict(projection))==collected)
     original_chain.unchanged();chain=_Chain(run_dir)
-    require(chain.files==original_chain.files)
+    require(chain.files==original_chain.files and chain.fingerprints==original_chain.fingerprints)
     require(_capture_prefix(chain,capture[0])==capture[1])
     record=decode_private(collected);fd=open_directory(chain.run)
     try:
@@ -570,16 +588,16 @@ def seal_ingress(run_dir,projection):
             try:raw,created=_publish(fd,name,record,identify=True);break
             except FileExistsError:continue
         else:raise ValueError('native ingress limit')
-        path=chain.run/name;actual,identity=_identity(path,32*1024*1024)
-        require(actual==raw==collected and (identity['device'],identity['inode'])==created)
+        path=chain.run/name;actual,identity,fingerprint=_read_identity(path,32*1024*1024)
+        require(actual==raw==collected and fingerprint==created)
         check_directory(fd,chain.run);chain.unchanged()
-        _remember_ingress(path,identity,chain,admission)
+        _remember_ingress(path,identity,fingerprint,chain,admission)
         return dict(ingressSha256=sha(raw),record=record,ingressFile=dict(basename=name,identity=detached(identity)))
     finally:os.close(fd)
 
 
 def _publish(fd,name,value,*,identify=False):
-    from segmented_capture import canonical
+    from segmented_capture import canonical,file_identity
     raw=canonical(value);require(len(raw)<=32*1024*1024)
     item=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
     try:
@@ -590,7 +608,7 @@ def _publish(fd,name,value,*,identify=False):
         os.fsync(item);info=os.fstat(item)
     finally:os.close(item)
     os.fsync(fd)
-    return (raw,(info.st_dev,info.st_ino)) if identify else raw
+    return (raw,file_identity(info)) if identify else raw
 
 
 def _approval(value,approval_id,plan,request_id,result):
@@ -707,7 +725,8 @@ def seal_operation_binding(run_dir,ingress_path):
     chain=_Chain(run_dir);path=Path(ingress_path)
     require(path.parent==chain.run and re.fullmatch(r'native-ingress-[0-9]{4}\.json',path.name))
     sealed_identity,admission=_take_ingress(path,chain)
-    raw,identity=_identity(path,32*1024*1024);require(canonical(identity)==sealed_identity)
+    raw,identity,fingerprint=_read_identity(path,32*1024*1024)
+    require(canonical(dict(identity=identity,fingerprint=fingerprint))==sealed_identity)
     admitted=decode_private(admission)
     require(admitted['runId']==chain.plan['runId'] and admitted['planSha256']==chain.context['planSha256'] and admitted['readySha256']==chain.ready_sha and admitted['feedBindingSha256']==chain.ready['feedBindingSha256'])
     record=decode_private(raw);exact(record,RECORD_KEYS);require(canonical(record)==raw)
@@ -758,7 +777,7 @@ def seal_operation_binding(run_dir,ingress_path):
         require(diagnostic==record['diagnostic'])
         for frame in _history(chain,progress['latest']):_fleet({k:frame['inventory'][k] for k in chain.baseline['fleet']},chain.plan['target']['originalInstanceIds'])
         binding['restartReceiptSha256']=diagnostic['restartReceiptSha256']
-    validate_operation_binding(binding,chain.context);chain.unchanged();require(_identity(path,32*1024*1024)==(raw,identity))
+    validate_operation_binding(binding,chain.context);chain.unchanged();require(_read_identity(path,32*1024*1024)==(raw,identity,fingerprint))
     fd=open_directory(chain.run)
     try:_publish(fd,'native-operation-binding.json',binding)
     finally:os.close(fd)

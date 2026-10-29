@@ -243,8 +243,13 @@ class IngressTests(unittest.TestCase):
             path=self.f.paths[key];original=path.read_bytes();path.write_bytes(original+b' ')
             with self.subTest(key=key),self.assertRaises(ValueError):self.f.read()
             path.write_bytes(original)
-        projection=self.f.read();ready=self.f.run/'native-ready.json';raw=ready.read_bytes();ready.unlink();ready.write_bytes(raw);ready.chmod(0o600)
-        with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+        projection=self.f.read();ready=self.f.run/'native-ready.json';raw=ready.read_bytes()
+        # Keep the original inode allocated for this distinct-inode case. The
+        # separate ABA regressions cover equal public identity with real ctime changes.
+        with ready.open('rb') as original:
+            ready.unlink();ready.write_bytes(raw);ready.chmod(0o600)
+            self.assertNotEqual(os.fstat(original.fileno()).st_ino,ready.stat().st_ino)
+            with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
         with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,dict(projection))
     def test_native_ready_requires_committed_frames_and_live_processes(self):
         self.f.admitted['readySha256']='e'*64
@@ -738,6 +743,73 @@ class AttemptSpanningReviewTests(unittest.TestCase):
         with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,forged)
         binding=ingress.seal_operation_binding(self.f.run,self.f.run/original)
         self.assertEqual(binding['ingressSha256'],sha((self.f.run/original).read_bytes()))
+
+
+class ImmutableIdentityABAReviewTests(unittest.TestCase):
+    setUp=IngressTests.setUp
+    def rewrite_same_bytes(self,path):
+        before=path.stat();raw=path.read_bytes()
+        # Separate real ctime updates even on Linux's coarse inode clock. This
+        # sets up the mutation once; it never retries an acceptance assertion.
+        import time
+        time.sleep(0.02)
+        path.write_bytes(raw)
+        os.utime(str(path),ns=(before.st_atime_ns,before.st_mtime_ns))
+        after=path.stat()
+        self.assertEqual((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns),
+                         (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns))
+        self.assertNotEqual(before.st_ctime_ns,after.st_ctime_ns)
+        return before,after
+    def test_same_bytes_same_inode_rewrite_with_restored_mtime_refuses_ready_seal(self):
+        projection=self.f.read();ready=self.f.run/'native-ready.json';published=file_record(ready)
+        self.rewrite_same_bytes(ready)
+        self.assertEqual(file_record(ready),published)
+        with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+    def test_replaced_ready_with_colliding_inode_and_changed_real_ctime_refuses(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        projection=self.f.read();ready=self.f.run/'native-ready.json';before=ready.stat();published=file_record(ready)
+        import time
+        time.sleep(0.02)
+        replacement=self.f.run/'ready-replacement';replacement.write_bytes(ready.read_bytes());replacement.chmod(0o600)
+        os.utime(str(replacement),ns=(before.st_atime_ns,before.st_mtime_ns));replacement.replace(ready)
+        after=ready.stat();self.assertNotEqual(before.st_ctime_ns,after.st_ctime_ns)
+        real_stat,real_fstat=os.stat,os.fstat
+        def collide(info):
+            if (info.st_dev,info.st_ino)!=(after.st_dev,after.st_ino):return info
+            values={key:getattr(info,key) for key in dir(info) if key.startswith('st_')}
+            values.update(st_dev=before.st_dev,st_ino=before.st_ino)
+            return SimpleNamespace(**values)
+        # Only device/inode are substituted. Bytes, mode, size, mtime and the
+        # actually changed ctime all come from the real replacement file.
+        with patch.object(os,'stat',side_effect=lambda *a,**kw:collide(real_stat(*a,**kw))), \
+             patch.object(os,'fstat',side_effect=lambda *a:collide(real_fstat(*a))):
+            self.assertEqual(file_record(ready),published)
+            self.assertEqual(ready.stat().st_ctime_ns,after.st_ctime_ns)
+            with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+    def test_original_ingress_anchor_detects_same_bytes_rewrite(self):
+        complete_native(self.f);sealed=ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/sealed['ingressFile']['basename']
+        self.rewrite_same_bytes(path)
+        self.assertEqual(file_record(path),sealed['ingressFile']['identity'])
+        with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,path)
+    def test_identity_never_pairs_old_bytes_with_a_replacement_path_stat(self):
+        from unittest.mock import patch
+        path=self.f.run/'identity-probe';path.write_bytes(b'original bytes');path.chmod(0o600)
+        replacement=self.f.run/'identity-probe-next';replacement.write_bytes(b'replacement bytes');replacement.chmod(0o600)
+        real_stat=os.stat;swapped=[]
+        def racing_stat(name,*args,**kwargs):
+            info=real_stat(name,*args,**kwargs)
+            if name==path.name and kwargs.get('dir_fd') is not None and not swapped:
+                replacement.replace(path);swapped.append(True)
+            return info
+        with patch.object(os,'stat',side_effect=racing_stat):
+            with self.assertRaises(ValueError):ingress._identity(path)
+        self.assertEqual(swapped,[True])
+    def test_public_identity_schema_does_not_gain_internal_timestamps(self):
+        raw,identity=ingress._identity(self.f.run/'native-ready.json')
+        self.assertEqual(identity,file_record(self.f.run/'native-ready.json'))
+        self.assertEqual(set(identity),{'device','inode','uid','mode','nlink','size','sha256'})
+        self.assertEqual(identity['sha256'],sha(raw))
 
 
 if __name__=='__main__':unittest.main()
