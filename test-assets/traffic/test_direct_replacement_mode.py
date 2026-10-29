@@ -56,7 +56,82 @@ def replace_inventory(frames, index, members, desired, backends=None):
     frames[index]['inventory'] = inv
 
 
+def rollout_frames():
+    """Two old clients, one surge slot, then the exact successor pair."""
+    frames = direct_frames()
+    def pod(uid, at, start, end):
+        count = min(at, end) - start
+        final = at >= end
+        events = [dict(processId=uid, sequence=i+1, at=start, kind='connected') for i in range(4)]
+        for n in range(1, count+1):
+            events += [dict(processId=uid, sequence=len(events)+1, at=start+n,
+                            kind='scheduled', operationId=f'{uid}-{n}'),
+                       dict(processId=uid, sequence=len(events)+2, at=start+n,
+                            kind='operation', operationId=f'{uid}-{n}', outcome='success')]
+        if final:
+            events += [dict(processId=uid, sequence=len(events)+i+1, at=end, kind='disconnected') for i in range(4)]
+        sample = dict(processId=uid, at=at, sequence=len(events), Scheduled=count,
+                      Attempts=count, Success=count, Failure=0, Timeout=0, Ambiguous=0, Skipped=0)
+        return dict(uid=uid, snapshot=dict(sample=sample, events=events, final=final,
+                                         connected=0 if final else 4, truncated=False))
+    for f in frames:
+        at = f['at']; f['expectedReplicas'] = 2
+        roster = []
+        if at <= 4: roster.append(pod('old-a', at, 0, 4))
+        if at <= 7: roster.append(pod('old-b', at, 0, 7))
+        if at >= 3: roster.append(pod('new-c', at, 3, 9))
+        if at >= 6: roster.append(pod('new-d', at, 6, 9))
+        f['pods'] = roster
+    return frames
+
+
 class DirectReplacementModeTests(unittest.TestCase):
+    def test_rollout_retains_predecessor_finals_and_successor_history_across_surge(self):
+        frames = rollout_frames()
+        self.assertEqual([len(f['pods']) for f in frames], [2,2,2,3,3,2,3,3,2,2])
+        self.assertEqual(assess(frames, completed=True)['status'], 'PASS')
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory)/'capture'
+            capture = SegmentedCapture(path, max_segment_seconds=2)
+            for f in frames: capture.append(f)
+            self.assertEqual(capture.finish(completed=True, cancelled=False, errors=[])['status'], 'PASS')
+            self.assertEqual(assess_manifest(path)['status'], 'PASS')
+            rows = [json.loads(line) for p in sorted(path.glob('segment-*.jsonl')) for line in p.read_text().splitlines()]
+            finals = {p['uid'] for f in rows for p in f['pods'] if p['snapshot']['final']}
+            self.assertEqual(finals, {'old-a','old-b','new-c','new-d'})
+            for uid in ('new-c','new-d'):
+                events = [e for f in rows for p in f['pods'] if p['uid']==uid for e in p['snapshot']['events']]
+                self.assertEqual([e['sequence'] for e in events], list(range(1, len(events)+1)))
+                self.assertEqual([e['kind'] for e in events[:4]], ['connected']*4)
+
+    def test_rollout_cannot_hide_missing_finals_history_or_sql_failure(self):
+        for case in ('old final', 'new startup', 'new final', 'old failure', 'new failure'):
+            frames = rollout_frames()
+            if case == 'old final': frames[4]['pods'][0]['snapshot'].update(final=False, connected=4)
+            if case == 'new startup':
+                for f in frames[3:]:
+                    for p in f['pods']:
+                        if p['uid']=='new-c': p['snapshot']['events'] = p['snapshot']['events'][1:]
+            if case == 'new final': frames[-1]['pods'][0]['snapshot'].update(final=False, connected=4)
+            if case in ('old failure','new failure'):
+                uid = 'old-a' if case=='old failure' else 'new-c'
+                for f in frames:
+                    for p in f['pods']:
+                        if p['uid']==uid and p['snapshot']['sample']['Attempts']:
+                            s=p['snapshot']['sample']; s['Success']-=1; s['Failure']=1
+                            next(e for e in p['snapshot']['events'] if e['kind']=='operation')['outcome']='failure'
+                # Corrupt coverage as well: observed SQL failure must win.
+                frames[-1]['metrics']['available'] = False
+            with self.subTest(case=case):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = pathlib.Path(directory)/'capture'
+                    capture = SegmentedCapture(path, max_segment_seconds=2)
+                    for f in frames: capture.append(f)
+                    result = capture.finish(completed=True, cancelled=False, errors=[])
+                    expected = 'FAIL' if 'failure' in case else 'INCONCLUSIVE'
+                    self.assertEqual(result['status'], expected, result)
+                    self.assertEqual(assess_manifest(path)['status'], expected)
+
     def operator(self, **kwargs):
         op = feed.Operator(SimpleNamespace(mode=MODE, **kwargs))
         op.atomic_worker_write = lambda value: None

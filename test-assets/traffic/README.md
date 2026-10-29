@@ -221,6 +221,25 @@ rule, missing-poll count, or traffic verdict.
 
 ### Exact client finalization boundary
 
+Application rolling restarts keep `maxUnavailable: 0` and `maxSurge: 1`. SIGTERM
+stops new schedules, drains the active operation and one accepted queued operation
+per worker, and closes active and idle sessions. Each operation has five seconds
+including any reconnect, with up to one second rollback and one second close.
+The three active workers drain concurrently (at most 14 seconds), followed by the
+one idle session close (one second), ten seconds of final evidence retention,
+and two seconds for overlapping control/HTTP shutdown: 27 seconds within the
+30-second termination grace. Existing SQL failures, timeouts, ambiguous outcomes
+and overload skips remain adverse evidence. The private finish socket remains
+available throughout the final hold; its exact identity and two-minute hold are
+unchanged, and a signal can interrupt that controlled hold.
+
+Keep one capture through the surge: retain every retiring process's final
+counters and each successor's startup events and cumulative counters. Finalize
+the terminal successor pair separately after the rollout. A clean successor
+cannot repair a missing predecessor final, lost startup history, or SQL failure.
+The rollout fixture exercises this retained-evidence contract locally; it does
+not establish a live rollout or the originals' independent zero/absence proof.
+
 After separate action-time authorization for client finish, start the collector
 with a fresh shared private directory:
 

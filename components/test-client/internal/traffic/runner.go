@@ -71,9 +71,7 @@ func (r Runner) Run(ctx context.Context) error {
 		e.At = time.Now().UTC()
 		r.Emit(e)
 	}
-	dial := func() Session {
-		dctx, cancel := context.WithTimeout(ctx, c.Timeout)
-		defer cancel()
+	dial := func(dctx context.Context) Session {
 		s, err := r.Dial(dctx)
 		if err != nil || s == nil {
 			emit(Event{Kind: "connection_failure"})
@@ -87,7 +85,9 @@ func (r Runner) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
-		sessions[i] = dial()
+		dctx, cancel := context.WithTimeout(ctx, c.Timeout)
+		sessions[i] = dial(dctx)
+		cancel()
 	}
 	var wg sync.WaitGroup
 	jobs := make([]chan string, c.Sessions-c.Idle)
@@ -104,20 +104,18 @@ func (r Runner) Run(ctx context.Context) error {
 				}
 			}()
 			for id := range jobs[i] {
-				if ctx.Err() != nil {
-					emit(Event{Kind: "skipped", OperationID: id})
-					continue
-				}
-				if s == nil {
-					s = dial()
-				}
+				// Accepted work survives the scheduling stop. Reconnect and SQL
+				// share one finite operation budget, including during shutdown.
+				opctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 				start := time.Now()
+				if s == nil {
+					s = dial(opctx)
+				}
 				out := Failure
 				if s != nil {
-					opctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 					out = s.Operate(opctx, id)
-					cancel()
 				}
+				cancel()
 				emit(Event{Kind: "operation", OperationID: id, Outcome: out, DurationSeconds: time.Since(start).Seconds()})
 				if out != Success && s != nil {
 					s.Close()
@@ -155,8 +153,13 @@ func (r Runner) Run(ctx context.Context) error {
 			// Failed dials remain observable; this never retries a SQL operation.
 			for i := len(jobs); i < len(sessions); i++ {
 				if sessions[i] == nil && ctx.Err() == nil {
-					sessions[i] = dial()
+					dctx, cancel := context.WithTimeout(ctx, c.Timeout)
+					sessions[i] = dial(dctx)
+					cancel()
 				}
+			}
+			if ctx.Err() != nil {
+				return nil
 			}
 
 			schedule := func() {
