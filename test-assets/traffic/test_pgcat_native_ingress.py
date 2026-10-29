@@ -589,4 +589,155 @@ class ReadinessTrafficTests(unittest.TestCase):
         with self.assertRaises(ValueError):ingress._ready_pair(frames,self.f.baseline,self.f.context,self.f.ready['readyAt'])
 
 
+
+
+class OriginAnchorReviewTests(unittest.TestCase):
+    def setUp(self):
+        IngressTests.setUp(self);complete_native(self.f)
+    def test_mutated_projection_and_apparent_authority_cannot_relabel_unknown(self):
+        projection=self.f.read()
+        projection['execution']['result']['replacement']['actions'][1]['outcome']='submitted'
+        projection._record=canonical(dict(projection))
+        projection._chain=ingress._Chain(self.f.run)
+        progress,_,_=read_progress(self.f.run/'native-capture',self.f.context)
+        projection._capture=(progress['latest'],ingress._capture_prefix(projection._chain,progress['latest']))
+        with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+        self.assertFalse(list(self.f.run.glob('native-ingress-*.json')))
+    def test_forged_or_exchanged_projection_handles_are_not_issued(self):
+        first=self.f.read();second=self.f.read()
+        forged=ingress._Projection(copy.deepcopy(dict(first)))
+        forged.__dict__.update(first.__dict__)
+        with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,forged)
+        first['execution']['result']['replacement']['actions'][1]['outcome']='submitted'
+        first.__dict__.clear();first.__dict__.update(second.__dict__)
+        first._record=canonical(dict(first))
+        with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,first)
+        sealed=ingress.seal_ingress(self.f.run,second)
+        self.assertEqual(sealed['record']['execution']['result']['replacement']['actions'][1]['outcome'],'unknown')
+    def test_projection_is_consumed_once(self):
+        projection=self.f.read();ingress.seal_ingress(self.f.run,projection)
+        with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+        self.assertEqual(len(list(self.f.run.glob('native-ingress-*.json'))),1)
+    def test_same_inode_ingress_rewrite_is_not_an_original_seal(self):
+        sealed=ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/'native-ingress-0001.json';inode=path.stat().st_ino
+        sealed['record']['execution']['result']['replacement']['actions'][1]['outcome']='submitted'
+        write(path,sealed['record']);self.assertEqual(path.stat().st_ino,inode)
+        with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,path)
+        self.assertFalse((self.f.run/'native-operation-binding.json').exists())
+    def test_replaced_identical_ingress_bytes_are_not_the_original_file(self):
+        ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/'native-ingress-0001.json';old=path.stat().st_ino
+        replacement=self.f.run/'replacement';replacement.write_bytes(path.read_bytes());replacement.chmod(0o600);replacement.replace(path)
+        self.assertNotEqual(path.stat().st_ino,old)
+        with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,path)
+    def test_never_issued_numbered_file_refuses(self):
+        path=self.f.run/'native-ingress-0001.json';write(path,dict(self.f.read()))
+        with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,path)
+    def test_returned_record_mutation_does_not_change_sealed_authority(self):
+        sealed=ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/'native-ingress-0001.json'
+        sealed['record']['execution']['result']['replacement']['actions'][1]['outcome']='submitted'
+        binding=ingress.seal_operation_binding(self.f.run,path)
+        actual=__import__('json').loads(path.read_bytes())
+        self.assertEqual(actual['execution']['result']['replacement']['actions'][1]['outcome'],'unknown')
+        self.assertEqual(binding['resultSha256'],sha(canonical(actual['execution']['result'])))
+    def test_fresh_worker_cannot_reconstruct_an_anchor_from_current_file(self):
+        import subprocess,sys
+        ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/'native-ingress-0001.json'
+        script=("import sys; from pathlib import Path; import pgcat_native_ingress as i\n"
+                "try:i.seal_operation_binding(Path(sys.argv[1]),Path(sys.argv[2]))\n"
+                "except ValueError:print('refused')\n"
+                "else:print('accepted')\n")
+        env=dict(os.environ,PYTHONPATH=str(Path(__file__).resolve().parent))
+        result=subprocess.run([sys.executable,'-c',script,str(self.f.run),str(path)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+            universal_newlines=True,timeout=10,check=True)
+        self.assertEqual(result.stdout.strip(),'refused');self.assertEqual(result.stderr,'')
+
+
+
+
+def resumed_native(f,on_pause=None):
+    """Three real attempt identities, two paused snapshots, one final result."""
+    def stage(n,roll,members):
+        frame=copy.deepcopy(f.frame) if roll is None else rolling(roll)
+        frame['inventory'].update(desired=len(members),members=members,healthyRegistered=members,
+            memberStates=[dict(id=x,lifecycle='Protected',health='Healthy',addressKnown=True) for x in members],
+            backendStates=[dict(id=x,status='Available',weight=100,listenerHealth='Normal') for x in members])
+        f.append(n,frame)
+    f.events=[]
+    def event(attempt,runtime,tool,t):
+        f.events.append(dict(eventId=attempt+':'+str(runtime),requestId=REQUEST,attemptId=attempt,sequence=len(f.events)+1,
+            occurredAt=timestamp(START+t),kind='tool_start',summary='tool_start: started',
+            details=dict(tool=tool,status='started',runtimeSequence=runtime),evidenceMode='live'))
+    stage(2,None,['a','b','c','d'])
+    event('attempt-A',1,'mcp__infra__db_proxy_scale',2)
+    event('attempt-A',2,'resource_wait',2)
+    f.execution.update(attemptId='attempt-A',status='paused',stage='waiting')
+    if on_pause:on_pause()
+    stage(3,1,['a','b','c','d']);stage(4,2,['a','b','c','d']);stage(5,3,['a','b','c','d']);f.live=kubernetes(3)
+    event('attempt-B',1,'mcp__infra__deployment_restart',3)
+    event('attempt-B',2,'mcp__infra__db_proxy_nodes_deregister',4)
+    event('attempt-B',3,'mcp__raptor__approval_request',5)
+    event('attempt-B',4,'mcp__raptor__request_pause',5)
+    f.execution.update(attemptId='attempt-B',status='paused',stage='waiting')
+    if on_pause:on_pause()
+    stage(6,4,['c','d']);f.live=kubernetes(4)
+    event('attempt-C',1,'mcp__raptor__approval_get',6)
+    event('attempt-C',2,'mcp__infra__db_proxy_scale',6)
+    replacement=dict(version=2,converged=True,acceptance='pending',scope=copy.deepcopy(f.plan['controllerScope']),oldInstanceIds=['a','b'],newInstanceIds=['c','d'],
+        desiredCapacity=2,restartGeneration=2,actions=[dict(actionId='expand',previousDesiredCapacity=2,desiredCapacity=4,outcome='submitted'),
+            dict(actionId='shrink',previousDesiredCapacity=4,desiredCapacity=2,outcome='unknown')],observedAt=timestamp(f.now))
+    f.execution.update(attemptId='attempt-C',status='completed',stage='completed',result=dict(requestId=REQUEST,attemptId='attempt-C',
+        selectedModel='gpt-6-luna',actualModel='gpt-6-luna',selectedProvider='codex',actualProvider='openai-codex',
+        answer='Replacement converged; retained traffic and approval assessment is pending.',evidence=[],usage=[],generatedAt=timestamp(f.now),replacement=replacement))
+
+
+class AttemptSpanningReviewTests(unittest.TestCase):
+    setUp=IngressTests.setUp
+    def test_resource_wait_then_approval_pause_resume_keeps_three_attempts(self):
+        paused=[]
+        def pause():
+            projection=self.f.read();paused.append(projection['execution']['attemptId'])
+            sealed=ingress.seal_ingress(self.f.run,projection)
+            with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,self.f.run/sealed['ingressFile']['basename'])
+        resumed_native(self.f,pause)
+        self.assertEqual(paused,['attempt-A','attempt-B'])
+        sealed=ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/sealed['ingressFile']['basename']
+        result=ingress.seal_operation_binding(self.f.run,path)
+        self.assertEqual(result['requestId'],REQUEST)
+        self.assertEqual([e['attemptId'] for e in sealed['record']['events']],['attempt-A']*2+['attempt-B']*4+['attempt-C']*2)
+        self.assertEqual([e['details']['runtimeSequence'] for e in sealed['record']['events']],[1,2,1,2,3,4,1,2])
+        self.assertEqual(sealed['record']['execution']['result']['replacement']['actions'][1]['outcome'],'unknown')
+    def test_extra_foreign_preready_duplicate_replayed_or_mismatched_history_refuses(self):
+        for case in ('extra-scale','foreign-request','pre-ready','duplicate-id','runtime-replay','mutation-time-regression','post-result-mutation','mismatched-final-attempt'):
+            root=self.root/case;root.mkdir(mode=0o700);f=Fixture(root);resumed_native(f)
+            if case=='extra-scale':
+                extra=copy.deepcopy(f.events[0]);extra.update(eventId='attempt-A:2');extra['details']['runtimeSequence']=2
+                f.events[1]['eventId']='attempt-A:3';f.events[1]['details']['runtimeSequence']=3;f.events.insert(1,extra)
+                for n,e in enumerate(f.events,1):e['sequence']=n
+            elif case=='foreign-request':f.events[0]['requestId']='99999999-9999-4999-8999-999999999999'
+            elif case=='pre-ready':f.events[0]['occurredAt']=timestamp(START+1)
+            elif case=='duplicate-id':f.events[-1]['eventId']=f.events[0]['eventId']
+            elif case=='runtime-replay':f.events[3]['details']['runtimeSequence']=1
+            elif case=='mutation-time-regression':f.events[3]['occurredAt']=timestamp(START+2)
+            elif case=='post-result-mutation':
+                extra=copy.deepcopy(f.events[-1]);extra.update(eventId='attempt-C:3',sequence=9,occurredAt=timestamp(START+7))
+                extra['details'].update(tool='mcp__infra__deployment_restart',runtimeSequence=3);f.events.append(extra)
+            else:f.execution['result']['attemptId']='attempt-B'
+            with self.subTest(case=case),self.assertRaises(ValueError):
+                sealed=ingress.seal_ingress(f.run,f.read())
+                ingress.seal_operation_binding(f.run,f.run/sealed['ingressFile']['basename'])
+            self.assertFalse((f.run/'native-operation-binding.json').exists())
+    def test_same_attempt_runtime_sequence_replay_refuses_at_collection(self):
+        complete_native(self.f);self.f.events[-1]['details']['runtimeSequence']=1
+        with self.assertRaises(ValueError):self.f.read()
+    def test_returned_file_metadata_cannot_redirect_private_origin(self):
+        resumed_native(self.f);sealed=ingress.seal_ingress(self.f.run,self.f.read())
+        self.assertEqual(set(sealed),{'ingressSha256','record','ingressFile'})
+        self.assertEqual(sealed['ingressFile']['identity'],file_record(self.f.run/sealed['ingressFile']['basename']))
+        original=sealed['ingressFile']['basename'];forged=self.f.run/'native-ingress-9999.json';write(forged,sealed['record'])
+        sealed['ingressFile'].update(basename=forged.name,identity=file_record(forged));sealed['ingressSha256']=sha(forged.read_bytes())
+        with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,forged)
+        binding=ingress.seal_operation_binding(self.f.run,self.f.run/original)
+        self.assertEqual(binding['ingressSha256'],sha((self.f.run/original).read_bytes()))
+
+
 if __name__=='__main__':unittest.main()

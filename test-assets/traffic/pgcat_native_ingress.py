@@ -346,7 +346,7 @@ def _action_gate(chain,gate,calls,kube_read,now,action,initial=False):
             _ready_pair([previous,latest],chain.baseline,chain.context,at)
             require(live['deployment']['metadata']['generation']==chain.baseline['deployment']['generation'])
     chain.unchanged()
-    return dict(progress=progress,inventory=inventory,config=config,live=live,at=at)
+    return dict(progress=progress,inventory=inventory,config=config,live=live,at=at,admission=detached(admission))
 
 
 def _credentials(chain,label,calls,kube_read):
@@ -441,7 +441,45 @@ def _result(value,plan,request_id,attempt):
 
 
 class _Projection(dict):
-    pass
+    """Caller-visible view; object identity is an issued handle, never its fields."""
+
+
+def _origin_state():
+    """Bounded, process-local authority; neither dictionaries nor files can mint it.
+
+    A fixed worker invocation must collect, seal and bind before exiting. A new
+    worker must collect again; it cannot reconstruct this state from a file.
+    """
+    import weakref
+    collections={};seals={}
+    def chain_digest(chain):
+        from segmented_capture import canonical,sha
+        return sha(canonical({key:identity for key,(_,identity) in chain.files.items()}))
+    def issue(projection,chain,capture,admission):
+        from segmented_capture import canonical
+        raw=canonical(dict(projection));key=id(projection)
+        require(len(collections)<128 and sum(len(v[2]) for v in collections.values())+len(raw)<=32*1024*1024)
+        def released(ref):
+            entry=collections.get(key)
+            if entry is not None and entry[0] is ref:collections.pop(key)
+        collections[key]=(weakref.ref(projection,released),os.getpid(),raw,chain,capture,canonical(admission))
+    def consume(projection):
+        entry=collections.pop(id(projection),None)
+        require(entry is not None and entry[0]() is projection and entry[1]==os.getpid())
+        return entry[2:]
+    def remember(path,identity,chain,admission):
+        from segmented_capture import canonical
+        key=str(path);require(key not in seals and len(seals)<9999)
+        seals[key]=(os.getpid(),canonical(identity),chain_digest(chain),admission)
+    def take(path,chain):
+        entry=seals.pop(str(path),None)
+        require(entry is not None and entry[0]==os.getpid() and entry[2]==chain_digest(chain))
+        return entry[1],entry[3]
+    return issue,consume,remember,take
+
+
+_issue_collection,_consume_collection,_remember_ingress,_take_ingress=_origin_state()
+del _origin_state
 
 
 @sanitized
@@ -469,7 +507,7 @@ def read_ingress(run_dir,selector,*,gate,kube_read,http_get,now):
         response=get('openapi',prefix+'/context');exact(response,{'data'})
         ctx=_context(response['data'],chain.plan,request_id)
         response=get('gateway',prefix);exact(response,{'data'});first=_execution(response['data'],chain.plan,ctx)
-        events=[];cursor=0;seen=set();pages=0
+        events=[];cursor=0;seen=set();pages=0;runtime_sequences={}
         def exhaust():
             nonlocal cursor,pages
             while True:
@@ -486,6 +524,8 @@ def read_ingress(run_dir,selector,*,gate,kube_read,http_get,now):
                     if row['kind'] in ('tool_start','tool_end','tool_result'):require(bool(retained))
                     if retained:
                         require(set(retained)=={'tool','status','runtimeSequence'} and token(retained['tool']) and token(retained['status']) and integer(retained['runtimeSequence'],1))
+                        require(retained['runtimeSequence']>runtime_sequences.get(row['attemptId'],0))
+                        runtime_sequences[row['attemptId']]=retained['runtimeSequence']
                     # Free-text summaries and arbitrary runtime detail fields are not evidence.
                     event={k:row[k] for k in set(row)-{'summary','details'}};event['details']=retained
                     events.append(event);seen.add(row['eventId']);cursor=row['sequence'];require(len(events)<=10000)
@@ -505,35 +545,40 @@ def read_ingress(run_dir,selector,*,gate,kube_read,http_get,now):
             context=ctx,execution=last,events=events,approvals=approvals)
         encoded=canonical(record).decode('ascii')
         require(all(json.dumps(secret)[1:-1] not in encoded for secret in secrets))
-    _action_gate(chain,gate,calls,kube_read,now,'native-ingress')
+    final_state=_action_gate(chain,gate,calls,kube_read,now,'native-ingress')
+    require(final_state['admission']==state['admission'])
     chain.unchanged()
     require(_capture_prefix(chain,state['progress']['latest'])==capture_prefix)
-    result=_Projection(record);result._chain=chain;result._record=canonical(record)
-    result._capture=(state['progress']['latest'],capture_prefix)
+    result=_Projection(record)
+    _issue_collection(result,chain,(state['progress']['latest'],capture_prefix),state['admission'])
     return result
 
 
 @sanitized
 def seal_ingress(run_dir,projection):
-    from segmented_capture import canonical,sha,open_directory,check_directory
-    require(type(projection) is _Projection and projection._chain.run==Path(run_dir))
-    require(canonical(dict(projection))==projection._record)
-    projection._chain.unchanged();chain=_Chain(run_dir)
-    require(chain.files==projection._chain.files)
-    require(_capture_prefix(chain,projection._capture[0])==projection._capture[1])
-    fd=open_directory(chain.run)
+    from segmented_capture import canonical,sha,open_directory,check_directory,decode_private
+    require(type(projection) is _Projection)
+    collected,original_chain,capture,admission=_consume_collection(projection)
+    require(original_chain.run==Path(run_dir) and canonical(dict(projection))==collected)
+    original_chain.unchanged();chain=_Chain(run_dir)
+    require(chain.files==original_chain.files)
+    require(_capture_prefix(chain,capture[0])==capture[1])
+    record=decode_private(collected);fd=open_directory(chain.run)
     try:
         for n in range(1,10000):
             name='native-ingress-%04d.json'%n
-            try:raw=_publish(fd,name,dict(projection));break
+            try:raw,created=_publish(fd,name,record,identify=True);break
             except FileExistsError:continue
         else:raise ValueError('native ingress limit')
-        check_directory(fd,chain.run)
-        return dict(ingressSha256=sha(raw),record=dict(projection))
+        path=chain.run/name;actual,identity=_identity(path,32*1024*1024)
+        require(actual==raw==collected and (identity['device'],identity['inode'])==created)
+        check_directory(fd,chain.run);chain.unchanged()
+        _remember_ingress(path,identity,chain,admission)
+        return dict(ingressSha256=sha(raw),record=record,ingressFile=dict(basename=name,identity=detached(identity)))
     finally:os.close(fd)
 
 
-def _publish(fd,name,value):
+def _publish(fd,name,value,*,identify=False):
     from segmented_capture import canonical
     raw=canonical(value);require(len(raw)<=32*1024*1024)
     item=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
@@ -542,9 +587,10 @@ def _publish(fd,name,value):
         remaining=raw
         while remaining:
             count=os.write(item,remaining);require(count>0);remaining=remaining[count:]
-        os.fsync(item)
+        os.fsync(item);info=os.fstat(item)
     finally:os.close(item)
-    os.fsync(fd);return raw
+    os.fsync(fd)
+    return (raw,(info.st_dev,info.st_ino)) if identify else raw
 
 
 def _approval(value,approval_id,plan,request_id,result):
@@ -660,7 +706,11 @@ def seal_operation_binding(run_dir,ingress_path):
     from pgcat_native_evidence import validate_operation_binding,_replay
     chain=_Chain(run_dir);path=Path(ingress_path)
     require(path.parent==chain.run and re.fullmatch(r'native-ingress-[0-9]{4}\.json',path.name))
-    raw,identity=_identity(path,32*1024*1024);record=decode_private(raw);exact(record,RECORD_KEYS);require(canonical(record)==raw)
+    sealed_identity,admission=_take_ingress(path,chain)
+    raw,identity=_identity(path,32*1024*1024);require(canonical(identity)==sealed_identity)
+    admitted=decode_private(admission)
+    require(admitted['runId']==chain.plan['runId'] and admitted['planSha256']==chain.context['planSha256'] and admitted['readySha256']==chain.ready_sha and admitted['feedBindingSha256']==chain.ready['feedBindingSha256'])
+    record=decode_private(raw);exact(record,RECORD_KEYS);require(canonical(record)==raw)
     require(record['runId']==chain.plan['runId'] and record['executionKind']==chain.plan['executionKind'] and record['planSha256']==chain.context['planSha256'] and record['readySha256']==chain.ready_sha)
     progress,_,latest=read_progress(chain.run/'native-capture',chain.context)
     require(latest is not None and not any(progress['flags'].values()))
@@ -690,9 +740,13 @@ def seal_operation_binding(run_dir,ingress_path):
         mutations={'mcp__infra__db_proxy_scale','mcp__infra__db_proxy_node_protection_set','mcp__infra__db_proxy_nodes_deregister','mcp__infra__deployment_restart'}
         scales=[];previous_time=None
         for event in record['events']:
+            require(event['requestId']==ctx['requestId'])
             if event['kind']=='tool_start' and event['details'].get('tool') in mutations:
-                require(event['attemptId']==execution['attemptId'] and event['details'].get('status')=='started' and instant(event['occurredAt'])>chain.ready['readyAt'])
+                # Pauses resume under a new attempt ID. Authority is the authenticated
+                # request-wide chronology, not membership in only the final attempt.
+                require(event['details'].get('status')=='started' and instant(event['occurredAt'])>chain.ready['readyAt'])
                 when=instant(event['occurredAt']);require(previous_time is None or previous_time<=when);previous_time=when
+                require(when<=instant(replacement['observedAt']))
                 if event['details']['tool']=='mcp__infra__db_proxy_scale':scales.append(event)
         require(len(scales)==2)
         require(instant(scales[-1]['occurredAt'])<=instant(result['replacement']['observedAt']))
