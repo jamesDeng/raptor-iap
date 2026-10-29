@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing Go gateway-live-gate, Python3.6 standard-library worker code, Mac lane/SQLite Journal, unittest/Go tests, existing Kubernetes/Workbench adapters. No new dependency/service/API/DB reader.
 
-**Spec:** [Native observer design](../specs/2026-10-29-pgcat-native-observer-design.md), [A admission contracts](2026-10-29-pgcat-native-admission.md) frozen at4ee0b89, and [B rolling evidence](2026-10-29-pgcat-native-rolling-evidence.md). Implement after reviewed A1/A2; do not edit their active work concurrently. Reconcile exact committed function names before changing shared files.
+**Spec:** [Native observer design](../specs/2026-10-29-pgcat-native-observer-design.md), [A admission contracts](2026-10-29-pgcat-native-admission.md) including completed review rulings, and [B rolling evidence](2026-10-29-pgcat-native-rolling-evidence.md). Implement after reviewed A1/A2; do not edit their active work concurrently. Reconcile exact committed function names before changing shared files.
 
 ## Global Constraints
 
