@@ -98,3 +98,9 @@ Implement one final admission policy before freezing: complete disabled-proof ac
 ## Remaining proof limits
 
 Actual event/metrics/approval availability may be insufficient to prove the exact sequence despite converged topology; this is INCONCLUSIVE until supported evidence exists. The current4s/5s finish and<30s inventory budgets may legitimately refuse a slow environment; do not extend them after observing failure. Exact runtime inspection and restoration need independent source/runtime qualification. This plan adds no cloud operation now and leaves the live path closed pending complete implementation and qualification.
+
+## C1 integration rulings
+
+Task1 owns the exact nativeClosure source keyset additions in lane actions and matching tests, plus support-name reservation only in lane protocol; it does not open release admission. The fixed binary is `run_dir/gateway-live-gate`, with separately pinned runtime asset digest and opened executable identity checks. Pre-feed runtime proof uses the actual allocated run UUID and bound template/service identities before the future plan exists; after sealing, it validates the actual plan. It consumes A2's original prepared credential identity, never rebinds a replaced path. C4 supplies full immutable asset validation and production wiring.
+
+Beyond A's runtime proof and the strict outer action receipt, no completed support schema already exists. C1 defines minimal strict per-action input/output records and fixed authenticated request/control readers, documenting them for C2/C4 review. Settlement comes from actual same-request supported terminal state, confirmed cleanup, no recovery or pending control and the existing Gateway idle check; a caller boolean or historical receipt shape cannot establish it. Already-false disable also requires safe settled/idle evidence, without toggling the flag to manufacture proof.
