@@ -626,6 +626,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(self.owner.child)
 
     def test_signal_during_seal_blocks_scaleout(self):
+        # Construct the later request while its receipt is fresh; this test
+        # exercises cancellation after seal, not the receipt's one-second TTL.
+        later=self.request(action='scaleout-two-to-three')
         original = self.journal.seal
         def seal(req, result):
             os.kill(os.getpid(),signal.SIGINT)
@@ -633,7 +636,7 @@ class SupervisorTests(unittest.TestCase):
         with patch.object(self.journal,'seal',seal): row = self.run_request()
         self.assertEqual(row['state'],'complete')
         self.assertNotEqual(row['runState'],'active')
-        with self.assertRaises(Refused): self.owner.run_once(self.request(action='scaleout-two-to-three')['requestId'])
+        with self.assertRaises(Refused): self.owner.run_once(later['requestId'])
 
     def test_signal_before_terminal_commit(self):
         original = actions.ActionCatalog.parse
@@ -872,7 +875,17 @@ class SupervisorTests(unittest.TestCase):
     def test_actual_fork_retains_lane_lock_after_direct_child_exit(self):
         import fcntl
         self.behavior.write_text('fork')
-        row=self.run_request(deadlineMonotonic=monotonic()+.8)
+        original=self.owner._communicate
+        def after_fork(deadline):
+            until=monotonic()+2
+            while not self.fork_ready.exists():
+                self.assertLess(monotonic(),until,'fake descendant did not start')
+                time.sleep(.01)
+            # Exercise timeout with an actual lock-holding descendant, without
+            # counting interpreter startup against the short timeout fixture.
+            return original(min(deadline,monotonic()+.15))
+        with patch.object(self.owner,'_communicate',after_fork):
+            row=self.run_request(deadlineMonotonic=monotonic()+4)
         self.assertEqual(row['state'],'uncertain')
         self.assertTrue(self.fork_ready.exists())
         fd=os.open(self.bindings['laneLockPath'],os.O_RDWR)

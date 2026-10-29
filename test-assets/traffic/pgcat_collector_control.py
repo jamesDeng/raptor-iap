@@ -41,6 +41,9 @@ SOURCES = {
     'captureWindow': 'capture_window.py', 'finishClients': 'finish_clients.py',
     'workerCapture': 'worker_capture.py', 'segmentedCapture': 'segmented_capture.py'}
 
+NATIVE_MODE='full-replacement-direct-v2'
+NATIVE_SOURCES=dict(SOURCES,nativeEvidence='pgcat_native_evidence.py')
+
 
 def check(value):
     if not value:
@@ -107,17 +110,28 @@ def entry_command(worker, digest, arguments):
     return [sys.executable,'-I','-S','-c',BOOTSTRAP,str(worker),digest]+arguments
 
 
-def context(contract, run_id, expected, worker_path=None):
+def native_entry_command(run,expected,args):
+    from pgcat_source_bootstrap import ROOT,NATIVE_SOURCES
+    check(set(expected)==set(NATIVE_SOURCES))
+    return ['python3','-I','-S','-c',ROOT,str(run/'pgcat_source_bootstrap.py'),expected['sourceBootstrap'],
+        'collectorControl',json.dumps(expected,sort_keys=True,separators=(',',':'))]+args
+
+
+def context(contract, run_id, expected, worker_path=None, *, profile='no-scale'):
     check(type(run_id) is str and str(uuid.UUID(run_id)) == run_id)
     contract=Path(contract);run=contract.parent/'run'
     check(contract.name == 'contract' and contract.is_absolute())
     check(Path(worker_path) == run/'pgcat_collector_control.py' if worker_path is not None else True)
-    check(type(expected) is dict and set(expected) == set(SOURCES))
+    sources=SOURCES
+    if profile==NATIVE_MODE:
+        from pgcat_source_bootstrap import NATIVE_SOURCES as sources,require_verified
+        require_verified(__name__)
+    check(type(expected) is dict and set(expected) == set(sources))
     fd=directory(contract);os.close(fd)
     fd=directory(run)
     verified={}
     try:
-        for key,name in SOURCES.items():
+        for key,name in sources.items():
             check(type(expected[key]) is str and re.fullmatch(r'[0-9a-f]{64}',expected[key]) is not None)
             raw=read(fd,name)
             check(hashlib.sha256(raw).hexdigest() == expected[key]);verified[name[:-3]]=raw
@@ -207,8 +221,11 @@ def capture_context(contract,run_id,expected,verified,job_fd):
         deployment=baseline['deployment'],collectorIdentity=identity))
 
 
-def profile_values(profile):
-    check(type(profile) is str and profile in ('no-scale','disabled-rehearsal'))
+def profile_values(profile,cap=5400):
+    check(type(profile) is str and profile in ('no-scale','disabled-rehearsal',NATIVE_MODE))
+    if profile==NATIVE_MODE:
+        check(type(cap) is int and 75<=cap<=5400)
+        return 'native-capture',cap,cap+15,cap+30
     if profile=='no-scale':
         return 'collector-capture',65,80,90
     return 'rehearsal-capture',5400,5415,5430
@@ -217,9 +234,11 @@ def profile_values(profile):
 def intent_profile(value,profile):
     profile_values(profile)
     keys={'runId','startedAt'}
-    if profile=='disabled-rehearsal':keys.add('profile')
+    if profile!='no-scale':keys.add('profile')
+    if profile==NATIVE_MODE:keys.add('captureMaxSeconds')
     check(type(value) is dict and set(value)==keys and type(value['startedAt']) is int)
     check(profile=='no-scale' or value['profile']==profile)
+    if profile==NATIVE_MODE:profile_values(profile,value['captureMaxSeconds'])
     return value
 
 
@@ -230,40 +249,59 @@ def intent(fd,run_id,*,profile='no-scale'):
 
 
 def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,*,profile='no-scale'):
+    if profile==NATIVE_MODE:
+        from pgcat_lane_protocol import _release_admission
+        _release_admission(profile,'native-collector-launch')
     profile_values(profile)
-    run,fd,_=context(contract,run_id,expected,worker_path)
+    run,fd,_=context(contract,run_id,expected,worker_path,profile=profile)
     try:
         kubeconfig=kube_binding(contract,kubeconfig)
-        if profile=='disabled-rehearsal':
-            boundary=directory(run/'disabled-boundary')
+        if profile in ('disabled-rehearsal',NATIVE_MODE):
+            boundary=directory(run/('native-boundary' if profile==NATIVE_MODE else 'disabled-boundary'))
             try:check(not os.listdir(boundary))
             finally:os.close(boundary)
         check(not os.listdir(fd))
         started=dict(runId=run_id,startedAt=int(time.time()))
-        if profile=='disabled-rehearsal':started['profile']=profile
+        if profile!='no-scale':started['profile']=profile
+        if profile==NATIVE_MODE:
+            from pgcat_native_controller import capture_budget
+            from pgcat_native_ingress import _identity
+            started['captureMaxSeconds']=capture_budget(decode(_identity(run/'native-plan.json')[0]),time.time())
         write(fd,'intent.json',started)
         args=entry_command(run/'pgcat_collector_control.py',expected['collectorControl'],
-            ['_run' if profile=='no-scale' else '_rehearsal-run',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))])
+            ['_native-run' if profile==NATIVE_MODE else '_run' if profile=='no-scale' else '_rehearsal-run',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))])
+        if profile==NATIVE_MODE:args=native_entry_command(run,expected,['_native-run',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))])
         env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8'}
         try:
-            (spawn or subprocess.Popen)(args,cwd=str(run),env=env,stdin=subprocess.DEVNULL,
+            guardian=(spawn or subprocess.Popen)(args,cwd=str(run),env=env,stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,close_fds=True)
         except BaseException:
             raise ValueError('collector') from None
+        if profile==NATIVE_MODE:
+            from pgcat_native_controller import owned_process
+            identity=owned_process(guardian,process_identity)
+            write(fd,'guardian.json',identity)
+            return dict(status='LAUNCHED',guardianIdentity=identity)
         return {'status':'LAUNCHED'}
     finally:
         os.close(fd)
 
 
 def capture_arguments(run,*,profile='no-scale'):
-    output,seconds,_,_=profile_values(profile)
+    cap=5400
+    if profile==NATIVE_MODE:
+        job=directory(run/'collector-job')
+        try:cap=intent_profile(decode(read(job,'intent.json')),profile)['captureMaxSeconds']
+        finally:os.close(job)
+    output,seconds,_,_=profile_values(profile,cap)
     arguments=['--output',str(run/output),'--inventory',
                str(run/'provider-inventory.json'),'--seconds',str(seconds)]
-    if profile=='disabled-rehearsal':arguments+=['--boundary-dir',str(run/'disabled-boundary')]
+    if profile in ('disabled-rehearsal',NATIVE_MODE):arguments+=['--boundary-dir',str(run/('native-boundary' if profile==NATIVE_MODE else 'disabled-boundary'))]
     return arguments
 
 
 def completion(run,*,profile='no-scale'):
+    if profile==NATIVE_MODE:raise ValueError('native closure not implemented')
     output,seconds,_,_=profile_values(profile)
     job=directory(run/'collector-job')
     try:intent_profile(decode(read(job,'intent.json')),profile)
@@ -292,19 +330,27 @@ def completion(run,*,profile='no-scale'):
 
 
 def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,probe=None,*,profile='no-scale'):
+    if profile==NATIVE_MODE:
+        from pgcat_lane_protocol import _release_admission
+        _release_admission(profile,'native-collector-launch')
     fd=None;child=None
     try:
         _,_,wait_seconds,_=profile_values(profile)
-        run,fd,_=context(contract,run_id,expected,worker_path)
-        kubeconfig=kube_binding(contract,kubeconfig);intent(fd,run_id,profile=profile)
+        run,fd,_=context(contract,run_id,expected,worker_path,profile=profile)
+        kubeconfig=kube_binding(contract,kubeconfig);started=intent(fd,run_id,profile=profile)
+        if profile==NATIVE_MODE:_,_,wait_seconds,_=profile_values(profile,started['captureMaxSeconds'])
         write(fd,'claim.json',dict(runId=run_id))
         args=entry_command(run/'pgcat_collector_control.py',expected['collectorControl'],
-            ['_capture' if profile=='no-scale' else '_rehearsal-capture',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))]
+            ['_native-capture' if profile==NATIVE_MODE else '_capture' if profile=='no-scale' else '_rehearsal-capture',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))]
             +capture_arguments(run,profile=profile))
+        if profile==NATIVE_MODE:args=native_entry_command(run,expected,['_native-capture',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))]+capture_arguments(run,profile=profile))
         child=(spawn or subprocess.Popen)(args,cwd=str(run),
             env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8','KUBECONFIG':kubeconfig},
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
-        identity=(probe or process_identity)(child.pid);valid_identity(identity)
+        if profile==NATIVE_MODE:
+            from pgcat_native_controller import owned_process
+            identity=owned_process(child,probe or process_identity)
+        else:identity=(probe or process_identity)(child.pid);valid_identity(identity)
         write(fd,'identity.json',identity)
         category='incomplete';digest=None
         try:
@@ -330,11 +376,18 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
 
 
 def status(contract,run_id,expected,probe=None,now=None,*,profile='no-scale'):
+    if profile==NATIVE_MODE:
+        from pgcat_lane_protocol import _release_admission
+        _release_admission(profile,'native-collector-status')
     fd=None
     try:
         _,_,_,status_seconds=profile_values(profile)
-        run,fd,_=context(contract,run_id,expected)
+        run,fd,_=context(contract,run_id,expected,profile=profile)
         started=intent(fd,run_id,profile=profile)
+        if profile==NATIVE_MODE:
+            _,_,_,status_seconds=profile_values(profile,started['captureMaxSeconds'])
+            guardian=decode(read(fd,'guardian.json'));valid_identity(guardian)
+            check((probe or process_identity)(guardian['pid'])==guardian)
         check(0<=(now or time.time)()-started['startedAt']<=status_seconds)
         check(decode(read(fd,'claim.json')) == dict(runId=run_id))
         identity=decode(read(fd,'identity.json'));valid_identity(identity)
@@ -344,6 +397,7 @@ def status(contract,run_id,expected,probe=None,now=None,*,profile='no-scale'):
             if 'observed.json' not in os.listdir(fd):
                 write(fd,'observed.json',identity)
             check(decode(read(fd,'observed.json'))==identity)
+            if profile==NATIVE_MODE:return dict(status='ALIVE',identity=identity,guardianIdentity=guardian)
             return dict(status='ALIVE',identity=identity)
         check(decode(read(fd,'observed.json'))==identity)
         sealed=decode(read(fd,'exit.json'))
@@ -404,8 +458,33 @@ def main():
     os.umask(0o077)
     try:
         args=sys.argv[1:]
+        if args and args[0] in ('native-launch','native-status','_native-run','_native-capture'):
+            from pgcat_lane_protocol import _release_admission
+            _release_admission(NATIVE_MODE)
         check(len(args)>=5)
         verb,contract,run_id,kubeconfig,hashes=args[:5];expected=decode(hashes.encode('ascii'))
+        if verb in ('native-launch','native-status','_native-run','_native-capture'):
+            from pgcat_source_bootstrap import require_verified
+            require_verified(__name__)
+            if verb=='_native-run':return run_child(contract,run_id,kubeconfig,expected,worker_path=Path(__file__),profile=NATIVE_MODE)
+            if verb=='_native-capture':
+                from pgcat_native_controller import seal_capture_context,FixedWorkerReads
+                from pgcat_native_ingress import _identity
+                run,job,verified=context(contract,run_id,expected,Path(__file__),profile=NATIVE_MODE)
+                try:
+                    intent(job,run_id,profile=NATIVE_MODE)
+                    until=time.monotonic()+1.
+                    while 'identity.json' not in os.listdir(job):
+                        check(time.monotonic()<until);time.sleep(.01)
+                finally:os.close(job)
+                check(args[5:]==capture_arguments(run,profile=NATIVE_MODE))
+                plan=decode(_identity(run/'native-plan.json')[0]);reads=FixedWorkerReads(plan,kubeconfig)
+                progress=seal_capture_context(run,expected,probe_process=process_identity,live_clients=reads.live_clients,now=time.time)
+                import worker_capture
+                sys.argv=['worker_capture.py']+args[5:];worker_capture.main(progress_context=progress);return 0
+            check(len(args)==5)
+            result=(launch(contract,run_id,kubeconfig,expected,worker_path=Path(__file__),profile=NATIVE_MODE) if verb=='native-launch' else status(contract,run_id,expected,profile=NATIVE_MODE))
+            print(json.dumps(result,sort_keys=True,separators=(',',':')));return 0 if result['status'] in ('LAUNCHED','ALIVE') else 1
         profiles={'launch':'no-scale','status':'no-scale','_run':'no-scale','_capture':'no-scale',
                   'verdict':'no-scale','rehearsal-launch':'disabled-rehearsal',
                   'rehearsal-status':'disabled-rehearsal','_rehearsal-run':'disabled-rehearsal',

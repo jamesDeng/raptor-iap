@@ -55,9 +55,10 @@ def finite_number(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
-def read_receipt(path, session, minimum):
+def read_receipt(path, session, minimum, *, expected_mode='disabled-rehearsal'):
     """Read without following a symlink and bind both inode and content."""
     try:
+        require(expected_mode in ('disabled-rehearsal','full-replacement-direct-v2'),'receipt')
         private_directory(os.path.dirname(path))
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
@@ -73,8 +74,8 @@ def read_receipt(path, session, minimum):
             os.close(fd)
         require(type(value) is dict and set(value) == RECEIPT_FIELDS, 'receipt')
         require(value['feedSession'] == session, 'receipt')
-        require(value['mode'] == 'disabled-rehearsal', 'receipt')
-        require(type(value['desired']) is int and value['desired'] in (2, 3), 'receipt')
+        require(value['mode'] == expected_mode, 'receipt')
+        require(type(value['desired']) is int and value['desired'] in ((2,3,4) if expected_mode=='full-replacement-direct-v2' else (2,3)), 'receipt')
         require(type(value['sequence']) is int and value['sequence'] >= minimum, 'receipt')
         require(type(value['rosterSha256']) is str and
                 re.fullmatch(r'[0-9a-f]{64}',value['rosterSha256']) is not None,'receipt')
@@ -141,6 +142,30 @@ def _post_stop_authority(argv, env, *, claim=False):
         raise Refused(getattr(error,'category','source')) from None
 
 
+def _native_authority(argv,env,*,claim=False):
+    try:
+        from pathlib import Path
+        from pgcat_source_bootstrap import require_verified,current_hashes
+        from pgcat_lane_protocol import Journal,private_json,monotonic,_release_admission
+        from pgcat_lane_supervisor import GLOBAL_ROOT
+        from pgcat_lane_actions import ActionCatalog
+        require_verified(__name__);_release_admission('full-replacement-direct-v2')
+        root=Path(env['PGCAT_LANE_ROOT']);private_directory(str(root))
+        journal=Journal(root);admitted=journal.native_admission(env['PGCAT_LANE_REQUEST_ID'])
+        request=admitted['request'];bindings=admitted['bindings']
+        require(current_hashes()==bindings['sourceHashes'] and bindings['mode']=='full-replacement-direct-v2','source')
+        active,_=private_json(GLOBAL_ROOT/'active-run')
+        require(active==dict(runId=request['runId'],supervisorId=request['supervisorId'],laneRoot=str(root)),'source')
+        for envkey,key in [('PGCAT_LANE_REAL_CLI','workbenchCli'),('PGCAT_LANE_LOCK','laneLockPath'),('PGCAT_LANE_RECEIPT','receiptPath'),('PGCAT_LANE_INTENT_DIR','laneIntentDir')]:require(env[envkey]==bindings[key],'source')
+        expected=ActionCatalog.native_worker_command(request['action'],bindings,request['runId'],admitted)
+        require(argv==['exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',expected],'source')
+        require(monotonic()<request['deadlineMonotonic'],'deadline')
+        if claim:require(journal.native_admission(request['requestId'],claim=True)==admitted,'source')
+        return bindings['mode']
+    except Refused:raise
+    except Exception:raise Refused('source') from None
+
+
 def execute(argv, env):
     require(len(argv) == 9 and argv[:8] ==
             ['exec', '-P', PROFILE, '-r', REGION, '-i', WORKER, '-c']
@@ -167,7 +192,8 @@ def execute(argv, env):
         intent_dir = env['PGCAT_LANE_INTENT_DIR']
         require(os.path.isabs(receipt_path))
         private_directory(intent_dir)
-        original, value, fresh_until = read_receipt(receipt_path, session, minimum)
+        expected_mode=(_native_authority(argv,env) if 'PGCAT_LANE_ROOT' in env else 'disabled-rehearsal')
+        original, value, fresh_until = read_receipt(receipt_path, session, minimum,expected_mode=expected_mode)
         deadline = time.clock_gettime(time.CLOCK_MONOTONIC) + fresh_until-time.time()
     # Never unlink or replace this lock: every process must use the same inode.
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
@@ -187,11 +213,13 @@ def execute(argv, env):
         require((opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino))
         require(time.clock_gettime(time.CLOCK_MONOTONIC) < deadline, 'deadline' if role == 'provider' else 'receipt')
         if role == 'external':
-            latest, value, _ = read_receipt(receipt_path, session, minimum)
+            latest, value, _ = read_receipt(receipt_path, session, minimum,expected_mode=expected_mode)
             require(latest == original, 'receipt')
             consume_intent(intent_dir, session, value['sequence'])
-            latest, _, _ = read_receipt(receipt_path, session, minimum)
+            latest, _, _ = read_receipt(receipt_path, session, minimum,expected_mode=expected_mode)
             require(latest == original, 'receipt')
+        if role=='external' and expected_mode=='full-replacement-direct-v2':
+            require(_native_authority(argv,env,claim=True)==expected_mode,'source')
         if role == 'post-stop':
             require(_post_stop_authority(argv,env,claim=True) == deadline,'source')
         # No context manager, subprocess, helper child or early unlock after exec.

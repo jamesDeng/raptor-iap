@@ -18,6 +18,15 @@ ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'rehearsal-collector-launch', 'rehearsal-collector-status', 'lane-verdict', 'reconcile-close', 'rehearsal-finish',
     'scaleout-two-to-three', 'pre-drain-proof', 'deregister-new-node',
     'zero-proof', 'scaling-activity-check', 'scalein-three-to-two'))
+NATIVE_MODE = 'full-replacement-direct-v2'
+NATIVE_ACTIONS = frozenset(('native-baseline','native-collector-launch','native-collector-status','native-ingress','native-disabled-restart'))
+NATIVE_RESERVED = frozenset(('native-terminal-seal','native-reconcile','native-feed-stop','native-finish','native-verdict','native-restore','native-cleanup'))
+
+def native_action(action,kind):
+    require(kind in ('native-replacement','disabled-proof') and action in NATIVE_ACTIONS)
+    require(action!='native-disabled-restart' or kind=='disabled-proof')
+
+
 NO_SCALE_ACTIONS = frozenset(('baseline-start','baseline-status',
     'collector-launch','collector-status','lane-verdict'))
 REQUEST_KEYS = frozenset(('requestId', 'runId', 'supervisorId', 'action',
@@ -143,7 +152,7 @@ def validate_request(value):
     require(len(encode(value)) <= MAX_REQUEST)
     for key in ('requestId', 'runId', 'supervisorId', 'feedSession', 'nonce'):
         identifier(value[key])
-    require(type(value['action']) is str and value['action'] in ACTIONS)
+    require(type(value['action']) is str and value['action'] in ACTIONS | NATIVE_ACTIONS)
     require(type(value['minimumSequence']) is int and value['minimumSequence'] > 0)
     require(sha(value['receiptIdentity']) and sha(value['bundleSha256']))
     require(type(value['deadlineMonotonic']) is float and math.isfinite(value['deadlineMonotonic']))
@@ -550,6 +559,12 @@ class Journal:
                 feed_exit TEXT NOT NULL, assessment TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS feed_binding (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS native_plan (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), raw BLOB NOT NULL, identity TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS native_admission (
+                request_id TEXT PRIMARY KEY, proof TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS native_support (
+                request_id TEXT PRIMARY KEY, proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS feed_manifest (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), raw BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS rehearsal_stop (
@@ -625,17 +640,39 @@ class Journal:
                     db.execute('ROLLBACK')
                 raise
 
-    def create_run(self, run_id: str, mode: str, target: dict, hashes: dict) -> None:
+    def create_run(self, run_id: str, mode: str, target: dict, hashes: dict, *, native_plan=None) -> None:
         _release_admission(mode)
         identifier(run_id)
-        require(mode in ('no-scale', 'disabled-rehearsal'))
+        require(mode in ('no-scale', 'disabled-rehearsal',NATIVE_MODE))
         target_valid(target)
         require(type(hashes) is dict and 'bundleSha256' in hashes and len(hashes) <= 64)
         require(all(token(k) and sha(v) for k, v in hashes.items()))
+        if mode==NATIVE_MODE:
+            from pgcat_native_ingress import validate_plan,_identity
+            native_plan=validate_plan(native_plan)
+            require(native_plan['runId']==run_id and native_plan['target']==target and hashes==dict(native_plan['sourceHashes'],bundleSha256=digest(native_plan['sourceHashes'])),'source')
+            raw,identity=_identity(self.root/'native-plan.json');require(raw==encode(native_plan),'source')
+        else:require(native_plan is None)
         with self._transaction() as db:
             require(db.execute('SELECT 1 FROM run').fetchone() is None)
             db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?)',
                        (run_id, mode, encode(target).decode(), encode(hashes).decode(), 'active', None, None))
+            if mode==NATIVE_MODE:db.execute('INSERT INTO native_plan VALUES (1,?,?)',(sqlite3.Binary(raw),encode(identity).decode()))
+
+    def _native_plan_in_tx(self,db):
+        from pgcat_native_ingress import validate_plan,_identity
+        row=db.execute('SELECT raw,identity FROM native_plan').fetchone()
+        run=db.execute('SELECT * FROM run').fetchone()
+        require(row is not None and run is not None and run['mode']==NATIVE_MODE,'source')
+        raw,identity=_identity(self.root/'native-plan.json')
+        require(raw==bytes(row['raw']) and identity==json.loads(row['identity']),'source')
+        plan=validate_plan(json.loads(raw));require(raw==encode(plan),'source')
+        require(plan['runId']==run['run_id'] and plan['target']==json.loads(run['target']) and
+            dict(plan['sourceHashes'],bundleSha256=digest(plan['sourceHashes']))==json.loads(run['hashes']),'source')
+        return plan
+
+    def native_plan(self):
+        with self._connection() as db:return self._native_plan_in_tx(db)
 
     def admit(self, request: dict, receipt=None) -> None:
         validate_request(request)
@@ -645,6 +682,8 @@ class Journal:
             run = db.execute('SELECT * FROM run').fetchone()
             require(run is not None and run['state'] == 'active')
             _release_admission(run['mode'], request['action'])
+            if run['mode']==NATIVE_MODE:
+                plan=self._native_plan_in_tx(db);native_action(request['action'],plan['executionKind'])
             require(request['runId'] == run['run_id'])
             require(request['target'] == json.loads(run['target']), 'target')
             require(request['bundleSha256'] == json.loads(run['hashes'])['bundleSha256'], 'source')
@@ -820,8 +859,64 @@ class Journal:
             db.execute('UPDATE run SET supervisor=?, session=?', (request['supervisorId'],request['feedSession']))
             db.execute('INSERT INTO requests VALUES (?,?,?,?,?,NULL)',
                        (request['requestId'], request['runId'], request['nonce'], encode(request).decode(), 'dispatching'))
+            if run['mode']==NATIVE_MODE:self._native_admit_in_tx(db,request)
             if request['action'] in ('deregister-new-node','scalein-three-to-two'):
                 db.execute('INSERT INTO mutation_keys VALUES (?,?)',(request['runId'],request['action']))
+
+    def _native_admit_in_tx(self,db,request):
+        from pgcat_native_controller import validate_action
+        from pgcat_native_ingress import _identity
+        plan=self._native_plan_in_tx(db);action=request['action'];native_action(action,plan['executionKind'])
+        feed=db.execute('SELECT proof FROM feed_binding').fetchone();require(feed is not None,'child')
+        feed=json.loads(feed['proof'])
+        selector_raw,selector_file=_identity(self.root/('native-selector-'+request['requestId']+'.json'))
+        selector=json.loads(selector_raw);require(selector_raw==encode(selector),'source')
+        if action!='native-ingress':
+            require(db.execute("SELECT 1 FROM requests WHERE request_id!=? AND json_extract(request,'$.action')=?",(request['requestId'],action)).fetchone() is None,'incomplete')
+        envelope=dict(schemaVersion=1,action=action,localRequestId=request['requestId'],runId=plan['runId'],executionKind=plan['executionKind'],
+            planSha256=digest(plan),baselineSha256=plan['baselineSha256'],feedBinding=feed,deadlineMonotonic=request['deadlineMonotonic'])
+        if action in ('native-ingress','native-disabled-restart'):
+            ready=None
+            for row in db.execute('SELECT proof FROM native_support'):
+                proof=json.loads(row['proof'])
+                if proof['action']=='native-collector-launch':ready=proof['outputs']
+            require(ready is not None,'incomplete')
+            envelope.update(readySha256=ready['readyFile']['sha256'],feedBindingSha256=ready['ready']['feedBindingSha256'])
+        elif action=='native-collector-launch':
+            require(any(json.loads(r['proof'])['action']=='native-baseline' for r in db.execute('SELECT proof FROM native_support')),'incomplete')
+        validate_action(plan,envelope,selector)
+        proof=dict(envelope=envelope,selector=selector,selectorFile=selector_file)
+        db.execute('INSERT INTO native_admission VALUES (?,?,0)',(request['requestId'],encode(proof).decode()))
+
+    def native_admission(self,request_id,*,claim=False):
+        _release_admission(NATIVE_MODE)
+        with self._transaction() as db:
+            plan=self._native_plan_in_tx(db)
+            request=db.execute('SELECT * FROM requests WHERE request_id=?',(request_id,)).fetchone()
+            row=db.execute('SELECT * FROM native_admission WHERE request_id=?',(request_id,)).fetchone()
+            require(request is not None and request['state']=='dispatching' and row is not None,'incomplete')
+            req=json.loads(request['request']);require(req['deadlineMonotonic']>monotonic(),'timeout')
+            proof=json.loads(row['proof']);native_action(req['action'],plan['executionKind'])
+            if claim:
+                require(row['claimed']==0,'incomplete');db.execute('UPDATE native_admission SET claimed=1 WHERE request_id=?',(request_id,))
+            bindings,_=private_json(self.root/'bindings.json')
+            return dict(request=req,bindings=bindings,**proof)
+
+    def seal_native(self,request_id,result):
+        _release_admission(NATIVE_MODE)
+        from pgcat_native_controller import validate_action_result
+        with self._transaction() as db:
+            plan=self._native_plan_in_tx(db)
+            row=db.execute('SELECT * FROM requests WHERE request_id=?',(request_id,)).fetchone()
+            admission=db.execute('SELECT * FROM native_admission WHERE request_id=?',(request_id,)).fetchone()
+            require(row is not None and row['state']=='dispatching' and admission is not None and admission['claimed']==1,'incomplete')
+            request=json.loads(row['request']);require(request['deadlineMonotonic']>monotonic(),'timeout')
+            proof=json.loads(admission['proof']);require(result['state']=='complete' and result['category']=='ok','source')
+            payload=validate_action_result(result['payload'],plan,request['action'],request_id)
+            require(payload['staged']['admission']['sha256']==digest(proof['envelope']) and payload['staged']['selector']['sha256']==digest(proof['selector']),'source')
+            require(db.execute('SELECT state FROM run').fetchone()['state']=='active','incomplete')
+            db.execute('INSERT INTO native_support VALUES (?,?)',(request_id,encode(payload).decode()))
+            db.execute("UPDATE requests SET state='complete',result=? WHERE request_id=?",(encode(result).decode(),request_id))
 
     def seal(self, request_id: str, result: dict, pending_source_sha=None,
              pre_drain_source_sha=None, zero_source_sha=None,
@@ -1238,7 +1333,7 @@ class Journal:
         require(absolute(outer['workerInventory']) == Path(b['remoteRun'])/'provider-inventory.json' and
                 absolute(outer['workerKubeconfig']) == Path(b['workerKubeconfig']) and
                 outer['workerInventory'] != outer['workerKubeconfig'], 'source')
-        require(type(outer['sourceHashes']) is dict and set(outer['sourceHashes']) == {'controller','client','runner'} and
+        require(type(outer['sourceHashes']) is dict and set(outer['sourceHashes']) == ({'nativeController','client','runner'} if b.get('mode')==NATIVE_MODE else {'controller','client','runner'}) and
                 all(sha(value) and value == b['sourceHashes'][key] for key,value in outer['sourceHashes'].items()), 'source')
         inner,_=private_json(root/'bindings.json')
         require(encode(inner) == encode(b) and b['target'] == run['target'] and
@@ -1252,10 +1347,11 @@ class Journal:
                 sha(binding['bindingSha256']) and sha(binding['argvSha256']),'child')
         with self._transaction() as db:
             run=db.execute('SELECT * FROM run').fetchone()
-            require(run is not None and run['mode'] in ('no-scale','disabled-rehearsal') and run['state']=='active' and
+            require(run is not None and run['mode'] in ('no-scale','disabled-rehearsal',NATIVE_MODE) and run['state']=='active' and
                     run['run_id']==binding['runId'],'child')
             _release_admission(run['mode'])
-            if run['mode'] == 'disabled-rehearsal':
+            if run['mode'] in ('disabled-rehearsal',NATIVE_MODE):
+                if run['mode']==NATIVE_MODE:self._native_plan_in_tx(db)
                 try:
                     self._feed_manifest(manifest_raw,binding,dict(target=json.loads(run['target']),hashes=json.loads(run['hashes'])))
                 except (OSError,ValueError,UnicodeError,KeyError,TypeError):raise Refused('source') from None

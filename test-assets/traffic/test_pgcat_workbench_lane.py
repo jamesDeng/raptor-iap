@@ -200,6 +200,8 @@ with p.open('a') as stream:
         self.write_receipt(sequence=9)
         env = self.environment('external', PGCAT_LANE_MIN_SEQUENCE='9')
         self.assertEqual(self.run_lane(env).returncode, 0)
+        # Even a fresh copy of the same publication cannot reuse its sequence.
+        self.write_receipt(sequence=9)
         self.refused(self.run_lane(env), 'intent')
         self.assertEqual(len([row for row in self.rows() if row['event']=='start']), 1)
         intents = list(self.intents.iterdir())
@@ -227,9 +229,17 @@ with p.open('a') as stream:
         self.refused(self.run_lane(self.environment('external')), 'intent')
 
     def test_subprocess_run_timeout_has_no_wrapper_child_left_holding_lock(self):
+        from unittest.mock import patch
         self.write_receipt()
-        with self.assertRaises(subprocess.TimeoutExpired):
-            self.run_lane(self.environment('external', FAKE_SLEEP='3'), timeout=.7)
+        original=subprocess.Popen.communicate
+        def after_exec(process,*args,**kwargs):
+            if kwargs.get('timeout')==.7:self.wait_starts(1)
+            return original(process,*args,**kwargs)
+        # Start the short communication timeout after the actual exec handshake;
+        # subprocess.run must still kill/wait the same PID and release its lock.
+        with patch.object(subprocess.Popen,'communicate',after_exec):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self.run_lane(self.environment('external', FAKE_SLEEP='3'), timeout=.7)
         cli_pid = self.rows()[0]['pid']
         with self.assertRaises(ProcessLookupError):
             os.kill(cli_pid, 0)
@@ -356,3 +366,27 @@ class PostStopWrapperTests(unittest.TestCase):
 
 
 WORKER_ID = 'i-t4nj1bitmcz7cuoch82h'
+
+class NativeReceiptTests(unittest.TestCase):
+    setUp=LaneTests.setUp
+    stop_processes=LaneTests.stop_processes
+    environment=LaneTests.environment
+    write_receipt=LaneTests.write_receipt
+    run_lane=LaneTests.run_lane
+    refused=LaneTests.refused
+    rows=LaneTests.rows
+    def test_explicit_native_receipt_profile_preserves_legacy_default(self):
+        import inspect,pgcat_workbench_lane as lane
+        self.assertIn('expected_mode',inspect.signature(lane.read_receipt).parameters)
+        self.write_receipt(mode='full-replacement-direct-v2',desired=4)
+        with self.assertRaises(lane.Refused):lane.read_receipt(str(self.receipt),SESSION,1)
+        _,value,_=lane.read_receipt(str(self.receipt),SESSION,1,expected_mode='full-replacement-direct-v2')
+        self.assertEqual(value['desired'],4)
+        for mode in ('full-replacement','direct-v2','',None):
+            with self.assertRaises(lane.Refused):lane.read_receipt(str(self.receipt),SESSION,1,expected_mode=mode)
+        self.write_receipt()
+        lane.read_receipt(str(self.receipt),SESSION,1)
+        with self.assertRaises(lane.Refused):lane.read_receipt(str(self.receipt),SESSION,1,expected_mode='full-replacement-direct-v2')
+        self.write_receipt(mode='full-replacement-direct-v2',desired=4)
+        self.refused(self.run_lane(self.environment('external',PGCAT_LANE_MODE='full-replacement-direct-v2')),'receipt')
+        self.assertEqual(self.rows(),[])

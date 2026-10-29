@@ -24,6 +24,8 @@ BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerF
     'nlbIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
 SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions','sourceBootstrap','controller','client','runner',
                           'pendingProofWorker','preDrainProofWorker','zeroProofWorker','collectorControl','laneTimingAssessor')) | frozenset(WORKER_SOURCES)
+NATIVE_SOURCE_NAMES = SOURCE_NAMES | frozenset(('nativeController','nativeIngress','nativeEvidence'))
+NATIVE_BINDING_KEYS = BINDING_KEYS | frozenset(('mode','executionKind'))
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'
 REGION = 'ap-southeast-1'
@@ -31,8 +33,12 @@ WORKER = 'i-t4nj1bitmcz7cuoch82h'
 PROFILE = 'infra-ops-poc'
 
 
-def validate_bindings(bindings):
-    require(type(bindings) is dict and set(bindings) == BINDING_KEYS)
+def validate_bindings(bindings, mode=None):
+    native=mode=='full-replacement-direct-v2' or (type(bindings) is dict and bindings.get('mode')=='full-replacement-direct-v2')
+    require(type(bindings) is dict and set(bindings) == (NATIVE_BINDING_KEYS if native else BINDING_KEYS))
+    if native:
+        require(bindings['mode']=='full-replacement-direct-v2' and bindings['executionKind'] in ('native-replacement','disabled-proof'))
+        require(bindings['target']['nlbServerGroupId']=='sgp-xs5s42tihtl6ja2a67','target')
     target_valid(bindings['target'])
     require(bindings['target']['originalInstanceIds'] == sorted(
             bindings['target']['originalInstanceIds']), 'target')
@@ -44,7 +50,7 @@ def validate_bindings(bindings):
                 and all(ord(c) >= 32 for c in path) and '..' not in Path(path).parts)
     for key in ('workbenchCli','aliyunCli'):
         require(os.path.isfile(bindings[key]) and os.access(bindings[key],os.X_OK))
-    require(type(bindings['sourceHashes']) is dict and set(bindings['sourceHashes']) == SOURCE_NAMES)
+    require(type(bindings['sourceHashes']) is dict and set(bindings['sourceHashes']) == (NATIVE_SOURCE_NAMES if native else SOURCE_NAMES))
     run = Path(bindings['remoteRun'])
     contract = Path(bindings['contractDir'])
     require(run.name == 'run' and contract.name == 'contract' and
@@ -68,6 +74,11 @@ class ActionCatalog:
     @staticmethod
     def command(action, bindings, run_id=None, pending_binding=None, run_context=None,
                 *, lane_root=None, request_id=None):
+        if type(bindings) is dict and bindings.get('mode')=='full-replacement-direct-v2':
+            from pgcat_lane_protocol import _release_admission, native_action
+            native_action(action,bindings.get('executionKind'))
+            _release_admission(bindings['mode'],action)
+            return ActionCatalog.native_command(action,bindings,run_id,run_context,lane_root)
         require(type(action) is str and action in ACTIONS)
         validate_bindings(bindings)
         require(action == 'rehearsal-finish' or lane_root is None and request_id is None)
@@ -206,6 +217,32 @@ class ActionCatalog:
         from pgcat_source_bootstrap import command as source_command
         return (source_command(bindings['sourceHashes'],'laneWrapper',
                 ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',command]),env,5.0)
+
+    @staticmethod
+    def native_worker_command(action,bindings,run_id,context):
+        from pgcat_lane_protocol import native_action
+        from pgcat_source_bootstrap import ROOT
+        validate_bindings(bindings,'full-replacement-direct-v2');native_action(action,bindings['executionKind']);identifier(run_id)
+        require(type(context) is dict and set(context)=={'request','bindings','envelope','selector','selectorFile'},'source')
+        require(context['bindings']==bindings and context['request']['runId']==run_id and context['request']['action']==action,'source')
+        envelope=context['envelope'];selector=context['selector'];request_id=context['request']['requestId']
+        require(envelope['localRequestId']==request_id and envelope['runId']==run_id and envelope['action']==action and envelope['executionKind']==bindings['executionKind'],'source')
+        raw=encode(envelope);selected=encode(selector)
+        parts=['python3','-I','-S','-c',ROOT,str(Path(bindings['remoteRun'])/'pgcat_source_bootstrap.py'),bindings['sourceHashes']['sourceBootstrap'],
+            'nativeController',encode(bindings['sourceHashes']).decode(),action,bindings['remoteRun'],request_id,
+            hashlib.sha256(raw).hexdigest(),hashlib.sha256(selected).hexdigest(),raw.decode(),selected.decode()]
+        return ' '.join(shlex.quote(part) for part in parts)
+
+    @staticmethod
+    def native_command(action,bindings,run_id,context,lane_root):
+        from pgcat_source_bootstrap import command
+        require(type(lane_root) is str and Path(lane_root).is_absolute(),'source')
+        worker=ActionCatalog.native_worker_command(action,bindings,run_id,context)
+        env={'PATH':os.defpath,'HOME':os.path.expanduser('~'),'LANG':'C','LC_ALL':'C',
+            'PGCAT_LANE_ROLE':'external','PGCAT_LANE_REAL_CLI':bindings['workbenchCli'],'PGCAT_LANE_LOCK':bindings['laneLockPath'],
+            'PGCAT_LANE_RECEIPT':bindings['receiptPath'],'PGCAT_LANE_INTENT_DIR':bindings['laneIntentDir'],
+            'PGCAT_LANE_ROOT':lane_root,'PGCAT_LANE_REQUEST_ID':context['request']['requestId']}
+        return command(bindings['sourceHashes'],'laneWrapper',['exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',worker]),env,5.
 
     @staticmethod
     def post_stop_worker_command(bindings, run_id, context):

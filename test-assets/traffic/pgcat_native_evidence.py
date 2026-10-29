@@ -19,16 +19,21 @@ def detached(value):return decode_private(canonical(value))
 def token(value):return type(value) is str and re.fullmatch(r'[A-Za-z0-9_.:/-]{1,256}',value) is not None
 
 
+def validate_deployment(value):
+    require(type(value) is dict and set(value)=={'name','namespace','uid','generation','initialReplicaSetUid','initialTemplateHash','imageDigest'})
+    require(integer(value['generation'],1) and value['generation']<2**53)
+    require(token(value['initialReplicaSetUid']) and token(value['initialTemplateHash']))
+    require(type(value['imageDigest']) is str and re.fullmatch('sha256:[0-9a-f]{64}',value['imageDigest']))
+    require(value['name']=='rdev-test-client-client' and value['namespace']=='raptor-test' and token(value['uid']))
+    return detached(value)
+
+
 def validate_context(value):
     from segmented_capture import validate_context as legacy_context
     require(type(value) is dict and set(value)==CONTEXT_KEYS)
     require(type(value['schemaVersion']) is int and value['schemaVersion']==2 and value['mode']==MODE)
     require(value['executionKind'] in ('native-replacement','disabled-proof') and hash_value(value['planSha256']))
-    deployment=value['deployment']
-    require(type(deployment) is dict and set(deployment)=={'name','namespace','uid','generation','initialReplicaSetUid','initialTemplateHash','imageDigest'})
-    require(integer(deployment['generation'],1) and deployment['generation']<2**53)
-    require(token(deployment['initialReplicaSetUid']) and token(deployment['initialTemplateHash']))
-    require(type(deployment['imageDigest']) is str and re.fullmatch('sha256:[0-9a-f]{64}',deployment['imageDigest']))
+    deployment=validate_deployment(value['deployment'])
     hashes=value['sourceHashes']
     require(type(hashes) is dict and set(hashes)==SOURCE_KEYS|{'nativeEvidence'} and hash_value(hashes['nativeEvidence']))
     legacy={key:value[key] for key in ('runId','feedSession','providerRunContextSha256','bundleSha256','baselineSha256','collectorIdentity')}

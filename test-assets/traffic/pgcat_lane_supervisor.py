@@ -139,6 +139,8 @@ class LaneSupervisor:
             segmentedCapture=here/'segmented_capture.py',
             collectorControl=here/'pgcat_collector_control.py',
             laneTimingAssessor=here/'pgcat_lane_timing_assessor.py')
+        if b.get('mode')=='full-replacement-direct-v2':
+            paths.update(nativeController=here/'pgcat_native_controller.py',nativeIngress=here/'pgcat_native_ingress.py',nativeEvidence=here/'pgcat_native_evidence.py')
         for name,path in paths.items():
             require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == b['sourceHashes'][name],'source')
         self.bundle=hashlib.sha256(encode(b['sourceHashes'])).hexdigest()
@@ -185,7 +187,8 @@ class LaneSupervisor:
                 self.child=None
 
     def _receipt(self, req):
-        try: identity,value,_=lane.read_receipt(self.bindings['receiptPath'],req['feedSession'],req['minimumSequence'])
+        try: identity,value,_=lane.read_receipt(self.bindings['receiptPath'],req['feedSession'],req['minimumSequence'],
+            expected_mode='full-replacement-direct-v2' if self.bindings.get('mode')=='full-replacement-direct-v2' else 'disabled-rehearsal')
         except lane.Refused: raise Refused('receipt') from None
         require(receipt_identity(identity) == req['receiptIdentity'],'receipt')
         return identity,value
@@ -412,8 +415,14 @@ class LaneSupervisor:
                         completionSha256=collector['payload']['exit']['completionSha256'])
                 if req['action'] == 'reconcile-close':
                     verdict_context=self.journal.reconcile_context(receipt)
-                argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
-                    self.run_id,binding,run_context=verdict_context)
+                native=run['mode']=='full-replacement-direct-v2'
+                if native:
+                    from pgcat_lane_protocol import native_action
+                    native_action(req['action'],self.journal.native_plan()['executionKind'])
+                    budget=5.;env={}
+                else:
+                    argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
+                        self.run_id,binding,run_context=verdict_context)
                 deadline=req['deadlineMonotonic']
                 require(0 < deadline-monotonic() <= budget,'timeout')
                 if req['action'] == 'scaleout-two-to-three': self._ess(req,receipt)
@@ -436,6 +445,10 @@ class LaneSupervisor:
                     else:
                         self.journal.admit(req)
                     admitted=True
+                    if native:
+                        context=self.journal.native_admission(req['requestId'])
+                        argv,env,budget=ActionCatalog.command(req['action'],self.bindings,self.run_id,run_context=context,lane_root=str(self.root))
+                        env.update(PGCAT_LANE_SESSION=req['feedSession'],PGCAT_LANE_MIN_SEQUENCE=str(req['minimumSequence']))
                     if req['action'] in ('scaleout-two-to-three','deregister-new-node',
                                          'scalein-three-to-two'):
                         lane.consume_intent(self.bindings['laneIntentDir'],req['feedSession'],receipt['sequence'])
@@ -451,7 +464,11 @@ class LaneSupervisor:
                         preexec_fn=lambda:signal.pthread_sigmask(signal.SIG_SETMASK,child_mask))
                 self._alive(); require(monotonic() < deadline,'timeout')
                 raw=self._communicate(deadline)
-                if req['action'] in ('pending-proof','pre-drain-proof','zero-proof'):
+                if native:
+                    from pgcat_native_controller import validate_action_result
+                    require(len(raw)<=32768,'parse')
+                    payload=validate_action_result(json.loads(raw.decode('ascii'),object_pairs_hook=unique),self.journal.native_plan(),req['action'],req['requestId'])
+                elif req['action'] in ('pending-proof','pre-drain-proof','zero-proof'):
                     payload=ActionCatalog.parse(req['action'],raw,req,receipt,
                         source_sha=self.bindings['sourceHashes'][
                             {'pending-proof':'pendingProofWorker','pre-drain-proof':'preDrainProofWorker',
@@ -468,7 +485,9 @@ class LaneSupervisor:
                     self._alive()
                     require(monotonic() < deadline,'timeout')
                     result=dict(state='complete',category='ok',payload=payload)
-                    if req['action'] == 'pending-proof':
+                    if native:
+                        self.journal.seal_native(request_id,result)
+                    elif req['action'] == 'pending-proof':
                         self.journal.seal(request_id,result,
                             pending_source_sha=self.bindings['sourceHashes']['pendingProofWorker'])
                     elif req['action'] == 'pre-drain-proof':

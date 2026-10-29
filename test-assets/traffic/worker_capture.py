@@ -86,7 +86,13 @@ def native_owner_evidence(deployment, replicasets, pods, context):
 
 def _native_owner_records(deployment, replicasets, pods, context, allow_starting=False):
     from pgcat_native_evidence import validate_context, token
-    context=validate_context(context);bound=context['deployment']
+    context=validate_context(context)
+    return _native_owner_records_for_deployment(deployment,replicasets,pods,context['deployment'],allow_starting)
+
+
+def _native_owner_records_for_deployment(deployment, replicasets, pods, bound, allow_starting=False):
+    from pgcat_native_evidence import validate_deployment, token
+    bound=validate_deployment(bound)
     def controller(obj,kind):
         refs=obj['metadata'].get('ownerReferences',[])
         require(type(refs) is list and all(type(row) is dict for row in refs))

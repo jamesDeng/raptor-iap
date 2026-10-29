@@ -735,3 +735,20 @@ class NativeStartupReads(unittest.TestCase):
             with self.subTest(case=case):
                 cohort=NativeCohort(context());cohort.observe(rolling(0));cohort.observe(self.observe(case))
                 self.assertTrue(any(cohort.snapshot()['flags'].values()))
+
+class NativePrefeedOwnerTests(unittest.TestCase):
+    def test_prefeed_owner_chain_without_future_context(self):
+        from test_pgcat_native_evidence import kubernetes,context,ownership
+        import worker_capture
+        self.assertTrue(hasattr(worker_capture,'_native_owner_records_for_deployment'),'prefeed owner validation missing')
+        live=kubernetes(0);bound=context()['deployment'];live['deployment']['metadata']['generation']=1
+        owners,starting=worker_capture._native_owner_records_for_deployment(live['deployment'],live['replicaSets'],live['pods'],bound)
+        self.assertEqual(owners,{p['metadata']['uid']:ownership() for p in live['pods']});self.assertEqual(starting,[])
+        for key,value in [('name','other'),('namespace','other'),('uid',''),('generation',True),('generation',2**53),('initialTemplateHash',''),('initialReplicaSetUid',''),('imageDigest','image:tag')]:
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                worker_capture._native_owner_records_for_deployment(live['deployment'],live['replicaSets'],live['pods'],dict(bound,**{key:value}))
+        for bad in ('foreign','image'):
+            rows=kubernetes(0);rows['deployment']['metadata']['generation']=1
+            if bad=='foreign':rows['replicaSets'][0]['metadata']['ownerReferences'][0]['uid']='foreign'
+            else:rows['pods'][0]['status']['containerStatuses'][0]['imageID']='repo@sha256:'+'b'*64
+            with self.assertRaises(ValueError):worker_capture._native_owner_records_for_deployment(rows['deployment'],rows['replicaSets'],rows['pods'],bound)

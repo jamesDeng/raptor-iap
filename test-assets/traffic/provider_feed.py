@@ -301,7 +301,7 @@ def _unique_pairs(pairs):
     return value
 
 
-def validate_run_context(root, path, *, no_scale=False):
+def validate_run_context(root, path, *, no_scale=False, mode='disabled-rehearsal'):
     """Bind context and requested feed guards to the active journal mode."""
     from pgcat_lane_protocol import Journal, encode, identifier, private, read_private
     import pgcat_lane_supervisor as supervisor
@@ -339,8 +339,11 @@ def validate_run_context(root, path, *, no_scale=False):
     from pgcat_lane_protocol import _release_admission
     _release_admission(journal['mode'])
     require(journal['runState'] == 'active' and journal['runId'] == context['runId'])
-    require(type(no_scale) is bool and journal['mode'] in ('no-scale', 'disabled-rehearsal')
-            and (journal['mode'] == 'no-scale') == no_scale)
+    require(type(no_scale) is bool and mode in ('disabled-rehearsal','full-replacement-direct-v2') and
+            journal['mode'] in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and
+            (journal['mode']=='no-scale')==no_scale and
+            (journal['mode']=='full-replacement-direct-v2')==(mode=='full-replacement-direct-v2'))
+    if mode=='full-replacement-direct-v2':Journal(root).native_plan()
     target = journal['target']
     require(target['scalingGroupId'] == GROUP_ID and target['nlbServerGroupId'] == SERVER_GROUP_ID
             and target['workerId'] == WORKER_ID and target['regionId'] == REGION)
@@ -561,8 +564,11 @@ class Operator:
         run_context = getattr(args, 'run_context', None)
         self.run_context = None
         if run_context is not None:
-            # The full four-node observer requires a separate explicit integration.
-            require(self.mode == 'disabled-rehearsal')
+            require(self.mode in ('disabled-rehearsal','full-replacement-direct-v2'))
+            if self.mode=='full-replacement-direct-v2':
+                from pgcat_lane_protocol import _release_admission
+                try:_release_admission(self.mode)
+                except Refused:raise ValueError('native startup') from None
             context_path = Path(run_context)
             contract = Path(args.contract_dir)
             inventory = Path(args.worker_inventory)
@@ -572,7 +578,7 @@ class Operator:
                     inventory.parent.name == 'run' and
                     inventory.parent.parent == contract.parent)
             self.run_context = validate_run_context(context_path.parent, context_path,
-                no_scale=getattr(args, 'no_scale_target', None) is not None)
+                no_scale=getattr(args, 'no_scale_target', None) is not None,mode=self.mode)
         if self.run_context is not None and getattr(args,'no_scale_target',None) is None:
             require(type(args.interval) is int and args.interval == 15 and
                     type(args.max_seconds) is int and 75 <= args.max_seconds <= 5400)
@@ -675,10 +681,10 @@ class Operator:
 
     def verify_run_context(self):
         if self.run_context is not None:
-            require(self.mode == 'disabled-rehearsal' and self.args.mode == self.mode)
+            require(self.mode in ('disabled-rehearsal','full-replacement-direct-v2') and self.args.mode == self.mode)
             path = Path(self.args.run_context)
             require(validate_run_context(path.parent, path,
-                no_scale=getattr(self.args, 'no_scale_target', None) is not None) == self.run_context)
+                no_scale=getattr(self.args, 'no_scale_target', None) is not None,mode=self.mode) == self.run_context)
             if self.deadline is not None:
                 self.deadline.remaining()
 
@@ -940,6 +946,9 @@ def main():
     parser.add_argument('--kubeconfig',required=True,help='already authorized private worker path; never transferred by this tool')
     args = parser.parse_args()
     try:
+        if args.mode=='full-replacement-direct-v2':
+            from pgcat_lane_protocol import _release_admission
+            _release_admission(args.mode)
         require(args.worker_inventory.startswith('/') and args.kubeconfig.startswith('/') and args.worker_inventory != args.kubeconfig)
         operator = Operator(args)
         operator.previous = operator.existing_targets()

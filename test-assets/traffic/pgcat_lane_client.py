@@ -25,23 +25,28 @@ def _require_verified():
 
 class LaneClient:
     @classmethod
-    def start(cls, bindings: dict, mode: str, root: Path):
+    def start(cls, bindings: dict, mode: str, root: Path, *, native_plan=None):
         from pgcat_lane_protocol import _release_admission
         _release_admission(mode)
         _require_verified()
         bindings = copy.deepcopy(bindings)
-        validate_bindings(bindings)
+        validate_bindings(bindings,mode)
+        if mode=='full-replacement-direct-v2':
+            from pgcat_native_controller import validate_start_plan
+            native_plan=validate_start_plan(bindings,native_plan)
+        else:require(native_plan is None)
         root = Path(root).absolute()
         try: root.mkdir(mode=0o700)
         except OSError: raise Refused('storage') from None
         private(root, True)
         self = cls()
         self.root = root; self.bindings = bindings; self.mode = mode
-        self.run_id = str(uuid.uuid4()); self.supervisor_id = None
+        self.run_id = native_plan['runId'] if native_plan is not None else str(uuid.uuid4()); self.supervisor_id = None
         self.journal = Journal(root)
         self.bundle = hashlib.sha256(encode(bindings['sourceHashes'])).hexdigest()
+        if native_plan is not None:save_once(root,'native-plan.json',native_plan)
         self.journal.create_run(self.run_id, mode, bindings['target'],
-                                dict(bindings['sourceHashes'], bundleSha256=self.bundle))
+                                dict(bindings['sourceHashes'], bundleSha256=self.bundle),native_plan=native_plan)
         save_once(root, 'bindings.json', bindings)
         reader, self.liveness_fd = os.pipe()
         os.set_inheritable(reader, False); os.set_inheritable(self.liveness_fd, False)
@@ -79,19 +84,19 @@ class LaneClient:
     def start_feed(self, argv, env, outer_binding_path):
         """Bind this mode's live exact child before allowing provider exec."""
         self._active()
-        require(self.mode in ('no-scale','disabled-rehearsal') and getattr(self,'feed_process',None) is None,'child')
+        require(self.mode in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and getattr(self,'feed_process',None) is None,'child')
         from pgcat_lane_protocol import _release_admission
         _release_admission(self.mode)
         outer,raw=private_json(Path(outer_binding_path))
         b=self.bindings
         require(outer['laneBindings']==b and Path(outer['laneRoot'])==self.root,'source')
         cap='180'
-        if self.mode == 'disabled-rehearsal':
+        if self.mode in ('disabled-rehearsal','full-replacement-direct-v2'):
             require(type(argv) is list and len(argv) > 8 and type(argv[8]) is str,'source')
             cap=argv[8]
             require(0 < len(cap) <= 4 and all('0' <= c <= '9' for c in cap) and str(int(cap)) == cap and 75 <= int(cap) <= 5400,'timeout')
         expected=[sys.executable,'-u',b['providerFeedPath'],
-            '--mode','disabled-rehearsal','--interval','15','--max-seconds',cap,
+            '--mode',('full-replacement-direct-v2' if self.mode=='full-replacement-direct-v2' else 'disabled-rehearsal'),'--interval','15','--max-seconds',cap,
             '--workbench',b['laneWrapper'],'--worker-inventory',outer['workerInventory'],
             '--kubeconfig',outer['workerKubeconfig'],'--status-file',b['receiptPath'],
             '--run-context',str(self.root/'run-context.json'),'--contract-dir',b['contractDir']]
@@ -102,10 +107,15 @@ class LaneClient:
         verified_argv=command(b['sourceHashes'],'providerFeed',argv[3:])
         require(hashlib.sha256(Path(b['providerFeedPath']).read_bytes()).hexdigest()==b['sourceHashes']['providerFeed'],'source')
         here=Path(__file__).resolve().parent
-        for key,name in dict(client='pgcat_lane_client.py',controller='pgcat_rehearsal_controller.py',runner='pgcat_lane_runner.py').items():
+        local_sources=dict(client='pgcat_lane_client.py',runner='pgcat_lane_runner.py')
+        local_sources.update({'nativeController':'pgcat_native_controller.py'} if self.mode=='full-replacement-direct-v2' else {'controller':'pgcat_rehearsal_controller.py'})
+        for key,name in local_sources.items():
             require(hashlib.sha256((here/name).read_bytes()).hexdigest()==outer['sourceHashes'][key],'source')
         def check_cap():
-            if self.mode == 'disabled-rehearsal':
+            if self.mode == 'full-replacement-direct-v2':
+                from pgcat_native_controller import capture_budget
+                require(int(cap)<=capture_budget(self.journal.native_plan(),time.time()),'timeout')
+            if self.mode in ('disabled-rehearsal','full-replacement-direct-v2'):
                 now=datetime.fromtimestamp(time.time(),timezone(timedelta(hours=8)))
                 require(now < now.replace(hour=21,minute=30,second=0,microsecond=0) and
                         int(cap) <= int((now.replace(hour=22,minute=30,second=0,microsecond=0)-now).total_seconds())-120,'timeout')
@@ -127,7 +137,7 @@ class LaneClient:
             _,current=private_json(Path(outer_binding_path));require(current==raw,'source')
             self.feed_binding=dict(runId=self.run_id,feedId=str(uuid.uuid4()),pid=self.feed_process.pid,
                 bindingSha256=hashlib.sha256(raw).hexdigest(),argvSha256=digest(verified_argv))
-            if self.mode == 'disabled-rehearsal':self.journal.bind_feed(self.feed_binding,manifest_raw=raw)
+            if self.mode in ('disabled-rehearsal','full-replacement-direct-v2'):self.journal.bind_feed(self.feed_binding,manifest_raw=raw)
             else:self.journal.bind_feed(self.feed_binding)
             self._active();require(self.feed_process.poll() is None,'child')
             check_cap()
@@ -138,7 +148,7 @@ class LaneClient:
             os.close(writer)
 
     def confirm_feed_exit(self, feed_process):
-        require(self.mode in ('no-scale','disabled-rehearsal') and feed_process is getattr(self,'feed_process',None) and
+        require(self.mode in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and feed_process is getattr(self,'feed_process',None) and
                 isinstance(feed_process,subprocess.Popen),'child')
         code=feed_process.poll();require(type(code) is int,'child')
         bound=self.feed_binding
@@ -176,6 +186,10 @@ class LaneClient:
         require(state['runState'] == 'active' and state['runId'] == self.run_id, 'incomplete')
         require(state['mode'] == self.mode and state['target'] == self.bindings['target'])
         require(state['hashes'] == dict(self.bindings['sourceHashes'], bundleSha256=self.bundle), 'source')
+        if self.mode=='full-replacement-direct-v2':
+            from pgcat_native_controller import validate_start_plan
+            validate_start_plan(self.bindings,self.journal.native_plan())
+            if getattr(self,'feed_process',None) is not None:require(self.feed_process.poll() is None,'child')
 
     def _prepared_result_ready(self, action, request_id, result):
         if action != 'pending-status' or result['payload'].get('status') != 'PREPARED':
@@ -185,7 +199,7 @@ class LaneClient:
                              (request_id,)).fetchone()
         return row is not None
 
-    def call(self, action: str, receipt: dict, deadline: float) -> dict:
+    def call(self, action: str, receipt: dict, deadline: float, *, native_selector=None) -> dict:
         # Proven stopped calls refuse before the uncertainty/owner-close path.
         with self.journal._connection() as db:
             stopped=db.execute('SELECT 1 FROM rehearsal_stop').fetchone() is not None
@@ -196,7 +210,8 @@ class LaneClient:
             self._active()
             require(type(receipt) is dict, 'receipt')
             identity, current, _ = lane.read_receipt(self.bindings['receiptPath'],
-                                                   receipt['feedSession'], receipt['sequence'])
+                                                   receipt['feedSession'], receipt['sequence'],
+                                                   expected_mode='full-replacement-direct-v2' if self.mode=='full-replacement-direct-v2' else 'disabled-rehearsal')
             require(current == receipt, 'receipt')
             request = dict(requestId=str(uuid.uuid4()), runId=self.run_id,
                 supervisorId=self.supervisor_id, action=action, feedSession=receipt['feedSession'],
@@ -204,6 +219,12 @@ class LaneClient:
                 target=copy.deepcopy(self.bindings['target']), bundleSha256=self.bundle,
                 nonce=str(uuid.uuid4()), deadlineMonotonic=deadline)
             require(type(deadline) is float and monotonic() < deadline, 'timeout')
+            if self.mode=='full-replacement-direct-v2':
+                from pgcat_native_controller import validate_selector
+                selector={} if native_selector is None else native_selector
+                validate_selector(self.journal.native_plan(),action,selector)
+                save_once(self.root,'native-selector-'+request['requestId']+'.json',selector)
+            else:require(native_selector is None)
             publish_request(self.root, request)
             while True:
                 self._active(); require(monotonic() < deadline, 'timeout')
