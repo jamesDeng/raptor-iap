@@ -1,0 +1,55 @@
+{
+  "requestId": "request",
+  "attemptId": "attempt",
+  "selectedModel": "gpt-5.6-luna",
+  "actualModel": "gpt-5.6-luna",
+  "answer": "Replacement converged; retained traffic and approval assessment is pending.",
+  "replacement": {
+    "version": 2,
+    "restartGeneration": 6,
+    "converged": true,
+    "acceptance": "pending",
+    "scope": {
+      "envCode": "rdev.ali",
+      "proxyCode": "proxy",
+      "groupId": "group",
+      "serverGroupId": "backend",
+      "targetDbCode": "db",
+      "application": {
+        "envCode": "rdev.ali",
+        "appCode": "client",
+        "clusterId": "cluster",
+        "namespace": "test",
+        "name": "client",
+        "uid": "uid"
+      }
+    },
+    "oldInstanceIds": [
+      "old-a",
+      "old-b"
+    ],
+    "newInstanceIds": [
+      "new-a",
+      "new-b"
+    ],
+    "desiredCapacity": 2,
+    "actions": [
+      {
+        "actionId": "expand",
+        "previousDesiredCapacity": 2,
+        "desiredCapacity": 4,
+        "outcome": "submitted"
+      },
+      {
+        "actionId": "shrink",
+        "previousDesiredCapacity": 4,
+        "desiredCapacity": 2,
+        "outcome": "unknown"
+      }
+    ],
+    "observedAt": "2026-10-29T00:00:00.000Z"
+  },
+  "evidence": [],
+  "usage": [],
+  "generatedAt": "2026-10-29T00:00:00.000Z"
+}

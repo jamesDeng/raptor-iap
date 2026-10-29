@@ -119,7 +119,9 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
    if(!input||Object.keys(input).length)throw invalid();const app=config.application;
    const result=await execute('kubectl',['--kubeconfig',config.private?.kubeconfig,'--namespace',app.namespace,'get','deployment',app.name,'--output','json'],{});
    if(result.metadata?.uid!==app.uid||result.metadata?.namespace!==app.namespace||result.metadata?.name!==app.name)throw invalid();
-   return {clusterId:app.clusterId,namespace:app.namespace,name:app.name,uid:app.uid,observedAt:new Date().toISOString(),replicas:result.spec?.replicas??0,readyReplicas:result.status?.readyReplicas??0,updatedReplicas:result.status?.updatedReplicas??0,availableReplicas:result.status?.availableReplicas??0};
+   const generation=result.metadata?.generation,observedGeneration=result.status?.observedGeneration;
+   if(!Number.isSafeInteger(generation)||generation<1||!Number.isSafeInteger(observedGeneration)||observedGeneration<0||observedGeneration>generation)throw invalid();
+   return {clusterId:app.clusterId,namespace:app.namespace,name:app.name,uid:app.uid,generation,observedGeneration,observedAt:new Date().toISOString(),replicas:result.spec?.replicas??0,readyReplicas:result.status?.readyReplicas??0,updatedReplicas:result.status?.updatedReplicas??0,availableReplicas:result.status?.availableReplicas??0};
   }
  };
  return tools;

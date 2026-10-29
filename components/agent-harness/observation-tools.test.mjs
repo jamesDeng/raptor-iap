@@ -4,7 +4,7 @@ const binding={requestId:'request',definitionSha256:'a'.repeat(64),envCode:'rdev
 const config=()=>({version:1,requestId:binding.requestId,definitionSha256:binding.definitionSha256,envCode:'rdev.ali',accountId:'1360282071200743',region:'ap-southeast-1',groupId:'group',serverGroupId:'backend',dbInstanceId:'db',application:{clusterId:'cluster',namespace:'raptor-test',name:'client',uid:'uid'},clientTargets:['10.70.1.20:9090'],prometheusURL:'http://10.70.1.10:9090',expiresAt:new Date(Date.now()+600000).toISOString(),private:{aliyunEnv:{ALIBABA_CLOUD_ACCESS_KEY_ID:'fixture-key',ALIBABA_CLOUD_ACCESS_KEY_SECRET:'fixture-secret',ALIBABA_CLOUD_SECURITY_TOKEN:'fixture-token'},kubeconfig:'/tmp/private/kubeconfig',sql:{user:'fixtureuser',password:'fixture-password',database:'test',sslmode:'disable'}}});
 const clientRead=async(_command,args)=>{const kind=args[args.indexOf('get')+1];const metadata={namespace:'raptor-test',name:'client',uid:'uid'};if(kind==='deployment')return {metadata,spec:{replicas:1,selector:{matchLabels:{app:'client'}}}};if(kind==='replicasets')return {items:[{metadata:{namespace:'raptor-test',name:'client-rs',uid:'rs',ownerReferences:[{kind:'Deployment',name:'client',uid:'uid',controller:true}]}}]};return {items:[{metadata:{namespace:'raptor-test',name:'client-pod',uid:'pod',labels:{app:'client'},ownerReferences:[{kind:'ReplicaSet',name:'client-rs',uid:'rs',controller:true}]},status:{phase:'Running',podIP:'10.70.1.20',conditions:[{type:'Ready',status:'True'}]}}]};};
 test('observer commands are fixed reads and results exclude raw workload credentials',async()=>{
- const calls=[];const tools=createObservationTools({binding,config:config(),exec:async(command,args)=>{calls.push([command,args]);if(command==='aliyun'&&args.includes('GetCallerIdentity'))return {AccountId:'1360282071200743',Arn:'acs:ram::1360282071200743:assumed-role/raptor-rdev-agent-observer/session'};if(command==='aliyun')return {ScalingInstances:[{InstanceId:'i-one',ScalingGroupId:'group',ProtectedFromScaleIn:true,LifecycleState:'InService',HealthStatus:'Healthy'}]};return {metadata:{uid:'uid',namespace:'raptor-test',name:'client'},spec:{replicas:2,template:{spec:{containers:[{env:[{value:'fixture-password'}]}]}}},status:{readyReplicas:2}};}});
+ const calls=[];const tools=createObservationTools({binding,config:config(),exec:async(command,args)=>{calls.push([command,args]);if(command==='aliyun'&&args.includes('GetCallerIdentity'))return {AccountId:'1360282071200743',Arn:'acs:ram::1360282071200743:assumed-role/raptor-rdev-agent-observer/session'};if(command==='aliyun')return {ScalingInstances:[{InstanceId:'i-one',ScalingGroupId:'group',ProtectedFromScaleIn:true,LifecycleState:'InService',HealthStatus:'Healthy'}]};return {metadata:{uid:'uid',namespace:'raptor-test',name:'client',generation:1},spec:{replicas:2,template:{spec:{containers:[{env:[{value:'fixture-password'}]}]}}},status:{observedGeneration:1,readyReplicas:2}};}});
  const fleet=await tools.cloudRead({kind:'fleet'});assert.equal(fleet.instances[0].instanceId,'i-one');const deployment=await tools.deploymentRead({});assert.equal(deployment.readyReplicas,2);assert.equal(JSON.stringify(deployment).includes('fixture-password'),false);
  assert.ok(calls.every(([command,args])=>!args.includes('delete')&&!args.includes('patch')&&!args.includes('secrets')));await assert.rejects(tools.cloudRead({kind:'DeleteInstances'}),/InvalidObservation/);
 });
@@ -160,4 +160,15 @@ test('NLB backend supports documented listener ID with its 6432 port suffix',asy
  const c=config();c.listenerId='lsn-7kuvcqkaz5o3z2w376@6432';const tools=createObservationTools({binding,config:c,exec:async(_command,args)=>observerCloudFixture(c,args)});
  const backend=await tools.cloudRead({kind:'backend'});assert.equal(backend.listenerId,c.listenerId);assert.equal(backend.nodes.length,1);
  for(const invalidId of ['lsn-test@6443','lsn-test@6432/evil','lsn-test@6432?secret']){c.listenerId=invalidId;await assert.rejects(tools.cloudRead({kind:'backend'}),/InvalidObservation/);}
+});
+
+test('deployment read returns validated actual generation and observedGeneration',async()=>{
+ const raw={metadata:{uid:'uid',namespace:'raptor-test',name:'client',generation:7},spec:{replicas:2},status:{observedGeneration:6,readyReplicas:2,updatedReplicas:1,availableReplicas:2}};
+ const tools=createObservationTools({binding,config:config(),exec:async()=>raw});
+ const data=await tools.deploymentRead({});assert.equal(data.generation,7);assert.equal(data.observedGeneration,6);
+ for(const value of [undefined,-1,1.5,'7',Number.MAX_SAFE_INTEGER+1]){
+  raw.metadata.generation=value;await assert.rejects(()=>tools.deploymentRead({}),/InvalidObservation/);
+ }
+ raw.metadata.generation=7;
+ for(const value of [undefined,-1,1.5,'6',8]){raw.status.observedGeneration=value;await assert.rejects(()=>tools.deploymentRead({}),/InvalidObservation/);}
 });

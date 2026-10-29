@@ -12,7 +12,7 @@ func TestOperationHarnessModulesArePackaged(t *testing.T) {
 	for _, name := range harnessFiles {
 		files[name] = true
 	}
-	for _, name := range []string{"operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "skills-bundle.mjs"} {
+	for _, name := range []string{"replacement-sequence.mjs", "operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "skills-bundle.mjs"} {
 		if !files[name] {
 			t.Errorf("runtime dependency missing: %s", name)
 		}

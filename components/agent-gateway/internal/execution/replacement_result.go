@@ -11,20 +11,21 @@ type ReplacementScaleAction struct {
 	Outcome  string `json:"outcome"`
 }
 type ReplacementConvergence struct {
-	Version         int                      `json:"version"`
-	Converged       bool                     `json:"converged"`
-	Acceptance      string                   `json:"acceptance"`
-	Scope           ReplacementScope         `json:"scope"`
-	OldInstanceIDs  []string                 `json:"oldInstanceIds"`
-	NewInstanceIDs  []string                 `json:"newInstanceIds"`
-	DesiredCapacity int                      `json:"desiredCapacity"`
-	Actions         []ReplacementScaleAction `json:"actions"`
-	ObservedAt      time.Time                `json:"observedAt"`
+	RestartGeneration int64                    `json:"restartGeneration,omitempty"`
+	Version           int                      `json:"version"`
+	Converged         bool                     `json:"converged"`
+	Acceptance        string                   `json:"acceptance"`
+	Scope             ReplacementScope         `json:"scope"`
+	OldInstanceIDs    []string                 `json:"oldInstanceIds"`
+	NewInstanceIDs    []string                 `json:"newInstanceIds"`
+	DesiredCapacity   int                      `json:"desiredCapacity"`
+	Actions           []ReplacementScaleAction `json:"actions"`
+	ObservedAt        time.Time                `json:"observedAt"`
 }
 
 func validateReplacementResult(r LiveResult, b AttemptBinding) error {
 	v := r.Replacement
-	if !b.journalValid() || v == nil || v.Version != 1 || !v.Converged || v.Acceptance != "pending" || !v.Scope.ValidFor(b) || v.DesiredCapacity != 2 || v.ObservedAt.IsZero() || r.Answer != ReplacementConvergenceAnswer || len(r.Evidence) != 0 || len(v.OldInstanceIDs) != 2 || len(v.NewInstanceIDs) != 2 || len(v.Actions) != 3 {
+	if !b.journalValid() || v == nil || (v.Version != 1 && v.Version != 2) || !v.Converged || v.Acceptance != "pending" || !v.Scope.ValidFor(b) || v.DesiredCapacity != 2 || v.ObservedAt.IsZero() || r.Answer != ReplacementConvergenceAnswer || len(r.Evidence) != 0 || len(v.OldInstanceIDs) != 2 || len(v.NewInstanceIDs) != 2 {
 		return ErrInvalid
 	}
 	ids := map[string]bool{}
@@ -35,6 +36,17 @@ func validateReplacementResult(r LiveResult, b AttemptBinding) error {
 		ids[id] = true
 	}
 	stages := [][2]int{{2, 4}, {4, 3}, {3, 2}}
+	if v.Version == 2 {
+		stages = [][2]int{{2, 4}, {4, 2}}
+		if v.RestartGeneration < 1 || v.RestartGeneration > 9007199254740991 {
+			return ErrInvalid
+		}
+	} else if v.RestartGeneration != 0 {
+		return ErrInvalid
+	}
+	if len(v.Actions) != len(stages) {
+		return ErrInvalid
+	}
 	actions := map[string]bool{}
 	for i, a := range v.Actions {
 		if !journalName.MatchString(a.ActionID) || actions[a.ActionID] || a.Previous != stages[i][0] || a.Desired != stages[i][1] || (a.Outcome != "submitted" && a.Outcome != "unknown") {
