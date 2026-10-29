@@ -138,11 +138,41 @@ class _Calls:
         finally:signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,previous)
 
 
-def _read_identity(path,limit=MAX_RESPONSE):
+MAX_GUARD_FDS=64
+
+
+class _FileGuard:
+    """One owned descriptor pins an authoritative inode until explicit release."""
+    active=0
+    @classmethod
+    def available(cls):
+        import resource
+        limit=resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        require(cls.active<MAX_GUARD_FDS and (limit==resource.RLIM_INFINITY or cls.active<max(0,limit-64)))
+    def __init__(self,fd,fingerprint):
+        self.fd=fd;self.fingerprint=fingerprint;type(self).active+=1
+    def check(self,path):
+        from segmented_capture import open_directory,private_info,file_identity,check_directory
+        require(self.fd is not None)
+        parent=open_directory(path.parent)
+        try:
+            before=os.fstat(self.fd);private_info(before)
+            current=os.stat(path.name,dir_fd=parent,follow_symlinks=False);private_info(current)
+            after=os.fstat(self.fd);private_info(after)
+            require(self.fingerprint==file_identity(before)==file_identity(current)==file_identity(after))
+            check_directory(parent,path.parent)
+        finally:os.close(parent)
+    def close(self):
+        if self.fd is not None:
+            fd=self.fd;self.fd=None;type(self).active-=1;os.close(fd)
+
+
+def _read_identity(path,limit=MAX_RESPONSE,hold=None):
     """Bind bytes, public identity and private mutation fingerprint to one FD."""
     from segmented_capture import open_directory,private_info,file_identity,sha,check_directory
     fd=open_directory(path.parent)
     try:
+        if hold is not None:_FileGuard.available()
         item=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
         try:
             before=os.fstat(item);private_info(before);require(before.st_size<=limit)
@@ -154,8 +184,11 @@ def _read_identity(path,limit=MAX_RESPONSE):
             check_directory(fd,path.parent)
             identity=dict(device=before.st_dev,inode=before.st_ino,uid=before.st_uid,mode=before.st_mode&0o777,
                 nlink=before.st_nlink,size=before.st_size,sha256=sha(raw))
+            if hold is not None:
+                hold.append((path,_FileGuard(item,fingerprint)));item=None
             return raw,identity,fingerprint
-        finally:os.close(item)
+        finally:
+            if item is not None:os.close(item)
     finally:os.close(fd)
 
 
@@ -241,7 +274,14 @@ def _baseline_frame(frame,baseline,context,at):
 
 
 class _Chain:
-    def __init__(self,run_dir):
+    def __init__(self,run_dir,retain=False):
+        self.guards=[]
+        try:self._load(run_dir,retain)
+        except BaseException:self.close();raise
+    def close(self):
+        for _,guard in self.guards:guard.close()
+        self.guards=[]
+    def _load(self,run_dir,retain):
         from segmented_capture import open_directory,decode_private,sha,canonical,read_frame,read_progress
         from pgcat_native_evidence import validate_context
         from capture_window import seconds
@@ -250,7 +290,7 @@ class _Chain:
         self.paths=dict(plan=self.run/'native-plan.json',baseline=self.run/'native-baseline.json',context=self.run/'native-context.json',
             feedBinding=self.run/'native-feed-binding.json',providerRunContext=self.run.parent/'contract'/'provider-source'/'run-context.json',
             progressBinding=self.run/'native-capture'/'progress-binding.json',gatewayRuntime=self.run/'native-gateway-runtime.json',ready=self.run/'native-ready.json')
-        observed={k:_read_identity(p) for k,p in self.paths.items()}
+        observed={k:_read_identity(p,hold=self.guards if retain else None) for k,p in self.paths.items()}
         self.files={k:value[:2] for k,value in observed.items()}
         self.fingerprints={k:value[2] for k,value in observed.items()}
         self.values={k:decode_private(raw) for k,(raw,_) in self.files.items()}
@@ -292,7 +332,9 @@ class _Chain:
         finally:os.close(fd)
         self.ready_sha=sha(self.files['ready'][0])
     def unchanged(self):
+        for path,guard in self.guards:guard.check(path)
         require(all(_read_identity(path)==self.files[key]+(self.fingerprints[key],) for key,path in self.paths.items()))
+        for path,guard in self.guards:guard.check(path)
 
 
 def _gateway_config(chain,calls,kube_read):
@@ -468,42 +510,58 @@ def _origin_state():
     A fixed worker invocation must collect, seal and bind before exiting. A new
     worker must collect again; it cannot reconstruct this state from a file.
     """
-    import weakref
-    collections={};seals={}
-    def chain_digest(chain):
-        from segmented_capture import canonical,sha
-        return sha(canonical({key:dict(identity=identity,fingerprint=chain.fingerprints[key]) for key,(_,identity) in chain.files.items()}))
+    import atexit,weakref
+    collections={};seals={};owner_pid=os.getpid()
+    def cleanup():
+        entries=list(collections.values());collections.clear()
+        for entry in entries:entry[3].close()
+        entries=list(seals.values());seals.clear()
+        for entry in entries:entry[2].close();entry[4].close()
+    def same_process():
+        if os.getpid()!=owner_pid:cleanup();require(False)
     def issue(projection,chain,capture,admission):
         from segmented_capture import canonical
-        raw=canonical(dict(projection));key=id(projection)
+        same_process();raw=canonical(dict(projection));key=id(projection)
         require(len(collections)<128 and sum(len(v[2]) for v in collections.values())+len(raw)<=32*1024*1024)
         def released(ref):
             entry=collections.get(key)
-            if entry is not None and entry[0] is ref:collections.pop(key)
+            if entry is not None and entry[0] is ref:collections.pop(key)[3].close()
         collections[key]=(weakref.ref(projection,released),os.getpid(),raw,chain,capture,canonical(admission))
     def consume(projection):
-        entry=collections.pop(id(projection),None)
-        require(entry is not None and entry[0]() is projection and entry[1]==os.getpid())
-        return entry[2:]
-    def remember(path,identity,fingerprint,chain,admission):
+        same_process();entry=collections.pop(id(projection),None)
+        require(entry is not None)
+        try:
+            require(entry[0]() is projection and entry[1]==os.getpid())
+            return entry[2:]
+        except BaseException:entry[3].close();raise
+    def remember(path,identity,fingerprint,chain,admission,guard):
         from segmented_capture import canonical
-        key=str(path);require(key not in seals and len(seals)<9999)
-        seals[key]=(os.getpid(),canonical(dict(identity=identity,fingerprint=fingerprint)),chain_digest(chain),admission)
-    def take(path,chain):
-        entry=seals.pop(str(path),None)
-        require(entry is not None and entry[0]==os.getpid() and entry[2]==chain_digest(chain))
-        return entry[1],entry[3]
-    return issue,consume,remember,take
+        same_process();key=str(path);require(key not in seals and len(seals)<9999)
+        seals[key]=(os.getpid(),canonical(dict(identity=identity,fingerprint=fingerprint)),chain,admission,guard)
+    def take(path):
+        same_process();entry=seals.pop(str(path),None);require(entry is not None)
+        try:
+            require(entry[0]==os.getpid());entry[2].unchanged();entry[4].check(path)
+            return entry[1:]
+        except BaseException:entry[2].close();entry[4].close();raise
+    atexit.register(cleanup)
+    return issue,consume,remember,take,cleanup
 
 
-_issue_collection,_consume_collection,_remember_ingress,_take_ingress=_origin_state()
+_issue_collection,_consume_collection,_remember_ingress,_take_ingress,_close_origins=_origin_state()
 del _origin_state
 
 
 @sanitized
 def read_ingress(run_dir,selector,*,gate,kube_read,http_get,now):
+    chain=_Chain(run_dir,retain=True)
+    try:return _collect_ingress(chain,selector,gate=gate,kube_read=kube_read,http_get=http_get,now=now)
+    except BaseException:chain.close();raise
+
+
+def _collect_ingress(chain,selector,*,gate,kube_read,http_get,now):
     from segmented_capture import decode_private,canonical
-    chain=_Chain(run_dir);calls=_Calls();native=chain.plan['executionKind']=='native-replacement'
+    calls=_Calls();native=chain.plan['executionKind']=='native-replacement'
     state=_action_gate(chain,gate,calls,kube_read,now,'native-ingress')
     capture_prefix=_capture_prefix(chain,state['progress']['latest'])
     record=dict(schemaVersion=1,executionKind=chain.plan['executionKind'],runId=chain.plan['runId'],planSha256=chain.context['planSha256'],
@@ -577,38 +635,50 @@ def seal_ingress(run_dir,projection):
     from segmented_capture import canonical,sha,open_directory,check_directory,decode_private
     require(type(projection) is _Projection)
     collected,original_chain,capture,admission=_consume_collection(projection)
-    require(original_chain.run==Path(run_dir) and canonical(dict(projection))==collected)
-    original_chain.unchanged();chain=_Chain(run_dir)
-    require(chain.files==original_chain.files and chain.fingerprints==original_chain.fingerprints)
-    require(_capture_prefix(chain,capture[0])==capture[1])
-    record=decode_private(collected);fd=open_directory(chain.run)
+    guard=None
     try:
-        for n in range(1,10000):
-            name='native-ingress-%04d.json'%n
-            try:raw,created=_publish(fd,name,record,identify=True);break
-            except FileExistsError:continue
-        else:raise ValueError('native ingress limit')
-        path=chain.run/name;actual,identity,fingerprint=_read_identity(path,32*1024*1024)
-        require(actual==raw==collected and fingerprint==created)
-        check_directory(fd,chain.run);chain.unchanged()
-        _remember_ingress(path,identity,fingerprint,chain,admission)
-        return dict(ingressSha256=sha(raw),record=record,ingressFile=dict(basename=name,identity=detached(identity)))
-    finally:os.close(fd)
+        require(original_chain.run==Path(run_dir) and canonical(dict(projection))==collected)
+        original_chain.unchanged();chain=_Chain(run_dir)
+        require(chain.files==original_chain.files and chain.fingerprints==original_chain.fingerprints)
+        require(_capture_prefix(chain,capture[0])==capture[1])
+        record=decode_private(collected);fd=open_directory(chain.run)
+        try:
+            for n in range(1,10000):
+                name='native-ingress-%04d.json'%n
+                try:raw,guard=_publish(fd,name,record,identify=True);break
+                except FileExistsError:continue
+            else:raise ValueError('native ingress limit')
+            path=chain.run/name;guard.check(path)
+            actual,identity,fingerprint=_read_identity(path,32*1024*1024)
+            require(actual==raw==collected and fingerprint==guard.fingerprint)
+            check_directory(fd,chain.run);original_chain.unchanged();guard.check(path)
+            result=dict(ingressSha256=sha(raw),record=record,ingressFile=dict(basename=name,identity=detached(identity)))
+            _remember_ingress(path,identity,fingerprint,original_chain,admission,guard)
+            original_chain=None;guard=None
+            return result
+        finally:os.close(fd)
+    finally:
+        if original_chain is not None:original_chain.close()
+        if guard is not None:guard.close()
 
 
 def _publish(fd,name,value,*,identify=False):
     from segmented_capture import canonical,file_identity
     raw=canonical(value);require(len(raw)<=32*1024*1024)
+    if identify:_FileGuard.available()
     item=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
     try:
         os.fchmod(item,0o600)
         remaining=raw
         while remaining:
             count=os.write(item,remaining);require(count>0);remaining=remaining[count:]
-        os.fsync(item);info=os.fstat(item)
-    finally:os.close(item)
-    os.fsync(fd)
-    return (raw,file_identity(info)) if identify else raw
+        os.fsync(item);info=os.fstat(item);os.fsync(fd)
+        if identify:
+            guard=_FileGuard(item,file_identity(info));item=None
+            return raw,guard
+        return raw
+    finally:
+        if item is not None:os.close(item)
 
 
 def _approval(value,approval_id,plan,request_id,result):
@@ -720,11 +790,18 @@ def _history(chain,latest):
 
 @sanitized
 def seal_operation_binding(run_dir,ingress_path):
+    path=Path(ingress_path);run=Path(run_dir)
+    require(path.parent==run and re.fullmatch(r'native-ingress-[0-9]{4}\.json',path.name))
+    sealed_identity,original_chain,admission,guard=_take_ingress(path)
+    try:return _bind_operation(run,path,sealed_identity,original_chain,admission,guard)
+    finally:original_chain.close();guard.close()
+
+
+def _bind_operation(run,path,sealed_identity,original_chain,admission,guard):
     from segmented_capture import sha,canonical,decode_private,read_progress,open_directory
     from pgcat_native_evidence import validate_operation_binding,_replay
-    chain=_Chain(run_dir);path=Path(ingress_path)
-    require(path.parent==chain.run and re.fullmatch(r'native-ingress-[0-9]{4}\.json',path.name))
-    sealed_identity,admission=_take_ingress(path,chain)
+    chain=_Chain(run)
+    require(chain.files==original_chain.files and chain.fingerprints==original_chain.fingerprints)
     raw,identity,fingerprint=_read_identity(path,32*1024*1024)
     require(canonical(dict(identity=identity,fingerprint=fingerprint))==sealed_identity)
     admitted=decode_private(admission)
@@ -777,7 +854,8 @@ def seal_operation_binding(run_dir,ingress_path):
         require(diagnostic==record['diagnostic'])
         for frame in _history(chain,progress['latest']):_fleet({k:frame['inventory'][k] for k in chain.baseline['fleet']},chain.plan['target']['originalInstanceIds'])
         binding['restartReceiptSha256']=diagnostic['restartReceiptSha256']
-    validate_operation_binding(binding,chain.context);chain.unchanged();require(_read_identity(path,32*1024*1024)==(raw,identity,fingerprint))
+    validate_operation_binding(binding,chain.context);original_chain.unchanged();guard.check(path)
+    require(_read_identity(path,32*1024*1024)==(raw,identity,fingerprint));guard.check(path)
     fd=open_directory(chain.run)
     try:_publish(fd,'native-operation-binding.json',binding)
     finally:os.close(fd)

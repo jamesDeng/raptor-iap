@@ -225,6 +225,7 @@ class IngressTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name).resolve();self.root.chmod(0o700)
         self.f=Fixture(self.root)
+        self.addCleanup(ingress._close_origins)
     def test_native_ingress_kind_and_identity_are_bound(self):
         record=ingress.seal_ingress(self.f.run,self.f.read())['record']
         self.assertEqual(record['context']['definition']['connectionVersion'],2)
@@ -810,6 +811,163 @@ class ImmutableIdentityABAReviewTests(unittest.TestCase):
         self.assertEqual(identity,file_record(self.f.run/'native-ready.json'))
         self.assertEqual(set(identity),{'device','inode','uid','mode','nlink','size','sha256'})
         self.assertEqual(identity['sha256'],sha(raw))
+
+
+class RetainedObjectReviewTests(unittest.TestCase):
+    setUp=IngressTests.setUp
+    def collide_replacement(self,path):
+        from contextlib import ExitStack
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        before=path.stat();replacement=path.with_name('equal-stat-replacement')
+        replacement.write_bytes(path.read_bytes());replacement.chmod(0o600);replacement.replace(path)
+        after=path.stat();real_stat,real_fstat=os.stat,os.fstat
+        def collide(info):
+            if (info.st_dev,info.st_ino)!=(after.st_dev,after.st_ino):return info
+            values={key:getattr(info,key) for key in dir(info) if key.startswith('st_')}
+            for key in ('st_dev','st_ino','st_mtime','st_mtime_ns','st_ctime','st_ctime_ns'):values[key]=getattr(before,key)
+            return SimpleNamespace(**values)
+        stack=ExitStack()
+        stack.enter_context(patch.object(os,'stat',side_effect=lambda *a,**kw:collide(real_stat(*a,**kw))))
+        stack.enter_context(patch.object(os,'fstat',side_effect=lambda *a:collide(real_fstat(*a))))
+        return stack
+    def track_descriptors(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        real_open,real_close=os.open,os.close;active=set()
+        def opened(*args,**kwargs):
+            fd=real_open(*args,**kwargs);active.add(fd);return fd
+        def closed(fd):
+            real_close(fd);active.discard(fd)
+        stack=ExitStack();stack.enter_context(patch.object(os,'open',side_effect=opened));stack.enter_context(patch.object(os,'close',side_effect=closed))
+        return stack,active
+    def test_equal_stat_ready_replacement_refuses(self):
+        projection=self.f.read();path=self.f.run/'native-ready.json';expected=ingress._read_identity(path)
+        with self.collide_replacement(path):
+            self.assertEqual(ingress._read_identity(path),expected)
+            with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+    def test_equal_stat_ingress_replacement_refuses(self):
+        complete_native(self.f);sealed=ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/sealed['ingressFile']['basename'];expected=ingress._read_identity(path)
+        with self.collide_replacement(path):
+            self.assertEqual(ingress._read_identity(path),expected)
+            with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,path)
+        self.assertFalse((self.f.run/'native-operation-binding.json').exists())
+    def test_actual_publication_handle_survives_until_readback(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        original=ingress._publish;projection=self.f.read()
+        with ExitStack() as stack:
+            def publish(fd,name,value,**kwargs):
+                result=original(fd,name,value,**kwargs)
+                stack.enter_context(self.collide_replacement(self.f.run/name))
+                return result
+            stack.enter_context(patch.object(ingress,'_publish',side_effect=publish))
+            with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+    def test_abandoned_projection_closes_original_descriptors(self):
+        import gc
+        stack,active=self.track_descriptors()
+        with stack:
+            projection=self.f.read();self.assertGreaterEqual(len(active),8)
+            del projection;gc.collect();self.assertEqual(active,set())
+    def test_failed_consumption_closes_descriptors(self):
+        stack,active=self.track_descriptors()
+        with stack:
+            projection=self.f.read();self.assertGreaterEqual(len(active),8)
+            projection['readAt']+=1
+            with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+            self.assertEqual(active,set())
+    def test_successful_binding_closes_all_retained_descriptors(self):
+        complete_native(self.f);stack,active=self.track_descriptors()
+        with stack:
+            sealed=ingress.seal_ingress(self.f.run,self.f.read());self.assertGreaterEqual(len(active),1)
+            ingress.seal_operation_binding(self.f.run,self.f.run/sealed['ingressFile']['basename'])
+            self.assertEqual(active,set())
+
+    def test_equal_stat_source_replacement_after_seal_refuses_binding(self):
+        complete_native(self.f);sealed=ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/'native-ready.json'
+        with self.collide_replacement(path):
+            with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,self.f.run/sealed['ingressFile']['basename'])
+    def test_read_validation_and_adapter_exceptions_close_all_guards(self):
+        from unittest.mock import patch
+        stack,active=self.track_descriptors()
+        with stack:
+            with patch.object(ingress,'validate_plan',side_effect=ValueError('fixture validation')):
+                with self.assertRaises(ValueError):self.f.read()
+            self.assertEqual(active,set())
+            with patch.object(self.f,'http',side_effect=ValueError('fixture adapter')):
+                with self.assertRaises(ValueError):self.f.read()
+            self.assertEqual(active,set())
+    def test_publication_failure_closes_consumed_sources_and_new_file(self):
+        from unittest.mock import patch
+        stack,active=self.track_descriptors()
+        with stack:
+            projection=self.f.read()
+            with patch.object(os,'fsync',side_effect=OSError('fixture fsync')):
+                with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+            self.assertEqual(active,set())
+    def test_binding_failure_consumes_and_closes_all_guards(self):
+        from unittest.mock import patch
+        import pgcat_native_evidence
+        complete_native(self.f);stack,active=self.track_descriptors()
+        with stack:
+            sealed=ingress.seal_ingress(self.f.run,self.f.read());path=self.f.run/sealed['ingressFile']['basename']
+            self.assertEqual(len(active),9)
+            with patch.object(pgcat_native_evidence,'_replay',side_effect=ValueError('fixture replay')):
+                with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,path)
+            self.assertEqual(active,set())
+            with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,path)
+    def test_wrong_process_closes_inherited_collections_and_seals(self):
+        from unittest.mock import patch
+        stack,active=self.track_descriptors()
+        with stack:
+            projection=self.f.read();ingress.seal_ingress(self.f.run,self.f.read());self.assertEqual(len(active),17)
+            pid=os.getpid()
+            with patch.object(os,'getpid',return_value=pid+1):
+                with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+            self.assertEqual(active,set())
+    def test_guard_cap_refuses_partial_collection_and_publication_without_leak(self):
+        from unittest.mock import patch
+        stack,active=self.track_descriptors()
+        with stack,patch.object(ingress,'MAX_GUARD_FDS',9):
+            first=self.f.read();self.assertEqual(len(active),8)
+            with self.assertRaises(ValueError):self.f.read()
+            self.assertEqual(len(active),8)
+            sealed=ingress.seal_ingress(self.f.run,first);self.assertEqual(len(active),9)
+            with self.assertRaises(ValueError):self.f.read()
+            self.assertEqual(len(active),9)
+            ingress._close_origins();ingress._close_origins();self.assertEqual(active,set())
+        stack,active=self.track_descriptors()
+        with stack,patch.object(ingress,'MAX_GUARD_FDS',8):
+            projection=self.f.read()
+            with self.assertRaises(ValueError):ingress.seal_ingress(self.f.run,projection)
+            self.assertEqual(ingress._FileGuard.active,0);self.assertEqual(active,set())
+    def test_hard_cap_bounds_all_pending_collections(self):
+        from unittest.mock import patch
+        import resource
+        stack,active=self.track_descriptors()
+        with stack,patch.object(resource,'getrlimit',return_value=(256,256)):
+            projections=[self.f.read() for _ in range(8)]
+            self.assertEqual(len(active),64)
+            with self.assertRaises(ValueError):self.f.read()
+            self.assertEqual(len(active),64)
+            ingress._close_origins();self.assertEqual(active,set())
+            self.assertEqual(len(projections),8)
+    def test_pending_seals_close_at_worker_exit(self):
+        import subprocess,sys
+        script=("import atexit,os\n"
+                "active=set();original_open=os.open;original_close=os.close\n"
+                "def opened(*a,**kw):\n fd=original_open(*a,**kw);active.add(fd);return fd\n"
+                "def closed(fd):\n original_close(fd);active.discard(fd)\n"
+                "atexit.register(lambda:print('exit-open',len(active)))\n"
+                "from pathlib import Path\n"
+                "from test_pgcat_native_ingress import Fixture,complete_native,ingress\n"
+                "import tempfile\n"
+                "temp=tempfile.TemporaryDirectory();root=Path(temp.name).resolve();root.chmod(0o700)\n"
+                "f=Fixture(root);complete_native(f);os.open=opened;os.close=closed\n"
+                "ingress.seal_ingress(f.run,f.read());print('pending-open',len(active))\n")
+        result=subprocess.run([sys.executable,'-c',script],env=dict(os.environ,PYTHONPATH=str(Path(__file__).resolve().parent)),
+            stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=10,check=True)
+        self.assertEqual(result.stdout.splitlines(),['pending-open 9','exit-open 0']);self.assertEqual(result.stderr,'')
 
 
 if __name__=='__main__':unittest.main()
