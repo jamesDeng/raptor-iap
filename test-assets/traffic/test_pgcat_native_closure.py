@@ -326,3 +326,44 @@ class GatewayClosureTests(unittest.TestCase):
         with self.assertRaises(ValueError):closure.read_support(self.f.run,'native-gateway-disable',plan=self.f.plan,original=artifact)
         record['outputs']['observedAt']=1;record['outputs']['runtime']['observedAt']=True
         with self.assertRaises(ValueError):closure.validate_support(record,self.f.plan,'native-gateway-disable')
+
+    @unittest.skipUnless(hasattr(os,'fork'),'requires real process fork')
+    def test_fork_cannot_inherit_issued_artifact_or_guarded_provenance(self):
+        import select
+        self.enabled=True
+        secret=self.objects[('Secret','raptor-system','gateway-live-config')]
+        secret['data']['config.json']=base64.b64encode(b'{"replacementEnabled":true}').decode()
+        self.settlement_value=self.settlement();adapter=self.adapter()
+        with patch.object(native.FixedHTTP,'__call__',side_effect=self.http):record=self.disable(adapter)
+        artifact=closure.support_artifact(self.f.run,'native-gateway-disable',adapters=adapter)
+        expected=dict(kind='guarded-verify',resourceVersion='2',changedAfter='2026-10-20T03:00:00Z')
+        self.assertEqual(closure._observe(adapter,False,lambda:self.f.now)['provenance'],expected)
+        reader,writer=os.pipe();child=os.fork()
+        if child==0:
+            os.close(reader)
+            result={}
+            try:
+                for name,operation in (
+                        ('artifact',lambda:closure.support_artifact(self.f.run,'native-gateway-disable',adapters=adapter)),
+                        ('guarded',lambda:closure._observe(adapter,False,lambda:self.f.now))):
+                    try:operation()
+                    except ValueError:result[name]='refused'
+                    else:result[name]='inherited'
+                os.write(writer,json.dumps(result).encode())
+                os.close(writer);os._exit(0)
+            except BaseException:
+                os.close(writer);os._exit(2)
+        os.close(writer)
+        try:
+            ready,_,_=select.select([reader],[],[],5)
+            if not ready:
+                os.kill(child,9);os.waitpid(child,0)
+                self.fail('forked proof child exceeded bounded test budget')
+            result=json.loads(os.read(reader,4096))
+            _,status=os.waitpid(child,0)
+        finally:os.close(reader)
+        self.assertEqual(status,0)
+        self.assertEqual(result,dict(artifact='refused',guarded='refused'))
+        self.assertEqual(closure.support_artifact(self.f.run,'native-gateway-disable',adapters=adapter),artifact)
+        self.assertEqual(closure._observe(adapter,False,lambda:self.f.now)['provenance'],expected)
+        self.assertEqual(json.loads((self.f.run/artifact['basename']).read_text()),record)

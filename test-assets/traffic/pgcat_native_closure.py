@@ -21,7 +21,8 @@ ASSET_KEYS={'schemaVersion','sourceBundleSha256','infraApiRevision','gatewayImag
     'gateBinarySha256','skillsTag','skillsCommit','scope','application'}
 _GATE_IMAGE=r'ghcr\.io/jamesdeng/raptor-iap-gateway@(sha256:[0-9a-f]{64})'
 # Genuine provenance is held only by this invocation after its actual set/verify.
-# Files (including legacy *.set.json) cannot issue it.
+# Files (including legacy *.set.json) cannot issue it. Each entry also pins
+# its issuing PID: a fork inherits objects and bytes, not issuance authority.
 import weakref
 _guarded=weakref.WeakKeyDictionary()
 _sealed=weakref.WeakKeyDictionary()
@@ -167,9 +168,13 @@ class FixedGatewayAdapters:
 
 def _observe(adapters,want,now,*,set_receipt=None):
     require(type(adapters) is FixedGatewayAdapters and type(want) is bool)
+    retained=set_receipt
+    if retained is None:
+        issued=_guarded.get(adapters)
+        if issued is not None:
+            require(issued[0]==os.getpid());retained=issued[1]
     started=now();require(number(started));adapters._check();before=adapters._metadata()
     require(before['replacementEnabled'] is want)
-    retained=_guarded.get(adapters) if set_receipt is None else set_receipt
     if retained is not None and retained['resourceVersion']==before['secretResourceVersion'] and retained['replacementEnabled'] is want:
         _set_receipt(retained,want,started)
         args=['verify','--expected',str(want).lower(),'--resource-version',retained['resourceVersion'],'--changed-after',retained['changedAfter']]
@@ -226,7 +231,7 @@ def _transition(adapters,want,now):
     adapters._command(['kubectl','--kubeconfig',adapters.reads.credential['path'],'-n','raptor-system','rollout','status','deployment/agent-gateway','--timeout=120s'])
     runtime=_observe(adapters,want,now,set_receipt=receipt)
     require(all(runtime[k]==before[k] for k in ('secretUid','deploymentUid','imageDigest')))
-    require(adapters in _guarded or len(_guarded)<128);_guarded[adapters]=dict(receipt)
+    require(adapters in _guarded or len(_guarded)<128);_guarded[adapters]=(os.getpid(),dict(receipt))
     return receipt,runtime
 
 
@@ -273,7 +278,7 @@ def _seal_action(adapters,record,outputs):
     validate_support(record,adapters.plan,record['action'])
     basename=record['action']+'.json';identity=_write_bytes(adapters.run/basename,canonical(record))
     require(adapters in _sealed or len(_sealed)<128)
-    _sealed[adapters]=(record['action'],dict(basename=basename,identity=identity),canonical(record))
+    _sealed[adapters]=(os.getpid(),record['action'],dict(basename=basename,identity=identity),canonical(record))
     return record
 
 
@@ -359,9 +364,9 @@ def support_artifact(run_dir,action,*,adapters):
     A caller record, filename, or a prior process's files cannot issue it.
     """
     require(type(adapters) is FixedGatewayAdapters and Path(run_dir)==adapters.run)
-    retained=_sealed.get(adapters);require(retained is not None and retained[0]==action)
-    artifact=retained[1];raw,identity=_identity(adapters.run/artifact['basename'])
-    require(raw==retained[2] and identity==artifact['identity']);adapters._check()
+    retained=_sealed.get(adapters);require(retained is not None and retained[0]==os.getpid() and retained[1]==action)
+    artifact=retained[2];raw,identity=_identity(adapters.run/artifact['basename'])
+    require(raw==retained[3] and identity==artifact['identity']);adapters._check()
     validate_support(decode_private(raw),adapters.plan,action)
     return decode_private(canonical(artifact))
 
