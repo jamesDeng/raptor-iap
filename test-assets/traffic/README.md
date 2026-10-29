@@ -95,6 +95,32 @@ the process remembers exact earlier ESS IDs and sequential desired decreases
 only those exact earlier IDs may remain NLB backends after leaving ESS. Approval
 receipts remain a separate final acceptance gate.
 
+The explicit `full-replacement-direct-v2` mode describes a single direct **2→4→2**
+transition. Its first publication binds exactly two originals at desired two.
+Desired four may converge through two and three physical members, but both exact
+originals and every observed replacement must remain until the full four-member
+cohort has been observed. The one desired-four to desired-two drop permits only
+those two originals to depart, either together or through four/three physical
+members while desired stays two. Both exact replacements must remain; desired
+three, another expansion, new identities after the drop, and original reappearance
+are rejected. Completion requires exactly the replacement pair as members,
+backends and healthy registered IDs, plus both originals retired by the existing
+complete-zero and later-backend-absence evidence. Fully covered nonzero old series
+cannot complete this new mode; later nonzero samples or re-registration invalidate
+the corresponding retirement proof. Historical modes retain their existing completion rules.
+
+This mode is recognized by the CLI, producer and retained-evidence sanitizer for
+source and fixture integration. The current CLI still requires the existing native
+run context, whose admission accepts only `disabled-rehearsal`; selecting the direct
+mode therefore refuses runtime startup before provider reads or publication.
+Native observer integration and receipt admission require separate reviewed work.
+The mode does not change any source age, receipt, deadline or metrics rule. Each
+original retains its metrics obligation until complete fresh zero triplets across
+its pool/users and a later fresh provider publication establishes backend absence.
+A desired decrease or ESS departure alone never drops its targets or metrics
+obligation. Learned scrape targets remain retained until authorized explicit
+cleanup, including after an original's evidence obligation has been retired.
+
 The worker file is atomically replaced in its own directory, fsynced and mode
 0600. Schema 2 contains `schemaVersion`, `feedSession`, `sequence`,
 `observedAt`, `desired`, sorted `members`, sorted `memberStates`, sorted

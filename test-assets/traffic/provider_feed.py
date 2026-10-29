@@ -536,7 +536,7 @@ class Operator:
     def __init__(self, args):
         self.args = args
         self.mode = getattr(args, 'mode', 'full-replacement')
-        require(self.mode in ('full-replacement', 'disabled-rehearsal'))
+        require(self.mode in ('full-replacement', 'disabled-rehearsal', 'full-replacement-direct-v2'))
         self.inventory_mode = InventoryMode()
         self.previous = ()
         self.retained_targets = ()
@@ -760,6 +760,11 @@ class Operator:
             raise FeedStop(self.stage) from None
 
     def departures_for(self, desired):
+        # The direct action permits the original pair to leave asynchronously.
+        if self.mode == 'full-replacement-direct-v2':
+            if self.allowed_departures == 0 and (self.previous_desired, desired) == (4, 2):
+                return 2
+            return self.allowed_departures
         # Count each sequential decrease once; later equal-desired ticks retain it.
         expected = ((3, 2),) if self.mode == 'disabled-rehearsal' else ((4, 3), (3, 2))
         if self.allowed_departures < len(expected) and (self.previous_desired, desired) == expected[self.allowed_departures]:
@@ -850,8 +855,10 @@ class Operator:
             if self.no_scale_target is not None:
                 require(tuple(sorted(value['privateAddresses'].items())) == self.previous and
                         [node for node,_ in self.previous] == self.no_scale_target['originalInstanceIds'])
+            if self.mode == 'full-replacement-direct-v2':
+                require(value.get('sequence', self.sequence + 1) == self.sequence + 1)
             candidate = dict(value, feedSession=self.feedSession, sequence=self.sequence + 1)
-            if self.mode == 'disabled-rehearsal':candidate['mode'] = self.mode
+            if self.mode != 'full-replacement':candidate['mode'] = self.mode
             mode_state = copy.deepcopy(self.inventory_mode)
             mode_state.observe(candidate)
             worker_write = self.atomic_worker_write if self.run_context is None else (
@@ -916,8 +923,8 @@ if not (json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])): 
 def main():
     _require_verified()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=('full-replacement','disabled-rehearsal'),default='full-replacement',
-                        help='bind this feed to the full replacement or disabled 2-to-3-to-2 rehearsal')
+    parser.add_argument('--mode',choices=('full-replacement','disabled-rehearsal','full-replacement-direct-v2'),default='full-replacement',
+                        help='select historical staged replacement, disabled rehearsal, or direct-v2 topology')
     parser.add_argument('--no-scale-target',help='fixed address-free target, only for the finite no-scale proof')
     parser.add_argument('--interval',type=int,default=15)
     parser.add_argument('--max-seconds',type=int,default=5400)

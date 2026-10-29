@@ -34,7 +34,7 @@ def clean_inventory(source):
         if type(source['schemaVersion']) is not int or source['schemaVersion']!=2:raise ValueError('schema')
         inv={k:source[k] for k in TRANSITION_FIELDS}
         if 'mode' in source:
-            if source['mode'] not in ('full-replacement','disabled-rehearsal'):raise ValueError('mode')
+            if source['mode'] not in ('full-replacement','disabled-rehearsal','full-replacement-direct-v2'):raise ValueError('mode')
             inv['mode']=source['mode']
         if not isinstance(inv['feedSession'],str) or str(uuid.UUID(inv['feedSession']))!=inv['feedSession']:raise ValueError('session')
         if type(inv['sequence']) is not int or inv['sequence']<1:raise ValueError('sequence')
@@ -64,18 +64,21 @@ def clean_inventory(source):
 
 
 class InventoryMode:
-    """Bind a rehearsal to its initial two IDs; legacy streams keep full rules."""
+    """Bind explicit transition modes to their initial IDs; keep legacy rules."""
     def __init__(self):
-        self.mode=None;self.originals=set();self.added=set();self.phase=0;self.departed=False
+        self.mode=None;self.originals=set();self.added=set();self.phase=0;self.departed=False;self.removed=set()
 
     def observe(self,inv):
         mode=inv.get('mode','full-replacement')
-        if mode not in ('full-replacement','disabled-rehearsal') or self.mode not in (None,mode):
+        if mode not in ('full-replacement','disabled-rehearsal','full-replacement-direct-v2') or self.mode not in (None,mode):
             raise ValueError('changed inventory mode')
         first=self.mode is None
         self.mode=mode
         if mode=='full-replacement':return
         members=set(inv['members']);desired=inv['desired']
+        if mode=='full-replacement-direct-v2':
+            self.observe_direct(members,desired,first)
+            return
         if first:
             if desired!=2 or len(members)!=2:raise ValueError('rehearsal baseline')
             self.originals=members.copy()
@@ -96,7 +99,37 @@ class InventoryMode:
         self.added=added
         if self.phase==2 and not (added & members):self.departed=True
 
-    def complete(self,inv):
+    def observe_direct(self,members,desired,first):
+        if first:
+            if desired!=2 or len(members)!=2:raise ValueError('direct baseline')
+            self.originals=members.copy()
+        if type(desired) is not int or desired not in (2,4):raise ValueError('direct desired')
+        if desired==4:
+            if self.phase==2:raise ValueError('direct repeated expansion')
+            self.phase=1
+        elif self.phase==1:
+            if len(self.added)!=2:raise ValueError('direct skipped expansion')
+            self.phase=2
+        if self.phase==0:
+            if members!=self.originals:raise ValueError('direct early identity')
+        elif self.phase==1:
+            if not (self.originals|self.added).issubset(members):raise ValueError('direct early departure')
+            added=members-self.originals
+            if len(added)>2:raise ValueError('direct extra identity')
+            self.added=added
+        else:
+            if not self.added.issubset(members) or not members.issubset(self.originals|self.added):
+                raise ValueError('direct retained identity')
+            if self.removed & members:raise ValueError('direct original reappearance')
+            self.removed.update(self.originals-members)
+
+    def complete(self,inv,retired=()):
+        if self.mode=='full-replacement-direct-v2':
+            return (self.phase==2 and len(self.added)==2 and self.originals.issubset(retired) and
+                    inv['desired']==2 and
+                    set(inv['members'])==self.added and
+                    {r['id'] for r in inv['backendStates']}==self.added and
+                    set(inv['healthyRegistered'])==self.added)
         return (self.mode!='disabled-rehearsal' or
                 self.phase==2 and self.departed and inv['desired']==2 and
                 set(inv['members'])==self.originals and
@@ -119,8 +152,11 @@ class TransitionEvidence:
             if (inv['feedSession']!=previous['feedSession'] or inv['sequence']!=previous['sequence']+1 or
                 seconds(inv['observedAt'])<=seconds(previous['observedAt'])):
                 issue('provider feed discontinuity')
-            expected=((3,2),) if self.mode.mode=='disabled-rehearsal' else ((4,3),(3,2))
-            if self.departures<len(expected) and (previous['desired'],inv['desired'])==expected[self.departures]:self.departures+=1
+            if self.mode.mode=='full-replacement-direct-v2':
+                if self.departures==0 and (previous['desired'],inv['desired'])==(4,2):self.departures=2
+            else:
+                expected=((3,2),) if self.mode.mode=='disabled-rehearsal' else ((4,3),(3,2))
+                if self.departures<len(expected) and (previous['desired'],inv['desired'])==expected[self.departures]:self.departures+=1
         self.previous=inv
         members=set(inv['members']);backends={r['id'] for r in inv['backendStates']}
         self.seen.update(members)
@@ -456,7 +492,9 @@ def assess(frames,cancelled=False,completed=False,max_gap=3,require_transition=T
             if not roster or type(frame['expectedReplicas'])!=int or frame['expectedReplicas']<1 or len(roster)<frame['expectedReplicas']:issue('incomplete client roster')
             for (uid,pid),s in processes.items():
                 if (uid not in roster or seen_pods.get(uid)!=pid) and not s['final']:issue('old process lost without final counters')
-        if require_transition and schema==2 and not transitions.mode.complete(transitions.previous):issue('incomplete rehearsal transition')
+        if require_transition and schema==2 and not transitions.mode.complete(transitions.previous,transitions.retired):
+            issue('incomplete direct replacement transition' if transitions.mode.mode=='full-replacement-direct-v2'
+                  else 'incomplete rehearsal transition')
         for s in processes.values():
             if s['pending'] or s['baselinePending'] or s['last']['Scheduled']!=s['last']['Attempts']+s['last']['Skipped']:issue('operations in flight at boundary')
         if first_poll is None or first_poll==last_poll or success==0:issue('no covered successful traffic')
