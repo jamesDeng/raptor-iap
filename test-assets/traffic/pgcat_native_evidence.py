@@ -65,7 +65,7 @@ class NativeCohort:
     def observe(self,frame):
         flags=self.flags
         if self.first_at is None:self.first_at=seconds(frame['at'])
-        authenticated=[];seen=set()
+        authenticated=[];seen=set();active=set()
         initial={row['uid']:row for row in self.context['initialRoster']}
         try:
             require(frame['inventory']['feedSession']==self.context['feedSession'] and frame['inventory']['mode']==MODE)
@@ -93,8 +93,6 @@ class NativeCohort:
                     require(old['containerId'] is None or old['containerId']==startup['containerId'])
                 require(len(set(initial)|set(self.rows)|set(self.starting)|{uid})<=4)
                 self.successor=pair;self.starting[uid]=detached(startup);startup_seen.add(uid)
-            if pending:
-                require(sum(type(p) is dict and type(p.get('snapshot')) is dict and p['snapshot'].get('final') is False for p in frame['pods'])>=2)
         except (KeyError,TypeError,ValueError):flags['invalidEvidence']=True
         converted=set()
         for pod in frame.get('pods',[]) if type(frame.get('pods')) is list else []:
@@ -145,7 +143,10 @@ class NativeCohort:
                     require(snap['connected']==0 and sample['Scheduled']==sample['Attempts']+sample['Skipped'])
                     self.finals.setdefault(uid,dict(sample))
                 self.samples[uid]=dict(sample)
+                if not snap['final']:active.add(uid)
             except (KeyError,TypeError,ValueError,OverflowError):flags['invalidEvidence']=True
+        if frame.get('phase','measurement')=='measurement' and len(active)<2:
+            flags['invalidEvidence']=True
         for uid in set(self.starting)-startup_seen-converted:flags['invalidEvidence']=True
         # Conversion becomes resolved only after its first frame is durable.
         if not self.last_seen and not set(initial).issubset(seen):flags['identityChanged']=True

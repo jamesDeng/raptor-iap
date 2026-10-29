@@ -316,3 +316,25 @@ class NativeFullGraph(unittest.TestCase):
             result=writer.finish(completed=True,cancelled=False,errors=[])
             self.assertEqual(result['status'],'PASS',result)
             self.assertEqual(native.read_terminal_clients(path,context(),operation()),sealed)
+
+class NativeMeasurementCoverage(unittest.TestCase):
+    def test_one_active_successor_without_startup_rows_is_sticky_and_cannot_seal(self):
+        from segmented_capture import SegmentedCapture,publish_private,read_progress
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(os.path.realpath(directory))/'capture'
+            writer=SegmentedCapture(path,progress_context=context())
+            for t in range(6):
+                value=rolling(t)
+                if t in (1,2):
+                    value['pods']=[pod for pod in value['pods'] if pod['uid']!='new-uid-1']
+                writer.append(value)
+            publish_private(writer.progress_fd,'native-operation-binding.json',operation())
+            progress,_,_=read_progress(path,context())
+            # The later full sequence-1 history must not cure t=2's coverage gap.
+            with self.subTest(invariant='sticky measurement coverage'):
+                self.assertTrue(progress['flags']['invalidEvidence'])
+                self.assertTrue(progress['nativeCohort']['flags']['invalidEvidence'])
+            with self.subTest(invariant='terminal refuses historical coverage gap'):
+                with self.assertRaises(ValueError):
+                    native.seal_terminal_clients(path,context(),operation(),lambda:kubernetes(),now=lambda:5)
+            self.assertFalse((path/'terminal-clients.json').exists())
