@@ -66,7 +66,7 @@ def validate_plan(value):
     try:target_valid(value['target'])
     except Exception:raise ValueError('invalid native ingress') from None
     require(value['target']['originalInstanceIds']==sorted(value['target']['originalInstanceIds']))
-    exact(value['sourceHashes'],SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence'})
+    exact(value['sourceHashes'],SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure'})
     require(all(hashed(v) for v in value['sourceHashes'].values()) and hashed(value['baselineSha256']))
     limits=value['deadline'];exact(limits,{'mutationCutoff','closureDeadline','captureMaxSeconds'})
     require(integer(limits['captureMaxSeconds'],75) and limits['captureMaxSeconds']<=5400)

@@ -20,7 +20,7 @@ ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'zero-proof', 'scaling-activity-check', 'scalein-three-to-two'))
 NATIVE_MODE = 'full-replacement-direct-v2'
 NATIVE_ACTIONS = frozenset(('native-baseline','native-collector-launch','native-collector-status','native-ingress','native-disabled-restart'))
-NATIVE_RESERVED = frozenset(('native-terminal-seal','native-reconcile','native-feed-stop','native-finish','native-verdict','native-restore','native-cleanup'))
+NATIVE_RESERVED = frozenset(('native-gateway-enable','native-gateway-disable','native-terminal-seal','native-reconcile','native-feed-stop','native-finish','native-verdict','native-restore','native-cleanup'))
 
 def native_action(action,kind):
     require(kind in ('native-replacement','disabled-proof') and action in NATIVE_ACTIONS)

@@ -140,7 +140,7 @@ class LaneSupervisor:
             collectorControl=here/'pgcat_collector_control.py',
             laneTimingAssessor=here/'pgcat_lane_timing_assessor.py')
         if b.get('mode')=='full-replacement-direct-v2':
-            paths.update(nativeController=here/'pgcat_native_controller.py',nativeIngress=here/'pgcat_native_ingress.py',nativeEvidence=here/'pgcat_native_evidence.py')
+            paths.update(nativeController=here/'pgcat_native_controller.py',nativeIngress=here/'pgcat_native_ingress.py',nativeEvidence=here/'pgcat_native_evidence.py',nativeClosure=here/'pgcat_native_closure.py')
         for name,path in paths.items():
             require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == b['sourceHashes'][name],'source')
         self.bundle=hashlib.sha256(encode(b['sourceHashes'])).hexdigest()

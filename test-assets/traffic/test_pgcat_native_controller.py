@@ -44,7 +44,7 @@ class NativeStartupTests(unittest.TestCase):
         self.root=Path(os.path.realpath(self.tmp.name));self.root.chmod(0o700)
 
     def test_exact_native_closure_and_subset(self):
-        self.assertEqual(len(bootstrap.source_names('full-replacement-direct-v2')),23)
+        self.assertEqual(len(bootstrap.source_names('full-replacement-direct-v2')),24)
         self.assertEqual(len(bootstrap.source_names('no-scale')),20)
         self.assertEqual(set(native.collector_sources()),set(__import__('pgcat_collector_control').SOURCES)|{'nativeEvidence'})
         with self.assertRaises(ValueError):bootstrap.source_names('direct-v2')

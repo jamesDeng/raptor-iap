@@ -24,7 +24,7 @@ BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerF
     'nlbIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
 SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions','sourceBootstrap','controller','client','runner',
                           'pendingProofWorker','preDrainProofWorker','zeroProofWorker','collectorControl','laneTimingAssessor')) | frozenset(WORKER_SOURCES)
-NATIVE_SOURCE_NAMES = SOURCE_NAMES | frozenset(('nativeController','nativeIngress','nativeEvidence'))
+NATIVE_SOURCE_NAMES = SOURCE_NAMES | frozenset(('nativeController','nativeIngress','nativeEvidence','nativeClosure'))
 NATIVE_BINDING_KEYS = BINDING_KEYS | frozenset(('mode','executionKind'))
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'

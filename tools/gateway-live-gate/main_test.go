@@ -359,3 +359,106 @@ func TestVerifyLoadedConfigBinding(t *testing.T) {
 		})
 	}
 }
+
+// inspectRaceRunner changes authoritative observations only after the config read.
+type inspectRaceRunner struct {
+	*rolloutRunner
+	race string
+	read bool
+}
+
+func (f *inspectRaceRunner) Run(ctx context.Context, args []string, in []byte) ([]byte, error) {
+	a := strings.Join(args, " ")
+	if f.read {
+		switch f.race {
+		case "secret-uid", "secret-rv":
+			var s map[string]any
+			json.Unmarshal(f.secret, &s)
+			key := "uid"
+			if f.race == "secret-rv" {
+				key = "resourceVersion"
+			}
+			obj(s["metadata"])[key] = "replacement"
+			f.secret = raw(s)
+		case "deployment-uid":
+			obj(f.deployment["metadata"])["uid"] = "replacement"
+		case "deployment-rv":
+			obj(f.deployment["metadata"])["resourceVersion"] = "replacement"
+		case "pod-uid":
+			obj(obj(f.pods["items"].([]any)[0])["metadata"])["uid"] = "replacement"
+		case "unready":
+			obj(obj(f.pods["items"].([]any)[0])["status"])["conditions"] = []any{}
+		}
+	}
+	b, e := f.rolloutRunner.Run(ctx, args, in)
+	if strings.Contains(a, "cat /run/raptor/live/config.json") {
+		f.read = true
+	}
+	return b, e
+}
+func TestInspectLoadedBytesAndIdentity(t *testing.T) {
+	for _, name := range []string{"false", "true", "no-restart", "false-secret-true-mounted", "same-json-different-bytes", "duplicate-json", "duplicate-secret-json", "wrong-owner", "wrong-image", "wrong-init-source", "secret-uid", "secret-rv", "deployment-uid", "deployment-rv", "pod-uid", "unready"} {
+		t.Run(name, func(t *testing.T) {
+			f := &inspectRaceRunner{rolloutRunner: rolloutFixture(), race: name}
+			want := "false"
+			pod := obj(f.pods["items"].([]any)[0])
+			switch name {
+			case "true":
+				want = "true"
+				var s map[string]any
+				json.Unmarshal(f.secret, &s)
+				changeConfig(s, func(c map[string]any) { c["replacementEnabled"] = true })
+				f.secret = raw(s)
+				f.effective = raw(config(s))
+			case "no-restart":
+				delete(obj(obj(obj(f.deployment["spec"])["template"])["metadata"]), "annotations")
+			case "false-secret-true-mounted":
+				c := config(fixture())
+				c["replacementEnabled"] = true
+				f.effective = raw(c)
+			case "same-json-different-bytes":
+				f.effective = append(f.effective, '\n')
+			case "duplicate-json":
+				f.effective = []byte(`{"replacementEnabled":false,"replacementEnabled":false}`)
+			case "duplicate-secret-json":
+				s := fixture()
+				obj(s["data"])["config.json"] = base64.StdEncoding.EncodeToString([]byte(`{"replacementEnabled":false,"replacementEnabled":false}`))
+				f.secret = raw(s)
+			case "wrong-owner":
+				obj(obj(f.rs["metadata"])["ownerReferences"].([]any)[0])["uid"] = "foreign"
+			case "wrong-image":
+				obj(obj(pod["status"])["containerStatuses"].([]any)[0])["imageID"] = "wrong"
+			case "wrong-init-source":
+				obj(obj(obj(pod["spec"])["volumes"].([]any)[1])["secret"])["secretName"] = "wrong"
+			}
+			var out bytes.Buffer
+			err := run(context.Background(), []string{"inspect", "--expected", want}, f, &out)
+			success := name == "false" || name == "true" || name == "no-restart"
+			if (err == nil) != success {
+				t.Fatalf("success=%v, error=%v", err == nil, err)
+			}
+			for _, call := range f.calls {
+				if strings.Contains(call, "replace") || strings.Contains(call, "patch") || strings.Contains(call, "rollout") || strings.Contains(call, "--idle-check") {
+					t.Fatalf("inspection mutated: %s", call)
+				}
+			}
+			if success {
+				var got map[string]any
+				if json.Unmarshal(out.Bytes(), &got) != nil || len(got) != 4 || got["replacementEnabled"] != (want == "true") || got["ready"] != true || got["generation"] != float64(2) || got["podUID"] != "new-pod-uid" {
+					t.Fatalf("bad proof: %s", out.String())
+				}
+			} else if out.Len() != 0 {
+				t.Fatal("rejected proof emitted output")
+			}
+		})
+	}
+}
+func TestInspectRejectsUnsupportedFlagsBeforeReads(t *testing.T) {
+	for _, flags := range [][]string{{}, {"--expected", "false", "--set="}, {"--expected", "false", "--set", "true"}, {"--expected", "false", "--resource-version="}, {"--expected", "false", "--changed-after="}, {"--expected", "false", "--namespace", "wrong"}} {
+		f := rolloutFixture()
+		var out bytes.Buffer
+		if run(context.Background(), append([]string{"inspect"}, flags...), f, &out) == nil || len(f.calls) != 0 || out.Len() != 0 {
+			t.Fatal("accepted unsupported inspect arguments")
+		}
+	}
+}

@@ -28,7 +28,7 @@ SOURCES = {
     'finishClients':'finish_clients.py','workerCapture':'worker_capture.py',
     'segmentedCapture':'segmented_capture.py'}
 NATIVE_SOURCES = dict(SOURCES, nativeController='pgcat_native_controller.py',
-    nativeIngress='pgcat_native_ingress.py', nativeEvidence='pgcat_native_evidence.py')
+    nativeIngress='pgcat_native_ingress.py', nativeEvidence='pgcat_native_evidence.py', nativeClosure='pgcat_native_closure.py')
 
 
 def source_names(mode):

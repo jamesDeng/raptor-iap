@@ -349,6 +349,22 @@ func run(ctx context.Context, args []string, r runner, out io.Writer) error {
 		return rejected
 	}
 	want, _ := strconv.ParseBool(*expected)
+	if mode == "inspect" {
+		forbidden := false
+		f.Visit(func(v *flag.Flag) {
+			if v.Name == "set" || v.Name == "resource-version" || v.Name == "changed-after" {
+				forbidden = true
+			}
+		})
+		if forbidden {
+			return rejected
+		}
+		proof, e := verifyRuntime(ctx, r, want, "", time.Time{}, true)
+		if e != nil {
+			return e
+		}
+		return json.NewEncoder(out).Encode(proof)
+	}
 	if mode == "set" {
 		if (*next != "true" && *next != "false") || *next == *expected || *rv != "" || *since != "" {
 			return rejected
@@ -488,7 +504,23 @@ type verification struct {
 }
 
 func verify(ctx context.Context, r runner, want bool, rv string, since time.Time) (verification, error) {
-	c, e := exactVersion(ctx, r, want, rv)
+	return verifyRuntime(ctx, r, want, rv, since, false)
+}
+func verifyRuntime(ctx context.Context, r runner, want bool, rv string, since time.Time, inspection bool) (verification, error) {
+	var secret map[string]any
+	var c map[string]any
+	var e error
+	if inspection {
+		secret, c, e = getSecret(ctx, r)
+		if e == nil && c["replacementEnabled"] != want {
+			e = rejected
+		}
+		if e == nil {
+			rv = str(obj(secret["metadata"])["resourceVersion"])
+		}
+	} else {
+		c, e = exactVersion(ctx, r, want, rv)
+	}
 	if e != nil {
 		return verification{}, e
 	}
@@ -501,8 +533,11 @@ func verify(ctx context.Context, r runner, want bool, rv string, since time.Time
 	generation := number(m["generation"])
 	annotations := obj(obj(obj(d["spec"])["template"])["metadata"])
 	restarted, restartErr := time.Parse(time.RFC3339Nano, str(obj(annotations["annotations"])["kubectl.kubernetes.io/restartedAt"]))
-	if restartErr != nil || !restarted.After(since) {
+	if !inspection && (restartErr != nil || !restarted.After(since)) {
 		return verification{}, rejected
+	}
+	if inspection {
+		restarted = time.Time{}
 	}
 	if number(obj(d["spec"])["replicas"]) != 1 || number(status["observedGeneration"]) != generation {
 		return verification{}, rejected
@@ -551,8 +586,19 @@ func verify(ctx context.Context, r runner, want bool, rv string, since time.Time
 	if e != nil || !reflect.DeepEqual(c, actual) {
 		return verification{}, rejected
 	}
+	if inspection {
+		raw, err := base64.StdEncoding.DecodeString(str(obj(secret["data"])["config.json"]))
+		if err != nil || !bytes.Equal(raw, effective) {
+			return verification{}, rejected
+		}
+	}
 	// Recheck version and Pod UID after exec to reject a concurrent update/restart.
-	if _, e = exactVersion(ctx, r, want, rv); e != nil {
+	if inspection {
+		latestSecret, latestConfig, err := getSecret(ctx, r)
+		if err != nil || obj(latestSecret["metadata"])["uid"] != obj(secret["metadata"])["uid"] || obj(latestSecret["metadata"])["resourceVersion"] != rv || latestConfig["replacementEnabled"] != want {
+			return verification{}, rejected
+		}
+	} else if _, e = exactVersion(ctx, r, want, rv); e != nil {
 		return verification{}, e
 	}
 	latest, e := getObject(ctx, r, "pods", "")
@@ -575,7 +621,7 @@ func verify(ctx context.Context, r runner, want bool, rv string, since time.Time
 		return verification{}, rejected
 	}
 	finalDeployment, e := deploymentObject(ctx, r)
-	if e != nil || obj(finalDeployment["metadata"])["resourceVersion"] != m["resourceVersion"] {
+	if e != nil || obj(finalDeployment["metadata"])["resourceVersion"] != m["resourceVersion"] || inspection && obj(finalDeployment["metadata"])["uid"] != m["uid"] {
 		return verification{}, rejected
 	}
 	return verification{want, generation, true, str(pm["uid"])}, nil
