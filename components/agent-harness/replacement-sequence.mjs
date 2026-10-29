@@ -32,11 +32,12 @@ export class ReplacementSequence {
   if(saved.length>16)throw invalid();
   const intents=trace.rows.filter(r=>r.kind==='intent');
   if(saved.length!==intents.length)throw invalid();
+  const baselineAt=entries.findIndex(e=>e.type==='custom'&&e.customType===TRACE&&e.data.kind==='baseline'&&same(e.data,this.trace.baseline()));
   for(let i=0;i<saved.length;i++){
    const row=saved[i].data,intent=intents[i];
    if(!row||row.version!==2||Object.keys(row).sort().join(',')!=='identity,key,observedAt,stage,version'||!same(row.identity,trace.identity)||row.key!==intent.key||!Number.isFinite(Date.parse(row.observedAt))||Date.parse(row.observedAt)>Date.parse(intent.observedAt))throw invalid();
    const at=entries.indexOf(saved[i]),intentAt=entries.findIndex(e=>e.type==='custom'&&e.customType===TRACE&&e.data.kind==='intent'&&e.data.key===intent.key);
-   if(at>=intentAt||(i&&at<=entries.findIndex(e=>e.type==='custom'&&e.customType===TRACE&&e.data.kind==='intent'&&e.data.key===intents[i-1].key)))throw invalid();
+   if(baselineAt<0||baselineAt>=at||at>=intentAt||(i&&at<=entries.findIndex(e=>e.type==='custom'&&e.customType===TRACE&&e.data.kind==='intent'&&e.data.key===intents[i-1].key)))throw invalid();
    if(i){const priorResultAt=entries.findIndex(e=>e.type==='custom'&&e.customType===TRACE&&e.data.kind==='result'&&e.data.key===intents[i-1].key);if(priorResultAt<0||priorResultAt>=at)throw invalid();}
    let stage;try{stage=this.stage(intent.tool,intent.args);}catch{throw invalid();}
    if(row.stage!==stage)throw invalid();
@@ -90,7 +91,7 @@ export class ReplacementSequence {
  canWrite(){return this.permits.some(p=>p.stage==='expand')?this.readiness.ready():this.initial();}
  retained(requireProtected=true){const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.capacity(4)&&this.fleet([...old,...added])&&(!requireProtected||this.current.fleet.instances.filter(n=>added.includes(n.instanceId)).every(protectedNode));}
  restart(){const intent=this.intents('restart')[0],result=this.trace.rows.find(r=>r.kind==='result'&&r.key===intent?.key);return result&&result.state.accepted===true&&Number.isSafeInteger(result.state.generation)&&result.state.generation>0?{generation:result.state.generation,at:Date.parse(result.observedAt)}:null;}
- drained(){const r=this.restart();if(!r)return false;const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.retained()&&this.backend(added,old)&&fresh(this.current.backend,r.at)&&this.app(r.generation,r.at)&&metricsValid(this.current.metrics,[...old,...added],old,r.at);}
+ drained(){const r=this.restart();if(!r)return false;const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.retained()&&this.probesReady(added)&&this.backend(added,old)&&fresh(this.current.backend,r.at)&&this.app(r.generation,r.at)&&metricsValid(this.current.metrics,[...old,...added],old,r.at);}
  beforeMutation(tool,args){
   if(tool==='approval_request'){
    if(args.parameters?.desiredCapacity!==2||!this.readiness.ready()||!this.drained()||this.idsFor('unprotectOld').length!==2||this.permits.some(p=>p.stage==='shrink')||this.current.fleet.instances.filter(n=>this.cohort().oldInstanceIds.includes(n.instanceId)).some(n=>n.protectedFromScaleIn!==false||n.lifecycleState!=='InService'))throw missing();

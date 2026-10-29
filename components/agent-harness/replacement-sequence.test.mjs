@@ -107,3 +107,42 @@ test('malformed SQL timestamp and impossible observedGeneration cannot qualify i
   assert.throws(()=>x.gate.beforeMutation('db_proxy_scale',argsFor('db_proxy_scale',{actionId:'expand',desiredCapacity:4})),/MissingEvidence/);
  }
 });
+
+for(const stage of ['unprotect','approval','reduction'])for(const instanceId of added)for(const fault of ['omitted','failed','expired'])test(`resumed ${stage} rejects ${fault} SQL probe for ${instanceId}`,t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ const x=restarted();
+ if(stage!=='unprotect')mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
+ // Model a resource wait (unprotect/approval) or approval wait (reduction).
+ t.mock.timers.tick(60000);
+ const y=setup(x.session);
+ const probe=id=>y.gate.observe('sql',{instanceId:id,connected:true},{instanceId:id});
+ if(fault==='expired'){
+  probe(instanceId);t.mock.timers.tick(31001);
+ }else if(fault==='failed')y.gate.observe('sql',{instanceId,connected:false,readiness:'pending'},{instanceId});
+ for(const id of added)if(id!==instanceId)probe(id);
+ const e=observations([...old,...added],{withdrawn:old,unprotected:stage==='unprotect'?[]:old,zero:true,generation:6});
+ for(const [kind,data] of Object.entries(e))y.gate.observe(kind,data);
+ const tool=stage==='unprotect'?'db_proxy_node_protection_set':stage==='approval'?'approval_request':'db_proxy_scale';
+ const args=stage==='unprotect'?protect(old,false):stage==='approval'?{requestId:'request',actionId:'shrink',interface:'ess.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy',groupId:'group'},parameters:{desiredCapacity:2}}:argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
+ assert.throws(()=>y.gate.beforeMutation(tool,args),/MissingEvidence/);
+ probe(instanceId);
+ assert.doesNotThrow(()=>y.gate.beforeMutation(tool,args),'both fresh successful probes restore eligibility');
+});
+
+test('approval resume cannot reduce with an empty SQL probe map despite fresh zero and rollout evidence',()=>{
+ const x=restarted();mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
+ const y=setup(x.session);
+ for(const [kind,data] of Object.entries(observations([...old,...added],{withdrawn:old,unprotected:old,zero:true,generation:6})))y.gate.observe(kind,data);
+ assert.equal(y.gate.probes.size,0);
+ assert.throws(()=>y.gate.beforeMutation('db_proxy_scale',argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2})),/MissingEvidence/);
+});
+
+for(const first of ['protectOld','expand'])test(`resume rejects first ${first} permit before its baseline`,()=>{
+ const x=setup();observe(x);
+ if(first==='protectOld')mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:true},{instanceIds:old,outcome:'submitted'});
+ else mutate(x,'db_proxy_scale',{actionId:'expand',desiredCapacity:4},{previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'});
+ assert.doesNotThrow(()=>setup(x.session),'the unmodified baseline-first history must reopen');
+ const entries=x.session.entries,index=entries.findIndex(e=>e.customType==='raptor-replacement-sequence-v2');
+ const [permit]=entries.splice(index,1);entries.unshift(permit);
+ assert.throws(()=>setup(x.session),/InvalidEvidence/);
+});
