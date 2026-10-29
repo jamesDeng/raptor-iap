@@ -1,5 +1,25 @@
 # Controlled PgCat two-node live replacement test
 
+## 2026-10-29 controlling amendment
+
+The owner now selects **2→4→2**: double ESS, qualify both replacements, stop new
+connections to both originals, rolling-restart related application Deployments,
+require fresh zero active/idle/waiting client counts across every pool/user on
+both originals, then perform one exact approved scale-in to desired two. Retain
+exactly the two healthy protected replacements. This supersedes the staged
+4→3→2 execution and two scale-in approval design below; the remaining original
+text records the earlier design and historical evidence.
+
+The active runbook's opening amendment defines the current sequence and identifies
+the incompatible strict-majority deregistration guard, staged pinned skill/native
+completion contract and fixed client-roster assumptions. These need tested,
+reviewed changes before execution; documentation is not an installed contract.
+Keep skills-v0.4.0 immutable and replacement disabled during preparation. Preserve
+all old and successor client evidence across restarts, without resetting failures
+or splicing capture windows. Full replacement remains NOT PASS. Current standing
+limits are CNY 1,800 net, once-daily billing checks, 21:30 paid-action cutoff and
+22:30 Shanghai POC stop; older limits below are historical.
+
 ## Intent and boundary
 
 Run one controlled replacement of the two existing PgCat ECS nodes in the dedicated `rdev.ali` POC proxy, using the existing 2→4→3→2 contract. Success requires independent evidence for fleet convergence, request-bound human approvals, continuous application traffic, and final cleanup. Native read-only qualification passed for request `87b0ba57-a6d3-487a-96e7-530426e35878`; that request cannot become a replacement request, and its result did not assess traffic or execute replacement.

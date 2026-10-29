@@ -1,5 +1,56 @@
 # PgCat two-node live-test operator runbook
 
+## 2026-10-29 owner direction: replace both originals with 2→4→2
+
+The owner explicitly selected this full-run sequence, superseding the earlier
+staged 2→4→3→2 design:
+
+1. Expand ESS once from two to four and qualify both replacement nodes.
+2. Stop new connections to **both** exact originals; verify their backend
+   withdrawal while both replacements remain healthy and registered.
+3. Rolling-restart the related, scope-bound application Deployments.
+4. Observe fresh complete zero active/idle/waiting client counts across every
+   pool/user on **each** original.
+5. Scale ESS directly from four to two, retaining exactly the two replacements.
+
+Keep both replacements protected; make only the verified drained originals
+eligible for removal. Bind one scale-in action/approval to desiredCapacity 2 and
+the immutable request scope. Recheck both zero gates and retained capacity after
+any pause before dispatch. Never accept arbitrary two-node fleet convergence.
+
+This direction supersedes the earlier same-Pod/no-restart drain restriction for
+future restart-based runs and the proposed private session-rotation mechanism.
+It does not change historical verdicts or make current fixed-roster code admit a
+restart. The disabled rehearsal must test the same restart behavior before the
+full replacement. No new session-rotation command is required by this choice.
+
+The checked-in client chart uses RollingUpdate, maxUnavailable 0, maxSurge 1 and
+a 20-second termination grace period. Those settings alone do not prove graceful
+SQL completion: the current SIGTERM path can mark queued operations skipped.
+Verify bounded graceful draining and retain final evidence for every retiring
+Pod/process, plus exact successor identities and advancing SQL, in the same
+continuous capture. Never reset counters, discard failures or splice windows to
+accommodate the rollout. Keep the Deployment UID and reviewed image binding;
+record the authorized template/generation and ReplicaSet transition explicitly.
+
+After rollout, require two distinct fresh complete zero active/idle/waiting client
+scrapes across every pool/user on each withdrawn PgCat node and fresh provider
+absence evidence before scale-in. A completed rollout or restart receipt is
+not a zero-connection proof. Missing final evidence, remaining connections or an
+uncertain restart blocks scale-in; observed SQL failures remain FAIL.
+
+Status: operator strategy recorded, **not executable under the current contract**.
+`DeregistrationAllowed` currently requires remaining healthy registered capacity
+strictly greater than desired/2: at desired 4, the second withdrawal would leave
+2 and be refused as InsufficientHealthyCapacity. The pinned skill and native
+completion/evidence contract also describe staged 4→3→2. Implement and test an
+explicit replacement-aware capacity rule and direct 4→2 contract; do not bypass
+the guard or mutate the immutable skills-v0.4.0 tag. Restart-aware evidence and
+graceful shutdown also need implementation, review and disabled-mode proof.
+No live restart or cloud operation was executed by this documentation amendment.
+
+## Earlier verification and implementation status
+
 2026-10-28 update: reviewed merge `7508dfac` completed a tracked no-scale timing
 **PASS**, independently reassessed from retained capture and sealed records:
 64.003 seconds measurement, 66 frames, maximum gap 1.002616 seconds and 195 SQL
@@ -670,19 +721,21 @@ never reupload that trigger or assume the mutation did not happen.
    definition SHA and skills commit; keep identical across all resumes. Prior
    qualification `87b0ba57-a6d3-487a-96e7-530426e35878` cannot be converted/reused.
 4. Agent records/protects originals; expand once 2→4; qualify both new nodes with
-   healthy NLB registration and SQL probes; protect new nodes. Deregister/drain
-   only first original, restart only the bound client Deployment, require fresh
-   complete zero active/idle/waiting for every reported pool/user on that original.
-5. First distinct approval binds this request, action ID A, `ess.scale-in`,
-   `rdev.ali`, exact DP00001/group and `desiredCapacity: 3` (observed 4→3).
+   healthy NLB registration and SQL probes; protect both new nodes. Under the
+   reviewed direct-replacement contract, withdraw both exact originals from new
+   connections, restart only the related bound application Deployments, and require
+   fresh complete zero active/idle/waiting for every reported pool/user on both
+   originals. Only those originals may become eligible for removal.
+5. One exact approval binds this request, action ID A, `ess.scale-in`,
+   `rdev.ali`, exact DP00001/group and `desiredCapacity: 2` (observed 4→2).
    Verify completed checkpointed pause and human decision; resume same immutable
-   binding, gather fresh evidence, submit A once. Record provider acknowledgement
-   separately from convergence. Denial or stale gate ends that action.
-6. Authoritatively reconcile 3 before draining second original. Repeat fresh drain,
-   bound client restart and complete zero gate. Require a **different** action ID B
-   and approval ID, exact `desiredCapacity: 2` (3→2), separate checkpointed pause,
-   verified human decision, same immutable request on resume and new evidence.
-   Approval A and chat text never authorize B. Submit B once.
+   binding, gather fresh evidence for both originals and both retained replacements,
+   submit A once. Record provider acknowledgement separately from convergence.
+   Denial or stale gate ends that action.
+6. Observe direct 4→2 convergence. Intermediate membership observations may occur
+   during one provider action; they do not authorize another scale action or an
+   application restart. Require both originals absent and both exact replacements
+   retained, protected, healthy and registered.
 7. Unknown/submitted acknowledgement is not convergence. Never replay it or invent
    another action ID. Read authoritative desired capacity, complete ESS membership
    and protection, NLB registration/health, deployment, SQL and metrics. Unresolved
