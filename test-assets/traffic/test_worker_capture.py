@@ -563,3 +563,175 @@ class DeadlineReads(unittest.TestCase):
         with patch.object(worker.time,'monotonic',side_effect=lambda:ticks[0]),patch.object(worker.urllib.request,'urlopen',side_effect=urlopen):
             with self.assertRaises(ValueError):worker.get('http://fixture',deadline=6)
         self.assertEqual(seen,[1])
+
+class NativeRollingBoundary(unittest.TestCase):
+    def run_native(self, kind='good', execution='native-replacement', real_reads=False):
+        import copy,json,os,tempfile
+        from pathlib import Path
+        from test_pgcat_native_evidence import context,operation,rolling,kubernetes
+        from segmented_capture import open_directory,publish_private
+        from finish_clients import atomic_json
+        import pgcat_native_evidence as native
+        clock=[0];ctx=context(execution);op=operation(execution);seen={}
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(os.path.realpath(folder));output=root/'capture';boundary=root/'boundary';boundary.mkdir(mode=0o700)
+            def capture(*args,**kwargs):
+                t=clock[0];value=rolling(t)
+                if kind in ('old-failure','new-failure'):
+                    target=0 if kind=='old-failure' else 2
+                    if t==1:
+                        snap=value['pods'][target]['snapshot'];snap['sample'].update(Scheduled=1,Attempts=1,Success=0,Failure=1)
+                    if t==6:value['pods'][0]['snapshot']['sample']['Success']='malformed'
+                if t==5:
+                    fd=open_directory(output)
+                    try:publish_private(fd,'native-operation-binding.json',op)
+                    finally:os.close(fd)
+                    if kind not in ('missing-seal','old-failure','new-failure'):
+                        native.seal_terminal_clients(output,ctx,op,lambda:kubernetes(),now=lambda:4)
+                    roster=kubernetes()['roster']
+                    if kind=='original-request':roster=ctx['initialRoster']
+                    atomic_json(boundary/'request.json',dict(requestId='finish-one',roster=roster))
+                if t>=6:
+                    for index,pod in enumerate(value['pods']):
+                        final_at=(11 if kind=='late-final' else 7) if index else 6
+                        if t>=final_at:
+                            saved=rolling(final_at)['pods'][index]['snapshot'];pod['snapshot']=saved
+                            saved.update(final=True,connected=0)
+                    if kind=='changed-final' and t==7:value['pods'][0]['snapshot']['sample']['Success']+=1
+                    if kind=='extra':value['pods'].append(copy.deepcopy(value['pods'][0]))
+                    if kind=='wrong-process':value['pods'][0]['snapshot']['sample']['processId']='wrong'
+                    if t==6:
+                        roster=kubernetes()['roster']
+                        if kind=='original-receipt':roster=ctx['initialRoster']
+                        receipt=dict(requestId='finish-one',status='ACKNOWLEDGED',clients={r['uid']+'/'+r['processId']:{'status':'unknown' if kind=='unknown-ack' else 'acknowledged'} for r in roster})
+                        atomic_json(boundary/'receipt.json',receipt)
+                        if kind=='changed-binding':
+                            (output/'native-operation-binding.json').write_text(json.dumps(dict(op,ingressSha256='0'*64)))
+                return value
+            active={}
+            def kube(*args):
+                if args[1]=='pods':
+                    active['frame']=capture();value=active['frame'];live=kubernetes(clock[0])
+                    live['deployment']['metadata']['generation']=value['deployment']['generation']
+                    live['deployment']['status'].update(observedGeneration=value['deployment']['observedGeneration'],readyReplicas=value['deployment']['ready'])
+                    for index,pod in enumerate(live['pods']):
+                        retained=value['pods'][index]
+                        pod['status']['podIP']='client-'+str(index)
+                        pod['status']['conditions'][0]['status']='True' if retained['ready'] else 'False'
+                        if retained['ownership']['terminating']:pod['metadata']['deletionTimestamp']='2026-10-29T00:00:00Z'
+                    active['live']=live;(root/'inventory').write_text(json.dumps(value['inventory']))
+                    return dict(items=live['pods'])
+                if args[1]=='deployment':return active['live']['deployment']
+                if args[1]=='replicasets':return dict(items=active['live']['replicaSets'])
+                return dict(spec=dict(clusterIP='metrics'))
+            def http(url,**kwargs):
+                if '/evidence' in url:
+                    index=int(url.split('client-')[1].split(':')[0])
+                    return copy.deepcopy(active['frame']['pods'][index]['snapshot'])
+                from urllib.parse import urlparse,parse_qs
+                query=parse_qs(urlparse(url).query)['query'][0]
+                rows=[]
+                for node in ('a','b'):
+                    metric=dict(ecs_instance_id=node)
+                    if 'pgcat_pools' in query:metric.update(pool='test',user='poc_app')
+                    rows.append(dict(metric=metric,value=[clock[0],str(clock[0] if query.startswith('timestamp(') else 0)]))
+                return dict(status='success',data=dict(resultType='vector',result=rows))
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(worker.time,'monotonic',side_effect=lambda:clock[0]))
+                stack.enter_context(patch.object(worker.time,'sleep',side_effect=lambda _:clock.__setitem__(0,clock[0]+1)))
+                if real_reads:
+                    stack.enter_context(patch.object(worker,'kubectl',side_effect=kube))
+                    stack.enter_context(patch.object(worker,'get',side_effect=http))
+                    stack.enter_context(patch.object(worker,'utc',side_effect=lambda:clock[0]))
+                else:stack.enter_context(patch.object(worker,'capture_frame',side_effect=capture))
+                seen['result']=worker.run_capture(output,root/'inventory',12,boundary,progress_context=ctx)
+            seen['files']={path.name:json.loads(path.read_text()) for path in boundary.iterdir()}
+            seen['progress']=json.loads((output/'progress.json').read_text())
+            seen['rows']=[json.loads(line) for path in sorted(output.glob('segment-*.jsonl')) for line in path.read_text().splitlines()]
+        return seen
+
+    def test_native_boundary_targets_terminal_successors_and_keeps_all_four_finals(self):
+        for execution in ('native-replacement','disabled-proof'):
+            seen=self.run_native(execution=execution);complete=seen['files'].get('boundary-completed.json')
+            self.assertIsNotNone(complete,seen['result'])
+            start=seen['files']['boundary-start.json']
+            self.assertEqual(start['schemaVersion'],2);self.assertEqual(start['executionKind'],execution)
+            self.assertNotIn('originalRosterSha256',start)
+            self.assertEqual(complete['terminalSha256'],start['terminalSha256'])
+            self.assertEqual(complete['executionKind'],execution)
+            self.assertEqual([r['uid'] for r in complete['finals']],['new-uid-0','new-uid-1'])
+            self.assertEqual([r['frame']['at'] for r in complete['predecessorFinals']],[2,2])
+            self.assertTrue(all(row['finalFrame'] is not None for row in seen['progress']['nativeCohort']['cohort']))
+
+    def test_native_worker_uses_actual_owner_reads_and_source_frame_files(self):
+        seen=self.run_native(real_reads=True)
+        self.assertIn('boundary-completed.json',seen['files'],seen['result'])
+        self.assertEqual([row['frame']['at'] for row in seen['files']['boundary-completed.json']['finals']],[6,7])
+        self.assertEqual(seen['rows'][1]['deployment']['observedGeneration'],1)
+        self.assertTrue(seen['rows'][2]['pods'][0]['ownership']['terminating'])
+
+    def test_native_boundary_refuses_wrong_or_missing_or_changed_proof(self):
+        for kind in ('missing-seal','original-request','original-receipt','unknown-ack','changed-binding','late-final','changed-final','extra','wrong-process'):
+            with self.subTest(kind=kind):self.assertNotIn('boundary-completed.json',self.run_native(kind)['files'])
+
+    def test_native_failure_survives_late_binding_and_finish_error(self):
+        for kind in ('old-failure','new-failure'):
+            with self.subTest(kind=kind):
+                seen=self.run_native(kind)
+                self.assertEqual(seen['result']['status'],'FAIL')
+                self.assertTrue(seen['progress']['flags']['sqlFailure'])
+                self.assertNotIn('boundary-completed.json',seen['files'])
+
+class NativeStartupReads(unittest.TestCase):
+    def observe(self,case):
+        import copy,json,tempfile
+        from pathlib import Path
+        from test_pgcat_native_evidence import context,kubernetes,rolling
+        import urllib.error
+        live=kubernetes(1);live['deployment']['metadata']['generation']=2
+        live['deployment']['status']['observedGeneration']=1
+        initial=set(r['uid'] for r in context()['initialRoster'])
+        for index,pod in enumerate(live['pods']):
+            pod['status']['podIP']='ip-'+str(index)
+            if pod['metadata']['uid'] not in initial:
+                pod['status']['conditions']=[dict(type='Ready',status='False')]
+                if case in ('pending','waiting'):
+                    pod['status'].update(phase='Pending',containerStatuses=[] if case=='pending' else [dict(name='client',imageID='',state=dict(waiting=dict(reason='ContainerCreating')))]);pod['status'].pop('podIP')
+                if case=='ready':pod['status']['conditions'][0]['status']='True'
+                if case=='image':pod['status']['containerStatuses'][0]['imageID']='repo@sha256:'+'b'*64
+                if case=='foreign':pod['metadata']['ownerReferences'][0]['uid']='other'
+        if case=='traffic':live['pods'][0]['status']['podIP']='unavailable-initial'
+        def kube(*args):
+            if args[1]=='pods':return dict(items=live['pods'])
+            if args[1]=='deployment':return live['deployment']
+            if args[1]=='replicasets':return dict(items=live['replicaSets'])
+            return dict(spec=dict(clusterIP='metrics'))
+        def get(url,**kwargs):
+            if 'unavailable-initial' in url:raise urllib.error.URLError(ConnectionRefusedError())
+            index=int(url.split('ip-')[1].split(':')[0])
+            if index>=2:
+                if case=='malformed':return {'sample':'broken'}
+                raise urllib.error.URLError(ConnectionRefusedError())
+            return copy.deepcopy(rolling(1)['pods'][index]['snapshot'])
+        with tempfile.TemporaryDirectory() as directory:
+            inventory=Path(directory)/'inventory';inventory.write_text(json.dumps(rolling(1)['inventory']))
+            with patch.object(worker,'kubectl',side_effect=kube),patch.object(worker,'get',side_effect=get),patch.object(worker,'query_metrics',return_value=rolling(1)['metrics']),patch.object(worker,'utc',return_value=1):
+                return worker.capture_frame(inventory,native_context=context())
+
+    def test_owned_pending_and_transport_refusal_are_startup_only(self):
+        from test_pgcat_native_evidence import starting_row
+        for case in ('pending','waiting','refused'):
+            with self.subTest(case=case):
+                value=self.observe(case)
+                self.assertEqual(value['expectedReplicas'],2)
+                self.assertEqual(len(value['pods']),2)
+                self.assertEqual(value.get('startingPods'),[starting_row(i,None if case in ('pending','waiting') else 'new-container-'+str(i)) for i in range(2)])
+
+    def test_malformed_ready_foreign_wrong_image_and_missing_initial_are_not_startup(self):
+        from test_pgcat_native_evidence import context,rolling
+        from pgcat_native_evidence import NativeCohort
+        for case in ('malformed','ready','foreign','image','traffic'):
+            with self.subTest(case=case):
+                cohort=NativeCohort(context());cohort.observe(rolling(0));cohort.observe(self.observe(case))
+                self.assertTrue(any(cohort.snapshot()['flags'].values()))

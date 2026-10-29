@@ -483,3 +483,32 @@ class MalformedPeerWitnessRegression(unittest.TestCase):
                 failed=next(pod for pod in retained['pods'] if pod['uid']==witness_context()['originalRoster'][1]['uid'])
                 self.assertEqual(failed['snapshot']['sample']['Failure'],1)
                 self.assertEqual(w.finish(completed=True,cancelled=False,errors=[])['status'],'FAIL')
+
+class NativeCommittedProgress(unittest.TestCase):
+    def test_uncommitted_final_never_allows_disappearance(self):
+        from test_pgcat_native_evidence import context,rolling
+        from pgcat_native_evidence import NativeCohort
+        cohort=NativeCohort(context())
+        for t in (0,1,2,3):cohort.observe(rolling(t))
+        self.assertTrue(cohort.snapshot()['flags']['invalidEvidence'])
+
+    def test_v1_verified_closure_never_imports_native_module(self):
+        import subprocess,sys
+        script='''
+import sys, unittest
+class DenyNative:
+    def find_spec(self,fullname,*args):
+        if fullname=='pgcat_native_evidence':raise AssertionError('v1 imported unpinned native source')
+sys.meta_path.insert(0,DenyNative())
+from test_worker_capture import DurableWitnessBoundary
+suite=unittest.TestSuite([DurableWitnessBoundary('test_exact_seals_before_slow_finish_and_original_final_pair')])
+result=unittest.TextTestRunner().run(suite)
+assert result.wasSuccessful()
+assert 'pgcat_native_evidence' not in sys.modules
+'''
+        # Import the existing v1 fixture under a forbidden-native import hook.
+        import test_worker_capture
+        names=[name for name,value in vars(test_worker_capture).items() if isinstance(value,type) and hasattr(value,'test_exact_seals_before_slow_finish_and_original_final_pair')]
+        script=script.replace('DurableWitnessBoundary',names[0])
+        result=subprocess.run([sys.executable,'-c',script],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)

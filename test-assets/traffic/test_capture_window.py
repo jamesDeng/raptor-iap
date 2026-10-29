@@ -538,3 +538,14 @@ class LaneIdentityRetention(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class NativeOwnershipCleaning(unittest.TestCase):
+    def test_direct_native_ownership_allowlist_preserves_only_typed_fields(self):
+        from test_pgcat_native_evidence import rolling,ownership
+        value=rolling(1);value['pods'][0]['ownership']['credential']='never-retain'
+        result=clean(value)
+        self.assertEqual(result['pods'][0].get('ownership'),ownership())
+        value['inventory']['mode']='full-replacement'
+        self.assertNotIn('ownership',clean(value)['pods'][0])
+        value=rolling(1);value['pods'][0]['ownership']['deploymentUid']={'secret':'never-retain'}
+        self.assertIsNone(clean(value)['pods'][0]['ownership']['deploymentUid'])

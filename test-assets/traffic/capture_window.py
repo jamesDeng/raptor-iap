@@ -284,6 +284,17 @@ def clean(frame):
     complete=True
     if inventory.get('schemaVersion')==2:
         pods,complete=clean_client_pods(frame.get('pods'))
+        if inventory.get('mode')=='full-replacement-direct-v2':
+            for source,pod in zip(frame.get('pods',[]) if type(frame.get('pods')) is list else [],pods):
+                if type(source) is not dict or 'ownership' not in source:continue
+                owner=source['ownership'];owner=owner if type(owner) is dict else {}
+                retained={}
+                for key in ('deploymentUid','replicaSetUid','templateHash','imageDigest','terminating'):
+                    value=owner.get(key)
+                    valid=(type(value) is bool if key=='terminating' else type(value) is str and re.fullmatch(r'[A-Za-z0-9_.:/-]{1,256}',value) is not None)
+                    retained[key]=value if valid else None
+                    if not valid:complete=False
+                pod['ownership']=retained
     else:
         pods=[]
         for p in frame['pods']:
@@ -308,6 +319,19 @@ def clean(frame):
         new_identity='deployment' in frame or any(any(k in p for k in identity_fields) for p in pods)
         if new_identity and ('deployment' not in frame or any(not all(k in p for k in identity_fields) for p in pods)):
             result['expectedReplicas']=0
+    if inventory.get('mode')=='full-replacement-direct-v2' and 'startingPods' in frame:
+        starting=[];source=frame['startingPods']
+        if type(source) is not list:source=[];result['expectedReplicas']=0
+        for row in source:
+            row=row if type(row) is dict else {}
+            retained={}
+            for key in ('name','uid','deploymentUid','replicaSetUid','templateHash','containerId'):
+                value=row.get(key)
+                valid=(key=='containerId' and value is None) or (type(value) is str and re.fullmatch(r'[A-Za-z0-9_.:/-]{1,256}',value) is not None)
+                retained[key]=value if valid else None
+                if not valid:result['expectedReplicas']=0
+            starting.append(retained)
+        result['startingPods']=starting
     if inventory.get('schemaVersion')==2 and 'deployment' in frame:
         source=frame['deployment'];source=source if isinstance(source,dict) else {}
         deployment={}

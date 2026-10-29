@@ -62,6 +62,9 @@ def hash_value(value):return type(value) is str and re.fullmatch('[0-9a-f]{64}',
 
 
 def validate_context(value):
+    if type(value) is dict and type(value.get('schemaVersion')) is int and value['schemaVersion']==2:
+        from pgcat_native_evidence import validate_context as native_context
+        return native_context(value)
     require(type(value) is dict and set(value)==CONTEXT_KEYS and type(value['schemaVersion']) is int and value['schemaVersion']==1)
     for key in ('runId','feedSession'):require(type(value[key]) is str and str(uuid.UUID(value[key]))==value[key])
     for key in ('providerRunContextSha256','bundleSha256','baselineSha256'):require(hash_value(value[key]))
@@ -163,14 +166,19 @@ def read_progress(directory,expected_context):
     try:
         binding_raw=read_private(fd,'progress-binding.json');binding=decode_private(binding_raw)
         identity=os.fstat(fd)
-        require(type(binding) is dict and set(binding)==CONTEXT_KEYS|{'captureDirectoryIdentity'})
-        validate_context({key:binding[key] for key in CONTEXT_KEYS})
+        context_keys=set(expected)
+        require(type(binding) is dict and set(binding)==context_keys|{'captureDirectoryIdentity'})
+        validate_context({key:binding[key] for key in context_keys})
         capture_identity=binding['captureDirectoryIdentity']
         require(type(capture_identity) is dict and set(capture_identity)=={'device','inode'} and integer(capture_identity['device']) and integer(capture_identity['inode'],1))
         require(binding==dict(expected,captureDirectoryIdentity=dict(device=identity.st_dev,inode=identity.st_ino)))
         progress=decode_private(read_private(fd,'progress.json'))
         keys={'schemaVersion','bindingSha256','generation','attempts','committedFrames','firstAt','lastAttemptAt','lastCommitMonotonic','maxGapSeconds','flags','previous','latest'}
-        require(type(progress) is dict and set(progress)==keys and type(progress['schemaVersion']) is int and progress['schemaVersion']==1 and progress['bindingSha256']==sha(binding_raw))
+        if expected['schemaVersion']==2:keys.add('nativeCohort')
+        require(type(progress) is dict and set(progress)==keys and type(progress['schemaVersion']) is int and progress['schemaVersion']==expected['schemaVersion'] and progress['bindingSha256']==sha(binding_raw))
+        if expected['schemaVersion']==2:
+            from pgcat_native_evidence import validate_snapshot
+            validate_snapshot(progress['nativeCohort'],expected)
         require(integer(progress['generation'],1) and integer(progress['attempts']) and integer(progress['committedFrames']) and progress['committedFrames']<=progress['attempts'] and progress['generation']>=progress['attempts']+1)
         require(type(progress['flags']) is dict and set(progress['flags'])==set(FLAGS) and all(type(v) is bool for v in progress['flags'].values()))
         require(number(progress['maxGapSeconds']) and progress['maxGapSeconds']>=0)
@@ -202,7 +210,10 @@ class SegmentedCapture:
     def __init__(self,directory: Path,max_segment_seconds=1800,max_total_seconds=5400,*,progress_context=None):
         if not 1<=max_segment_seconds<=1800 or not 1<=max_total_seconds<=5400:raise ValueError('invalid capture bounds')
         self.progress_context=validate_context(progress_context) if progress_context is not None else None
-        self.progress_fd=None;self.final_refs={};self.final_samples={}
+        self.progress_fd=None;self.final_refs={};self.final_samples={};self.native_cohort=None
+        if self.progress_context is not None and self.progress_context['schemaVersion']==2:
+            from pgcat_native_evidence import NativeCohort
+            self.native_cohort=NativeCohort(self.progress_context)
         self.directory=Path(directory);self.directory.mkdir(mode=0o700,parents=False,exist_ok=False)
         self.segment_seconds=max_segment_seconds;self.total_seconds=max_total_seconds
         self.window=CaptureWindow(self.directory/'segment-0001.jsonl')
@@ -212,7 +223,7 @@ class SegmentedCapture:
             binding=dict(self.progress_context,captureDirectoryIdentity=dict(device=info.st_dev,inode=info.st_ino))
             self.binding_raw=publish_private(self.progress_fd,'progress-binding.json',binding)
             self.binding_identity=file_identity(os.stat('progress-binding.json',dir_fd=self.progress_fd,follow_symlinks=False))
-            self.progress=dict(schemaVersion=1,bindingSha256=sha(self.binding_raw),generation=0,attempts=0,committedFrames=0,
+            self.progress=dict(schemaVersion=self.progress_context['schemaVersion'],bindingSha256=sha(self.binding_raw),generation=0,attempts=0,committedFrames=0,
                 firstAt=None,lastAttemptAt=None,lastCommitMonotonic=None,maxGapSeconds=0,
                 flags={key:False for key in FLAGS},previous=None,latest=None)
             self._publish()
@@ -222,6 +233,12 @@ class SegmentedCapture:
         check_directory(self.progress_fd,self.directory)
         require(file_identity(os.stat('progress-binding.json',dir_fd=self.progress_fd,follow_symlinks=False))==self.binding_identity)
         require(read_private(self.progress_fd,'progress-binding.json')==self.binding_raw)
+        if self.native_cohort is not None:
+            snapshot=self.native_cohort.snapshot()
+            for key in FLAGS:
+                self.progress['flags'][key]=self.progress['flags'][key] or snapshot['flags'][key]
+                self.native_cohort.flags[key]=self.progress['flags'][key]
+            self.progress['nativeCohort']=self.native_cohort.snapshot()
         self.progress['generation']+=1
         publish_private(self.progress_fd,'progress.json',self.progress,replace=self.progress['generation']>1)
         check_directory(self.progress_fd,self.directory)
@@ -231,6 +248,9 @@ class SegmentedCapture:
         self.progress['flags']['pollError']=True;self._publish()
     def _observe(self,frame):
         p=self.progress;p['attempts']+=1;p['lastAttemptAt']=frame['at'];flags=p['flags'];context=self.progress_context
+        if self.native_cohort is not None:
+            self.native_cohort.observe(frame)
+            return
         if frame.get('expectedReplicas')!=2:flags['pollError']=True
         if type(frame.get('inventory')) is not dict or frame['inventory'].get('feedSession')!=context['feedSession']:flags['invalidEvidence']=True
         authenticated=[]
@@ -304,6 +324,13 @@ class SegmentedCapture:
             if gap<=0:p['flags']['invalidEvidence']=True
             p['maxGapSeconds']=max(p['maxGapSeconds'],gap)
         p['previous']=p['latest'];p['latest']=ref;p['committedFrames']+=1;p['lastCommitMonotonic']=time.monotonic()
+        if self.native_cohort is not None:
+            self.native_cohort.committed(actual,ref)
+            for row in self.native_cohort.snapshot()['cohort']:
+                if row['finalFrame'] is not None:
+                    identity=row['identity'];self.final_refs[(identity['uid'],identity['processId'])]=row['finalFrame']
+            self._publish()
+            return actual
         for pod in actual['pods']:
             try:
                 key=client_identity(pod);snap=pod['snapshot'];sample=snap['sample']
