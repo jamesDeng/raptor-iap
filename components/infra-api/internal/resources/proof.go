@@ -63,11 +63,19 @@ func (s *Service) ResolveProof(ctx context.Context, env, proxy string) (Proof, e
 		return Proof{}, domain.ErrScope
 	}
 	ref := r.Context.RelatedResources[0]
-	app, e := s.resolve(ctx, env, "application", ref.Code)
+	appContext, e := s.catalogContext(ctx, env, "application", ref.Code)
 	if e != nil {
 		return Proof{}, e
 	}
-	if !sameEnvironment(r.Context, app.Context) || app.Context.Code != ref.Code || len(app.ApplicationWorkloads) != 1 {
+	if !sameEnvironment(r.Context, appContext) || appContext.Code != ref.Code {
+		return Proof{}, domain.ErrIdentity
+	}
+	// Consume exactly the catalog context just checked; do not re-read it through resolve.
+	app, e := s.backend.ResolveResource(ctx, appContext)
+	if e != nil {
+		return Proof{}, e
+	}
+	if len(app.ApplicationWorkloads) != 1 {
 		return Proof{}, domain.ErrIdentity
 	}
 	t := app.ApplicationWorkloads[0].Target

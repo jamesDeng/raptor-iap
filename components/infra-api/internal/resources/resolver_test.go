@@ -174,3 +174,83 @@ func TestProofRejectsChangedEnvironmentOrMissingDatabaseRealization(t *testing.T
 		}
 	}
 }
+
+func TestProofRejectsForeignRelatedContextBeforeApplicationBackend(t *testing.T) {
+	for _, field := range []string{"account", "cluster", "region", "canonical-code"} {
+		t.Run(field, func(t *testing.T) {
+			s := proofService(1)
+			catalog, backend := s.catalog, s.backend
+			s.catalog = catalogFunc(func(ctx context.Context, env, kind, code string) (domain.ResourceContext, error) {
+				c, e := catalog.Context(ctx, env, kind, code)
+				if kind == "application" {
+					switch field {
+					case "account":
+						c.AccountID = "foreign"
+					case "cluster":
+						c.ClusterID = "foreign"
+					case "region":
+						c.Region = "cn-hangzhou"
+					case "canonical-code":
+						c.Code = "unrelated"
+					}
+				}
+				return c, e
+			})
+			s.backend = backendFunc(func(ctx context.Context, c domain.ResourceContext) (domain.ResolvedResource, error) {
+				if c.Kind == "application" {
+					t.Fatal("foreign related catalog context reached application backend")
+				}
+				return backend.ResolveResource(ctx, c)
+			})
+			if _, e := s.ResolveProof(context.Background(), "dev", "proxy"); e == nil {
+				t.Fatal("foreign related context admitted")
+			}
+		})
+	}
+}
+
+func TestOrdinaryApplicationAliasResolvesCanonicalWorkload(t *testing.T) {
+	s := proofService(1)
+	catalog, backend := s.catalog, s.backend
+	s.catalog = catalogFunc(func(ctx context.Context, env, kind, code string) (domain.ResourceContext, error) {
+		if kind != "application" || code != "application-alias" {
+			t.Fatalf("unexpected selector: %s %s", kind, code)
+		}
+		return catalog.Context(ctx, env, kind, "app")
+	})
+	s.backend = backendFunc(func(ctx context.Context, c domain.ResourceContext) (domain.ResolvedResource, error) {
+		if c.Code != "app" {
+			t.Fatal("backend did not receive canonical app code")
+		}
+		return backend.ResolveResource(ctx, c)
+	})
+	r, e := s.Resolve(context.Background(), "dev", "application", "application-alias")
+	if e != nil || r.Context.Code != "app" || len(r.ApplicationWorkloads) != 1 || r.ApplicationWorkloads[0].Target.AppCode != "app" {
+		t.Fatal(r, e)
+	}
+}
+
+func TestProofUsesSingleValidatedRelatedCatalogContext(t *testing.T) {
+	s := proofService(1)
+	catalog, backend := s.catalog, s.backend
+	applicationReads := 0
+	s.catalog = catalogFunc(func(ctx context.Context, env, kind, code string) (domain.ResourceContext, error) {
+		if kind == "application" {
+			applicationReads++
+			if applicationReads > 1 {
+				t.Fatal("application context was re-read after validation")
+			}
+		}
+		return catalog.Context(ctx, env, kind, code)
+	})
+	s.backend = backendFunc(func(ctx context.Context, c domain.ResourceContext) (domain.ResolvedResource, error) {
+		if c.Kind == "application" && (applicationReads != 1 || c.EnvCode != "dev" || c.AccountID != "123" || c.ClusterID != "ack" || c.Region != "ap-southeast-1" || c.Code != "app") {
+			t.Fatal("backend context differs from validated related identity")
+		}
+		return backend.ResolveResource(ctx, c)
+	})
+	p, e := s.ResolveProof(context.Background(), "dev", "proxy")
+	if e != nil || applicationReads != 1 || p.Identity.Application.AppCode != "app" {
+		t.Fatal(p, e, applicationReads)
+	}
+}

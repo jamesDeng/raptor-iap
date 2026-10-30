@@ -25,21 +25,28 @@ func (s *Service) Resolve(ctx context.Context, env, kind, code string) (domain.R
 	defer cancel()
 	return s.resolve(ctx, env, kind, code)
 }
-func (s *Service) resolve(ctx context.Context, env, kind, code string) (domain.ResolvedResource, error) {
+func (s *Service) catalogContext(ctx context.Context, env, kind, code string) (domain.ResourceContext, error) {
 	if ctx.Err() != nil {
-		return domain.ResolvedResource{}, ctx.Err()
+		return domain.ResourceContext{}, ctx.Err()
 	}
 	if s == nil || s.catalog == nil || s.backend == nil {
-		return domain.ResolvedResource{}, domain.ErrNotConfigured
+		return domain.ResourceContext{}, domain.ErrNotConfigured
 	}
 	if !selectors(env, kind, code) {
-		return domain.ResolvedResource{}, domain.ErrScope
+		return domain.ResourceContext{}, domain.ErrScope
 	}
 	c, e := s.catalog.Context(ctx, env, kind, code)
 	if e != nil {
-		return domain.ResolvedResource{}, e
+		return domain.ResourceContext{}, e
 	}
 	if e = validateContext(c, env, kind); e != nil {
+		return domain.ResourceContext{}, e
+	}
+	return c, nil
+}
+func (s *Service) resolve(ctx context.Context, env, kind, code string) (domain.ResolvedResource, error) {
+	c, e := s.catalogContext(ctx, env, kind, code)
+	if e != nil {
 		return domain.ResolvedResource{}, e
 	}
 	r, e := s.backend.ResolveResource(ctx, c)
