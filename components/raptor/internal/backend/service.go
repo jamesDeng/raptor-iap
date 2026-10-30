@@ -31,6 +31,7 @@ func (s *Server) RegisterService(user, password string) {
 	wrap := func(pattern string, h http.HandlerFunc) {
 		s.Mux.Handle(pattern, auth.BasicAuth(h, auth.Credentials{Username: user, Password: password}))
 	}
+	wrap("GET /v1/infra/resource-context", s.infraResourceContext)
 	wrap("POST /v1/requests/{id}/pull-requests", func(w http.ResponseWriter, r *http.Request) {
 		var in githubservice.PRInput
 		if !httpx.Decode(w, r, &in) {
