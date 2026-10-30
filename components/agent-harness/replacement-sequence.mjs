@@ -11,17 +11,19 @@ const healthy=n=>n.healthStatus==='Healthy'&&['InService','Protected'].includes(
 const protectedNode=n=>healthy(n)&&n.protectedFromScaleIn===true&&n.lifecycleState==='Protected';
 const registered=n=>n.registered===true&&n.healthy===true&&n.status==='Available';
 const mcpChecks=['raptor.request_get','raptor.environment_get','raptor.object_get','infra.cloud_identity_get','infra.deployments_list','infra.deployment_status_get'];
-function metricsValid(m,ids,zero=[],after=0){
+function metricsValid(m,ids,budgeted=[],after=0){
  if(!fresh(m,after)||!Array.isArray(m.pendingInstanceIds)||m.pendingInstanceIds.length||!exact(m.nodes,ids))return false;
  const completed=Date.parse(m.observedAt),sources=[Date.parse(m.sourceAt),Date.parse(m.latestSourceAt)],responses=[Date.parse(m.responseAt),Date.parse(m.latestResponseAt)];
  if(sources.some(t=>!Number.isFinite(t)||Math.abs(Date.now()-t)>15000||Math.abs(completed-t)>15000||t<after)||responses.some(t=>!Number.isFinite(t)||Math.abs(Date.now()-t)>30000||Math.abs(completed-t)>30000||t<after)||sources[0]>sources[1]||responses[0]>responses[1])return false;
+ let retiringTotal=0;
  for(const n of m.nodes){
   if(!Number.isSafeInteger(n.connectedClients)||n.connectedClients<0||!Array.isArray(n.pools)||!n.pools.length||n.pools.length>100)return false;
   let total=0;const seen=new Set();
   for(const p of n.pools){const key=JSON.stringify([p.pool,p.user]);if(p.instanceId!==n.instanceId||typeof p.pool!=='string'||!p.pool||typeof p.user!=='string'||!p.user||seen.has(key)||!['active','idle','waiting'].every(k=>Number.isSafeInteger(p[k])&&p[k]>=0))return false;seen.add(key);total+=p.active+p.idle+p.waiting;}
-  if(!Number.isSafeInteger(total)||total!==n.connectedClients||(zero.includes(n.instanceId)&&total!==0))return false;
+  if(!Number.isSafeInteger(total)||total!==n.connectedClients)return false;
+  if(budgeted.includes(n.instanceId))retiringTotal+=total;
  }
- return true;
+ return Number.isSafeInteger(retiringTotal)&&retiringTotal<=1;
 }
 export class ReplacementSequence {
  constructor(manager,trace,readiness,profile){

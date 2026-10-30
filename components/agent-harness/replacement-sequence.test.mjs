@@ -31,7 +31,7 @@ test('restart requires both old withdrawals and observed absence with protected 
  observe(x,observations([...old,...added],{withdrawn:old}));assert.doesNotThrow(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')));
 });
 for(const [name,change] of [
- ['nonzero',e=>{e.metrics.nodes[0].pools[0].idle=1;e.metrics.nodes[0].connectedClients=1;}],
+ ['over budget',e=>{e.metrics.nodes[0].pools[0].idle=2;e.metrics.nodes[0].connectedClients=2;}],
  ['missing triplet',e=>delete e.metrics.nodes[0].pools[0].waiting],
  ['missing old metrics',e=>e.metrics.nodes.shift()],
  ['duplicate pool',e=>e.metrics.nodes[0].pools.push({...e.metrics.nodes[0].pools[0]})],
@@ -46,6 +46,43 @@ for(const [name,change] of [
  assert.throws(()=>x.gate.beforeMutation('db_proxy_node_protection_set',protect(old,false)),/MissingEvidence/);
  assert.throws(()=>x.gate.beforeMutation('db_proxy_scale',argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2})),/MissingEvidence/);
 });
+for(const stage of ['unprotect','approval','reduction'])for(const [name,counts,allowed] of [
+ ['zero total',[[0,0,0],[0,0,0]],true],
+ ['0+1 active',[[0,0,0],[1,0,0]],true],
+ ['1+0 idle',[[0,1,0],[0,0,0]],true],
+ ['0+1 waiting',[[0,0,0],[0,0,1]],true],
+ ['1+1 active',[[1,0,0],[1,0,0]],false],
+ ['idle plus waiting',[[0,1,0],[0,0,1]],false],
+])test(`${stage} enforces combined old-node budget: ${name}`,()=>{
+ const x=restarted();
+ if(stage!=='unprotect')mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
+ const e=observations([...old,...added],{withdrawn:old,unprotected:stage==='unprotect'?[]:old,zero:true,generation:6});
+ for(const [i,[active,idle,waiting]] of counts.entries()){
+  Object.assign(e.metrics.nodes[i].pools[0],{active,idle,waiting});e.metrics.nodes[i].connectedClients=active+idle+waiting;
+ }
+ // Retained protected-node clients are outside the retiring-node budget.
+ for(const n of e.metrics.nodes.filter(n=>added.includes(n.instanceId))){n.pools[0].active=3;n.connectedClients=3;}
+ observe(x,e);
+ const tool=stage==='unprotect'?'db_proxy_node_protection_set':stage==='approval'?'approval_request':'db_proxy_scale';
+ const args=stage==='unprotect'?protect(old,false):stage==='approval'?{requestId:'request',actionId:'shrink',interface:'ess.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy',groupId:'group'},parameters:{desiredCapacity:2}}:argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
+ if(allowed)assert.doesNotThrow(()=>x.gate.beforeMutation(tool,args));
+ else assert.throws(()=>x.gate.beforeMutation(tool,args),/MissingEvidence/);
+});
+for(const [name,change] of [
+ ['extra pool/user exceeds combined budget',e=>{const n=e.metrics.nodes[1];n.pools[0].active=1;n.pools.push({instanceId:n.instanceId,pool:'other-db',user:'other-client',active:0,idle:0,waiting:1});n.connectedClients=2;}],
+ ['missing pool',e=>e.metrics.nodes[1].pools=[]],
+ ['missing idle triplet value',e=>delete e.metrics.nodes[1].pools[0].idle],
+ ['missing active triplet value',e=>delete e.metrics.nodes[1].pools[0].active],
+ ['malformed count',e=>e.metrics.nodes[1].pools[0].waiting=0.5],
+ ['node total mismatch',e=>e.metrics.nodes[1].connectedClients=1],
+ ['pending node metrics',e=>e.metrics.pendingInstanceIds=[old[1]]],
+ ['stale response',e=>e.metrics.responseAt=new Date(Date.now()-31000).toISOString()],
+ ['source before restart',(e,x)=>e.metrics.sourceAt=new Date(x.gate.restart().at-1).toISOString()],
+ ['response before restart',(e,x)=>e.metrics.responseAt=new Date(x.gate.restart().at-1).toISOString()],
+])test(`direct budget refuses ${name}`,()=>{
+ const x=restarted(),e=observations([...old,...added],{withdrawn:old,zero:true,generation:6});change(e,x);observe(x,e);
+ assert.throws(()=>x.gate.beforeMutation('db_proxy_node_protection_set',protect(old,false)),/MissingEvidence/);
+});
 test('zero before restart is not rollout evidence and unprotecting replacements is forbidden',()=>{
  const x=withdrawn();observe(x,observations([...old,...added],{withdrawn:old,zero:true}));assert.throws(()=>x.gate.beforeMutation('db_proxy_node_protection_set',protect(old,false)),/MissingEvidence/);
  const y=restarted();assert.throws(()=>y.gate.beforeMutation('db_proxy_node_protection_set',protect(added,false)),/MissingEvidence/);
@@ -54,7 +91,9 @@ test('resume retains ordering and generation but requires fresh current reads; o
  const x=restarted();mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
  const y=setup(x.session),scale=argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
  assert.throws(()=>y.gate.beforeMutation('db_proxy_scale',scale),/MissingEvidence/);
- observe(y,observations([...old,...added],{withdrawn:old,unprotected:old,zero:true,generation:6}));
+ const e=observations([...old,...added],{withdrawn:old,unprotected:old,zero:true,generation:6});
+ e.metrics.nodes[1].pools[0].waiting=1;e.metrics.nodes[1].connectedClients=1;
+ observe(y,e);
  mutate(y,'db_proxy_scale',{actionId:'shrink',desiredCapacity:2},{previousDesiredCapacity:4,desiredCapacity:2,outcome:'unknown'});
  assert.throws(()=>y.gate.beforeMutation('db_proxy_scale',{...scale,actionId:'renamed'}),/MutationAlreadySubmitted|MissingEvidence/);
  observe(y,observations(added,{zero:true,generation:6}));
