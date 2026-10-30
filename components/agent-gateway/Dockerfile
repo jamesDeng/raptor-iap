@@ -1,6 +1,11 @@
 # Build with --build-context agent-harness=../agent-harness.
 # The named context contains source only; never a credential/state directory.
 FROM agent-harness AS harness
+# Install the existing lockfile, retaining only the observer SDK's pure JS closure.
+FROM node:22.23.3-alpine AS mcp-runtime
+WORKDIR /opt/raptor-harness
+COPY --from=harness /package.json /package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -11,6 +16,13 @@ FROM alpine:3.23
 RUN apk add --no-cache ca-certificates git nodejs && addgroup -g 10001 app && adduser -D -u 10001 -G app app
 COPY --from=build /out/ /usr/local/bin/
 COPY --from=harness /package.json /package-lock.json /archive.py /application-context.mjs /app-question.mjs /checkpoint.mjs /pi-adapter.mjs /runner.mjs /progress.mjs /live-contract.mjs /live-runner.mjs /live-question.mjs /live-repository.mjs /mcp-runtime.mjs /operation-profile.mjs /replacement-evidence.mjs /operation-session.mjs /skills-loader.mjs /live-operation.mjs /approval-pause.mjs /live-replacement.mjs /pinned-replacement-skill.mjs /tool-failure-diagnostic.mjs /skills-bundle.mjs /client-targets.mjs /replacement-trace.mjs /replacement-readiness.mjs /replacement-sequence.mjs /qualification-trace.mjs /qualification-read-plan.mjs /pgcat-metrics.mjs /replacement-completion.mjs /observation-tools.mjs /observation-extension.mjs /observation-config.mjs /observation-proxy.mjs /gateway-observation-runner.mjs /conversation.mjs /opt/raptor-harness/
+COPY --from=mcp-runtime /opt/raptor-harness/node_modules/@earendil-works/pi-mcp /opt/raptor-harness/node_modules/@earendil-works/pi-mcp
+COPY --from=mcp-runtime /opt/raptor-harness/node_modules/cross-spawn /opt/raptor-harness/node_modules/cross-spawn
+COPY --from=mcp-runtime /opt/raptor-harness/node_modules/path-key /opt/raptor-harness/node_modules/path-key
+COPY --from=mcp-runtime /opt/raptor-harness/node_modules/shebang-command /opt/raptor-harness/node_modules/shebang-command
+COPY --from=mcp-runtime /opt/raptor-harness/node_modules/shebang-regex /opt/raptor-harness/node_modules/shebang-regex
+COPY --from=mcp-runtime /opt/raptor-harness/node_modules/which /opt/raptor-harness/node_modules/which
+COPY --from=mcp-runtime /opt/raptor-harness/node_modules/isexe /opt/raptor-harness/node_modules/isexe
 RUN node --check /opt/raptor-harness/gateway-observation-runner.mjs
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/gateway"]

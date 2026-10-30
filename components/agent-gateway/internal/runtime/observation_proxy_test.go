@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
@@ -114,5 +115,34 @@ func TestObservationProxyRejectsExpiredSource(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{"expiresAt": time.Now().Add(-time.Second)})
 	if _, e := p.Register(proxyStart(), ObservationMaterial{Config: raw}, func(context.Context) error { return nil }); e == nil {
 		t.Fatal("expired underlying credentials registered")
+	}
+}
+
+func TestObservationProxyRejectsAttemptCredentialRepresentations(t *testing.T) {
+	in := proxyStart()
+	in.Access.Credential = "raptor_at_" + strings.Repeat("a", 43)
+	encoded := base64.StdEncoding.EncodeToString([]byte("agent:" + in.Access.Credential))
+	for _, secret := range []string{in.Access.Credential, "agent:" + in.Access.Credential, encoded, "Basic " + encoded} {
+		t.Run(secret[:8], func(t *testing.T) {
+			p, _ := NewObservationProxy("https://api.rdev.raptor-iap.top/v1/gateway-observations", func(context.Context, execution.LiveStart, ObservationMaterial, string, json.RawMessage) (json.RawMessage, error) {
+				return json.Marshal(map[string]string{"leak": secret})
+			})
+			m, err := p.Register(in, ObservationMaterial{}, func(context.Context) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			var c map[string]any
+			json.Unmarshal(m.Config, &c)
+			if strings.Contains(string(m.Config), in.Access.Credential) || strings.Contains(string(m.Config), encoded) {
+				t.Fatal("private access exported")
+			}
+			r := httptest.NewRequest("POST", observationRoute, strings.NewReader(`{"attemptId":"attempt","requestId":"request","definitionSha256":"hash","tool":"deployment_read","arguments":{}}`))
+			r.Header.Set("Authorization", "Bearer "+c["token"].(string))
+			w := httptest.NewRecorder()
+			p.ServeHTTP(w, r)
+			if w.Code != 503 || strings.Contains(w.Body.String(), secret) {
+				t.Fatal("attempt credential escaped", w.Code)
+			}
+		})
 	}
 }
