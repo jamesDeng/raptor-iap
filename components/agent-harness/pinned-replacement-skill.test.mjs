@@ -41,3 +41,21 @@ test('refuses oversized pinned instruction bytes',()=>{
   assert.throws(()=>pinnedReplacementInstructions(x.skills),/InvalidSkillsRelease/);
  }finally{fs.rmSync(x.root,{recursive:true,force:true});}
 });
+
+test('direct profile is derived from verified selected content, never release version',async()=>{
+ const {pinnedReplacementProfile}=await import('./pinned-replacement-skill.mjs');
+ assert.equal(typeof pinnedReplacementProfile,'function');
+ const x=fixture();try{
+  assert.throws(()=>pinnedReplacementProfile({...x.skills,tag:'skills-v99.0.0'}),/InvalidSkillsRelease/);
+  fs.appendFileSync(path.join(x.folder,'SKILL.md'),'\nreplacement-contract: direct-v2\n');
+  assert.equal(pinnedReplacementProfile(x.skills),'direct-v2');
+  fs.appendFileSync(path.join(x.folder,'SKILL.md'),'replacement-contract: direct-v3\n');
+  assert.throws(()=>pinnedReplacementProfile(x.skills),/InvalidSkillsRelease/);
+ }finally{fs.rmSync(x.root,{recursive:true,force:true});}
+});
+test('checked-in candidate skill selects the native direct contract through bounded loader',async()=>{
+ const {pinnedReplacementProfile}=await import('./pinned-replacement-skill.mjs');
+ assert.equal(typeof pinnedReplacementProfile,'function');
+ const skills={path:fs.realpathSync(new URL('../../agent-skills',import.meta.url)),tag:'skills-v0.5.0',commitSHA:'a'.repeat(40)};
+ assert.equal(pinnedReplacementProfile(skills),'direct-v2');
+});

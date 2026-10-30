@@ -11,7 +11,7 @@ import (
 	"net/url"
 )
 
-// MCP is a transport over the same read dispatcher as the HTTP endpoints.
+// MCP exposes fixed read and command dispatchers; proxy reads are MCP-only.
 // Raw handlers validate JSON explicitly; SDK tool visibility is not authorization.
 func newMCPHandler(op operations) http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "infra-api", Version: "0.1.0"}, nil)
@@ -46,6 +46,31 @@ func newMCPHandler(op operations) http.Handler {
 				return mcpFailure("ProviderUnavailable"), nil
 			}
 			return &mcp.CallToolResult{StructuredContent: envelope, Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil
+		})
+	}
+	for _, name := range []string{"proxy_observation_get", "proxy_pgcat_metrics_get"} {
+		field, options := proxyReadOptions(name)
+		fields := []string{"requestId", "envCode", "proxyCode", "groupId", "serverGroupId", field}
+		props := map[string]any{}
+		for _, key := range fields {
+			props[key] = map[string]any{"type": "string", "minLength": 1, "maxLength": 256}
+		}
+		props[field].(map[string]any)["enum"] = options
+		server.AddTool(&mcp.Tool{Name: name, Description: "Read one fixed observation for a request-bound registered proxy", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}, InputSchema: map[string]any{"type": "object", "properties": props, "required": fields, "additionalProperties": false}}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			args, err := decodeSelectors(r.Params.Arguments)
+			if err != nil {
+				return mcpFailure("InvalidInput"), nil
+			}
+			data, err := op.proxyRead(ctx, name, args)
+			if err != nil {
+				return mcpFailure(err.Error()), nil
+			}
+			envelope := map[string]any{"data": data}
+			raw, err := json.Marshal(envelope)
+			if err != nil {
+				return mcpFailure("ProviderUnavailable"), nil
+			}
+			return &mcp.CallToolResult{StructuredContent: envelope, Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}}}, nil
 		})
 	}
 	// Only explicitly configured command servers expose mutation tools.

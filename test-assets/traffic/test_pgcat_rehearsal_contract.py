@@ -136,6 +136,22 @@ class RehearsalContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fresh_provider_source(self.contract, self.run_id, self.inventory)
 
+    def test_provider_source_explicit_native_mode_preserves_legacy_and_byte_checks(self):
+        from pgcat_rehearsal_contract import fresh_provider_source
+        self.assertEqual(fresh_provider_source(self.contract,self.run_id,self.inventory)['sequence'],1)
+        self.inventory_data['mode']='full-replacement-direct-v2'
+        raw=json.dumps(self.inventory_data,sort_keys=True,separators=(',',':')).encode('ascii')
+        self.inventory.write_bytes(raw)
+        sidecar=json.loads(self.sidecar.read_text())
+        sidecar.update(inventorySha256=hashlib.sha256(raw).hexdigest(),inventorySemanticSha256=hashlib.sha256(raw).hexdigest())
+        self.sidecar.write_text(json.dumps(sidecar))
+        with self.assertRaises(ValueError):fresh_provider_source(self.contract,self.run_id,self.inventory)
+        self.assertEqual(fresh_provider_source(self.contract,self.run_id,self.inventory,mode='full-replacement-direct-v2')['sequence'],1)
+        for mode in ('unknown',None,True):
+            with self.assertRaises(ValueError):fresh_provider_source(self.contract,self.run_id,self.inventory,mode=mode)
+        sidecar['inventorySha256']='f'*64;self.sidecar.write_text(json.dumps(sidecar))
+        with self.assertRaises(ValueError):fresh_provider_source(self.contract,self.run_id,self.inventory,mode='full-replacement-direct-v2')
+
     def test_cross_run_and_symlinked_context_refuse(self):
         from pgcat_rehearsal_contract import fresh_provider_source
         with self.assertRaises(ValueError):
@@ -549,6 +565,631 @@ class RehearsalContractTests(unittest.TestCase):
         frame['inventory']['memberStates'][0]['addressKnown'] = True
         _pending_fleet(frame, {'originals': [{'id': 'i-a'}, {'id': 'i-b'}],
                                'receipt': {'feedSession': self.session}}, 'i-0')
+
+
+    def _reconcile_fixture(self):
+        self.__dict__.pop('_reconcile_kubectl', None)
+        import pgcat_pending_proof_worker as pending_proof
+        roster = self._finished_pending_source()
+        self.pending_binding = pending_proof.produce(self.contract, self.run_id,
+            kubectl=self._kubectl, live_roster=lambda: roster, now=lambda: 128.5)
+        self._advance_provider(20, 220.0)
+        self.close_context = dict(feedSession=self.session, sequence=20, observedAt=220.0,
+            scaleinRequestId=str(uuid.uuid4()), scaleinAcknowledgedAt=219.0,
+            pendingBindingSha256=hashlib.sha256(json.dumps(self.pending_binding,
+                sort_keys=True, separators=(',', ':'), allow_nan=False).encode('ascii')).hexdigest())
+        self.reconcile_calls = []
+        self.patch_failure = False
+        self.readback_failure = False
+
+    def _reconcile_kubectl(self, *args):
+        self.assertEqual(os.environ.get('KUBECONFIG'), str(self.kubeconfig))
+        self.reconcile_calls.append(args)
+        if args[0] == 'patch':
+            self.assertEqual(args[:5], ('patch', 'configmap', 'pgcat-provider-inventory', '--type=merge', '-p'))
+            self.assertEqual(args[6:], ('-o', 'json'))
+            self.assertEqual(len(args), 8)
+            body = json.loads(args[5])
+            self.assertEqual(set(body), {'metadata', 'data'})
+            self.assertEqual(body['metadata'], {'uid': 'cm-uid', 'resourceVersion': self.cm['metadata']['resourceVersion']})
+            self.assertEqual(set(body['data']), {'targets.json'})
+            self.assertTrue((self.contract / 'reconcile-close.intent').is_file())
+            if self.patch_failure:
+                raise RuntimeError('private patch failure 10.0.0.3')
+            self.cm['data'] = body['data']
+            self.cm['metadata']['resourceVersion'] = str(int(self.cm['metadata']['resourceVersion']) + 1)
+        else:
+            self.assertEqual(args, ('get', 'configmap', 'pgcat-provider-inventory', '-o', 'json'))
+            if self.readback_failure and len(self.reconcile_calls) > 1:
+                raise RuntimeError('private readback failure 10.0.0.3')
+        return copy.deepcopy(self.cm)
+
+    def _reconcile(self, **kwargs):
+        from pgcat_rehearsal_contract import reconcile_close
+        return reconcile_close(self.contract, self.run_id, self.target,
+            self.pending_binding, self.close_context, kubectl=self._reconcile_kubectl,
+            clock=kwargs.get('clock', lambda: 220.5))
+
+    def _reseal(self, name, value):
+        raw = (json.dumps(value, sort_keys=True, allow_nan=False) + '\n').encode('ascii')
+        (self.contract / name).write_bytes(raw)
+        (self.contract / (name + '.sha256')).write_text(json.dumps({'sha256': hashlib.sha256(raw).hexdigest()}))
+
+    def _rewrite_current_inventory(self, change):
+        value = json.loads(self.inventory.read_text())
+        change(value)
+        raw = json.dumps(value, separators=(',', ':')).encode('ascii')
+        self.inventory.write_bytes(raw)
+        sidecar = json.loads((self.source / '000020.json').read_text())
+        sidecar.update(inventorySha256=hashlib.sha256(raw).hexdigest(),
+            inventorySemanticSha256=hashlib.sha256(json.dumps(value, sort_keys=True,
+                separators=(',', ':')).encode('ascii')).hexdigest())
+        (self.source / '000020.json').write_text(json.dumps(sidecar))
+
+    def test_reconcile_exact_patch_readback_seal_and_old_pending_equal_live_rv(self):
+        self._reconcile_fixture()
+        self.assertGreater(220.5 - self.pending_binding['observedAt'], 30)
+        self.assertEqual(self.cm['metadata']['resourceVersion'], self.pending_binding['resourceVersion'])
+        with patch('pgcat_rehearsal_contract.proof.verified_frames', side_effect=AssertionError('capture must not be read')):
+            self.assertEqual(self._reconcile(), dict(feedSession=self.session, sequence=20, resourceVersion='12'))
+        self.assertEqual([call[0] for call in self.reconcile_calls], ['get', 'patch', 'get'])
+        expected = [{'targets': [address + ':9930'], 'labels': dict(env='rdev.ali',
+            db_proxy_code='DP00001', target_db_code='D00002', ecs_instance_id=node)}
+            for node, address in self.originals]
+        self.assertEqual(json.loads(self.cm['data']['targets.json']), expected)
+        from pgcat_rehearsal_contract import _directory, _sealed_read
+        fd = _directory(self.contract)
+        try:
+            sealed = _sealed_read(fd, 'reconcile-close.json')
+        finally:
+            os.close(fd)
+        self.assertEqual(sealed['runId'], self.run_id)
+        self.assertEqual(sealed['closeContext'], self.close_context)
+        self.assertEqual(sealed['oldResourceVersion'], '11')
+        self.assertEqual(sealed['resourceVersion'], '12')
+        self.assertEqual(sealed['newTargetsSha256'], hashlib.sha256(json.dumps(expected,
+            sort_keys=True, separators=(',', ':')).encode('ascii')).hexdigest())
+        with self.assertRaises(ValueError):
+            self._reconcile()
+        self.assertEqual(sum(call[0] == 'patch' for call in self.reconcile_calls), 1)
+
+    def test_reconcile_default_helper_uses_fixed_namespace_bounded_json_subprocess(self):
+        self._reconcile_fixture()
+        import pgcat_rehearsal_contract as contract
+        def fake_run(argv, **kwargs):
+            self.assertEqual(argv[:3], ['kubectl', '-n', 'raptor-test'])
+            self.assertEqual(kwargs['timeout'], 3)
+            self.assertEqual(set(kwargs), {'stdout', 'stderr', 'timeout'})
+            value = self._reconcile_kubectl(*argv[3:])
+            return type('Result', (), dict(returncode=0,
+                stdout=json.dumps(value).encode('ascii'), stderr=b'private diagnostic'))()
+        with patch.object(contract.worker_capture.subprocess, 'run', side_effect=fake_run):
+            result = contract.reconcile_close(self.contract, self.run_id, self.target,
+                self.pending_binding, self.close_context, clock=lambda: 220.5)
+        self.assertEqual(result, dict(feedSession=self.session, sequence=20, resourceVersion='12'))
+        self.assertEqual([call[0] for call in self.reconcile_calls], ['get', 'patch', 'get'])
+
+    def test_reconcile_accepts_live_version_newer_than_pending_and_uses_live_precondition(self):
+        self._reconcile_fixture()
+        self.cm['metadata']['resourceVersion'] = '15'
+        self.assertEqual(self._reconcile()['resourceVersion'], '16')
+        body = json.loads(self.reconcile_calls[1][5])
+        self.assertEqual(body['metadata']['resourceVersion'], '15')
+        sealed = json.loads((self.contract / 'reconcile-close.json').read_text())
+        self.assertEqual(sealed['oldResourceVersion'], '15')
+
+    def test_reconcile_refuses_publication_advance_during_live_get_before_patch(self):
+        self._reconcile_fixture()
+        real = self._reconcile_kubectl
+        def advance(*args):
+            result = real(*args)
+            self._advance_provider(21, 220.2)
+            return result
+        self._reconcile_kubectl = advance
+        with self.assertRaises(ValueError): self._reconcile()
+        self.assertEqual([call[0] for call in self.reconcile_calls], ['get'])
+        self.assertFalse((self.contract / 'reconcile-close.intent').exists())
+
+    def test_reconcile_refuses_summary_bundle_input_or_source_hash_mismatch(self):
+        for case in ('summary', 'bundle-run', 'input', 'source'):
+            with self.subTest(case=case):
+                self.setUp(); self._reconcile_fixture()
+                if case == 'summary':
+                    self.pending_binding['newId'] = 'wrong'
+                elif case == 'input':
+                    value = json.loads((self.contract / 'pending-ready.json').read_text())
+                    value['address'] = '10.0.0.99'
+                    self._reseal('pending-ready.json', value)
+                else:
+                    bundle = json.loads((self.contract / 'pending-proof.bundle.json').read_text())
+                    if case == 'bundle-run':
+                        bundle['runId'] = str(uuid.uuid4())
+                    else:
+                        bundle['summary']['sourceSha256'] = '0' * 64
+                        self.pending_binding['sourceSha256'] = '0' * 64
+                    self._reseal('pending-proof.bundle.json', bundle)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(self.reconcile_calls, [])
+
+    def test_reconcile_refuses_context_types_sequence_time_digest_and_ack_order(self):
+        changes = [dict(sequence=19), dict(sequence=21), dict(sequence=True),
+            dict(observedAt=219.9), dict(observedAt=float('nan')),
+            dict(scaleinAcknowledgedAt=220.0), dict(scaleinAcknowledgedAt=True),
+            dict(scaleinRequestId='bad'), dict(feedSession=str(uuid.uuid4())),
+            dict(pendingBindingSha256='0' * 64), dict(extra='forbidden')]
+        for change in changes:
+            with self.subTest(change=change):
+                self.setUp(); self._reconcile_fixture(); self.close_context.update(change)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(self.reconcile_calls, [])
+
+    def test_reconcile_refuses_stale_future_or_nonfinite_current_clock(self):
+        for stamp in (250.0, 218.9, float('nan'), True):
+            with self.subTest(stamp=stamp):
+                self.setUp(); self._reconcile_fixture()
+                with self.assertRaises(ValueError): self._reconcile(clock=lambda: stamp)
+                self.assertEqual(self.reconcile_calls, [])
+
+    def test_reconcile_refuses_wrong_current_fleet_protection_or_backend(self):
+        changes = [lambda v: v.update(desired=3),
+            lambda v: v['memberStates'][0].update(lifecycle='InService'),
+            lambda v: v['memberStates'][0].update(health='Unhealthy'),
+            lambda v: v['backendStates'][0].update(weight=0),
+            lambda v: v['backendStates'][0].update(status='Removing'),
+            lambda v: v.update(healthyRegistered=['i-a'])]
+        for change in changes:
+            with self.subTest(change=change):
+                self.setUp(); self._reconcile_fixture(); self._rewrite_current_inventory(change)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(self.reconcile_calls, [])
+
+    def test_reconcile_refuses_changed_configmap_identity_version_or_data(self):
+        for case in ('uid', 'name', 'namespace', 'deletion', 'rv', 'rv-type',
+                     'extra-key', 'address', 'labels', 'port', 'row-key', 'already-two', 'duplicate'):
+            with self.subTest(case=case):
+                self.setUp(); self._reconcile_fixture()
+                meta = self.cm['metadata']; rows = json.loads(self.cm['data']['targets.json'])
+                if case in ('uid', 'name', 'namespace'): meta[case] = 'changed'
+                elif case == 'deletion': meta['deletionTimestamp'] = 'now'
+                elif case == 'rv': meta['resourceVersion'] = '10'
+                elif case == 'rv-type': meta['resourceVersion'] = 11
+                elif case == 'extra-key': self.cm['data']['unexpected'] = 'x'
+                elif case == 'address': rows[-1]['targets'] = ['10.0.0.99:9930']
+                elif case == 'labels': rows[-1]['labels']['env'] = 'other'
+                elif case == 'port': rows[-1]['targets'] = ['10.0.0.3:9931']
+                elif case == 'row-key': rows[-1]['extra'] = 'x'
+                elif case == 'already-two': rows = rows[:2]
+                elif case == 'duplicate': rows[-1] = rows[0]
+                self.cm['data']['targets.json'] = json.dumps(rows)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual([call[0] for call in self.reconcile_calls], ['get'])
+
+    def test_reconcile_duplicate_intent_and_patch_or_readback_failure_never_retry(self):
+        for case in ('intent', 'patch', 'readback'):
+            with self.subTest(case=case):
+                self.setUp(); self._reconcile_fixture()
+                if case == 'intent':
+                    path = self.contract / 'reconcile-close.intent'
+                    path.write_text('{}'); path.chmod(0o600)
+                self.patch_failure = case == 'patch'; self.readback_failure = case == 'readback'
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertFalse((self.contract / 'reconcile-close.json').exists())
+                before = sum(call[0] == 'patch' for call in self.reconcile_calls)
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(sum(call[0] == 'patch' for call in self.reconcile_calls), before)
+
+    def test_reconcile_readback_requires_newer_version_and_exact_complete_targets(self):
+        for case in ('unchanged-rv', 'uid', 'data', 'extra-key'):
+            with self.subTest(case=case):
+                self.setUp(); self._reconcile_fixture()
+                real = self._reconcile_kubectl
+                def bad_readback(*args):
+                    result = real(*args)
+                    if args[0] == 'get' and len(self.reconcile_calls) == 3:
+                        if case == 'unchanged-rv': result['metadata']['resourceVersion'] = '11'
+                        elif case == 'uid': result['metadata']['uid'] = 'changed'
+                        elif case == 'extra-key': result['data']['extra'] = 'forbidden'
+                        else: result['data']['targets.json'] = '[]'
+                    return result
+                self._reconcile_kubectl = bad_readback
+                with self.assertRaises(ValueError): self._reconcile()
+                self.assertEqual(sum(call[0] == 'patch' for call in self.reconcile_calls), 1)
+                self.assertFalse((self.contract / 'reconcile-close.json').exists())
+
+    def _post_fixture(self):
+        import shutil,pgcat_collector_control as collector,pgcat_rehearsal_contract as contract
+        from segmented_capture import SegmentedCapture,canonical
+        self._reconcile_fixture();self._reconcile()
+        self._advance_provider(21,222.0)
+        self.post_ticks=[10.0]
+        self.post_hashes={}
+        for key,name in collector.SOURCES.items():
+            raw=(Path(__file__).parent/name).read_bytes()
+            destination=self.run/name;destination.write_bytes(raw);destination.chmod(0o600)
+            self.post_hashes[key]=hashlib.sha256(raw).hexdigest()
+        self.post_identity=dict(pid=123,bootId='boot',startTicks=456,commandSha256='e'*64)
+        job=self.run/'collector-job';job.mkdir(mode=0o700)
+        def private(path,value):
+            path.write_bytes(canonical(value));path.chmod(0o600)
+        private(job/'intent.json',dict(runId=self.run_id,startedAt=123,profile='disabled-rehearsal'))
+        private(job/'claim.json',dict(runId=self.run_id));private(job/'identity.json',self.post_identity)
+        self.post_baseline=json.loads((self.contract/'baseline.json').read_text())
+        context=dict(schemaVersion=1,runId=self.run_id,feedSession=self.session,
+            providerRunContextSha256=hashlib.sha256(self.raw).hexdigest(),bundleSha256='b'*64,
+            sourceHashes=self.post_hashes,baselineSha256=hashlib.sha256((self.contract/'baseline.json').read_bytes()).hexdigest(),
+            originalRoster=self.post_baseline['roster'],deployment=self.post_baseline['deployment'],collectorIdentity=self.post_identity)
+        shutil.rmtree(self.run/'rehearsal-capture')
+        self.post_writer=SegmentedCapture(self.run/'rehearsal-capture',progress_context=context)
+        def close_writer():
+            if self.post_writer.progress_fd is not None:
+                os.close(self.post_writer.progress_fd);self.post_writer.progress_fd=None
+        self.addCleanup(close_writer)
+        self.post_frames=[self._post_frame(222),self._post_frame(223)]
+        for frame in self.post_frames:self.post_writer.append(frame)
+        reconcile=json.loads((self.contract/'reconcile-close.json').read_text())
+        binding=dict(feedSession=self.session,sequence=20,resourceVersion=reconcile['resourceVersion'],requestId=str(uuid.uuid4()),
+            runId=self.run_id,scaleinRequestId=self.close_context['scaleinRequestId'],pendingBindingSha256=self.close_context['pendingBindingSha256'],
+            sourceSha256=self.post_hashes['rehearsalContract'],sealedAt=221.0)
+        inv=json.loads(self.inventory.read_text())
+        receipt={key:inv[key] for key in ('feedSession','sequence','mode','desired','observedAt')}
+        receipt['rosterSha256']=hashlib.sha256(canonical({key:inv[key] for key in ('members','healthyRegistered','memberStates','backendStates')})).hexdigest()
+        self.post_context=dict(schemaVersion=1,requestId=str(uuid.uuid4()),stopProofSha256='a'*64,receipt=receipt,reconcileBinding=binding,collectorIdentity=self.post_identity)
+        self.post_actions=[];self.post_boundary_change=None;self.post_final_change=None
+
+    def _post_frame(self,t,final=False):
+        from test_segmented_capture import witness_frame
+        frame=witness_frame(t,n=int(t),finals=(0,1) if final else ())
+        frame['inventory']=json.loads(self.inventory.read_text())
+        frame['metrics']['nodes']=['i-a','i-b']
+        for row in frame['metrics']['raw']:row['node']='i-'+row['node']
+        for pod,row in zip(frame['pods'],self.post_baseline['roster']):
+            pod.update({key:row[key] for key in ('name','uid','containerId')})
+            pod['snapshot']['sample']['processId']=row['processId']
+            for event in pod['snapshot']['events']:event['processId']=row['processId']
+        return frame
+
+    def _post_finish_io(self,path,expected_replicas=2,expected_roster=None,**kw):
+        from segmented_capture import canonical,sha,publish_private,open_directory
+        self.post_actions.append((expected_roster,kw))
+        self.assertTrue((self.contract/'post-stop-finish.intent').exists())
+        self.assertEqual(expected_roster,self.post_baseline['roster'])
+        self.assertEqual(kw,dict(deadline=14.0,kubeconfig=str(self.kubeconfig)))
+        fd=open_directory(path)
+        try:
+            request=dict(requestId='f'*32,roster=expected_roster)
+            request_raw=publish_private(fd,'request.json',request);publish_private(fd,'ack.json',request)
+            start=dict(schemaVersion=1,bindingSha256=self.post_writer.progress['bindingSha256'],requestSha256=sha(request_raw),requestId=request['requestId'],
+                originalRosterSha256=sha(canonical(expected_roster)),startedMonotonic=10.1,deadlineMonotonic=15.1,firstSettlingFrame=None)
+            final=self._post_frame(224,True)
+            if self.post_final_change:self.post_final_change(final)
+            self.post_writer.append(final);start['firstSettlingFrame']=self.post_writer.progress['latest']
+            start_raw=publish_private(fd,'boundary-start.json',start)
+            receipt=dict(requestId=request['requestId'],status='ACKNOWLEDGED',clients={r['uid']+'/'+r['processId']:{'status':'acknowledged'} for r in expected_roster})
+            receipt_raw=publish_private(fd,'receipt.json',receipt)
+            completed=dict(schemaVersion=1,bindingSha256=start['bindingSha256'],requestSha256=sha(request_raw),requestId=request['requestId'],
+                startSha256=sha(start_raw),receiptSha256=sha(receipt_raw),finalDurableMonotonic=10.3,
+                finals=[dict(uid=r['uid'],processId=r['processId'],frame=self.post_writer.final_refs[(r['uid'],r['processId'])]) for r in expected_roster],lastFrame=self.post_writer.progress['latest'])
+            if self.post_boundary_change:self.post_boundary_change(start,completed,receipt)
+            publish_private(fd,'boundary-completed.json',completed)
+            self.post_ticks[0]=10.4
+            return receipt
+        finally:os.close(fd)
+
+    def _post(self,**kw):
+        import pgcat_rehearsal_contract as contract
+        def read(*args,**options):
+            self.assertEqual(options,dict(deadline=14.0,kubeconfig=str(self.kubeconfig)))
+            return self._kubectl(*args)
+        with patch('pgcat_collector_control.process_identity',return_value=self.post_identity),patch.object(contract.finish_clients,'finish',side_effect=kw.pop('finish',self._post_finish_io)),patch.object(contract.finish_clients,'live_roster',return_value=self.post_baseline['roster']),patch.object(contract.time,'monotonic',side_effect=lambda:self.post_ticks[0]):
+            return contract.post_stop_finish(self.contract,self.run_id,self.target,self.post_context,source_hashes=self.post_hashes,
+                kubectl=kw.pop('kubectl',read),clock=kw.pop('clock',lambda:224.5),monotonic=lambda:self.post_ticks[0],**kw)
+
+    def test_post_exact_original_boundary_sealed_once_without_whole_archive(self):
+        self._post_fixture()
+        with patch('pgcat_rehearsal_contract.proof.verified_frames',side_effect=AssertionError('whole scan forbidden')):
+            result=self._post()
+        self.assertEqual(set(result),{'feedSession','sequence','boundaryRequestId','boundarySha256','evidenceSha256','sourceSha256'})
+        self.assertEqual(result['sequence'],21);self.assertEqual(result['boundaryRequestId'],'f'*32)
+        self.assertEqual(result['boundarySha256'],hashlib.sha256((self.boundary/'boundary-completed.json').read_bytes()).hexdigest())
+        self.assertEqual(result['evidenceSha256'],hashlib.sha256((self.contract/'post-stop-finish.json').read_bytes()).hexdigest())
+        with self.assertRaises(ValueError):self._post()
+        self.assertEqual(len(self.post_actions),1)
+
+    def test_post_context_source_provider_child_and_cm_refuse_before_intent(self):
+        for case in ('extra','bool','request','proof','receipt-sequence','receipt-hash','receipt-mode','receipt-time','binding-source','binding-run','binding-session','binding-sequence','binding-rv','binding-pending','binding-scalein','binding-time','source-map','source-bytes','child','dead-child','exit','cm-uid','cm-rv','cm-data','provider'):
+            with self.subTest(case=case):
+                self.setUp();self._post_fixture()
+                context=self.post_context
+                if case=='extra':context['extra']=True
+                elif case=='bool':context['schemaVersion']=True
+                elif case=='request':context['requestId']='bad'
+                elif case=='proof':context['stopProofSha256']='bad'
+                elif case=='receipt-sequence':context['receipt']['sequence']=20
+                elif case=='receipt-hash':context['receipt']['rosterSha256']='0'*64
+                elif case=='receipt-mode':context['receipt']['mode']='live'
+                elif case=='receipt-time':context['receipt']['observedAt']=221
+                elif case.startswith('binding-'):
+                    key={'source':'sourceSha256','run':'runId','session':'feedSession','sequence':'sequence','rv':'resourceVersion','pending':'pendingBindingSha256','scalein':'scaleinRequestId','time':'sealedAt'}[case[8:]]
+                    context['reconcileBinding'][key]=222 if key=='sealedAt' else (21 if key=='sequence' else 'wrong')
+                elif case=='source-map':self.post_hashes.pop('collectorControl')
+                elif case=='source-bytes':(self.run/'finish_clients.py').write_text('changed')
+                elif case=='child':context['collectorIdentity']=dict(self.post_identity,startTicks=457)
+                elif case=='dead-child':self.post_identity=None
+                elif case=='exit':(self.run/'collector-job'/'exit.json').write_text('{}')
+                elif case=='cm-uid':self.cm['metadata']['uid']='changed'
+                elif case=='cm-rv':self.cm['metadata']['resourceVersion']='13'
+                elif case=='cm-data':self.cm['data']['targets.json']='[]'
+                else:self.inventory.write_bytes(b'{}')
+                with self.assertRaises(ValueError):self._post()
+                self.assertFalse((self.contract/'post-stop-finish.intent').exists());self.assertEqual(self.post_actions,[])
+
+    def test_post_sticky_flags_tail_sql_metrics_and_roster_refuse(self):
+        from segmented_capture import publish_private
+        for case in ('pollError','identityChanged','sqlFailure','skipped','invalidEvidence','gap','partial','tamper','nonadvance','adverse','metrics','stale-metrics','roster'):
+            with self.subTest(case=case):
+                self.setUp();self._post_fixture()
+                progress=self.post_writer.progress
+                if case in progress['flags']:
+                    progress['flags'][case]=True;publish_private(self.post_writer.progress_fd,'progress.json',progress,replace=True)
+                elif case=='gap':
+                    progress['maxGapSeconds']=4;publish_private(self.post_writer.progress_fd,'progress.json',progress,replace=True)
+                elif case in ('partial','tamper'):
+                    path=self.run/'rehearsal-capture'/progress['latest']['basename']
+                    if case=='partial':
+                        with path.open('ab') as stream:stream.write(b'{')
+                    else:
+                        raw=path.read_bytes();path.write_bytes(raw.replace(b'"Success":',b'"Succexx":',1))
+                else:
+                    f=self._post_frame(224)
+                    if case=='nonadvance':
+                        for pod in f['pods']:
+                            previous=self.post_frames[-1]['pods'][f['pods'].index(pod)]['snapshot']['sample']
+                            pod['snapshot']['sample'].update({key:previous[key] for key in ('Success','Attempts','Scheduled')})
+                    elif case=='adverse':f['pods'][0]['snapshot']['sample']['Failure']=1
+                    elif case=='metrics':f['metrics']['raw']=[]
+                    elif case=='stale-metrics':f['metrics']['observedAt']=200
+                    else:f['pods'][0]['containerId']='changed'
+                    self.post_writer.append(f)
+                with self.assertRaises(ValueError):self._post()
+                self.assertEqual(self.post_actions,[])
+
+    def test_post_exact_boundary_hashes_finals_and_deadlines_refuse_consumed_intent(self):
+        for case in ('request','start','receipt','binding','late','final','missing','timeout','uncertain'):
+            with self.subTest(case=case):
+                self.setUp();self._post_fixture()
+                def alter(start,completed,receipt):
+                    if case in ('request','start','receipt','binding'):completed[{'request':'requestSha256','start':'startSha256','receipt':'receiptSha256','binding':'bindingSha256'}[case]]='0'*64
+                    elif case=='late':completed['finalDurableMonotonic']=15.2
+                    elif case=='final':completed['finals'][0]['uid']='foreign'
+                self.post_boundary_change=alter
+                def helper(*a,**kw):
+                    result=self._post_finish_io(*a,**kw)
+                    if case=='missing':(self.boundary/'boundary-completed.json').unlink();self.post_ticks[0]=14
+                    elif case=='timeout':self.post_ticks[0]=14
+                    elif case=='uncertain':result['status']='INCONCLUSIVE'
+                    return result
+                with self.assertRaises(ValueError):self._post(finish=helper)
+                self.assertTrue((self.contract/'post-stop-finish.intent').exists())
+                self.assertFalse((self.contract/'post-stop-finish.json').exists())
+                with self.assertRaises(ValueError):self._post()
+                self.assertEqual(len(self.post_actions),1)
+
+    def test_post_shared_budget_rejects_after_blocking_read_before_finish(self):
+        self._post_fixture();calls=[]
+        def slow(*a,**kw):
+            calls.append(a);self.post_ticks[0]+=3
+            return self._kubectl(*a)
+        with self.assertRaises(ValueError):self._post(kubectl=slow)
+        self.assertEqual(self.post_actions,[]);self.assertLessEqual(len(calls),2)
+
+    def test_post_clean_progress_flag_cannot_hide_actual_adverse_sql_events(self):
+        from segmented_capture import publish_private
+        self._post_fixture()
+        frame=self._post_frame(224)
+        event=next(e for e in reversed(frame['pods'][0]['snapshot']['events']) if e['kind']=='operation')
+        event['outcome']='failure'
+        self.post_writer.append(frame)
+        self.post_writer.progress['flags']={key:False for key in self.post_writer.progress['flags']}
+        publish_private(self.post_writer.progress_fd,'progress.json',self.post_writer.progress,replace=True)
+        with self.assertRaises(ValueError):self._post()
+        self.assertEqual(self.post_actions,[])
+
+    def test_post_final_counter_reset_or_wrong_final_provider_never_completes(self):
+        for case in ('counter-reset','provider','deployment','sample-type','events','connected','scheduled'):
+            with self.subTest(case=case):
+                self.setUp();self._post_fixture()
+                def mutate(frame):
+                    sample=frame['pods'][0]['snapshot']['sample']
+                    if case=='counter-reset':sample.update(Success=0,Attempts=0,Scheduled=0)
+                    elif case=='provider':frame['inventory']['sequence']=20
+                    elif case=='deployment':frame['deployment']['uid']='foreign'
+                    elif case=='sample-type':sample['Skipped']=False
+                    elif case=='events':next(e for e in reversed(frame['pods'][0]['snapshot']['events']) if e['kind']=='operation')['outcome']='failure'
+                    elif case=='connected':frame['pods'][0]['snapshot']['connected']=1
+                    else:sample['Scheduled']+=1
+                self.post_final_change=mutate
+                with self.assertRaises(ValueError):self._post()
+                self.assertTrue((self.contract/'post-stop-finish.intent').exists());self.assertFalse((self.contract/'post-stop-finish.json').exists())
+
+    def test_post_changed_sealed_input_after_finish_refuses_durable_success(self):
+        self._post_fixture()
+        def change(*a,**kw):
+            result=self._post_finish_io(*a,**kw)
+            value=json.loads((self.contract/'baseline.json').read_text());value['roster'][0]['processId']='changed'
+            self._reseal('baseline.json',value)
+            return result
+        with self.assertRaises(ValueError):self._post(finish=change)
+        self.assertTrue((self.contract/'post-stop-finish.intent').exists());self.assertFalse((self.contract/'post-stop-finish.json').exists())
+
+    def test_post_reconcile_independent_session_and_intent_must_match(self):
+        for case in ('close-session','intent','provider-sequence','pending-run'):
+            with self.subTest(case=case):
+                self.setUp();self._post_fixture()
+                value=json.loads((self.contract/'reconcile-close.json').read_text())
+                if case=='close-session':value['closeContext']['feedSession']=str(uuid.uuid4())
+                elif case=='provider-sequence':value['providerSource']['sequence']=19
+                elif case=='pending-run':value['pendingBinding']['runId']=str(uuid.uuid4())
+                else:(self.contract/'reconcile-close.intent').write_text('{}')
+                self._reseal('reconcile-close.json',value)
+                with self.assertRaises(ValueError):self._post()
+                self.assertEqual(self.post_actions,[])
+
+    def test_post_original_child_context_types_are_strict(self):
+        self._post_fixture()
+        self.post_identity['pid']=1
+        path=self.run/'collector-job'/'identity.json';path.write_text(json.dumps(self.post_identity))
+        context=json.loads((self.run/'rehearsal-capture'/'progress-binding.json').read_text())
+        context['collectorIdentity']['pid']=1
+        # Rebind a legitimate retained PID1, then submit a bool-valued assertion.
+        from segmented_capture import publish_private,canonical,sha
+        raw=publish_private(self.post_writer.progress_fd,'progress-binding.json',context,replace=True)
+        self.post_writer.progress['bindingSha256']=sha(raw)
+        publish_private(self.post_writer.progress_fd,'progress.json',self.post_writer.progress,replace=True)
+        self.post_context['collectorIdentity']=dict(self.post_identity,pid=True)
+        with self.assertRaises(ValueError):self._post()
+        self.assertEqual(self.post_actions,[])
+
+    def test_post_latest_boundary_frame_must_still_show_both_original_finals(self):
+        self._post_fixture()
+        def mutate(start,completed,receipt):
+            from segmented_capture import read_frame
+            frame=read_frame(self.post_writer.progress_fd,completed['lastFrame'])
+            frame['at']=225
+            frame['pods'][0]['snapshot']['final']=False
+            self.post_writer.append(frame)
+            completed['lastFrame']=self.post_writer.progress['latest']
+        self.post_boundary_change=mutate
+        with self.assertRaises(ValueError):self._post()
+        self.assertTrue((self.contract/'post-stop-finish.intent').exists());self.assertFalse((self.contract/'post-stop-finish.json').exists())
+
+    def test_post_freshness_is_checked_after_durable_result_write(self):
+        self._post_fixture()
+        import pgcat_rehearsal_contract as contract
+        real=contract._sealed_write;clock=[224.5]
+        def delayed(fd,name,value):
+            real(fd,name,value)
+            if name=='post-stop-finish.json':clock[0]=252.0
+        with patch.object(contract,'_sealed_write',side_effect=delayed):
+            with self.assertRaises(ValueError):self._post(clock=lambda:clock[0])
+        self.assertTrue((self.contract/'post-stop-finish.intent').exists())
+
+    def test_post_clean_progress_cannot_hide_adverse_tail_after_final_markers(self):
+        self._post_fixture()
+        def mutate(start,completed,receipt):
+            from segmented_capture import read_frame,publish_private
+            frame=read_frame(self.post_writer.progress_fd,completed['lastFrame']);frame['at']=225
+            event=next(e for e in reversed(frame['pods'][0]['snapshot']['events']) if e['kind']=='operation')
+            event.update(outcome='failure',sequence=event['sequence']+1,at=225)
+            self.post_writer.append(frame)
+            self.assertTrue(any(e.get('outcome')=='failure' for e in read_frame(self.post_writer.progress_fd,self.post_writer.progress['latest'])['pods'][0]['snapshot']['events']))
+            self.post_writer.progress['flags']={key:False for key in self.post_writer.progress['flags']}
+            publish_private(self.post_writer.progress_fd,'progress.json',self.post_writer.progress,replace=True)
+            completed['lastFrame']=self.post_writer.progress['latest']
+        self.post_boundary_change=mutate
+        with self.assertRaises(ValueError):self._post()
+        self.assertTrue((self.contract/'post-stop-finish.intent').exists());self.assertFalse((self.contract/'post-stop-finish.json').exists())
+
+    def test_post_original_collector_cap_requires_five_seconds_at_finish_dispatch(self):
+        import pgcat_rehearsal_contract as contract
+        for case in ('enough','exact','short','spent-before-dispatch'):
+            with self.subTest(case=case):
+                self.setUp();self._post_fixture()
+                path=self.run/'collector-job'/'intent.json';intent=json.loads(path.read_text())
+                intent['startedAt']=-5171 if case=='short' else -5170
+                path.write_text(json.dumps(intent))
+                current=[225.0 if case=='exact' else 224.5];actual=contract._write_once
+                def write(fd,name,value):
+                    actual(fd,name,value)
+                    if case=='spent-before-dispatch' and name=='post-stop-finish.intent':current[0]=225.2
+                with patch.object(contract,'_write_once',side_effect=write):
+                    if case in ('enough','exact'):self.assertEqual(self._post(clock=lambda:current[0])['sequence'],21)
+                    else:
+                        with self.assertRaises(ValueError):self._post(clock=lambda:current[0])
+                        self.assertEqual(self.post_actions,[])
+
+    def test_post_boundary_directory_replacement_during_readback_refuses(self):
+        self._post_fixture()
+        import segmented_capture as witness
+        actual=witness.read_private;changed=[]
+        def read(fd,name,*args):
+            raw=actual(fd,name,*args)
+            if name=='boundary-completed.json' and not changed:
+                changed.append(True);self.boundary.rename(self.run/'moved-boundary');self.boundary.mkdir(mode=0o700)
+            return raw
+        with patch.object(witness,'read_private',side_effect=read):
+            with self.assertRaises(ValueError):self._post()
+        self.assertTrue((self.contract/'post-stop-finish.intent').exists());self.assertFalse((self.contract/'post-stop-finish.json').exists())
+
+    def test_post_each_private_and_external_phase_refuses_exhausted_budget(self):
+        import pgcat_rehearsal_contract as contract,segmented_capture as witness
+        for phase in ('source','baseline','pending','reconcile','provider','child','progress','configmap','deployment','pods','finish','boundary','frame','final-frame','result'):
+            with self.subTest(phase=phase):
+                self.setUp();self._post_fixture()
+                actual_read=contract._read_at;actual_progress=witness.read_progress;actual_frame=witness.read_frame;actual_boundary=witness.read_private;actual_seal=contract._sealed_write
+                names={'source':'pgcat_rehearsal_worker.py','baseline':'baseline.json','pending':'pending-proof.bundle.json','reconcile':'reconcile-close.json','provider':'run-context.json','child':'identity.json'}
+                def read(fd,name,limit):
+                    value=actual_read(fd,name,limit)
+                    if names.get(phase)==name:self.post_ticks[0]=14
+                    return value
+                def progress(*a):
+                    value=actual_progress(*a)
+                    if phase=='progress':self.post_ticks[0]=14
+                    return value
+                def frame(*a):
+                    value=actual_frame(*a)
+                    if phase=='frame' or (phase=='final-frame' and self.post_actions):self.post_ticks[0]=14
+                    return value
+                def boundary(fd,name,*a):
+                    value=actual_boundary(fd,name,*a)
+                    if phase=='boundary' and name=='boundary-completed.json':self.post_ticks[0]=14
+                    return value
+                def seal(fd,name,value):
+                    actual_seal(fd,name,value)
+                    if phase=='result' and name=='post-stop-finish.json':self.post_ticks[0]=14
+                def kube(*a,**kw):
+                    value=self._kubectl(*a)
+                    if a[1]==phase:self.post_ticks[0]=14
+                    return value
+                def finish(*a,**kw):
+                    value=self._post_finish_io(*a,**kw)
+                    if phase=='finish':self.post_ticks[0]=14
+                    return value
+                with patch.object(contract,'_read_at',side_effect=read),patch.object(witness,'read_progress',side_effect=progress),patch.object(witness,'read_frame',side_effect=frame),patch.object(witness,'read_private',side_effect=boundary),patch.object(contract,'_sealed_write',side_effect=seal):
+                    with self.assertRaises(ValueError):self._post(kubectl=kube,finish=finish)
+                if phase in ('finish','boundary','final-frame','result'):self.assertTrue((self.contract/'post-stop-finish.intent').exists())
+                else:self.assertEqual(self.post_actions,[])
+
+    def test_post_source_authority_uses_private_snapshots_without_direct_self_path_read(self):
+        self._post_fixture()
+        import pgcat_rehearsal_contract as contract
+        original=Path.read_bytes
+        def read(path):
+            if path == Path(contract.__file__):raise AssertionError('unguarded direct module path read')
+            return original(path)
+        with patch.object(Path,'read_bytes',autospec=True,side_effect=read):
+            self.assertEqual(self._post()['sourceSha256'],self.post_hashes['rehearsalContract'])
+
+    def test_post_each_retained_frame_binds_full_original_identity_even_with_cleared_flags(self):
+        from segmented_capture import publish_private,read_progress
+        for position in ('previous','latest'):
+            for field in ('name','containerId'):
+                with self.subTest(position=position,field=field):
+                    self.setUp();self._post_fixture()
+                    frames=[self._post_frame(224),self._post_frame(225)]
+                    frames[0 if position=='previous' else 1]['pods'][0][field]='valid-replacement'
+                    for frame in frames:self.post_writer.append(frame)
+                    self.assertTrue(self.post_writer.progress['flags']['identityChanged'])
+                    self.post_writer.progress['flags']={key:False for key in self.post_writer.progress['flags']}
+                    publish_private(self.post_writer.progress_fd,'progress.json',self.post_writer.progress,replace=True)
+                    progress,previous,latest=read_progress(self.run/'rehearsal-capture',self.post_writer.progress_context)
+                    self.assertFalse(any(progress['flags'].values()))
+                    retained=previous if position=='previous' else latest
+                    self.assertEqual(retained['pods'][0][field],'valid-replacement')
+                    self.assertEqual(retained['pods'][0]['uid'],self.post_baseline['roster'][0]['uid'])
+                    self.assertEqual(retained['pods'][0]['snapshot']['sample']['processId'],self.post_baseline['roster'][0]['processId'])
+                    with self.assertRaises(ValueError):self._post()
+                    self.assertFalse((self.contract/'post-stop-finish.intent').exists())
+                    self.assertEqual(self.post_actions,[])
 
 
 if __name__ == '__main__':

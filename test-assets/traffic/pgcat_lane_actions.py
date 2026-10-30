@@ -5,6 +5,8 @@ are local only; staging and worker-source review remain separate requirements.
 """
 import hashlib
 import json
+import math
+import re
 import os
 from pathlib import Path
 import shlex
@@ -22,6 +24,8 @@ BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerF
     'nlbIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
 SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions','sourceBootstrap','controller','client','runner',
                           'pendingProofWorker','preDrainProofWorker','zeroProofWorker','collectorControl','laneTimingAssessor')) | frozenset(WORKER_SOURCES)
+NATIVE_SOURCE_NAMES = SOURCE_NAMES | frozenset(('nativeController','nativeIngress','nativeEvidence','nativeClosure'))
+NATIVE_BINDING_KEYS = BINDING_KEYS | frozenset(('mode','executionKind'))
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'
 REGION = 'ap-southeast-1'
@@ -29,8 +33,12 @@ WORKER = 'i-t4nj1bitmcz7cuoch82h'
 PROFILE = 'infra-ops-poc'
 
 
-def validate_bindings(bindings):
-    require(type(bindings) is dict and set(bindings) == BINDING_KEYS)
+def validate_bindings(bindings, mode=None):
+    native=mode=='full-replacement-direct-v2' or (type(bindings) is dict and bindings.get('mode')=='full-replacement-direct-v2')
+    require(type(bindings) is dict and set(bindings) == (NATIVE_BINDING_KEYS if native else BINDING_KEYS))
+    if native:
+        require(bindings['mode']=='full-replacement-direct-v2' and bindings['executionKind'] in ('native-replacement','disabled-proof'))
+        require(bindings['target']['nlbServerGroupId']=='sgp-xs5s42tihtl6ja2a67','target')
     target_valid(bindings['target'])
     require(bindings['target']['originalInstanceIds'] == sorted(
             bindings['target']['originalInstanceIds']), 'target')
@@ -42,7 +50,7 @@ def validate_bindings(bindings):
                 and all(ord(c) >= 32 for c in path) and '..' not in Path(path).parts)
     for key in ('workbenchCli','aliyunCli'):
         require(os.path.isfile(bindings[key]) and os.access(bindings[key],os.X_OK))
-    require(type(bindings['sourceHashes']) is dict and set(bindings['sourceHashes']) == SOURCE_NAMES)
+    require(type(bindings['sourceHashes']) is dict and set(bindings['sourceHashes']) == (NATIVE_SOURCE_NAMES if native else SOURCE_NAMES))
     run = Path(bindings['remoteRun'])
     contract = Path(bindings['contractDir'])
     require(run.name == 'run' and contract.name == 'contract' and
@@ -64,9 +72,16 @@ def unique(pairs):
 
 class ActionCatalog:
     @staticmethod
-    def command(action, bindings, run_id=None, pending_binding=None, run_context=None):
+    def command(action, bindings, run_id=None, pending_binding=None, run_context=None,
+                *, lane_root=None, request_id=None):
+        if type(bindings) is dict and bindings.get('mode')=='full-replacement-direct-v2':
+            from pgcat_lane_protocol import _release_admission, native_action
+            native_action(action,bindings.get('executionKind'))
+            _release_admission(bindings['mode'],action)
+            return ActionCatalog.native_command(action,bindings,run_id,run_context,lane_root)
         require(type(action) is str and action in ACTIONS)
         validate_bindings(bindings)
+        require(action == 'rehearsal-finish' or lane_root is None and request_id is None)
         # No ambient credentials, shell startup files or arbitrary environment.
         env = {'PATH':os.defpath, 'HOME':os.path.expanduser('~'), 'LANG':'C', 'LC_ALL':'C'}
         for key in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY',
@@ -94,7 +109,12 @@ class ActionCatalog:
                      '--Servers.1.Port','6432',
                      '--profile',PROFILE,'--region',REGION],env,20.0)
         q = shlex.quote
-        if action.startswith(('baseline-','pre-scale-')):
+        if action == 'rehearsal-finish':
+            identifier(request_id)
+            require(type(lane_root) is str and Path(lane_root).is_absolute() and '..' not in Path(lane_root).parts,'source')
+            require(type(run_context) is dict and run_context.get('requestId') == request_id,'source')
+            command=ActionCatalog.post_stop_worker_command(bindings,run_id,run_context)
+        elif action.startswith(('baseline-','pre-scale-')):
             identifier(run_id)
             phase, verb = action.rsplit('-',1)
             hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
@@ -128,6 +148,34 @@ class ActionCatalog:
                    json.dumps(hashes,sort_keys=True,separators=(',',':')),
                    encode(bindings['target']).decode('ascii'),encode(bound).decode('ascii')]
             command=' '.join(q(part) for part in parts)
+        elif action == 'reconcile-close':
+            identifier(run_id)
+            require(type(pending_binding) is dict and
+                    pending_binding.get('runId') == run_id and
+                    pending_binding.get('originalInstanceIds') == bindings['target']['originalInstanceIds'] and
+                    token(pending_binding.get('newId')) and
+                    pending_binding['newId'] not in bindings['target']['originalInstanceIds'],'target')
+            require(type(run_context) is dict and set(run_context) == {'feedSession','sequence',
+                'observedAt','scaleinRequestId','scaleinAcknowledgedAt','pendingBindingSha256'},'source')
+            identifier(run_context['feedSession']);identifier(run_context['scaleinRequestId'])
+            require(run_context['feedSession'] == pending_binding.get('feedSession') and
+                    type(run_context['sequence']) is int and
+                    type(pending_binding.get('sequence')) is int and
+                    0 < pending_binding['sequence'] < run_context['sequence'] <= 999999 and
+                    all(type(run_context[key]) in (int,float) and math.isfinite(run_context[key])
+                        for key in ('observedAt','scaleinAcknowledgedAt')) and
+                    type(pending_binding.get('observedAt')) in (int,float) and
+                    math.isfinite(pending_binding['observedAt']) and
+                    run_context['observedAt'] > max(pending_binding['observedAt'],run_context['scaleinAcknowledgedAt']) and
+                    sha(run_context['pendingBindingSha256']) and
+                    run_context['pendingBindingSha256'] == hashlib.sha256(encode(pending_binding)).hexdigest(),'source')
+            hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
+            parts=['python3','-I','-S','-c',BOOTSTRAP,bindings['phaseWorker'],hashes['rehearsalWorker'],
+                'reconcile-close',bindings['contractDir'],run_id,bindings['workerKubeconfig'],
+                json.dumps(hashes,sort_keys=True,separators=(',',':')),
+                encode(bindings['target']).decode('ascii'),encode(pending_binding).decode('ascii'),
+                encode(run_context).decode('ascii')]
+            command=' '.join(q(part) for part in parts)
         elif action.startswith('pending-'):
             identifier(run_id)
             hashes={key:bindings['sourceHashes'][key] for key in WORKER_SOURCES}
@@ -137,13 +185,15 @@ class ActionCatalog:
                    json.dumps(hashes,sort_keys=True,separators=(',',':')),
                    encode(bindings['target']).decode('ascii')]
             command=' '.join(q(part) for part in parts)
-        elif action.startswith('collector-') or action=='lane-verdict':
+        elif action.startswith(('collector-','rehearsal-collector-')) or action=='lane-verdict':
             identifier(run_id)
             hashes={key:bindings['sourceHashes'][key] for key in
                     set(WORKER_SOURCES) | {'collectorControl','laneTimingAssessor'}}
             parts=['python3','-I','-S','-c',BOOTSTRAP,
                    str(Path(bindings['remoteRun'])/'pgcat_collector_control.py'),
-                   hashes['collectorControl'],'verdict' if action=='lane-verdict' else action.split('-')[1],bindings['contractDir'],
+                   hashes['collectorControl'],('verdict' if action=='lane-verdict' else
+                       'rehearsal-'+action.rsplit('-',1)[1] if action.startswith('rehearsal-collector-')
+                       else action.split('-')[1]),bindings['contractDir'],
                    run_id,bindings['workerKubeconfig'],
                    json.dumps(hashes,sort_keys=True,separators=(',',':'))]
             if action=='lane-verdict':
@@ -162,9 +212,51 @@ class ActionCatalog:
         env.update(PGCAT_LANE_ROLE='external', PGCAT_LANE_REAL_CLI=bindings['workbenchCli'],
             PGCAT_LANE_LOCK=bindings['laneLockPath'], PGCAT_LANE_RECEIPT=bindings['receiptPath'],
             PGCAT_LANE_INTENT_DIR=bindings['laneIntentDir'])
+        if action == 'rehearsal-finish':
+            env.update(PGCAT_LANE_ROLE='post-stop',PGCAT_LANE_ROOT=lane_root,PGCAT_LANE_REQUEST_ID=request_id)
         from pgcat_source_bootstrap import command as source_command
         return (source_command(bindings['sourceHashes'],'laneWrapper',
                 ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',command]),env,5.0)
+
+    @staticmethod
+    def native_worker_command(action,bindings,run_id,context):
+        from pgcat_lane_protocol import native_action
+        from pgcat_source_bootstrap import ROOT
+        validate_bindings(bindings,'full-replacement-direct-v2');native_action(action,bindings['executionKind']);identifier(run_id)
+        require(type(context) is dict and set(context)=={'request','bindings','envelope','selector','selectorFile'},'source')
+        require(context['bindings']==bindings and context['request']['runId']==run_id and context['request']['action']==action,'source')
+        envelope=context['envelope'];selector=context['selector'];request_id=context['request']['requestId']
+        require(envelope['localRequestId']==request_id and envelope['runId']==run_id and envelope['action']==action and envelope['executionKind']==bindings['executionKind'],'source')
+        raw=encode(envelope);selected=encode(selector)
+        parts=['python3','-I','-S','-c',ROOT,str(Path(bindings['remoteRun'])/'pgcat_source_bootstrap.py'),bindings['sourceHashes']['sourceBootstrap'],
+            'nativeController',encode(bindings['sourceHashes']).decode(),action,bindings['remoteRun'],request_id,
+            hashlib.sha256(raw).hexdigest(),hashlib.sha256(selected).hexdigest(),raw.decode(),selected.decode()]
+        return ' '.join(shlex.quote(part) for part in parts)
+
+    @staticmethod
+    def native_command(action,bindings,run_id,context,lane_root):
+        from pgcat_source_bootstrap import command
+        require(type(lane_root) is str and Path(lane_root).is_absolute(),'source')
+        worker=ActionCatalog.native_worker_command(action,bindings,run_id,context)
+        env={'PATH':os.defpath,'HOME':os.path.expanduser('~'),'LANG':'C','LC_ALL':'C',
+            'PGCAT_LANE_ROLE':'external','PGCAT_LANE_REAL_CLI':bindings['workbenchCli'],'PGCAT_LANE_LOCK':bindings['laneLockPath'],
+            'PGCAT_LANE_RECEIPT':bindings['receiptPath'],'PGCAT_LANE_INTENT_DIR':bindings['laneIntentDir'],
+            'PGCAT_LANE_ROOT':lane_root,'PGCAT_LANE_REQUEST_ID':context['request']['requestId']}
+        return command(bindings['sourceHashes'],'laneWrapper',['exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',worker]),env,5.
+
+    @staticmethod
+    def post_stop_worker_command(bindings, run_id, context):
+        validate_bindings(bindings);identifier(run_id)
+        require(type(context) is dict and set(context) == {'schemaVersion','requestId','stopProofSha256',
+            'receipt','reconcileBinding','collectorIdentity'} and type(context['schemaVersion']) is int and context['schemaVersion'] == 1,'source')
+        identifier(context['requestId']);require(sha(context['stopProofSha256']),'source')
+        require(type(context['receipt']) is dict and type(context['reconcileBinding']) is dict,'source')
+        validate_result(dict(state='complete',category='ok',payload=dict(status='ALIVE',identity=context['collectorIdentity'])))
+        hashes={key:bindings['sourceHashes'][key] for key in set(WORKER_SOURCES) | {'collectorControl','laneTimingAssessor'}}
+        parts=['python3','-I','-S','-c',BOOTSTRAP,bindings['phaseWorker'],hashes['rehearsalWorker'],
+            'post-stop-finish',bindings['contractDir'],run_id,bindings['workerKubeconfig'],
+            json.dumps(hashes,sort_keys=True,separators=(',',':')),encode(bindings['target']).decode('ascii'),encode(context).decode('ascii')]
+        return ' '.join(shlex.quote(part) for part in parts)
 
     @staticmethod
     def parse(action, raw, request, receipt=None, source_sha=None, pending_binding=None):
@@ -180,14 +272,22 @@ class ActionCatalog:
             rows = [json.loads(line,object_pairs_hook=unique) for line in raw.decode('ascii').splitlines()]
         except (ValueError,UnicodeError):
             raise Refused('parse') from None
-        if action == 'reconcile-close':
+        if action == 'rehearsal-finish':
+            require(len(rows) == 2 and rows[0] == dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'),'parse')
+            value=rows[1]
+            require(type(value) is dict and set(value) == {'feedSession','sequence','boundaryRequestId',
+                'boundarySha256','evidenceSha256','sourceSha256'} and value['feedSession'] == request['feedSession'] and
+                type(value['sequence']) is int and value['sequence'] == request['minimumSequence'] and
+                type(value['boundaryRequestId']) is str and re.fullmatch(r'[0-9a-f]{32}',value['boundaryRequestId']) is not None and
+                all(sha(value[key]) for key in ('boundarySha256','evidenceSha256','sourceSha256')) and
+                sha(source_sha) and value['sourceSha256'] == source_sha,'parse')
+        elif action == 'reconcile-close':
             require(len(rows) == 2 and rows[0] == dict(status='PREPARED',stage='reconcile',category='rehearsal-only'),'parse')
             value=rows[1]
             require(type(value) is dict and set(value) == {'feedSession','sequence','resourceVersion'},'parse')
             require(value['feedSession'] == request['feedSession'] and type(value['sequence']) is int
-                    and value['sequence'] >= request['minimumSequence'] and token(value['resourceVersion'])
-                    and value['resourceVersion'].isascii() and value['resourceVersion'].isdigit()
-                    and int(value['resourceVersion']) > 0,'parse')
+                    and value['sequence'] == request['minimumSequence'] and type(value['resourceVersion']) is str
+                    and re.fullmatch(r'[1-9][0-9]{0,31}',value['resourceVersion']) is not None,'parse')
         else:
             require(len(rows) == 1 and type(rows[0]) is dict,'parse')
             value=rows[0]
@@ -284,9 +384,9 @@ class ActionCatalog:
                         value['category']=='lane-timing' and sha(value['verdictSha256']) and
                         all(sha(value[k]) or (value[k] is None and value['status'] in ('FAIL','INCONCLUSIVE'))
                             for k in ('clientIdentitySha256','workerCredentialCleanupSha256')),'parse')
-            elif action == 'collector-launch':
+            elif action in ('collector-launch','rehearsal-collector-launch'):
                 require(value == {'status':'LAUNCHED'},'parse')
-            elif action == 'collector-status':
+            elif action in ('collector-status','rehearsal-collector-status'):
                 require(value.get('status') in ('ALIVE','EXITED'),'parse')
                 require(set(value) == ({'status','identity'} if value['status']=='ALIVE'
                         else {'status','identity','exit'}),'parse')

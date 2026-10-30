@@ -111,6 +111,14 @@ func (i AgentIdentity) permits(tool string, selectors map[string]string) bool {
 		if tool == "deployment_restart" {
 			want["requestId"] = b.RequestID
 		}
+	case "proxy_observation_get", "proxy_pgcat_metrics_get":
+		if !replacement {
+			return false
+		}
+		want["requestId"] = b.RequestID
+		want["proxyCode"] = s.ProxyCode
+		want["groupId"] = s.GroupID
+		want["serverGroupId"] = s.ServerGroupID
 	case "db_proxy_scale", "db_proxy_node_protection_set", "db_proxy_nodes_deregister":
 		if !replacement {
 			return false
@@ -152,6 +160,18 @@ func (a agentAuthorizer) VisibleCommand(path string) bool {
 	return a.base != nil
 }
 func agentSelectors(path string, args any) (string, map[string]string, error) {
+	if path == "proxy_observation_get" || path == "proxy_pgcat_metrics_get" {
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return "", nil, domain.ErrScope
+		}
+		fields, err := decodeSelectors(raw)
+		if err != nil {
+			return "", nil, domain.ErrScope
+		}
+		selectors, err := proxyReadSelectors(path, fields)
+		return path, selectors, err
+	}
 	tool := ""
 	selectors := map[string]string{}
 	switch path {

@@ -54,3 +54,19 @@ func (p *ProxyBackend) mapping(ctx context.Context, env domain.Environment, code
 	}
 	return m, nil
 }
+
+// validateProxyGroup keeps the common read/command group prerequisites together.
+// Membership convergence remains the stricter Snapshot caller's responsibility.
+func validateProxyGroup(g *ess.DescribeScalingGroupsResponseBodyScalingGroups, m domain.ProxyMapping) error {
+	if tea.StringValue(g.LifecycleState) != "Active" || g.EnableDesiredCapacity == nil || !*g.EnableDesiredCapacity || g.DesiredCapacity == nil || g.MinSize == nil || g.MaxSize == nil || *g.MinSize < 0 || *g.MaxSize < *g.MinSize || *g.DesiredCapacity < *g.MinSize || *g.DesiredCapacity > *g.MaxSize {
+		return providerRefusal()
+	}
+	if len(g.ServerGroups) != 1 || g.ServerGroups[0] == nil {
+		return providerRefusal()
+	}
+	sg := g.ServerGroups[0]
+	if tea.StringValue(sg.ServerGroupId) != m.ServerGroupID || tea.StringValue(sg.Type) != "NLB" || sg.Port == nil || int(*sg.Port) != m.Port {
+		return domain.ErrScope
+	}
+	return nil
+}

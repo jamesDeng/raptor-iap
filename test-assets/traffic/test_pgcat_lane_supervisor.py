@@ -287,6 +287,92 @@ class SupervisorTests(unittest.TestCase):
         with self.journal._connection() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM mutation_keys WHERE action='scalein-three-to-two'").fetchone()[0],1)
 
+    def reconciliation_ready(self):
+        self.test_scalein_uses_sanitized_activity_and_exact_one_use_intent()
+        from pgcat_lane_protocol import original_roster
+        receipt=dict(feedSession=self.session,sequence=7,mode='disabled-rehearsal',desired=2,
+            observedAt=time.time(),rosterSha256=roster_sha(original_roster(self.target['originalInstanceIds'])))
+        self.private_json(Path(self.bindings['receiptPath']),receipt)
+        return receipt
+
+    def test_reconcile_fixed_command_has_only_reviewed_eight_worker_arguments(self):
+        import shlex
+        receipt=self.reconciliation_ready()
+        context=self.journal.reconcile_context(receipt)
+        argv,env,budget=actions.ActionCatalog.command('reconcile-close',self.bindings,
+            self.run,self.journal.pending_binding(),context)
+        # Decode the local wrapper bootstrap and its fixed Workbench -c command.
+        remote=shlex.split(argv[-1])
+        self.assertEqual(remote[7:11],['reconcile-close',self.bindings['contractDir'],self.run,self.bindings['workerKubeconfig']])
+        self.assertEqual(len(remote[7:]),8)
+        self.assertEqual(json.loads(remote[-1]),context)
+        self.assertEqual(budget,5.)
+        for changes in (dict(extra='caller'),dict(sequence=True),dict(scaleinRequestId='provider-ack'),dict(pendingBindingSha256='0'*64)):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                actions.ActionCatalog.command('reconcile-close',self.bindings,self.run,self.journal.pending_binding(),dict(context,**changes))
+
+    def test_reconcile_owned_dispatch_seals_original_admission_despite_feed_race(self):
+        receipt=self.reconciliation_ready()
+        rows=[dict(status='PREPARED',stage='reconcile',category='rehearsal-only'),
+              dict(feedSession=self.session,sequence=7,resourceVersion='42')]
+        def response(deadline):
+            self.private_json(Path(self.bindings['receiptPath']),dict(receipt,sequence=8,observedAt=time.time()))
+            return b'\n'.join(encode(row) for row in rows)
+        with patch.object(self.owner,'_communicate',side_effect=response):
+            result=self.run_request(action='reconcile-close')
+        self.assertEqual(result['state'],'complete')
+        self.assertEqual(self.journal.reconcile_binding()['sequence'],7)
+        if self.marker.exists():self.marker.unlink()
+        with self.assertRaises(Refused):self.run_request(action='reconcile-close')
+        self.assertFalse(self.marker.exists())
+
+    def test_reconcile_parser_requires_exact_admitted_sequence_and_canonical_rv(self):
+        req=self.request(action='reconcile-close')
+        prepared=dict(status='PREPARED',stage='reconcile',category='rehearsal-only')
+        good=dict(feedSession=self.session,sequence=1,resourceVersion='42')
+        for changes in (dict(sequence=2),dict(sequence=True),dict(resourceVersion='01'),
+                dict(resourceVersion='1'*33),dict(resourceVersion='١'),dict(extra='field')):
+            with self.subTest(changes=changes),self.assertRaises(Refused):
+                actions.ActionCatalog.parse('reconcile-close',b'\n'.join(map(encode,[prepared,dict(good,**changes)])),req)
+        for rows in ([good],[prepared,good,good],[dict(prepared,extra='field'),good]):
+            with self.assertRaises(Refused):actions.ActionCatalog.parse('reconcile-close',b'\n'.join(map(encode,rows)),req)
+
+    def test_fake_ack_admission_worker_and_successor_reach_reconciled_two(self):
+        from types import SimpleNamespace
+        from pgcat_rehearsal_controller import Controller
+        receipt=self.reconciliation_ready()
+        controller=Controller.__new__(Controller)
+        controller.bindings=dict(laneRoot=str(self.root),laneBindings=self.bindings)
+        controller.mode='disabled-rehearsal';controller.state='scaled-two'
+        controller.receipt=receipt;controller.reconcile_proof=None
+        controller.pending_proof=self.journal.pending_binding()
+        controller.feed=SimpleNamespace(poll=lambda:None)
+        def call(action,admitted,deadline):
+            self.assertEqual(action,'reconcile-close');self.assertEqual(admitted,receipt)
+            req=self.request(action=action,deadlineMonotonic=deadline)
+            return self.owner.run_once(req['requestId'])['result']
+        controller.client=SimpleNamespace(run_id=self.run,call=call,_active=lambda:None,close=lambda:None)
+        original_next=controller._next_receipt
+        def provider_successor(minimum,**kwargs):
+            # A fake successful provider tick AFTER the completed worker call.
+            self.private_json(Path(self.bindings['receiptPath']),dict(receipt,
+                sequence=minimum,observedAt=time.time()))
+            return original_next(minimum,**kwargs)
+        def worker_response(deadline):
+            with self.journal._connection() as db:
+                admission=json.loads(db.execute('SELECT proof FROM reconcile_admission').fetchone()[0])
+                self.assertEqual(admission['context']['scaleinRequestId'],self.journal.scalein_ack()['requestId'])
+                self.assertEqual(admission['receipt'],receipt)
+            return b'\n'.join(map(encode,[dict(status='PREPARED',stage='reconcile',category='rehearsal-only'),
+                dict(feedSession=self.session,sequence=7,resourceVersion='42')]))
+        with patch.object(self.owner,'_communicate',side_effect=worker_response), \
+                patch.object(controller,'_next_receipt',side_effect=provider_successor):
+            proof=controller.reconcile_rehearsal()
+        self.assertEqual(controller.state,'reconciled-two')
+        self.assertEqual(controller.receipt['sequence'],8)
+        self.assertEqual(proof,self.journal.reconcile_binding())
+        self.assertGreater(controller.receipt['observedAt'],proof['sealedAt'])
+
     def publish_no_scale_finish(self, status='PASS', forged=None, bound=True, exited=True, caller_pid=123, caller_binding='f'*64):
         from datetime import datetime,timezone,timedelta
         from pgcat_lane_protocol import (digest,no_scale_stop_ack,no_scale_assessment,
@@ -481,6 +567,38 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(budget,5.0)
         self.assertNotIn('AWS_SECRET_ACCESS_KEY',env)
 
+    def test_rehearsal_collector_action_argv_and_parser(self):
+        import shlex
+        from pgcat_lane_protocol import NO_SCALE_ACTIONS
+        identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64)
+        alive=dict(status='ALIVE',identity=identity)
+        exited=dict(status='EXITED',identity=identity,
+            exit=dict(category='completed',exitCode=0,completionSha256='c'*64))
+        req=self.request()
+        for action,verb,payloads in (
+                ('rehearsal-collector-launch','rehearsal-launch',[dict(status='LAUNCHED')]),
+                ('rehearsal-collector-status','rehearsal-status',[alive,exited])):
+            with self.subTest(action=action):
+                args,env,budget=actions.ActionCatalog.command(action,self.bindings,self.run)
+                parts=shlex.split(args[-1])
+                self.assertEqual(parts[:4],['python3','-I','-S','-c'])
+                self.assertEqual(parts[5:11],['/reviewed/run/pgcat_collector_control.py',
+                    self.hashes['collectorControl'],verb,'/reviewed/contract',self.run,'/reviewed/kubeconfig'])
+                self.assertEqual(len(parts),12)
+                self.assertEqual(json.loads(parts[11]),{k:self.hashes[k] for k in
+                    set(actions.WORKER_SOURCES)|{'collectorControl','laneTimingAssessor'}})
+                old,old_env,_=actions.ActionCatalog.command('collector-launch',self.bindings,self.run)
+                self.assertEqual(args[:-1],old[:-1]);self.assertEqual(env,old_env)
+                self.assertEqual(budget,5.0);self.assertNotIn(action,NO_SCALE_ACTIONS)
+                for payload in payloads:
+                    self.assertEqual(actions.ActionCatalog.parse(action,encode(payload),req),payload)
+        for payload in (dict(status='RUNNING',identity=identity),dict(status='ALIVE'),
+                dict(alive,extra='unexpected'),dict(status='ALIVE',identity=dict(identity,pid=True)),
+                dict(exited,exit=dict(category='completed',exitCode=1,completionSha256='c'*64)),
+                dict(exited,exit=dict(category='completed',exitCode=0))):
+            with self.subTest(payload=payload),self.assertRaises(Refused):
+                actions.ActionCatalog.parse('rehearsal-collector-status',encode(payload),req)
+
     def test_clean_child_mask_restored_and_one_use(self):
         row = self.run_request()
         self.assertEqual(row['state'],'complete')
@@ -508,6 +626,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(self.owner.child)
 
     def test_signal_during_seal_blocks_scaleout(self):
+        # Construct the later request while its receipt is fresh; this test
+        # exercises cancellation after seal, not the receipt's one-second TTL.
+        later=self.request(action='scaleout-two-to-three')
         original = self.journal.seal
         def seal(req, result):
             os.kill(os.getpid(),signal.SIGINT)
@@ -515,7 +636,7 @@ class SupervisorTests(unittest.TestCase):
         with patch.object(self.journal,'seal',seal): row = self.run_request()
         self.assertEqual(row['state'],'complete')
         self.assertNotEqual(row['runState'],'active')
-        with self.assertRaises(Refused): self.owner.run_once(self.request(action='scaleout-two-to-three')['requestId'])
+        with self.assertRaises(Refused): self.owner.run_once(later['requestId'])
 
     def test_signal_before_terminal_commit(self):
         original = actions.ActionCatalog.parse
@@ -754,7 +875,17 @@ class SupervisorTests(unittest.TestCase):
     def test_actual_fork_retains_lane_lock_after_direct_child_exit(self):
         import fcntl
         self.behavior.write_text('fork')
-        row=self.run_request(deadlineMonotonic=monotonic()+.8)
+        original=self.owner._communicate
+        def after_fork(deadline):
+            until=monotonic()+2
+            while not self.fork_ready.exists():
+                self.assertLess(monotonic(),until,'fake descendant did not start')
+                time.sleep(.01)
+            # Exercise timeout with an actual lock-holding descendant, without
+            # counting interpreter startup against the short timeout fixture.
+            return original(min(deadline,monotonic()+.15))
+        with patch.object(self.owner,'_communicate',after_fork):
+            row=self.run_request(deadlineMonotonic=monotonic()+4)
         self.assertEqual(row['state'],'uncertain')
         self.assertTrue(self.fork_ready.exists())
         fd=os.open(self.bindings['laneLockPath'],os.O_RDWR)
@@ -918,3 +1049,294 @@ class SupervisorTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class PostStopSupervisorTests(unittest.TestCase):
+    def setUp(self):
+        import test_pgcat_lane_protocol as fixtures
+        f=fixtures.PostStopJournalTests();f.setUp();self.addCleanup(f.doCleanups);self.f=f
+        guard=patch.object(supervisor,'_require_verified');guard.start();self.addCleanup(guard.stop)
+        self.owner=supervisor.LaneSupervisor.__new__(supervisor.LaneSupervisor)
+        o=self.owner;o.root=f.root;o.bindings=f.f.outer['laneBindings'];o.journal=f.journal
+        o.supervisor_id=f.supervisor;o.run_id=f.f.run;o.bundle=f.request['bundleSha256']
+        o.child=None;o.cancelled=None;o.liveness_fd=None
+        o.owner_fd=os.open(f.root/'test-owner.lock',os.O_CREAT|os.O_RDWR,0o600);self.addCleanup(o.close)
+        self.global_dir=f.root.parent/'global';self.global_dir.mkdir(mode=0o700)
+        override=patch.object(supervisor,'GLOBAL_ROOT',self.global_dir);override.start();self.addCleanup(override.stop)
+        supervisor.save_once(self.global_dir,'active-run',dict(runId=f.f.run,supervisorId=f.supervisor,laneRoot=str(f.root)))
+
+    def test_dedicated_path_admits_before_spawn_and_ignores_consumed_publication(self):
+        f=self.f;intents=Path(self.owner.bindings['laneIntentDir']);intents.mkdir(mode=0o700)
+        lane.consume_intent(str(intents),f.f.session,10)
+        publish_request(f.root,f.request)
+        real_spawn=subprocess.Popen
+        # Mock only actual external spawn; retain the owner's communication and seal path.
+        def local_spawn(argv,**kwargs):
+            admission=f.journal.post_stop_admission(f.request['requestId']);self.assertEqual(admission['request'],f.request)
+            f.journal.post_stop_dispatch(f.request['requestId'])
+            raw=encode(dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'))+b'\n'+encode(f.result()['payload'])
+            return real_spawn([sys.executable,'-c','import sys;sys.stdout.buffer.write('+repr(raw)+')'],**kwargs)
+        with patch.object(supervisor.subprocess,'Popen',side_effect=local_spawn), \
+             patch.object(self.owner,'_receipt',side_effect=AssertionError('live receipt')):
+            result=self.owner.run_once(f.request['requestId'])
+        self.assertEqual(result['state'],'complete');self.assertEqual(f.journal.post_stop_binding()['workerResult'],f.result()['payload'])
+        self.assertIsNotNone(self.owner.owner_fd)
+
+    def test_supervisor_actual_wrapper_exec_seals_the_source_bound_result(self):
+        f=self.f;marker=f.root.parent/'actual-cli-pid';b=self.owner.bindings
+        cli=Path(b['workbenchCli']);header=dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only')
+        raw=encode(header)+b'\n'+encode(f.result()['payload'])+b'\n'
+        cli.write_text('#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\nPath('+repr(str(marker))+').write_text(str(os.getpid()))\nsys.stdout.buffer.write('+repr(raw)+')\n')
+        cli.chmod(0o700)
+        driver=('import sys;from pathlib import Path;sys.path.insert(0,'+repr(str(Path(__file__).parent))+');'
+            'import pgcat_lane_protocol as p;p._release_admission=lambda *a:None;'
+            'import pgcat_source_bootstrap as b;b.require_verified=lambda *a:None;'
+            'b.current_hashes=lambda:'+repr(b['sourceHashes'])+';'
+            'import pgcat_lane_supervisor as s;s.GLOBAL_ROOT=Path(sys.argv[1]);'
+            'import pgcat_workbench_lane as w;sys.argv=sys.argv[2:];sys.exit(w.main())')
+        def command(hashes,entry,args):
+            self.assertEqual(entry,'laneWrapper')
+            return [sys.executable,'-c',driver,str(self.global_dir),'wrapper']+args
+        publish_request(f.root,f.request)
+        with patch('pgcat_source_bootstrap.command',side_effect=command):
+            snapshot=self.owner.run_once(f.request['requestId'])
+        self.assertTrue(marker.exists());self.assertEqual(snapshot['state'],'complete')
+        self.assertEqual(f.journal.post_stop_binding()['workerResult'],f.result()['payload'])
+
+    def test_unknown_worker_attempt_retains_admission_and_dispatch_claim(self):
+        f=self.f;publish_request(f.root,f.request);real_spawn=subprocess.Popen
+        def spawn(argv,**kwargs):
+            f.journal.post_stop_dispatch(f.request['requestId'])
+            return real_spawn([sys.executable,'-c','raise SystemExit(3)'],**kwargs)
+        with patch.object(supervisor.subprocess,'Popen',side_effect=spawn):
+            snapshot=self.owner.run_once(f.request['requestId'])
+        self.assertEqual(snapshot['state'],'uncertain');self.assertEqual(snapshot['runState'],'uncertain')
+        with f.journal._connection() as db:self.assertEqual(db.execute('SELECT dispatch_claimed FROM post_stop_admission').fetchone()[0],1)
+
+    def test_changed_global_owner_on_result_cannot_seal_success(self):
+        f=self.f;publish_request(f.root,f.request);real_spawn=subprocess.Popen
+        def spawn(argv,**kwargs):
+            f.journal.post_stop_dispatch(f.request['requestId'])
+            (self.global_dir/'active-run').write_bytes(encode(dict(runId=f.f.run,supervisorId=str(uuid.uuid4()),laneRoot=str(f.root))))
+            raw=encode(dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'))+b'\n'+encode(f.result()['payload'])
+            return real_spawn([sys.executable,'-c','import sys;sys.stdout.buffer.write('+repr(raw)+')'],**kwargs)
+        with patch.object(supervisor.subprocess,'Popen',side_effect=spawn):snapshot=self.owner.run_once(f.request['requestId'])
+        self.assertEqual(snapshot['state'],'uncertain')
+        with self.assertRaises(Refused):f.journal.post_stop_binding()
+
+    def test_returned_worker_result_at_original_deadline_cannot_seal(self):
+        f=self.f;publish_request(f.root,f.request);real_spawn=subprocess.Popen
+        late=[False]
+        def now():return f.request['deadlineMonotonic'] if late[0] else monotonic()
+        def spawn(argv,**kwargs):
+            f.journal.post_stop_dispatch(f.request['requestId'])
+            return real_spawn([sys.executable,'-c','pass'],**kwargs)
+        def returned(deadline):
+            late[0]=True
+            return encode(dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'))+b'\n'+encode(f.result()['payload'])
+        with patch.object(supervisor.subprocess,'Popen',side_effect=spawn), \
+             patch.object(self.owner,'_communicate',side_effect=returned),patch.object(supervisor,'monotonic',side_effect=now):
+            snapshot=self.owner.run_once(f.request['requestId'])
+        self.assertEqual(snapshot['state'],'uncertain')
+        with self.assertRaises(Refused):f.journal.post_stop_binding()
+
+    def test_wrong_owner_ordinary_request_keeps_original_cancellation_semantics(self):
+        f=self.f;request=dict(f.request,action='baseline-status',supervisorId=str(uuid.uuid4()))
+        with f.journal._transaction() as db:db.execute('DELETE FROM rehearsal_stop')
+        publish_request(f.root,request)
+        with self.assertRaises(Refused):self.owner.run_once(request['requestId'])
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+
+    def test_malformed_request_keeps_original_cancellation_semantics(self):
+        f=self.f;publish_request(f.root,f.request)
+        (f.root/'requests'/(f.request['requestId']+'.ready')).write_text('0'*64)
+        with self.assertRaises(Refused):self.owner.run_once(f.request['requestId'])
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+
+    def test_forged_fixed_action_duplicate_is_not_a_failure_bypass(self):
+        f=self.f;f.admit()
+        request=dict(f.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()),receiptIdentity='0'*64)
+        publish_request(f.root,request)
+        with self.assertRaises(Refused):self.owner.run_once(request['requestId'])
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+
+    def test_authenticated_ordinary_request_after_stop_preserves_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status')
+        publish_request(f.root,request)
+        with patch.object(supervisor.time,'time',return_value=f.f.receipt['observedAt']+121):
+            with self.assertRaises(Refused):self.owner.run_once(request['requestId'])
+        self.assertEqual(f.journal.run_snapshot()['runState'],'active')
+        self.assertIsNone(self.owner.cancelled);self.assertIsNotNone(self.owner.owner_fd)
+
+    def test_served_authenticated_stopped_refusal_preserves_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status')
+        publish_request(f.root,request)
+        waits,requests=self.serve_scans(1)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'active',
+            'Authenticated stopped refusal reached serve outer cancellation')
+        self.assertEqual(waits,1);self.assertEqual(requests,[request['requestId']])
+        self.assertIsNone(self.owner.cancelled);self.assertIsNotNone(self.owner.owner_fd)
+
+    def serve_scans(self, count, on_wait=None):
+        reader,writer=os.pipe();waits=[0];requests=[]
+        original_select=supervisor.select.select;original_run=self.owner.run_once
+        class EndServing(Exception):pass
+        def wait(readers,writers,errors,timeout):
+            if timeout != .02:return original_select(readers,writers,errors,timeout)
+            waits[0]+=1
+            if on_wait is not None:on_wait(waits[0])
+            if waits[0] == count:raise EndServing()
+            return [],[],[]
+        def run(request_id):
+            requests.append(request_id)
+            return original_run(request_id)
+        try:
+            with patch.object(supervisor.select,'select',side_effect=wait),patch.object(self.owner,'run_once',side_effect=run):
+                try:self.owner.serve(reader)
+                except EndServing:pass
+        finally:
+            os.close(reader);os.close(writer)
+        return waits[0],requests
+
+    def test_served_stopped_marker_is_accounted_once_across_scans(self):
+        f=self.f;request=dict(f.request,action='baseline-status')
+        publish_request(f.root,request)
+        waits,requests=self.serve_scans(3)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'active')
+        self.assertEqual(waits,3);self.assertEqual(requests,[request['requestId']])
+        with f.journal._connection() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM requests WHERE request_id=?',(request['requestId'],)).fetchone())
+            self.assertIsNone(db.execute('SELECT 1 FROM post_stop_admission').fetchone())
+        self.assertIsNone(self.owner.child);self.assertIsNone(self.owner.cancelled)
+
+    def test_served_finalized_duplicate_after_121_seconds_preserves_original_binding(self):
+        f=self.f;f.admit();f.journal.post_stop_dispatch(f.request['requestId'])
+        f.journal.seal(f.request['requestId'],f.result(),post_stop_source_sha=f.result()['payload']['sourceSha256'])
+        binding=f.journal.post_stop_binding()
+        request=dict(f.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()))
+        publish_request(f.root,request)
+        with patch.object(supervisor.time,'time',return_value=f.f.receipt['observedAt']+121):
+            waits,requests=self.serve_scans(3)
+            self.assertEqual(f.journal.post_stop_binding(),binding)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'active')
+        self.assertEqual(waits,3);self.assertEqual(requests,[request['requestId']])
+        with f.journal._connection() as db:
+            self.assertEqual(db.execute('SELECT dispatch_claimed FROM post_stop_admission').fetchone()[0],1)
+            self.assertIsNone(db.execute('SELECT 1 FROM requests WHERE request_id=?',(request['requestId'],)).fetchone())
+        self.assertIsNone(self.owner.child)
+
+    def test_accounted_stopped_marker_replacement_cancels_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        marker=f.root/'requests'/(request['requestId']+'.ready')
+        def replace(wait):
+            if wait == 1:
+                replacement=marker.with_suffix('.replacement')
+                replacement.write_bytes(marker.read_bytes());replacement.chmod(0o600);replacement.replace(marker)
+        waits,requests=self.serve_scans(3,replace)
+        self.assertEqual(waits,1)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_stopped_request_bytes_change_cancels_owner(self):
+        import hashlib
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        path=f.root/'requests'/(request['requestId']+'.request.json')
+        marker=f.root/'requests'/(request['requestId']+'.ready')
+        def change(wait):
+            if wait == 1:
+                raw=encode(dict(request,nonce=str(uuid.uuid4())))
+                path.write_bytes(raw);marker.write_text(hashlib.sha256(raw).hexdigest())
+        waits,requests=self.serve_scans(3,change)
+        self.assertEqual(waits,1);self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_stopped_request_rechecks_global_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        def change(wait):
+            if wait == 1:
+                (self.global_dir/'active-run').write_bytes(encode(dict(runId=f.f.run,
+                    supervisorId=str(uuid.uuid4()),laneRoot=str(f.root))))
+        waits,requests=self.serve_scans(3,change)
+        self.assertEqual(waits,1);self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_stopped_request_rechecks_source(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        changed=[False];original=self.owner._verify_sources
+        def verify():
+            if changed[0]:raise Refused('source')
+            return original()
+        with patch.object(self.owner,'_verify_sources',side_effect=verify):
+            waits,requests=self.serve_scans(3,lambda count:changed.__setitem__(0,True))
+        self.assertEqual(waits,1);self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_serve_wrong_run_ordinary_request_still_cancels(self):
+        f=self.f;request=dict(f.request,action='baseline-status',runId=str(uuid.uuid4()))
+        publish_request(f.root,request)
+        waits,requests=self.serve_scans(2)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain');self.assertEqual(waits,0)
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_serve_malformed_ready_still_cancels(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        (f.root/'requests'/(request['requestId']+'.ready')).write_text('0'*64)
+        waits,requests=self.serve_scans(2)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain');self.assertEqual(waits,0)
+        self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_stopped_marker_disappearance_cancels_owner(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        marker=f.root/'requests'/(request['requestId']+'.ready')
+        def remove(wait):
+            if wait == 1:marker.unlink()
+        waits,requests=self.serve_scans(3,remove)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(waits,1);self.assertEqual(requests,[request['requestId']])
+
+    def test_serve_forged_fixed_duplicate_still_cancels(self):
+        f=self.f;f.admit()
+        request=dict(f.request,requestId=str(uuid.uuid4()),nonce=str(uuid.uuid4()),receiptIdentity='0'*64)
+        publish_request(f.root,request)
+        waits,requests=self.serve_scans(2)
+        self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+        self.assertEqual(waits,0);self.assertEqual(requests,[request['requestId']])
+
+    def test_accounted_malformed_stop_proof_cancels_without_redispatch(self):
+        f=self.f;request=dict(f.request,action='baseline-status');publish_request(f.root,request)
+        original=copy.deepcopy(f.stop)
+        malformed=[('missing-'+key,{name:value for name,value in original.items() if name != key})
+            for key in ('runId','feedSession','receipt','receiptIdentity')]
+        malformed += [('receipt-'+type(value).__name__,dict(original,receipt=value))
+            for value in ({},None,[],7,'receipt')]
+        malformed += [('stop-'+type(value).__name__,value) for value in (None,[],7,'stop')]
+        malformed += [('wrong-sequence-type',dict(original,receipt=dict(original['receipt'],sequence='10')))]
+        for name,proof in malformed:
+            with self.subTest(proof=name):
+                # Each serve starts with the same genuine stopped record and accounts it once.
+                with f.journal._transaction() as db:
+                    db.execute("UPDATE run SET state='active'")
+                    db.execute('UPDATE rehearsal_stop SET proof=?',(encode(original).decode(),))
+                self.owner.cancelled=None
+                def corrupt(wait):
+                    if wait == 1:
+                        with f.journal._transaction() as db:
+                            db.execute('UPDATE rehearsal_stop SET proof=?',(encode(proof).decode(),))
+                waits,requests=self.serve_scans(3,corrupt)
+                self.assertEqual(f.journal.run_snapshot()['runState'],'uncertain')
+                self.assertIsNotNone(self.owner.cancelled)
+                self.assertEqual(waits,1);self.assertEqual(requests,[request['requestId']])
+                self.assertIsNone(self.owner.child)
+                with f.journal._connection() as db:
+                    self.assertIsNone(db.execute('SELECT 1 FROM requests WHERE request_id=?',(request['requestId'],)).fetchone())
+
+    def test_malformed_stopped_proof_is_normalized_to_source_refusal(self):
+        f=self.f;request=dict(f.request,action='baseline-status')
+        for proof in ({name:value for name,value in f.stop.items() if name != 'receipt'},
+                      dict(f.stop,receipt=[]),None,[],'bad-json'):
+            with self.subTest(proof=proof):
+                raw='{' if proof == 'bad-json' else encode(proof).decode()
+                with f.journal._transaction() as db:
+                    db.execute('UPDATE rehearsal_stop SET proof=?',(raw,))
+                with self.assertRaises(Refused) as caught:self.owner._revalidate_stopped_refusal(request)
+                self.assertEqual(caught.exception.category,'source')

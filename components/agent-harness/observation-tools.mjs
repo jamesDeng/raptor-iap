@@ -12,7 +12,20 @@ async function boundedJSON(response){
 }
 const id=value=>typeof value==='string'&&/^[A-Za-z0-9_.-]{1,128}$/.test(value);
 function privateEndpoint(value){try{const u=new URL(value);const h=u.hostname;return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash&&isIP(h)===4&&(h.startsWith('10.')||h.startsWith('192.168.')||/^172\.(1[6-9]|2\d|3[01])\./.test(h));}catch{return false;}}
-export function createObservationTools({binding,config,replacementScope,fetch=globalThis.fetch,onDiagnostic,exec=async(command,args,env)=>{const {stdout}=await run(command,args,{env:{PATH:process.env.PATH,...env},timeout:15000,maxBuffer:262144});return command==='psql'?{connected:stdout.trim()==='1'}:JSON.parse(stdout);}}){
+function projection(kind,data,config){
+ const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.slice().sort().join(',');
+ const stamp=v=>typeof v==='string'&&Number.isFinite(Date.parse(v))&&Math.abs(Date.now()-Date.parse(v))<=30000;
+ if(!data||!stamp(data.observedAt))throw invalid();
+ if(kind==='fleet'){
+  if(!exact(data,['groupId','observedAt','instances'])||data.groupId!==config.groupId||!Array.isArray(data.instances)||data.instances.length>50)throw invalid();
+  const seen=new Set();for(const n of data.instances){if(!exact(n,['instanceId','protectedFromScaleIn','lifecycleState','healthStatus'])||!id(n.instanceId)||seen.has(n.instanceId)||typeof n.protectedFromScaleIn!=='boolean'||!['InService','Protected','Pending','Pending:Wait','Standby','Stopped','Removing','Removing:Wait'].includes(n.lifecycleState)||!['Healthy','Unhealthy'].includes(n.healthStatus)||n.protectedFromScaleIn!==(n.lifecycleState==='Protected'))throw invalid();seen.add(n.instanceId);}
+ }else if(kind==='backend'){
+  if(!exact(data,['serverGroupId','listenerId','observedAt','nodes'])||data.serverGroupId!==config.serverGroupId||data.listenerId!==config.listenerId||!Array.isArray(data.nodes)||data.nodes.length>50)throw invalid();
+  const seen=new Set();for(const n of data.nodes){if(!exact(n,['instanceId','privateIp','status','registered','healthy'])||!id(n.instanceId)||seen.has(n.instanceId)||!privateEndpoint('http://'+n.privateIp)||!['Available','Adding','Configuring','Removing'].includes(n.status)||typeof n.registered!=='boolean'||typeof n.healthy!=='boolean'||(n.healthy&&(!n.registered||n.status!=='Available')))throw invalid();seen.add(n.instanceId);}
+ }else if(!exact(data,['groupId','desiredCapacity','minSize','maxSize','observedAt'])||data.groupId!==config.groupId||data.minSize!==2||data.maxSize!==4||!Number.isSafeInteger(data.desiredCapacity)||data.desiredCapacity<2||data.desiredCapacity>4)throw invalid();
+ return data;
+}
+export function createObservationTools({binding,config,replacementScope,fetch=globalThis.fetch,onDiagnostic,readCloud,readPgcatSeries,operatorDiagnosticReads=false,exec=async(command,args,env)=>{const {stdout}=await run(command,args,{env:{PATH:process.env.PATH,...env},timeout:15000,maxBuffer:262144});return command==='psql'?{connected:stdout.trim()==='1'}:JSON.parse(stdout);}}){
  if(config?.transport==='gateway')return createRemoteObservationTools({binding,config,replacementScope,fetch,onDiagnostic});
  if(!config||config.version!==1||config.requestId!==binding.requestId||config.definitionSha256!==binding.definitionSha256||config.envCode!==binding.envCode||config.application?.clusterId!==binding.clusterId||(!Array.isArray(config.clientTargets)||!config.clientTargets.length||config.clientTargets.length>10||config.clientTargets.some(t=>!/^10\.[0-9.]+:9090$/.test(t)))||!privateEndpoint(config.prometheusURL)||!Number.isFinite(Date.parse(config.expiresAt))||Date.parse(config.expiresAt)<=Date.now()||!['accountId','region','groupId','serverGroupId','dbInstanceId'].every(k=>id(config[k]))||!['namespace','name','uid'].every(k=>id(config.application[k])))throw invalid();
  if(replacementScope&&(['envCode','groupId','serverGroupId'].some(k=>config[k]!==replacementScope[k])||['clusterId','namespace','name','uid'].some(k=>config.application[k]!==replacementScope.application?.[k])))throw invalid();
@@ -53,8 +66,18 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
      }
     };
     const metrics=await readPgcatClients({scope:replacementScope,nodeIds,pool:config.private?.sql?.database,user:config.private?.sql?.user,query:async promql=>{
-     const url=new URL('/api/v1/query',config.prometheusURL);url.searchParams.set('query',promql);
-     try{const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);if(data.status!=='success'||data.data?.resultType!=='vector'||!Array.isArray(data.data.result))throw invalid();validatePendingRows(data.data.result,promql);return data.data.result.filter(row=>!pending.has(row.metric?.ecs_instance_id));}catch{throw invalid();}
+     try{
+      let rows;
+      if(readPgcatSeries){
+       const selector='{job="pgcat",env='+JSON.stringify(replacementScope.envCode)+',db_proxy_code='+JSON.stringify(replacementScope.proxyCode)+',target_db_code='+JSON.stringify(replacementScope.targetDbCode)+'}';
+       const expressions=new Map();for(const [series,metric] of [['up','up'],['active','pgcat_pools_cl_active'],['idle','pgcat_pools_cl_idle'],['waiting','pgcat_pools_cl_waiting']]){expressions.set(metric+selector,series);expressions.set('timestamp('+metric+selector+')',series+'Timestamp');}
+       const series=expressions.get(promql);if(!series)throw invalid();rows=await readPgcatSeries(series);
+      }else{
+       if(!operatorDiagnosticReads)throw invalid();const url=new URL('/api/v1/query',config.prometheusURL);url.searchParams.set('query',promql);
+       const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);if(data.status!=='success'||data.data?.resultType!=='vector')throw invalid();rows=data.data.result;
+      }
+      if(!Array.isArray(rows))throw invalid();validatePendingRows(rows,promql);return rows.filter(row=>!pending.has(row.metric?.ecs_instance_id));
+     }catch{throw invalid();}
     }});
     return {...metrics,pendingInstanceIds};
    }
@@ -84,7 +107,9 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
    validate(sources,true);return {observedAt:new Date().toISOString(),samples:validate(rows)};
   },
   async cloudRead({kind}){
-   if(!['fleet','backend','capacity'].includes(kind))throw invalid();
+   fresh();if(!['fleet','backend','capacity'].includes(kind))throw invalid();
+   if(readCloud){try{return projection(kind,await readCloud({kind}),config);}catch{throw invalid();}}
+   if(!operatorDiagnosticReads)throw invalid();
    const identity=await execute('aliyun',['sts','GetCallerIdentity','--RegionId',config.region],config.private?.aliyunEnv);
    if(identity.AccountId!==config.accountId||typeof identity.Arn!=='string'||!identity.Arn.startsWith(`acs:ram::${config.accountId}:assumed-role/raptor-rdev-agent-observer/`))throw invalid();
    if(kind==='capacity'){
@@ -119,7 +144,9 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
    if(!input||Object.keys(input).length)throw invalid();const app=config.application;
    const result=await execute('kubectl',['--kubeconfig',config.private?.kubeconfig,'--namespace',app.namespace,'get','deployment',app.name,'--output','json'],{});
    if(result.metadata?.uid!==app.uid||result.metadata?.namespace!==app.namespace||result.metadata?.name!==app.name)throw invalid();
-   return {clusterId:app.clusterId,namespace:app.namespace,name:app.name,uid:app.uid,observedAt:new Date().toISOString(),replicas:result.spec?.replicas??0,readyReplicas:result.status?.readyReplicas??0,updatedReplicas:result.status?.updatedReplicas??0,availableReplicas:result.status?.availableReplicas??0};
+   const generation=result.metadata?.generation,observedGeneration=result.status?.observedGeneration;
+   if(!Number.isSafeInteger(generation)||generation<1||!Number.isSafeInteger(observedGeneration)||observedGeneration<0||observedGeneration>generation)throw invalid();
+   return {clusterId:app.clusterId,namespace:app.namespace,name:app.name,uid:app.uid,generation,observedGeneration,observedAt:new Date().toISOString(),replicas:result.spec?.replicas??0,readyReplicas:result.status?.readyReplicas??0,updatedReplicas:result.status?.updatedReplicas??0,availableReplicas:result.status?.availableReplicas??0};
   }
  };
  return tools;

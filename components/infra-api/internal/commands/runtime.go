@@ -111,6 +111,9 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 	binding := approval.Binding{RequestID: in.RequestID, ActionID: in.ActionID, EnvCode: env.Code, ProxyCode: in.ProxyCode, GroupID: s.GroupID, DesiredCapacity: in.DesiredCapacity}
 	var observations []policy.ClientObservation
 	if direction == "in" {
+		if e = policy.DirectReplacementScaleInAllowed(s, in.DesiredCapacity); e != nil {
+			return domain.ScaleReceipt{}, e
+		}
 		if r.Approval == nil || r.Metrics == nil || r.Claims == nil {
 			return domain.ScaleReceipt{}, domain.ErrNotConfigured
 		}

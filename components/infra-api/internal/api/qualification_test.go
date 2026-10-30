@@ -48,7 +48,7 @@ func TestQualificationBlocksHTTPAndMCPDespiteActiveAuthorization(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(tools.Tools) != 3 {
+	if len(tools.Tools) != 5 {
 		t.Fatal("mutation catalog exposed", len(tools.Tools))
 	}
 	for _, c := range calls {

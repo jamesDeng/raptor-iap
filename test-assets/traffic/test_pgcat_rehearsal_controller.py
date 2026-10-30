@@ -70,7 +70,8 @@ class ControllerTests(unittest.TestCase):
         self.client.start_feed.side_effect=lambda argv,env,path:self.start_feed(argv,env=env,start_new_session=True,close_fds=True)
         self.client.finish.side_effect = lambda *args: dict(runState='finished',assessment=copy.deepcopy(args[2]))
         self.auto_publish = True; self.die_on_call = False; self.result_override = None
-        self.pending_publish = False; self.wall = time.time()
+        from datetime import datetime, timezone
+        self.pending_publish = False; self.wall = datetime(2026,10,27,12,0,tzinfo=timezone.utc).timestamp()
         self.addCleanup(patch.stopall)
         patch.object(self.module.LaneClient, 'start', side_effect=self.start_client).start()
         self.spawn = patch.object(self.module.subprocess, 'Popen', side_effect=self.start_feed).start()
@@ -622,6 +623,63 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(intent['activityRequestId'],check_id)
         self.assertEqual(intent['zeroProofSha256'],hashlib.sha256(encode(proof)).hexdigest())
 
+    def reconciliation_controller(self):
+        from pgcat_lane_protocol import original_roster
+        if self.capture.exists():
+            import shutil
+            shutil.rmtree(self.capture)
+        controller,_,_=self.zero_controller()
+        controller.state='scaled-two'
+        Path(self.binding['laneRoot']).mkdir(mode=0o700)
+        controller.receipt=dict(controller.receipt,sequence=9,desired=2,
+            rosterSha256=roster_sha(original_roster(self.binding['laneBindings']['target']['originalInstanceIds'])))
+        payload=dict(feedSession=self.session,sequence=9,resourceVersion='42')
+        proof=dict(payload,requestId=str(uuid.uuid4()),runId=self.client.run_id,
+            scaleinRequestId=str(uuid.uuid4()),pendingBindingSha256=hashlib.sha256(encode(controller.pending_proof)).hexdigest(),
+            sourceSha256=self.binding['laneBindings']['sourceHashes']['rehearsalContract'],sealedAt=self.wall)
+        self.client.call.side_effect=lambda *args:dict(state='complete',category='ok',payload=payload)
+        return controller,payload,proof
+
+    def test_reconcile_enters_reconciled_two_only_after_later_exact_provider_publication(self):
+        controller,payload,proof=self.reconciliation_controller()
+        later=dict(controller.receipt,sequence=10,observedAt=self.wall+1)
+        def successor(minimum,**kwargs):
+            self.assertEqual(minimum,10);self.assertEqual(kwargs['observed_after'],self.wall)
+            self.assertEqual(kwargs['desired'],2)
+            controller.receipt=later;return later
+        with patch.object(self.module.Journal,'reconcile_binding',return_value=proof,create=True), \
+                patch.object(controller,'_next_receipt',side_effect=successor):
+            self.assertEqual(controller.reconcile_rehearsal(),proof)
+        self.assertEqual(controller.state,'reconciled-two')
+        self.assertEqual(self.client.call.call_args.args[0],'reconcile-close')
+        controller._live()
+        with self.assertRaises(Refused):controller.reconcile_rehearsal()
+
+    def test_reconcile_refuses_wrong_state_stale_roster_and_journal_result(self):
+        for kind in ('state','mode','stale','roster','binding','successor','timeout'):
+            with self.subTest(kind=kind):
+                controller,payload,proof=self.reconciliation_controller()
+                if kind=='state':controller.state='zero-bound'
+                if kind=='mode':controller.mode='no-scale'
+                if kind=='stale':controller.receipt['observedAt']-=3.5
+                if kind=='roster':controller.receipt['rosterSha256']='0'*64
+                if kind=='binding':proof['resourceVersion']='43'
+                later=dict(controller.receipt,sequence=10,observedAt=self.wall+1)
+                if kind=='successor':later['rosterSha256']='0'*64
+                with patch.object(self.module.Journal,'reconcile_binding',return_value=proof,create=True), \
+                        patch.object(controller,'_next_receipt',side_effect=Refused('timeout') if kind=='timeout' else None,return_value=later):
+                    with self.assertRaises(Refused):controller.reconcile_rehearsal()
+                self.assertEqual(controller.state,'uncertain')
+
+    def test_private_worker_reconcile_cannot_bypass_scaled_two_state(self):
+        controller,_,proof=self.reconciliation_controller()
+        controller.state='zero-bound'
+        with patch.object(self.module.Journal,'reconcile_binding',return_value=proof), \
+                patch.object(controller,'_next_receipt',return_value=controller.receipt):
+            with self.assertRaises(Refused):controller._worker_call('reconcile-close')
+        self.assertEqual(controller.state,'uncertain')
+        self.assertEqual(self.client.call.call_count,0)
+
     def test_slow_activity_refuses_before_ess_child(self):
         controller,proof,absent=self.zero_controller()
         controller.state='zero-bound';controller.zero_proof=proof
@@ -894,7 +952,9 @@ class PaidStartTests(unittest.TestCase):
             payload = {'baseline-start':dict(status='STARTED',phase='baseline'),
                 'baseline-status':dict(status='PREPARED',phase='baseline'),
                 'collector-launch':dict(status='LAUNCHED'),
-                'collector-status':dict(status='ALIVE',identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64))}[action]
+                'collector-status':dict(status='ALIVE',identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64)),
+                'rehearsal-collector-launch':dict(status='LAUNCHED'),
+                'rehearsal-collector-status':dict(status='ALIVE',identity=dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64))}[action]
         return self.result_override or dict(state='complete',category='ok',payload=payload)
 
     def prior_proof(self):
@@ -1007,8 +1067,8 @@ class PaidStartTests(unittest.TestCase):
         c=self.prepare(); result=c.start_rehearsal(self.preflight)
         self.assertEqual(c.state,'scaled-three'); self.assertEqual(result['desired'],3)
         calls=self.calls()
-        self.assertEqual([e[1] for e in calls],['baseline-start','baseline-status','collector-launch',
-            'collector-status','pre-scale-start','pre-scale-status','collector-status','scaleout-two-to-three'])
+        self.assertEqual([e[1] for e in calls],['baseline-start','baseline-status','rehearsal-collector-launch',
+            'rehearsal-collector-status','pre-scale-start','pre-scale-status','rehearsal-collector-status','scaleout-two-to-three'])
         self.assertEqual([e[2] for e in calls],list(range(1,9)))
         self.assertEqual(result['sequence'],9)
         self.assertAlmostEqual(calls[-1][3],1020.35)
@@ -1023,6 +1083,54 @@ class PaidStartTests(unittest.TestCase):
         self.assertEqual(args[args.index('--max-seconds')+1],'5400')
         with self.assertRaises(Refused): c.start_rehearsal(self.preflight)
         self.assertEqual(len(self.calls()),8)
+
+    def test_paid_baseline_uses_long_profile_actions(self):
+        c=self.prepare();c._start('disabled-rehearsal',5400);c._baseline_collector()
+        self.assertEqual([e[1] for e in self.calls()],['baseline-start','baseline-status',
+            'rehearsal-collector-launch','rehearsal-collector-status'])
+        self.assertEqual(c.receipt['desired'],2)
+        self.assertEqual(c.collector_identity,dict(pid=9,bootId='boot',startTicks=1,commandSha256='a'*64))
+
+    def test_paid_collector_status_waits_for_desired_three_successor(self):
+        c=self.prepare();c.start_rehearsal(self.preflight)
+        before=c.receipt['sequence'];observed_before=self.wall;self.scaled=True
+        result=c._worker_call('rehearsal-collector-status')
+        self.assertEqual(result['status'],'ALIVE')
+        self.assertEqual(c.receipt['desired'],3)
+        self.assertGreater(c.receipt['sequence'],before)
+        self.assertGreater(c.receipt['observedAt'],observed_before)
+
+    def test_public_no_scale_api_refuses_paid_controller(self):
+        c=self.prepare();c._start('disabled-rehearsal',5400)
+        before=len(self.calls())
+        with self.assertRaises(Refused):c.call_no_scale('baseline-start')
+        self.assertEqual(len(self.calls()),before)
+        self.assertEqual(c.state,'uncertain')
+
+    def test_worker_call_collector_pair_cannot_cross_modes(self):
+        c=self.controller()
+        self.capture.mkdir(mode=0o700)
+        for mode,action in (('disabled-rehearsal','collector-status'),
+                ('no-scale','rehearsal-collector-status')):
+            with self.subTest(mode=mode):
+                c.mode=mode
+                c.state='active';c.client=self.client;c.feed=Mock()
+                c.feed.poll.return_value=None
+                c.receipt=dict(feedSession=self.session,sequence=1,desired=2,observedAt=self.wall)
+                before=len(self.calls())
+                with self.assertRaises(Refused):c._worker_call(action)
+                self.assertEqual(len(self.calls()),before)
+
+    def test_paid_live_status_rejects_exit_malformed_and_changed_identity(self):
+        c=self.prepare();c._start('disabled-rehearsal',5400);c._baseline_collector()
+        identity=copy.deepcopy(c.collector_identity)
+        for payload in (dict(status='EXITED',identity=identity,
+                exit=dict(category='completed',exitCode=0,completionSha256='c'*64)),
+                dict(status='ALIVE'),dict(status='ALIVE',identity=dict(identity,pid=10))):
+            with self.subTest(payload=payload):
+                c.state='active';self.result_override=dict(state='complete',category='ok',payload=payload)
+                with self.assertRaises(Refused):c._worker_call('rehearsal-collector-status')
+                self.assertIsNone(c.collector_exit)
 
     def test_paid_refuses_invalid_operator_receipt_before_spawn(self):
         c=self.prepare()
@@ -1070,7 +1178,7 @@ class PaidStartTests(unittest.TestCase):
                     return result
                 def call(*args):
                     result=self.call(*args)
-                    if args[0]=='collector-status' and len(self.calls())==7:
+                    if args[0]=='rehearsal-collector-status' and len(self.calls())==7:
                         if point=='before-intent': self.wall+=5401
                         if point=='expiry': self.wall+=300
                     return result
@@ -1337,4 +1445,183 @@ class ProviderPreflightTests(unittest.TestCase):
                 with self.assertRaises(Refused): c._provider_preflight()
 
 
+
+
+
+class PaidControllerStopTests(unittest.TestCase):
+    def setUp(self):
+        from test_pgcat_lane_protocol import PaidStopJournalTests
+        from pgcat_lane_client import LaneClient
+        from pgcat_lane_protocol import digest
+        fixture=PaidStopJournalTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        self.fixture=fixture;self.module=importlib.import_module('pgcat_rehearsal_controller')
+        self.c=self.module.Controller.__new__(self.module.Controller)
+        c=self.c;c.bindings=fixture.outer;c.binding_path=fixture.fixture.manifest
+        c.binding_sha=hashlib.sha256(fixture.raw).hexdigest();c.mode='disabled-rehearsal';c.state='reconciled-two'
+        c.receipt=copy.deepcopy(fixture.receipt);c.reconcile_proof=copy.deepcopy(fixture.proof)
+        c.rehearsal_stop=None;c.stop_attempted=False
+        self.feed=Mock(spec=subprocess.Popen);self.feed.pid=123;self.feed.poll.return_value=None;c.feed=self.feed
+        client=LaneClient();client.root=fixture.root;client.bindings=fixture.outer['laneBindings'];client.mode=c.mode
+        client.run_id=fixture.run;client.bundle=digest(client.bindings['sourceHashes']);client.journal=fixture.journal
+        client.process=Mock();client.process.poll.return_value=None
+        reader,client.liveness_fd=os.pipe();os.close(reader);self.addCleanup(client.close)
+        client.feed_process=self.feed;client.feed_binding=fixture.binding;c.client=client
+        with patch('pgcat_lane_protocol._release_admission'):fixture.journal.bind_feed(fixture.binding,manifest_raw=fixture.raw)
+        from pgcat_lane_supervisor import save_once
+        save_once(fixture.root.parent,'status.json',fixture.receipt)
+
+    def acknowledge(self,extra=0):
+        from pgcat_lane_protocol import rehearsal_stop_ack
+        from pgcat_lane_supervisor import save_once
+        f=self.fixture;intent=json.loads((f.root.parent/'rehearsal-stop.intent').read_text())
+        final=dict(f.receipt,sequence=f.receipt['sequence']+extra)
+        (f.root.parent/'status.json').write_bytes(encode(final))
+        save_once(f.root.parent,'rehearsal-stop.ack',rehearsal_stop_ack(intent,final),atomic=True)
+        self.feed.poll.return_value=0
+        return 0
+
+    def test_paid_stop_seals_actual_exit_keeps_owner_alive_and_blocks_normal_calls(self):
+        self.feed.wait.side_effect=lambda timeout:self.acknowledge(1)
+        out=self.c.stop_rehearsal()
+        self.assertEqual(out,dict(pid=123,exitCode=0,category='ok',feedSession=self.fixture.session,sequence=11))
+        self.feed.wait.assert_called_once_with(timeout=30.)
+        self.assertEqual(self.c.state,'feed-stopped');self.assertIsNotNone(self.c.client.liveness_fd)
+        self.assertEqual(self.c.rehearsal_stop,self.fixture.journal.rehearsal_stop())
+        self.assertEqual(self.fixture.journal.run_snapshot()['runState'],'active')
+        # An ordinary post-stop call refuses before dispatch; no successor wait.
+        with patch.object(self.c.client,'call',side_effect=AssertionError('post-stop dispatch')):
+            with self.assertRaises(Refused):self.c._worker_call('baseline-status')
+
+    def test_paid_stop_refuses_natural_exit_or_missing_ack_and_enters_uncertain(self):
+        def wait(timeout):self.feed.poll.return_value=0;return 0
+        self.feed.wait.side_effect=wait
+        with self.assertRaises(Refused):self.c.stop_rehearsal()
+        self.assertEqual(self.c.state,'uncertain')
+        with self.assertRaises(Refused):self.fixture.journal.rehearsal_stop()
+        with self.fixture.journal._connection() as db:
+            row=db.execute('SELECT proof FROM feed_exit_confirmation').fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(json.loads(row['proof'])['exitCode'],0)
+
+    def test_paid_stop_requires_reconciled_state_and_exact_journal_proof(self):
+        for state in ('active','scaled-two','feed-stopped','uncertain'):
+            self.c.state=state
+            with self.subTest(state=state),self.assertRaises(Refused):self.c.stop_rehearsal()
+            self.assertFalse((self.fixture.root.parent/'rehearsal-stop.intent').exists())
+        self.c.state='reconciled-two';self.c.reconcile_proof['sourceSha256']='0'*64
+        with self.assertRaises(Refused):self.c.stop_rehearsal()
+        self.assertFalse((self.fixture.root.parent/'rehearsal-stop.intent').exists())
+
+    def test_paid_stop_does_not_close_retained_owner_on_duplicate_or_normal_action(self):
+        self.feed.wait.side_effect=lambda timeout:self.acknowledge()
+        self.c.stop_rehearsal();owner=self.c.client.liveness_fd
+        proof=copy.deepcopy(self.c.rehearsal_stop)
+        paths=[self.fixture.root.parent/name for name in ('status.json','rehearsal-stop.intent','rehearsal-stop.ack')]
+        before=[(p.read_bytes(),p.stat().st_mtime_ns) for p in paths]
+        self.addCleanup(patch.stopall)
+        patch.object(self.module,'save_once',side_effect=AssertionError('post-stop write')).start()
+        patch.object(self.c.client,'call',side_effect=AssertionError('post-stop CLI')).start()
+        patch.object(self.c,'_next_receipt',side_effect=AssertionError('post-stop successor')).start()
+        for operation in (self.c.stop_rehearsal,lambda:self.c._worker_call('baseline-status')):
+            with self.assertRaises(Refused):operation()
+            self.assertEqual(self.c.state,'feed-stopped');self.assertEqual(self.c.client.liveness_fd,owner)
+            self.assertEqual(self.c.rehearsal_stop,proof);self.assertEqual(self.fixture.journal.rehearsal_stop(),proof)
+            self.assertEqual([(p.read_bytes(),p.stat().st_mtime_ns) for p in paths],before)
+
+    def test_paid_stop_wait_timeout_preserves_failure_evidence(self):
+        self.feed.wait.side_effect=subprocess.TimeoutExpired('feed',30)
+        with self.assertRaises(Refused):self.c.stop_rehearsal()
+        self.assertEqual(self.c.state,'uncertain')
+        self.assertTrue((self.fixture.root.parent/'rehearsal-stop.intent').exists())
+        self.assertFalse((self.fixture.root.parent/'rehearsal-stop.ack').exists())
+        with self.assertRaises(Refused):self.fixture.journal.rehearsal_stop()
+
+    def test_changed_sealed_stop_proof_does_not_preserve_owner(self):
+        self.feed.wait.side_effect=lambda timeout:self.acknowledge()
+        self.c.stop_rehearsal();self.c.rehearsal_stop['receipt']['sequence']+=1
+        with self.assertRaises(Refused):self.c.stop_rehearsal()
+        self.assertEqual(self.c.state,'uncertain');self.assertIsNone(self.c.client.liveness_fd)
+
+    def test_paid_stop_refuses_changed_ack_after_actual_zero_exit(self):
+        def wait(timeout):
+            self.acknowledge()
+            path=self.fixture.root.parent/'rehearsal-stop.ack';value=json.loads(path.read_text());value['sequence']=12
+            path.write_bytes(encode(value));return 0
+        self.feed.wait.side_effect=wait
+        with self.assertRaises(Refused):self.c.stop_rehearsal()
+        self.assertEqual(self.c.state,'uncertain')
+        with self.assertRaises(Refused):self.fixture.journal.rehearsal_stop()
+
+    def test_paid_stop_refuses_stale_final_receipt_without_fabricating_freshness(self):
+        def wait(timeout):
+            self.acknowledge()
+            path=self.fixture.root.parent/'status.json';value=json.loads(path.read_text());value['observedAt']=time.time()-30
+            path.write_bytes(encode(value));return 0
+        self.feed.wait.side_effect=wait
+        with self.assertRaises(Refused):self.c.stop_rehearsal()
+        self.assertEqual(self.c.state,'uncertain')
+        with self.assertRaises(Refused):self.fixture.journal.rehearsal_stop()
+
+    def test_paid_natural_cap_exit_before_stop_has_no_proof(self):
+        self.feed.poll.return_value=0
+        with self.assertRaises(Refused):self.c.stop_rehearsal()
+        self.assertEqual(self.c.state,'uncertain')
+        self.assertFalse((self.fixture.root.parent/'rehearsal-stop.intent').exists())
+        with self.assertRaises(Refused):self.fixture.journal.rehearsal_stop()
+
+    def test_nonzero_actual_exit_is_retained_without_stop_permission(self):
+        def wait(timeout):self.feed.poll.return_value=1;return 1
+        self.feed.wait.side_effect=wait
+        with self.assertRaises(Refused):self.c.stop_rehearsal()
+        self.assertEqual(self.c.state,'uncertain')
+        with self.fixture.journal._connection() as db:
+            row=db.execute('SELECT proof FROM feed_exit_confirmation').fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(json.loads(row['proof'])['exitCode'],1)
+        with self.assertRaises(Refused):self.fixture.journal.rehearsal_stop()
+
+
 if __name__ == '__main__': unittest.main()
+
+
+class PostStopControllerTests(unittest.TestCase):
+    def setUp(self):
+        fixture=PaidControllerStopTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        self.f=fixture;self.c=fixture.c
+        fixture.feed.wait.side_effect=lambda timeout:fixture.acknowledge()
+        self.c.stop_rehearsal()
+
+    def test_finalized_clients_keep_owner_and_stop_proof_on_duplicates(self):
+        from pgcat_lane_protocol import digest
+        c=self.c;result=dict(state='complete',category='ok',payload=dict(feedSession=self.f.fixture.session,sequence=10,
+            boundaryRequestId='a'*32,boundarySha256='b'*64,evidenceSha256='c'*64,
+            sourceSha256=c.bindings['laneBindings']['sourceHashes']['rehearsalContract']))
+        binding=dict(schemaVersion=1,requestId=str(uuid.uuid4()),runId=c.client.run_id,
+            feedSession=self.f.fixture.session,stopProofSha256=digest(c.rehearsal_stop),admissionSha256='a'*64,
+            workerResult=result['payload'],sealedAt=time.time())
+        with patch.object(c.client,'post_stop_call',return_value=result,create=True), \
+             patch.object(self.f.module.Journal,'post_stop_binding',return_value=binding,create=True):
+            self.assertEqual(c.finish_rehearsal_clients(),binding)
+            self.assertEqual(c.state,'clients-finalized')
+            owner=c.client.liveness_fd
+            for op in (c.finish_rehearsal_clients,c.stop_rehearsal,lambda:c._worker_call('baseline-status')):
+                with self.assertRaises(Refused):op()
+                self.assertEqual(c.client.liveness_fd,owner);self.assertEqual(c.state,'clients-finalized')
+
+    def test_nonzero_retained_exit_cannot_finish_clients(self):
+        self.f.feed.poll.return_value=1
+        with self.assertRaises(Refused):self.c.finish_rehearsal_clients()
+        self.assertEqual(self.c.state,'uncertain')
+
+    def test_stopped_duplicate_and_ordinary_refusal_after_121_seconds_keep_owner(self):
+        c=self.c;owner=c.client.liveness_fd;proof=copy.deepcopy(c.rehearsal_stop)
+        with patch.object(self.f.module.time,'time',return_value=proof['receipt']['observedAt']+121):
+            for state in ('feed-stopped','clients-finalized'):
+                c.state=state
+                operations=[c.stop_rehearsal,lambda:c._worker_call('baseline-status'),
+                    lambda:c.client.call('baseline-status',c.receipt,999999.)]
+                if state=='clients-finalized':operations.append(c.finish_rehearsal_clients)
+                for operation in operations:
+                    with self.subTest(state=state),self.assertRaises(Refused):operation()
+                    self.assertEqual(c.client.liveness_fd,owner);self.assertEqual(c.rehearsal_stop,proof)
+                    self.assertEqual(c.state,state)

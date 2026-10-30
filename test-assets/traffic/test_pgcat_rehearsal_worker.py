@@ -508,5 +508,133 @@ class BaselineSnapshotTests(unittest.TestCase):
                 self.assertEqual(got.returncode,0,got.stderr)
                 self.assertEqual(json.loads(got.stdout),dict(direct='NEW',transitive='NEW'))
 
+
+class ReconcileDispatchTests(unittest.TestCase):
+    setUp = DetachedWorkerTests.setUp
+
+    def _dispatch_fixture(self, extra_source=''):
+        from pgcat_rehearsal_worker import BOOTSTRAP
+        path = self.contract / 'baseline.json'
+        raw = json.dumps({'paths': {'kubeconfig': str(self.kubeconfig)}}).encode('ascii')
+        path.write_bytes(raw); path.chmod(0o600)
+        seal = self.contract / 'baseline.json.sha256'
+        seal.write_text(json.dumps({'sha256': hashlib.sha256(raw).hexdigest()})); seal.chmod(0o600)
+        source = ('import capture_window\nfrom pathlib import Path\n'
+            'def reconcile_close(contract, run_id, target, pending, context):\n'
+            ' assert capture_window.PROBE == "NEW"\n'
+            ' assert pending == {"sealed": "pending"} and context == {"asserted": "ack"}\n'
+            ' Path(contract,"called").write_text("yes")\n' + extra_source +
+            ' return '+repr(dict(feedSession=self.feed_session, sequence=20, resourceVersion='12'))+'\n')
+        from test_pgcat_source_bootstrap import stale_cache
+        stale_cache(self.run / 'pgcat_rehearsal_contract.py', source.replace('== "NEW"', '== "OLD"'), source)
+        stale_cache(self.run / 'capture_window.py', 'PROBE="OLD"\n', 'PROBE="NEW"\n')
+        self.hashes = {key: hashlib.sha256((self.run / name).read_bytes()).hexdigest()
+                       for key, name in SOURCES.items()}
+        self.argv = [sys.executable, '-I', '-S', '-c', BOOTSTRAP, str(self.worker),
+            self.hashes['rehearsalWorker'], 'reconcile-close', str(self.contract), self.run_id,
+            str(self.kubeconfig), json.dumps(self.hashes), json.dumps(self.target),
+            json.dumps({'sealed': 'pending'}), json.dumps({'asserted': 'ack'})]
+
+    def _dispatch(self):
+        return subprocess.run(self.argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+
+    def test_reconcile_fixed_private_verb_executes_verified_bytes_and_two_safe_rows(self):
+        self._dispatch_fixture()
+        result = self._dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([json.loads(row) for row in result.stdout.splitlines()], [
+            dict(status='PREPARED', stage='reconcile', category='rehearsal-only'),
+            dict(feedSession=self.feed_session, sequence=20, resourceVersion='12')])
+        self.assertEqual(result.stderr, b'')
+        self.assertNotIn(b'private', result.stdout)
+        self.assertTrue((self.contract / 'called').exists())
+
+    def test_reconcile_dispatch_rejects_unknown_argument_stale_source_and_kubeconfig_swap(self):
+        for case in ('extra', 'missing', 'source', 'kubeconfig'):
+            with self.subTest(case=case):
+                self.setUp(); self._dispatch_fixture()
+                if case == 'extra': self.argv.append('extra')
+                elif case == 'missing': self.argv.pop()
+                elif case == 'source':
+                    with (self.run / 'capture_window.py').open('a') as stream: stream.write('# stale\n')
+                else: self.argv[10] = str(self.root / 'other-kubeconfig')
+                result = self._dispatch()
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(json.loads(result.stdout), dict(status='INCONCLUSIVE', phase='unknown'))
+                self.assertEqual(result.stderr, b'')
+                self.assertFalse((self.contract / 'called').exists())
+
+    def test_reconcile_dispatch_rechecks_sources_after_function_before_success(self):
+        self._dispatch_fixture(' Path(__file__).with_name("capture_window.py").write_text("changed")\n')
+        result = self._dispatch()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout), dict(status='INCONCLUSIVE', phase='unknown'))
+        self.assertNotIn(b'PREPARED', result.stdout)
+        self.assertEqual(result.stderr, b'')
+
+
+class PostStopDispatchTests(unittest.TestCase):
+    setUp = DetachedWorkerTests.setUp
+    _dispatch = ReconcileDispatchTests._dispatch
+
+    def fixture(self,extra_source='',result=None):
+        from pgcat_rehearsal_worker import BOOTSTRAP
+        from test_pgcat_source_bootstrap import stale_cache
+        base=self.contract/'baseline.json';raw=json.dumps({'paths':{'kubeconfig':str(self.kubeconfig)}}).encode('ascii')
+        base.write_bytes(raw);base.chmod(0o600)
+        seal=self.contract/'baseline.json.sha256';seal.write_text(json.dumps({'sha256':hashlib.sha256(raw).hexdigest()}));seal.chmod(0o600)
+        self.result=dict(feedSession=self.feed_session,sequence=21,boundaryRequestId='f'*32,boundarySha256='a'*64,evidenceSha256='b'*64,sourceSha256='c'*64) if result is None else result
+        source=('import pgcat_collector_control as c\nfrom pathlib import Path\n'
+            'def post_stop_finish(contract,run_id,target,context,*,source_hashes):\n'
+            ' assert c.PROBE == "NEW" and context == {"asserted":"stop"} and len(source_hashes)==11\n'
+            ' Path(contract,"called").write_text("yes")\n'+extra_source+
+            ' return '+repr(self.result)+'\n')
+        stale_cache(self.run/'pgcat_rehearsal_contract.py',source.replace('== "NEW"','== "OLD"'),source)
+        stale_cache(self.run/'pgcat_collector_control.py','PROBE="OLD"\n','PROBE="NEW"\n')
+        (self.run/'pgcat_lane_timing_assessor.py').write_text('pass\n');(self.run/'pgcat_lane_timing_assessor.py').chmod(0o600)
+        self.union=dict(SOURCES,collectorControl='pgcat_collector_control.py',laneTimingAssessor='pgcat_lane_timing_assessor.py')
+        self.hashes={key:hashlib.sha256((self.run/name).read_bytes()).hexdigest() for key,name in self.union.items()}
+        # Have fake result report its exact verified contract source, as required.
+        if result is None:
+            source=source.replace("'sourceSha256': '"+'c'*64+"'", "'sourceSha256': source_hashes['rehearsalContract']")
+            (self.run/'pgcat_rehearsal_contract.py').write_text(source)
+            self.hashes['rehearsalContract']=hashlib.sha256(source.encode()).hexdigest()
+            self.result['sourceSha256']=self.hashes['rehearsalContract']
+        self.argv=[sys.executable,'-I','-S','-c',BOOTSTRAP,str(self.worker),self.hashes['rehearsalWorker'],'post-stop-finish',str(self.contract),self.run_id,str(self.kubeconfig),json.dumps(self.hashes),json.dumps(self.target),json.dumps({'asserted':'stop'})]
+
+    def test_exact_seven_value_verb_uses_eleven_verified_sources_and_two_safe_lines(self):
+        self.fixture();result=self._dispatch()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual([json.loads(row) for row in result.stdout.splitlines()],[dict(status='PREPARED',stage='post-stop-finish',category='rehearsal-only'),self.result])
+        self.assertEqual(result.stderr,b'');self.assertTrue((self.contract/'called').exists())
+
+    def test_wrong_argv_source_set_stale_helper_and_kubeconfig_refuse_before_call(self):
+        for case in ('extra','missing','nine','extra-source','stale-collector','kubeconfig'):
+            with self.subTest(case=case):
+                self.setUp();self.fixture()
+                if case=='extra':self.argv.append('extra')
+                elif case=='missing':self.argv.pop()
+                elif case=='nine':self.argv[11]=json.dumps({key:self.hashes[key] for key in SOURCES})
+                elif case=='extra-source':self.argv[11]=json.dumps(dict(self.hashes,extra='0'*64))
+                elif case=='stale-collector':(self.run/'pgcat_collector_control.py').write_text('PROBE="CHANGED"')
+                else:self.argv[10]=str(self.root/'other')
+                result=self._dispatch();self.assertEqual(result.returncode,1);self.assertNotIn(b'PREPARED',result.stdout)
+                self.assertEqual(result.stderr,b'');self.assertFalse((self.contract/'called').exists())
+
+    def test_sources_are_verified_after_dispatch_and_result_schema_is_exact(self):
+        for case in ('changed-source','extra-key','bool-sequence','bad-request','wrong-source'):
+            with self.subTest(case=case):
+                self.setUp()
+                if case=='changed-source':self.fixture(' Path(__file__).with_name("pgcat_collector_control.py").write_text("changed")\n')
+                else:
+                    result=dict(feedSession=self.feed_session,sequence=21,boundaryRequestId='f'*32,boundarySha256='a'*64,evidenceSha256='b'*64,sourceSha256='c'*64)
+                    if case=='extra-key':result['extra']='private'
+                    elif case=='bool-sequence':result['sequence']=True
+                    elif case=='bad-request':result['boundaryRequestId']=str(uuid.uuid4())
+                    self.fixture(result=result)
+                result=self._dispatch();self.assertEqual(result.returncode,1);self.assertNotIn(b'PREPARED',result.stdout)
+                self.assertEqual(result.stderr,b'')
+
+
 if __name__ == '__main__':
     unittest.main()

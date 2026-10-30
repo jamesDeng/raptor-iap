@@ -289,6 +289,165 @@ func TestClosedTicksDrainScheduledQueueWithoutSkipped(t *testing.T) {
 	}
 }
 
+// Cancellation is an admission stop, not permission to discard accepted work.
+func TestCancellationDrainsAcceptedQueueAndReconnect(t *testing.T) {
+	for _, first := range []Outcome{Success, Failure, Timeout} {
+		t.Run(string(first), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ticks := make(chan time.Time)
+			active := &session{outcome: first, gate: make(chan struct{}), started: make(chan struct{})}
+			next := &session{outcome: Success}
+			var events []Event
+			scheduled := make(chan struct{}, 2)
+			done := make(chan error, 1)
+			dials := 0
+			r := Runner{Config: Config{Sessions: 1, Timeout: 50 * time.Millisecond, ProcessID: "p"}, Ticks: ticks,
+				Dial: func(c context.Context) (Session, error) {
+					dials++
+					if dials == 1 {
+						return active, nil
+					}
+					if c.Err() != nil {
+						return nil, c.Err()
+					}
+					return next, nil
+				}, Emit: func(e Event) {
+					events = append(events, e)
+					if e.Kind == "scheduled" {
+						scheduled <- struct{}{}
+					}
+				}}
+			go func() { done <- r.Run(ctx) }()
+			ticks <- time.Now()
+			<-active.started
+			ticks <- time.Now()
+			<-scheduled
+			<-scheduled
+			cancel()
+			if first != Timeout {
+				close(active.gate)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("drain exceeded finite operation budget")
+			}
+			counts := map[string]int{}
+			var outcomes []Outcome
+			for _, e := range events {
+				counts[e.Kind]++
+				if e.Kind == "operation" {
+					outcomes = append(outcomes, e.Outcome)
+				}
+			}
+			if counts["scheduled"] != 2 || counts["operation"] != 2 || counts["skipped"] != 0 || counts["connected"] != counts["disconnected"] || len(outcomes) != 2 || outcomes[0] != first || outcomes[1] != Success {
+				t.Fatalf("counts=%v outcomes=%v", counts, outcomes)
+			}
+			if !active.closed || first != Success && !next.closed {
+				t.Fatal("accepted sessions leaked")
+			}
+		})
+	}
+}
+
+func TestCancellationDuringIdleDialStopsAdmission(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ticks := make(chan time.Time)
+	active := &session{outcome: Success, gate: make(chan struct{}), started: make(chan struct{})}
+	entered := make(chan struct{})
+	done := make(chan error, 1)
+	var events []Event
+	scheduled := make(chan struct{}, 2)
+	dials := 0
+	r := Runner{Config: Config{Sessions: 2, Idle: 1, Timeout: time.Second, ProcessID: "p"}, Ticks: ticks,
+		Dial: func(c context.Context) (Session, error) {
+			dials++
+			if dials == 1 {
+				return active, nil
+			}
+			if dials == 5 {
+				close(entered)
+				<-c.Done()
+			}
+			return nil, errors.New("idle unavailable")
+		}, Emit: func(e Event) {
+			events = append(events, e)
+			if e.Kind == "scheduled" {
+				scheduled <- struct{}{}
+			}
+		}}
+	go func() { done <- r.Run(ctx) }()
+	ticks <- time.Now()
+	<-scheduled
+	<-active.started
+	ticks <- time.Now()
+	<-scheduled
+	ticks <- time.Now()
+	<-entered
+	cancel()
+	close(active.gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, e := range events {
+		counts[e.Kind]++
+	}
+	if counts["scheduled"] != 2 || counts["operation"] != 2 || counts["skipped"] != 0 {
+		t.Fatal("idle cancellation changed admitted work", counts)
+	}
+}
+
+type deadlineSession struct{ deadline time.Time }
+
+func (s *deadlineSession) Operate(ctx context.Context, _ string) Outcome {
+	deadline, ok := ctx.Deadline()
+	if !ok || !deadline.Equal(s.deadline) {
+		return Failure
+	}
+	return Success
+}
+func (*deadlineSession) Close() {}
+
+func TestReconnectSharesOperationDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ticks := make(chan time.Time)
+	done := make(chan error, 1)
+	var outcome Outcome
+	dials := 0
+	r := Runner{Config: Config{Sessions: 1, Timeout: time.Second, ProcessID: "p"}, Ticks: ticks,
+		Dial: func(c context.Context) (Session, error) {
+			dials++
+			if dials == 1 {
+				return nil, errors.New("initial connection unavailable")
+			}
+			deadline, ok := c.Deadline()
+			if !ok {
+				return nil, errors.New("unbounded reconnect")
+			}
+			return &deadlineSession{deadline: deadline}, nil
+		}, Emit: func(e Event) {
+			if e.Kind == "operation" {
+				outcome = e.Outcome
+				cancel()
+			}
+		}}
+	go func() { done <- r.Run(ctx) }()
+	ticks <- time.Now()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if outcome != Success {
+		t.Fatal("reconnect extended the accepted operation deadline", outcome)
+	}
+}
+
 // A tick may already be inside an idle reconnect when finish is accepted.
 // It must not schedule another operation into the full worker queue afterward.
 func TestFinishDuringTickWithFullQueue(t *testing.T) {

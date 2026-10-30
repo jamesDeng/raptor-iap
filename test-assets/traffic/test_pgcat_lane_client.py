@@ -362,4 +362,150 @@ class ClientTests(unittest.TestCase):
         self.assertNotEqual(self.client.journal.run_snapshot()['runState'], 'finished')
 
 
+
+
+class PaidFeedBarrierTests(unittest.TestCase):
+    def setUp(self):
+        from test_pgcat_feed_binding import FeedBindingTests
+        fixture=FeedBindingTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        self.fixture=fixture;self.client=fixture.client;self.client.mode='disabled-rehearsal'
+        self.argv=fixture.argv[:-2];self.argv[self.argv.index('--max-seconds')+1]='75';fixture.argv=self.argv
+        from pgcat_lane_protocol import encode
+        from pgcat_lane_supervisor import save_once
+        save_once(self.client.root,'bindings.json',self.client.bindings)
+        with self.client.journal._transaction() as db:db.execute("UPDATE run SET mode='disabled-rehearsal'")
+        self.wall=patch('pgcat_lane_client.time.time',return_value=1793188800.) # 2026-10-28 20:00 Shanghai
+        self.wall.start();self.addCleanup(self.wall.stop)
+        admission=patch('pgcat_lane_protocol._release_admission');admission.start();self.addCleanup(admission.stop)
+
+    def test_paid_actual_child_executes_only_after_original_raw_manifest_is_bound(self):
+        from pgcat_lane_protocol import digest
+        original=self.client.journal.bind_feed
+        raw=self.fixture.manifest.read_bytes()
+        def bind(value,**kwargs):
+            self.assertFalse(self.fixture.marker.exists());self.assertIsNone(self.client.feed_process.poll())
+            self.assertEqual(kwargs['manifest_raw'],raw)
+            original(value,**kwargs)
+        with patch.object(self.client.journal,'bind_feed',side_effect=bind):
+            child=self.client.start_feed(self.argv,{'PATH':os.defpath},self.fixture.manifest)
+        child.wait(timeout=3);self.assertTrue(self.fixture.marker.exists())
+        self.client.journal.cancel('incomplete') # Cleanup exit is still evidence after uncertainty.
+        self.client.confirm_feed_exit(child)
+        with self.client.journal._connection() as db:
+            self.assertEqual(bytes(db.execute('SELECT raw FROM feed_manifest').fetchone()['raw']),raw)
+        with self.assertRaises(Refused):self.client.confirm_feed_exit(child)
+        other=subprocess.Popen([sys.executable,'-c','pass']);other.wait(timeout=3)
+        with self.assertRaises(Refused):self.client.confirm_feed_exit(other)
+
+    def test_paid_persistence_failure_or_eof_never_executes_provider(self):
+        for kind in ('persist','eof'):
+            with self.subTest(kind=kind):
+                self.client.feed_process=None
+                if kind=='persist':
+                    context=patch.object(self.client.journal,'bind_feed',side_effect=Refused('storage'))
+                else:
+                    real=os.write
+                    context=patch('pgcat_lane_client.os.write',side_effect=lambda fd,data:0 if data==b'1' else real(fd,data))
+                with context,self.assertRaises(Refused):
+                    self.client.start_feed(self.argv,{'PATH':os.defpath},self.fixture.manifest)
+                self.assertIsNotNone(self.client.feed_process)
+                self.client.feed_process.wait(timeout=3)
+                self.assertFalse(self.fixture.marker.exists())
+
+    def test_paid_gate_timeout_and_live_handle_refuse_without_provider_execution(self):
+        original=self.client.journal.bind_feed
+        def delayed(value,**kwargs):
+            original(value,**kwargs)
+            with self.assertRaises(Refused):self.client.confirm_feed_exit(self.client.feed_process)
+            self.client.feed_process.wait(timeout=7)
+        with patch.object(self.client.journal,'bind_feed',side_effect=delayed),self.assertRaises(Refused):
+            self.client.start_feed(self.argv,{'PATH':os.defpath},self.fixture.manifest)
+        self.assertEqual(self.client.feed_process.poll(),125)
+        self.assertFalse(self.fixture.marker.exists())
+        self.client.confirm_feed_exit(self.client.feed_process)
+
+    def test_paid_cutoff_is_rechecked_after_source_validation_before_actual_spawn(self):
+        from datetime import datetime,timezone,timedelta
+        late=datetime(2026,10,28,21,30,tzinfo=timezone(timedelta(hours=8))).timestamp()
+        # Change the active clock through its patched callable, after cap parsing.
+        with patch('pgcat_lane_client.time.time',side_effect=lambda:getattr(self,'now',1793188800.)), \
+                patch('pgcat_lane_client._require_verified',side_effect=lambda:setattr(self,'now',late)):
+            with self.assertRaises(Refused):self.client.start_feed(self.argv,{'PATH':os.defpath},self.fixture.manifest)
+        self.assertIsNone(getattr(self.client,'feed_process',None));self.assertFalse(self.fixture.marker.exists())
+
+    def test_paid_exit_confirmation_rejects_changed_bound_source_or_independent_binding(self):
+        child=self.client.start_feed(self.argv,{'PATH':os.defpath},self.fixture.manifest);child.wait(timeout=3)
+        old=self.client.bindings['sourceHashes']['providerFeed']
+        self.client.bindings['sourceHashes']['providerFeed']='0'*64
+        with self.assertRaises(Refused):self.client.confirm_feed_exit(child)
+        self.client.bindings['sourceHashes']['providerFeed']=old
+        self.client.feed_binding['argvSha256']='0'*64
+        with self.assertRaises(Refused):self.client.confirm_feed_exit(child)
+
+    def test_paid_largest_cap_is_allowed_only_with_remaining_window(self):
+        self.argv[self.argv.index('--max-seconds')+1]='5400'
+        child=self.client.start_feed(self.argv,{'PATH':os.defpath},self.fixture.manifest);child.wait(timeout=3)
+        self.assertTrue(self.fixture.marker.exists());self.client.confirm_feed_exit(child)
+
+    def test_paid_exact_argv_cap_cutoff_and_guard_refuse_before_spawn(self):
+        from datetime import datetime,timezone,timedelta
+        good=1793188800.
+        for cap,hour,minute in (('74',20,0),('5401',20,0),('075',20,0),('75.0',20,0),
+                                ('75',21,30),('5400',21,29)):
+            with self.subTest(cap=cap,hour=hour,minute=minute):
+                now=datetime(2026,10,28,hour,minute,tzinfo=timezone(timedelta(hours=8))).timestamp()
+                argv=list(self.argv);argv[argv.index('--max-seconds')+1]=cap
+                with patch('pgcat_lane_client.time.time',return_value=now),self.assertRaises(Refused):
+                    self.client.start_feed(argv,{'PATH':os.defpath},self.fixture.manifest)
+                self.assertIsNone(getattr(self.client,'feed_process',None))
+        for suffix in (['--no-scale-target','{}'],['--arbitrary']):
+            with self.assertRaises(Refused):self.client.start_feed(self.argv+suffix,{'PATH':os.defpath},self.fixture.manifest)
+        with patch('pgcat_lane_protocol._release_admission',side_effect=Refused()),self.assertRaises(Refused):
+            self.client.start_feed(self.argv,{'PATH':os.defpath},self.fixture.manifest)
+        self.assertIsNone(getattr(self.client,'feed_process',None))
+
+
 if __name__ == '__main__': unittest.main()
+
+
+class PostStopClientTests(unittest.TestCase):
+    def setUp(self):
+        import test_pgcat_lane_protocol as fixtures
+        from unittest.mock import Mock
+        from pgcat_lane_protocol import digest
+        f=fixtures.PostStopJournalTests();f.setUp();self.addCleanup(f.doCleanups);self.f=f
+        c=LaneClient();self.client=c;c.root=f.root;c.bindings=f.f.outer['laneBindings'];c.mode='disabled-rehearsal'
+        c.run_id=f.f.run;c.supervisor_id=f.supervisor;c.bundle=digest(c.bindings['sourceHashes']);c.journal=f.journal
+        c.process=Mock();c.process.poll.return_value=None
+        reader,c.liveness_fd=os.pipe();os.close(reader);self.addCleanup(c.close)
+
+    def finish_published(self,root,request):
+        publish_request(root,request);self.f.request=request
+        self.f.journal.admit(request);self.f.journal.post_stop_dispatch(request['requestId'])
+        result=self.f.result();self.f.journal.seal(request['requestId'],result,post_stop_source_sha=result['payload']['sourceSha256'])
+        return request['requestId']
+
+    def test_noarg_client_uses_frozen_stop_and_returns_sealed_result(self):
+        with patch.object(client_module,'publish_request',side_effect=self.finish_published), \
+             patch.object(client_module.lane,'read_receipt',side_effect=AssertionError('live receipt')):
+            result=self.client.post_stop_call()
+        self.assertEqual(result,self.f.result());self.assertIsNotNone(self.client.liveness_fd)
+        with self.assertRaises(Refused):self.client.post_stop_call()
+        self.assertIsNotNone(self.client.liveness_fd)
+        with self.assertRaises(Refused):self.client.call('baseline-status',self.f.f.receipt,monotonic()+5.)
+        self.assertIsNotNone(self.client.liveness_fd)
+
+    def test_pre_call_final_age_and_late_return_refuse(self):
+        with patch.object(client_module.time,'time',return_value=self.f.f.receipt['observedAt']+24):
+            with self.assertRaises(Refused):self.client.post_stop_call()
+        self.assertIsNone(self.client.liveness_fd)
+
+    def test_uncertain_first_attempt_closes_and_never_retries(self):
+        def timeout(root,request):
+            publish_request(root,request);self.f.journal.admit(request)
+            self.f.journal.post_stop_dispatch(request['requestId']);self.f.journal.cancel('timeout')
+        with patch.object(client_module,'publish_request',side_effect=timeout):
+            with self.assertRaises(Refused):self.client.post_stop_call()
+        self.assertIsNone(self.client.liveness_fd)
+        with self.f.journal._connection() as db:
+            self.assertEqual(db.execute('SELECT dispatch_claimed FROM post_stop_admission').fetchone()[0],1)

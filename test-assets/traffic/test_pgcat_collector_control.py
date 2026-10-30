@@ -1,5 +1,7 @@
 """Offline collector lifecycle and exact reviewed-source execution tests."""
+import copy
 import hashlib
+import io
 import importlib
 import importlib.util
 import json
@@ -14,6 +16,8 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest.mock import patch
+from contextlib import redirect_stdout
 
 from pgcat_lane_actions import ActionCatalog
 from pgcat_lane_protocol import Refused, validate_result
@@ -36,6 +40,7 @@ class CollectorTests(unittest.TestCase):
         self.root = Path(os.path.realpath(self.tmp.name)); self.root.chmod(0o700)
         self.run = self.root/'run'; self.run.mkdir(mode=0o700)
         self.contract = self.root/'contract'; self.contract.mkdir(mode=0o700)
+        (self.run/'disabled-boundary').mkdir(mode=0o700)
         self.kubeconfig = self.root/'kubeconfig'
         self.kubeconfig.write_text('fixture'); self.kubeconfig.chmod(0o600)
         self.run_id = str(uuid.uuid4())
@@ -126,23 +131,28 @@ class CollectorTests(unittest.TestCase):
             with self.assertRaises(OSError):control.close_verdict(self.contract,self.run_id,str(self.kubeconfig),result)
         self.assertTrue(self.kubeconfig.exists());self.assertFalse((job/'credential-cleanup.json').exists())
 
-    def launch(self, spawn=None):
+    def launch(self, spawn=None, *, profile='no-scale'):
         def fake(*args, **kwargs):
             self.calls.append((args, kwargs))
             return object()
         return control.launch(self.contract, self.run_id, self.kubeconfig,
-            self.hashes, worker_path=self.worker, spawn=spawn or fake)
+            self.hashes, worker_path=self.worker, spawn=spawn or fake,
+            **({} if profile=='no-scale' else {'profile':profile}))
 
-    def child(self, code=0, timeout=False, completion=True, completed=True, cancelled=False):
+    def child(self, code=0, timeout=False, completion=True, completed=True, cancelled=False,
+              *, profile='no-scale', manifest=None):
         case = self
         class FakeChild:
             pid = 1234
             waits = 0
             kills = 0
+            timeouts = None
             def wait(self, timeout=None):
                 self.waits += 1
+                if self.timeouts is None:self.timeouts=[]
+                self.timeouts.append(timeout)
                 if timeout is not None:
-                    case.assertLessEqual(timeout, 80)
+                    case.assertLessEqual(timeout, 80 if profile=='no-scale' else 5415)
                     if timeout_flag and (timeout_flag != "once" or self.waits == 1):
                         raise subprocess.TimeoutExpired('fixture', timeout)
                 return code
@@ -152,28 +162,211 @@ class CollectorTests(unittest.TestCase):
         timeout_flag = timeout
         def spawn(args, **kwargs):
             self.calls.append((args, kwargs))
-            self.assertEqual(args[-6:], ['--output',str(self.run/'collector-capture'),
-                '--inventory',str(self.run/'provider-inventory.json'),'--seconds','65'])
-            self.assertNotIn('--boundary-dir', args)
+            tail = (['--output',str(self.run/'collector-capture'),
+                '--inventory',str(self.run/'provider-inventory.json'),'--seconds','65']
+                if profile=='no-scale' else ['--output',str(self.run/'rehearsal-capture'),
+                '--inventory',str(self.run/'provider-inventory.json'),'--seconds','5400',
+                '--boundary-dir',str(self.run/'disabled-boundary')])
+            self.assertEqual(args[-len(tail):], tail)
+            if profile=='no-scale':self.assertNotIn('--boundary-dir', args)
             self.assertEqual(kwargs['env']['KUBECONFIG'], str(self.kubeconfig))
-            capture = self.run/'collector-capture'; capture.mkdir(mode=0o700)
+            capture = self.run/('collector-capture' if profile=='no-scale' else 'rehearsal-capture')
+            capture.mkdir(mode=0o700)
             if completion:
                 path = capture/'completion.json'
-                path.write_text(json.dumps(dict(version=1, completed=completed, cancelled=cancelled,
-                    maxTotalSeconds=65, segments=[{'path':'segment-0001.jsonl'}])))
-                path.chmod(0o600)
+                value = dict(version=1, completed=completed, cancelled=cancelled,
+                    maxTotalSeconds=65 if profile=='no-scale' else 5400,
+                    segments=[{'path':'segment-0001.jsonl'}])
+                if profile=='disabled-rehearsal':
+                    value.update(maxSegmentSeconds=1800,errors=[],missingPollCount=0,
+                        clientFinalMarkers=[dict(uid='pod',processId='process',final=True)])
+                if manifest is not None:value.update(manifest)
+                path.write_text(json.dumps(value));path.chmod(0o600)
             # Status before the owning wait completes must expose the same identity.
             self.spawned = FakeChild()
             return self.spawned
         return control.run_child(self.contract,self.run_id,self.kubeconfig,self.hashes,
-            worker_path=self.worker,spawn=spawn,probe=lambda pid: dict(IDENTITY))
+            worker_path=self.worker,spawn=spawn,probe=lambda pid: dict(IDENTITY),
+            **({} if profile=='no-scale' else {'profile':profile}))
 
-    def status(self, alive=False, now=None):
+    def status(self, alive=False, now=None, *, profile='no-scale'):
         return control.status(self.contract,self.run_id,self.hashes,
-            probe=lambda pid: dict(IDENTITY) if alive else None, now=now)
+            probe=lambda pid: dict(IDENTITY) if alive else None, now=now,
+            **({} if profile=='no-scale' else {'profile':profile}))
 
     def observe(self):
         self.assertEqual(self.status(alive=True), {'status':'ALIVE','identity':IDENTITY})
+
+    def test_rehearsal_launch_requires_existing_empty_private_boundary(self):
+        for kind in ('missing','nonempty','public','symlink'):
+            with self.subTest(kind=kind):
+                self.setUp();boundary=self.run/'disabled-boundary'
+                if kind=='missing':boundary.rmdir()
+                if kind=='nonempty':(boundary/'request.json').write_text('stale')
+                if kind=='public':boundary.chmod(0o755)
+                if kind=='symlink':
+                    boundary.rmdir();target=self.root/'elsewhere';target.mkdir(mode=0o700)
+                    boundary.symlink_to(target,target_is_directory=True)
+                with self.assertRaises((ValueError,OSError)):self.launch(profile='disabled-rehearsal')
+                self.assertFalse(self.calls)
+                self.assertFalse((self.run/'collector-job'/'intent.json').exists())
+                # The no-scale component has no boundary precondition.
+                self.assertEqual(self.launch(),{'status':'LAUNCHED'})
+
+    def test_rehearsal_capture_argv_uses_bound_paths_and5400(self):
+        self.assertEqual(control.capture_arguments(self.run,profile='disabled-rehearsal'),
+            ['--output',str(self.run/'rehearsal-capture'),'--inventory',
+             str(self.run/'provider-inventory.json'),'--seconds','5400',
+             '--boundary-dir',str(self.run/'disabled-boundary')])
+        self.launch(profile='disabled-rehearsal')
+        self.assertEqual(self.child(profile='disabled-rehearsal'),0)
+        self.assertEqual(self.calls[-1][0][7],'_rehearsal-capture')
+
+    def test_no_scale_profile_remains65_without_boundary(self):
+        self.assertEqual(control.capture_arguments(self.run,profile='no-scale'),
+            ['--output',str(self.run/'collector-capture'),'--inventory',
+             str(self.run/'provider-inventory.json'),'--seconds','65'])
+        self.launch();self.assertEqual(self.child(),0)
+        self.assertEqual(self.spawned.timeouts,[80])
+        intent=json.loads((self.run/'collector-job'/'intent.json').read_text())
+        self.assertEqual(set(intent),{'runId','startedAt'})
+        self.assertEqual(self.status(alive=True,now=lambda:intent['startedAt']+90)['status'],'ALIVE')
+        self.assertEqual(self.status(alive=True,now=lambda:intent['startedAt']+91),{'status':'INCONCLUSIVE'})
+
+    def test_rehearsal_intent_binds_profile_across_child_and_status(self):
+        self.launch(profile='disabled-rehearsal')
+        intent=json.loads((self.run/'collector-job'/'intent.json').read_text())
+        self.assertEqual(intent,dict(runId=self.run_id,startedAt=intent['startedAt'],
+                                    profile='disabled-rehearsal'))
+        self.assertEqual(self.calls[0][0][0][7],'_rehearsal-run')
+        self.assertEqual(self.child(profile='disabled-rehearsal'),0)
+        self.assertEqual(self.status(alive=True,profile='disabled-rehearsal')['status'],'ALIVE')
+        self.assertEqual(self.status(profile='disabled-rehearsal')['status'],'EXITED')
+        path=self.run/'collector-job'/'intent.json'
+        path.write_text(json.dumps(dict(intent,profile='no-scale')))
+        self.assertEqual(self.status(alive=True,profile='disabled-rehearsal'),{'status':'INCONCLUSIVE'})
+        with self.assertRaises(ValueError):control.completion(self.run,profile='disabled-rehearsal')
+
+    def test_cross_profile_status_and_launch_refused(self):
+        for launched,wrong in [('no-scale','disabled-rehearsal'),('disabled-rehearsal','no-scale')]:
+            with self.subTest(launched=launched):
+                self.setUp();self.launch(profile=launched)
+                self.assertEqual(self.child(profile=wrong),1);self.assertEqual(len(self.calls),1)
+                with self.assertRaises(ValueError):self.launch(profile=wrong)
+                self.assertEqual(self.child(profile=launched),0)
+                self.assertEqual(self.status(alive=True,profile=wrong),{'status':'INCONCLUSIVE'})
+                self.assertEqual(self.status(alive=True,profile=launched)['status'],'ALIVE')
+                with self.assertRaises(ValueError):control.completion(self.run,profile=wrong)
+                self.assertEqual(self.status(profile=wrong),{'status':'INCONCLUSIVE'})
+        for invalid in ('rehearsal','5400','',None,True,{},[]):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):control.capture_arguments(self.run,profile=invalid)
+
+    def test_rehearsal_guardian_and_status_use_long_budgets(self):
+        self.launch(profile='disabled-rehearsal');self.assertEqual(self.child(profile='disabled-rehearsal'),0)
+        self.assertEqual(self.spawned.timeouts,[5415])
+        start=json.loads((self.run/'collector-job'/'intent.json').read_text())['startedAt']
+        self.assertEqual(self.status(alive=True,now=lambda:start+5430,profile='disabled-rehearsal')['status'],'ALIVE')
+        self.assertEqual(self.status(now=lambda:start+5430,profile='disabled-rehearsal')['status'],'EXITED')
+        for delta in (-1,5431):
+            self.assertEqual(self.status(alive=True,now=lambda:start+delta,profile='disabled-rehearsal'),{'status':'INCONCLUSIVE'})
+        self.setUp();self.launch(profile='disabled-rehearsal')
+        self.assertEqual(self.child(code=-9,timeout='once',profile='disabled-rehearsal'),1)
+        self.assertEqual(self.spawned.timeouts,[5415,5]);self.assertEqual(self.spawned.kills,1)
+        self.assertEqual(self.status(alive=True,profile='disabled-rehearsal')['status'],'ALIVE')
+        self.assertEqual(self.status(profile='disabled-rehearsal'),{'status':'INCONCLUSIVE'})
+
+    def test_rehearsal_missing_final_or_expired_duration_is_not_completed(self):
+        cases=[dict(clientFinalMarkers=[]),dict(clientFinalMarkers=[dict(uid='p',processId='c',final=False)]),
+               dict(errors=[{'reason':'client boundary unavailable'}],missingPollCount=1),
+               dict(maxTotalSeconds=65),dict(maxSegmentSeconds=1801),dict(maxSegmentSeconds=True),
+               dict(segments=[]),dict(segments=[{}]*5407),dict(completed=False),dict(cancelled=True)]
+        for value in cases:
+            with self.subTest(value=str(value)[:100]):
+                self.setUp();self.launch(profile='disabled-rehearsal')
+                self.assertEqual(self.child(profile='disabled-rehearsal',manifest=value),1)
+                self.assertEqual(self.status(alive=True,profile='disabled-rehearsal')['status'],'ALIVE')
+                self.assertEqual(self.status(profile='disabled-rehearsal'),{'status':'INCONCLUSIVE'})
+
+    def run_long_capture(self,kind):
+        # Real worker/segmentation, fixed 5400 argv, only remote reads and clock faked.
+        import worker_capture
+        from test_capture_window import frame
+        from finish_clients import atomic_json
+        boundary=self.run/'disabled-boundary'
+        from test_finish_clients import ROSTER
+        roster=ROSTER
+        clock=[0]
+        def capture(*args):
+            t=clock[0];row=frame(t,min(t,2),final=t>=2 and kind!='missing-final')
+            pod=row['pods'][0];row['expectedReplicas']=2;row['pods']=[]
+            for identity in roster:
+                item=copy.deepcopy(pod);item.update({k:v for k,v in identity.items() if k!='processId'})
+                item['snapshot']['sample']['processId']=identity['processId']
+                for event in item['snapshot']['events']:event['processId']=identity['processId']
+                row['pods'].append(item)
+            if t==1 and kind!='cap':atomic_json(boundary/'request.json',dict(requestId='one',roster=roster))
+            if t==2 and kind!='cap':
+                atomic_json(boundary/'receipt.json',dict(requestId='one',status='ACKNOWLEDGED',
+                    clients={r['uid']+'/'+r['processId']:{'status':'acknowledged'} for r in roster}))
+            return row
+        def sleep(_):clock[0]=5400 if kind=='cap' else clock[0]+1
+        with patch.object(worker_capture,'capture_frame',side_effect=capture), \
+             patch.object(worker_capture.time,'monotonic',side_effect=lambda:clock[0]), \
+             patch.object(worker_capture.time,'sleep',side_effect=sleep):
+            worker_capture.run_capture(self.run/'rehearsal-capture',self.run/'provider-inventory.json',5400,boundary)
+        return clock[0]
+
+    def test_real_rehearsal_boundary_completes_and_cap_or_missing_finals_refuse(self):
+        for kind in ('good','missing-final','cap'):
+            with self.subTest(kind=kind):
+                self.setUp();self.launch(profile='disabled-rehearsal');clock=self.run_long_capture(kind)
+                if kind=='good':
+                    self.assertEqual(clock,2)
+                    self.assertEqual(len(control.completion(self.run,profile='disabled-rehearsal')),64)
+                else:
+                    with self.assertRaises(ValueError):control.completion(self.run,profile='disabled-rehearsal')
+
+    def test_rehearsal_capture_refuses_missing_original_provenance_and_checks_intent(self):
+        self.launch(profile='disabled-rehearsal')
+        self._stale(self.run/'capture_window.py','VALUE="OLD"\n','VALUE="NEW"\n')
+        capture=self.run/'worker_capture.py'
+        capture.write_text('import capture_window\ndef main():\n print(capture_window.VALUE)\n')
+        capture.chmod(0o600);self.hashes=self.rehash()
+        args=control.entry_command(self.worker,self.hashes['collectorControl'],
+            ['_rehearsal-capture',str(self.contract),self.run_id,str(self.kubeconfig),json.dumps(self.hashes),
+             '--output',str(self.run/'rehearsal-capture'),'--inventory',
+             str(self.run/'provider-inventory.json'),'--seconds','5400',
+             '--boundary-dir',str(self.run/'disabled-boundary')])
+        result=subprocess.run(args,cwd=str(self.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5,
+            env=dict(os.environ,PYTHONPYCACHEPREFIX=str(self.root/'pycache')))
+        self.assertNotEqual(result.returncode,0);self.assertEqual(json.loads(result.stdout),{'status':'INCONCLUSIVE'})
+        args[7]='_capture'
+        result=subprocess.run(args,cwd=str(self.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+        self.assertNotEqual(result.returncode,0);self.assertEqual(json.loads(result.stdout),{'status':'INCONCLUSIVE'})
+        args[7]='_rehearsal-capture';args[-3]='65'
+        result=subprocess.run(args,cwd=str(self.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+        self.assertNotEqual(result.returncode,0)
+
+    def test_rehearsal_private_launch_and_status_cli_bind_profile(self):
+        previous_mask=os.umask(0o077);os.umask(previous_mask)
+        self.addCleanup(os.umask,previous_mask)
+        args=[str(self.worker),'rehearsal-launch',str(self.contract),self.run_id,
+              str(self.kubeconfig),json.dumps(self.hashes)]
+        output=io.StringIO()
+        with patch.object(control,'__file__',str(self.worker)),patch.object(sys,'argv',args), \
+             patch.object(control.subprocess,'Popen',return_value=object()),redirect_stdout(output):
+            self.assertEqual(control.main(),0)
+        self.assertEqual(json.loads(output.getvalue()),{'status':'LAUNCHED'})
+        self.assertEqual(self.child(profile='disabled-rehearsal'),0)
+        args[1]='rehearsal-status';output=io.StringIO()
+        with patch.object(sys,'argv',args),patch.object(control,'process_identity',return_value=dict(IDENTITY)), \
+             redirect_stdout(output):
+            self.assertEqual(control.main(),0)
+        self.assertEqual(json.loads(output.getvalue()),dict(status='ALIVE',identity=IDENTITY))
+        args[1]='status';output=io.StringIO()
+        with patch.object(sys,'argv',args),redirect_stdout(output):self.assertEqual(control.main(),1)
+        self.assertEqual(json.loads(output.getvalue()),{'status':'INCONCLUSIVE'})
 
     def test_launch_is_one_use_detached_even_after_unknown_spawn(self):
         self.assertEqual(self.launch(), {'status':'LAUNCHED'})
@@ -255,6 +448,7 @@ class CollectorTests(unittest.TestCase):
         path.write_text(new);path.chmod(0o600);os.utime(path,(stamp,stamp))
 
     def test_capture_executes_reviewed_transitive_bytes_ignoring_matching_pyc(self):
+        self.launch()
         self._stale(self.run/'capture_window.py','VALUE="OLD"\n','VALUE="NEW"\n')
         capture=self.run/'worker_capture.py'
         capture.write_text('import capture_window\ndef main():\n print(capture_window.VALUE)\n')
@@ -336,3 +530,75 @@ class CollectorParserTests(unittest.TestCase):
             self.assertEqual(words[8:11],[str(fixture.contract),fixture.run_id,str(fixture.kubeconfig)])
             self.assertEqual(json.loads(words[11])['collectorControl'],'c'*64)
             self.assertEqual(timeout,5)
+
+class CollectorWitnessContext(unittest.TestCase):
+    def setUp(self):
+        from test_pgcat_rehearsal_contract import RehearsalContractTests
+        self.fixture=RehearsalContractTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
+        self.fixture._baseline();f=self.fixture
+        for name in control.SOURCES.values():
+            shutil.copyfile(str(Path(__file__).resolve().parent/name),str(f.run/name));(f.run/name).chmod(0o600)
+        self.hashes={key:hashlib.sha256((f.run/name).read_bytes()).hexdigest() for key,name in control.SOURCES.items()}
+        self.run,self.fd,self.verified=control.context(f.contract,f.run_id,self.hashes);self.addCleanup(os.close,self.fd)
+    def derive(self):
+        f=self.fixture
+        return control.capture_context(f.contract,f.run_id,self.hashes,self.verified,self.fd)
+    def identity(self,value=None):control.write(self.fd,'identity.json',dict(IDENTITY) if value is None else value)
+    def test_exact_original_provenance_and_actual_child_identity(self):
+        self.identity();f=self.fixture
+        with patch.object(control,'process_identity',return_value=dict(IDENTITY)) as probe:
+            value=self.derive()
+        self.assertEqual(probe.call_args_list[0].args,(os.getpid(),))
+        self.assertEqual(value['collectorIdentity'],IDENTITY)
+        self.assertEqual(value['baselineSha256'],hashlib.sha256((f.contract/'baseline.json').read_bytes()).hexdigest())
+        self.assertEqual(value['providerRunContextSha256'],hashlib.sha256(f.raw).hexdigest())
+        self.assertEqual(value['sourceHashes'],self.hashes);self.assertEqual(value['bundleSha256'],'b'*64)
+        self.assertEqual(value['originalRoster'],json.loads((f.contract/'baseline.json').read_text())['roster'])
+    def test_verified_disabled_entry_injects_context_without_cli_capability(self):
+        f=self.fixture
+        # Offline subprocess gets a deterministic Linux identity probe; every
+        # transitive module still executes its verified source bytes.
+        path=f.run/'pgcat_collector_control.py';raw=path.read_text()
+        raw=raw.replace("if __name__=='__main__':", "def process_identity(pid):return "+repr(IDENTITY)+"\n\nif __name__=='__main__':")
+        path.write_text(raw)
+        capture=f.run/'worker_capture.py';capture.write_text(capture.read_text()+
+            "\ndef main(*,progress_context=None):\n print(json.dumps(progress_context,sort_keys=True))\n")
+        hashes={key:hashlib.sha256((f.run/name).read_bytes()).hexdigest() for key,name in control.SOURCES.items()}
+        control.write(self.fd,'identity.json',IDENTITY)
+        control.write(self.fd,'intent.json',dict(runId=f.run_id,startedAt=int(time.time()),profile='disabled-rehearsal'))
+        args=control.entry_command(path,hashes['collectorControl'],['_rehearsal-capture',str(f.contract),f.run_id,str(f.kubeconfig),json.dumps(hashes)]+control.capture_arguments(f.run,profile='disabled-rehearsal'))
+        result=subprocess.run(args,cwd=str(f.run),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+        self.assertEqual(result.returncode,0,result.stderr.decode()+result.stdout.decode())
+        value=json.loads(result.stdout);self.assertEqual(value['runId'],f.run_id);self.assertEqual(value['collectorIdentity'],IDENTITY)
+        self.assertEqual(value['sourceHashes'],hashes)
+
+    def test_guardian_identity_race_wait_is_bounded_and_never_adopted(self):
+        clock=[0];slept=[]
+        def sleep(delay):
+            slept.append(delay);clock[0]+=delay
+            if clock[0]>=.03 and not (self.run/'collector-job'/'identity.json').exists():self.identity()
+        with patch.object(control,'process_identity',return_value=dict(IDENTITY)),patch.object(control.time,'monotonic',side_effect=lambda:clock[0]),patch.object(control.time,'sleep',side_effect=sleep):
+            self.assertEqual(self.derive()['collectorIdentity'],IDENTITY)
+        self.assertTrue(slept);self.assertLessEqual(clock[0],1)
+        (self.run/'collector-job'/'identity.json').unlink();self.identity(dict(IDENTITY,pid=9999))
+        with patch.object(control,'process_identity',return_value=dict(IDENTITY)),self.assertRaises(ValueError):self.derive()
+    def test_missing_identity_timeout_and_mutated_source_or_seal_refuse(self):
+        clock=[0]
+        with patch.object(control,'process_identity',return_value=dict(IDENTITY)),patch.object(control.time,'monotonic',side_effect=lambda:clock[0]), \
+             patch.object(control.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)),self.assertRaises(ValueError):self.derive()
+        self.assertLessEqual(clock[0],1.01)
+        self.identity()
+        for kind in ('source','seal','path','target','feed','run'):
+            with self.subTest(kind=kind):
+                f=self.fixture;path=f.contract/'baseline.json';saved=path.read_bytes();seal=Path(str(path)+'.sha256');saved_seal=seal.read_bytes();v=json.loads(saved)
+                if kind=='source':self.verified['worker_capture']+=b'\n'
+                if kind=='seal':path.write_bytes(saved+b' ')
+                if kind=='path':v['paths']['captureDir']=str(f.run/'wrong')
+                if kind=='target':v['targetSha256']='f'*64
+                if kind=='feed':v['receipt']['feedSession']=str(uuid.uuid4())
+                if kind=='run':v['providerRunContextSha256']='f'*64
+                if kind not in ('source','seal'):
+                    path.write_text(json.dumps(v));seal.write_text(json.dumps(dict(sha256=hashlib.sha256(path.read_bytes()).hexdigest())))
+                with patch.object(control,'process_identity',return_value=dict(IDENTITY)),self.assertRaises(ValueError):self.derive()
+                path.write_bytes(saved);seal.write_bytes(saved_seal)
+                if kind=='source':self.verified['worker_capture']=self.verified['worker_capture'][:-1]

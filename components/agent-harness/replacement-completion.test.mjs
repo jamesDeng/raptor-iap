@@ -13,3 +13,16 @@ test('missing stages unresolved submissions old nodes and stale health cannot qu
  const o=observer(),read=o.cloudRead;o.cloudRead=async args=>{const d=await read(args);if(args.kind==='fleet')d.instances[0].instanceId='old-a';return d;};await assert.rejects(()=>qualifyReplacementConvergence(trace,o,scope),/MissingEvidence/);
  const stale=observer(),fresh=stale.cloudRead;stale.cloudRead=async args=>({...await fresh(args),observedAt:'2020-01-01T00:00:00Z'});await assert.rejects(()=>qualifyReplacementConvergence(trace,stale,scope),/MissingEvidence/);
 });
+
+test('direct convergence emits only two stages and retains exact readyFour cohort and restart generation',async()=>{
+ const direct={...trace,scaleActions:()=>[trace.scaleActions()[0],{actionId:'shrink',previousDesiredCapacity:4,desiredCapacity:2,outcome:'unknown'}]};
+ const sequence={cohort:()=>({oldInstanceIds:['old-a','old-b'],newInstanceIds:['new-a','new-b']}),completionEvidence:()=>({oldInstanceIds:['old-a','old-b'],newInstanceIds:['new-a','new-b'],restartGeneration:6})};
+ const o=observer();o.deploymentRead=async()=>({...scope.application,replicas:2,readyReplicas:2,updatedReplicas:2,availableReplicas:2,generation:6,observedGeneration:6,observedAt:now()});
+ const result=await qualifyReplacementConvergence(direct,o,scope,sequence);
+ assert.equal(result.version,2);assert.equal(result.restartGeneration,6);assert.equal(result.actions.length,2);
+ const wrong={...sequence,cohort:()=>({oldInstanceIds:['old-a','old-b'],newInstanceIds:['other-a','other-b']})};
+ await assert.rejects(()=>qualifyReplacementConvergence(direct,o,scope,wrong),/MissingEvidence/);
+ o.deploymentRead=async()=>({...scope.application,replicas:2,readyReplicas:2,updatedReplicas:2,availableReplicas:2,generation:6,observedGeneration:5,observedAt:now()});
+ await assert.rejects(()=>qualifyReplacementConvergence(direct,o,scope,sequence),/MissingEvidence/);
+ await assert.rejects(()=>qualifyReplacementConvergence(trace,observer(),scope,sequence),/MissingEvidence/);
+});

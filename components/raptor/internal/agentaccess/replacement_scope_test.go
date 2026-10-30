@@ -53,3 +53,41 @@ func TestReplacementCapabilitySelectors(t *testing.T) {
 		t.Fatal("server-only claim exposed")
 	}
 }
+
+func TestProxyReadReplacementSelectors(t *testing.T) {
+	b := Binding{RequestID: "request", EnvCode: "dev", ObjectKind: "db-proxy", ObjectCode: "proxy", Operation: "db-proxy.replace-nodes", ClusterID: "cluster"}
+	s := ReplacementScope{EnvCode: "dev", ProxyCode: "proxy", GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: "dev", AppCode: "client", ClusterID: "cluster", Namespace: "ns", Name: "client", UID: "uid"}}
+	for _, mode := range []string{"", "replacement", "qualification"} {
+		b.ExecutionMode = mode
+		for _, tool := range []string{"proxy_observation_get", "proxy_pgcat_metrics_get"} {
+			selectors := map[string]string{"requestId": "request", "envCode": "dev", "proxyCode": "proxy", "groupId": "group", "serverGroupId": "backend"}
+			if !ReplacementSelectorsAllowed(b, s, "infra", tool, selectors) {
+				t.Errorf("bound %s read denied in %s", tool, mode)
+			}
+			if ReplacementSelectorsAllowed(b, s, "raptor", tool, selectors) {
+				t.Fatal("wrong audience accepted")
+			}
+			if SelectorsAllowed(b, "infra", tool, selectors) {
+				t.Fatal("application-question allowlist gained proxy read")
+			}
+			for key, value := range selectors {
+				selectors[key] = "foreign"
+				if ReplacementSelectorsAllowed(b, s, "infra", tool, selectors) {
+					t.Fatal("foreign selector", key)
+				}
+				selectors[key] = value
+			}
+			for _, key := range []string{"kind", "series", "extra"} {
+				selectors[key] = "up"
+				if ReplacementSelectorsAllowed(b, s, "infra", tool, selectors) {
+					t.Fatal("raw selector accepted", key)
+				}
+				delete(selectors, key)
+			}
+			delete(selectors, "serverGroupId")
+			if ReplacementSelectorsAllowed(b, s, "infra", tool, selectors) {
+				t.Fatal("missing backend allowed")
+			}
+		}
+	}
+}

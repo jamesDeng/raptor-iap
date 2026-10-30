@@ -20,7 +20,8 @@ spec:
         raptor.env: {{ .Values.environment | quote }}
     spec:
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: 20
+      # Four sessions/one idle: 15s worst-case drain + 10s evidence + 2s shutdown.
+      terminationGracePeriodSeconds: 30
       securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532}
       volumes:
         - name: database

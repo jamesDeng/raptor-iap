@@ -4,7 +4,9 @@ import copy
 import hashlib
 from capture_window import InventoryMode
 from pgcat_lane_protocol import (roster_sha, encode, target_valid, original_roster,
-    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK, Refused)
+    validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK, Refused,
+    REHEARSAL_STOP_INTENT, REHEARSAL_STOP_ACK, validate_rehearsal_stop_receipt,
+    rehearsal_stop_ack, Journal, private_json)
 import ipaddress
 import json
 import math
@@ -299,7 +301,7 @@ def _unique_pairs(pairs):
     return value
 
 
-def validate_run_context(root, path, *, no_scale=False):
+def validate_run_context(root, path, *, no_scale=False, mode='disabled-rehearsal'):
     """Bind context and requested feed guards to the active journal mode."""
     from pgcat_lane_protocol import Journal, encode, identifier, private, read_private
     import pgcat_lane_supervisor as supervisor
@@ -337,8 +339,11 @@ def validate_run_context(root, path, *, no_scale=False):
     from pgcat_lane_protocol import _release_admission
     _release_admission(journal['mode'])
     require(journal['runState'] == 'active' and journal['runId'] == context['runId'])
-    require(type(no_scale) is bool and journal['mode'] in ('no-scale', 'disabled-rehearsal')
-            and (journal['mode'] == 'no-scale') == no_scale)
+    require(type(no_scale) is bool and mode in ('disabled-rehearsal','full-replacement-direct-v2') and
+            journal['mode'] in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and
+            (journal['mode']=='no-scale')==no_scale and
+            (journal['mode']=='full-replacement-direct-v2')==(mode=='full-replacement-direct-v2'))
+    if mode=='full-replacement-direct-v2':Journal(root).native_plan()
     target = journal['target']
     require(target['scalingGroupId'] == GROUP_ID and target['nlbServerGroupId'] == SERVER_GROUP_ID
             and target['workerId'] == WORKER_ID and target['regionId'] == REGION)
@@ -534,7 +539,7 @@ class Operator:
     def __init__(self, args):
         self.args = args
         self.mode = getattr(args, 'mode', 'full-replacement')
-        require(self.mode in ('full-replacement', 'disabled-rehearsal'))
+        require(self.mode in ('full-replacement', 'disabled-rehearsal', 'full-replacement-direct-v2'))
         self.inventory_mode = InventoryMode()
         self.previous = ()
         self.retained_targets = ()
@@ -559,6 +564,11 @@ class Operator:
         run_context = getattr(args, 'run_context', None)
         self.run_context = None
         if run_context is not None:
+            require(self.mode in ('disabled-rehearsal','full-replacement-direct-v2'))
+            if self.mode=='full-replacement-direct-v2':
+                from pgcat_lane_protocol import _release_admission
+                try:_release_admission(self.mode)
+                except Refused:raise ValueError('native startup') from None
             context_path = Path(run_context)
             contract = Path(args.contract_dir)
             inventory = Path(args.worker_inventory)
@@ -568,7 +578,12 @@ class Operator:
                     inventory.parent.name == 'run' and
                     inventory.parent.parent == contract.parent)
             self.run_context = validate_run_context(context_path.parent, context_path,
-                no_scale=getattr(args, 'no_scale_target', None) is not None)
+                no_scale=getattr(args, 'no_scale_target', None) is not None,mode=self.mode)
+        if self.run_context is not None and getattr(args,'no_scale_target',None) is None:
+            require(type(args.interval) is int and args.interval == 15 and
+                    type(args.max_seconds) is int and 75 <= args.max_seconds <= 5400)
+            for name in (REHEARSAL_STOP_INTENT,REHEARSAL_STOP_ACK):
+                require(self.status_file is not None and not os.path.lexists(self.status_file.parent/name))
         self.no_scale_target = None
         self.stop_ack = None
         raw_target = getattr(args, 'no_scale_target', None)
@@ -631,11 +646,45 @@ class Operator:
             self.stopped = True
             raise FeedStop('loop') from None
 
+    def stop_rehearsal(self):
+        """Acknowledge only the actual final publication after sealed reconciliation."""
+        if self.run_context is None or self.no_scale_target is not None:
+            return False
+        from pgcat_lane_supervisor import save_once
+        path=self.status_file.parent/REHEARSAL_STOP_INTENT
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.args.mode == self.mode and
+                    getattr(self.args,'no_scale_target',None) is None)
+            if not os.path.lexists(path):
+                require(self.stop_ack is None and not os.path.lexists(path.parent/REHEARSAL_STOP_ACK))
+                return False
+            self.deadline=None
+            self.verify_run_context()
+            journal=Journal(Path(self.args.run_context).parent)
+            run=journal.run_snapshot();proof=journal.reconcile_binding()
+            intent,raw=private_json(path)
+            require(raw == encode(intent) and intent['runId'] == self.run_context['runId'])
+            receipt,_=private_json(self.status_file)
+            require(receipt['feedSession'] == self.feedSession and receipt['sequence'] == self.sequence)
+            validate_rehearsal_stop_receipt(intent,receipt,proof,run)
+            ack=rehearsal_stop_ack(intent,receipt)
+            if self.stop_ack is None:
+                save_once(path.parent,REHEARSAL_STOP_ACK,ack,atomic=True)
+                self.stop_ack=ack
+            actual,raw=private_json(path.parent/REHEARSAL_STOP_ACK)
+            require(raw == encode(ack) and encode(actual) == encode(self.stop_ack) == encode(ack))
+            self.stopped=True
+            return True
+        except (Refused,OSError,ValueError,UnicodeError,TypeError,KeyError):
+            self.stopped=True
+            raise FeedStop('loop') from None
+
     def verify_run_context(self):
         if self.run_context is not None:
+            require(self.mode in ('disabled-rehearsal','full-replacement-direct-v2') and self.args.mode == self.mode)
             path = Path(self.args.run_context)
             require(validate_run_context(path.parent, path,
-                no_scale=getattr(self.args, 'no_scale_target', None) is not None) == self.run_context)
+                no_scale=getattr(self.args, 'no_scale_target', None) is not None,mode=self.mode) == self.run_context)
             if self.deadline is not None:
                 self.deadline.remaining()
 
@@ -717,6 +766,11 @@ class Operator:
             raise FeedStop(self.stage) from None
 
     def departures_for(self, desired):
+        # The direct action permits the original pair to leave asynchronously.
+        if self.mode == 'full-replacement-direct-v2':
+            if self.allowed_departures == 0 and (self.previous_desired, desired) == (4, 2):
+                return 2
+            return self.allowed_departures
         # Count each sequential decrease once; later equal-desired ticks retain it.
         expected = ((3, 2),) if self.mode == 'disabled-rehearsal' else ((4, 3), (3, 2))
         if self.allowed_departures < len(expected) and (self.previous_desired, desired) == expected[self.allowed_departures]:
@@ -725,7 +779,16 @@ class Operator:
 
     def workbench(self, script, *arguments):
         self.verify_run_context()
-        command = shlex.join(['python3','-c',script,*arguments])
+        flags=[]
+        if self.mode=='full-replacement-direct-v2' and self.run_context is not None:
+            from pgcat_lane_protocol import Journal
+            from pgcat_native_controller import prepared_source_prefix
+            journal=Journal(Path(self.args.run_context).parent)
+            plan=journal.native_plan();prepared=journal.native_prepared()
+            require(plan['runId']==self.run_context['runId'] and prepared['workerCredential']['path']==self.args.kubeconfig)
+            script=prepared_source_prefix(Path(self.args.worker_inventory).parent,plan,prepared)+script
+            flags=['-I','-S']
+        command = shlex.join(['python3']+flags+['-c',script,*arguments])
         return self.command(_wrapper_command(self.args.workbench,
             ['exec','-P',PROFILE,'-r',REGION,'-i',WORKER_ID,'-c',command]))
 
@@ -807,8 +870,10 @@ class Operator:
             if self.no_scale_target is not None:
                 require(tuple(sorted(value['privateAddresses'].items())) == self.previous and
                         [node for node,_ in self.previous] == self.no_scale_target['originalInstanceIds'])
+            if self.mode == 'full-replacement-direct-v2':
+                require(value.get('sequence', self.sequence + 1) == self.sequence + 1)
             candidate = dict(value, feedSession=self.feedSession, sequence=self.sequence + 1)
-            if self.mode == 'disabled-rehearsal':candidate['mode'] = self.mode
+            if self.mode != 'full-replacement':candidate['mode'] = self.mode
             mode_state = copy.deepcopy(self.inventory_mode)
             mode_state.observe(candidate)
             worker_write = self.atomic_worker_write if self.run_context is None else (
@@ -873,8 +938,8 @@ if not (json.loads(verified['data']['targets.json'])==json.loads(sys.argv[2])): 
 def main():
     _require_verified()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=('full-replacement','disabled-rehearsal'),default='full-replacement',
-                        help='bind this feed to the full replacement or disabled 2-to-3-to-2 rehearsal')
+    parser.add_argument('--mode',choices=('full-replacement','disabled-rehearsal','full-replacement-direct-v2'),default='full-replacement',
+                        help='select historical staged replacement, disabled rehearsal, or direct-v2 topology')
     parser.add_argument('--no-scale-target',help='fixed address-free target, only for the finite no-scale proof')
     parser.add_argument('--interval',type=int,default=15)
     parser.add_argument('--max-seconds',type=int,default=5400)
@@ -890,6 +955,9 @@ def main():
     parser.add_argument('--kubeconfig',required=True,help='already authorized private worker path; never transferred by this tool')
     args = parser.parse_args()
     try:
+        if args.mode=='full-replacement-direct-v2':
+            from pgcat_lane_protocol import _release_admission
+            _release_admission(args.mode)
         require(args.worker_inventory.startswith('/') and args.kubeconfig.startswith('/') and args.worker_inventory != args.kubeconfig)
         operator = Operator(args)
         operator.previous = operator.existing_targets()
@@ -897,7 +965,9 @@ def main():
             require([node for node,_ in operator.previous] == operator.no_scale_target['originalInstanceIds'])
         operator.stage = 'loop'
         run_loop(operator.read,operator.write,interval=args.interval,max_seconds=args.max_seconds,
-                 **({'stop':operator.stop_no_scale} if operator.no_scale_target is not None else {}))
+                 **({'stop':operator.stop_no_scale} if operator.no_scale_target is not None else
+                    {'stop':operator.stop_rehearsal} if operator.run_context is not None and
+                    operator.mode == 'disabled-rehearsal' else {}))
     except FeedStop as error:
         parser.exit(1,str(error)+'\n')
     except Exception:

@@ -2,7 +2,10 @@
 set -euo pipefail
 [[ $# == 1 ]]
 root=$(cd "$(dirname "$0")/../.." && pwd)
-docker run --rm --volume "$root/scripts/contracts:/scripts/contracts:ro" --entrypoint /bin/sh "$1" -ec '
+docker run --rm --volume "$root/scripts/contracts:/scripts/contracts:ro" \
+ --mount "type=bind,source=$root/agent-skills/pgcat-replacement,target=/agent-skills/pgcat-replacement,readonly" \
+ --mount "type=bind,source=$root/components/agent-gateway/internal/execution/testdata,target=/opt/agent-gateway/internal/execution/testdata,readonly" \
+ --entrypoint /bin/sh "$1" -ec '
  test -x /usr/local/bin/ax-task-runner
  test "$(pi --version)" = 1.3.0
  aliyun version

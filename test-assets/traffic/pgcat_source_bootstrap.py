@@ -27,6 +27,22 @@ SOURCES = {
     'zeroProofWorker':'pgcat_zero_proof_worker.py','captureWindow':'capture_window.py',
     'finishClients':'finish_clients.py','workerCapture':'worker_capture.py',
     'segmentedCapture':'segmented_capture.py'}
+NATIVE_SOURCES = dict(SOURCES, nativeController='pgcat_native_controller.py',
+    nativeIngress='pgcat_native_ingress.py', nativeEvidence='pgcat_native_evidence.py', nativeClosure='pgcat_native_closure.py')
+
+
+def source_names(mode):
+    _check(mode in ('no-scale','disabled-rehearsal','full-replacement-direct-v2'))
+    return dict(NATIVE_SOURCES if mode=='full-replacement-direct-v2' else SOURCES)
+
+
+def select_sources(hashes):
+    _check(type(hashes) is dict)
+    for sources in (SOURCES,NATIVE_SOURCES):
+        if set(hashes)==set(sources):return sources
+    raise ValueError('source')
+
+
 ROOT = '''import hashlib,os,stat,sys,types
 p,h=sys.argv[1:3]
 f=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
@@ -89,10 +105,10 @@ _finder=None
 def install(hashes):
     global _finder
     _check(sys.flags.isolated and sys.flags.no_site and _finder is None)
-    _check(type(hashes) is dict and set(hashes)==set(SOURCES))
+    sources=select_sources(hashes)
     _check(globals().get('__verified_root_sha256__')==hashes['sourceBootstrap'])
     root=Path(__file__).absolute().parent;snapshot={}
-    for key,name in SOURCES.items():
+    for key,name in sources.items():
         raw=_read(root/name);_check(hashlib.sha256(raw).hexdigest()==hashes[key])
         snapshot[name[:-3]]=raw
     for name,module in list(sys.modules.items()):
@@ -112,7 +128,8 @@ def require_verified(name):
 
 
 def command(hashes,entry,args):
-    _check(entry in ('runner','providerFeed','laneWrapper'))
+    _check(entry in ('runner','providerFeed','laneWrapper','nativeController','collectorControl'))
+    if entry in ('nativeController','collectorControl'):_check(set(hashes)==set(NATIVE_SOURCES))
     return [sys.executable,'-I','-S','-c',ROOT,str(Path(__file__).absolute()),
             hashes['sourceBootstrap'],entry,json.dumps(hashes,sort_keys=True,separators=(',',':'))]+list(args)
 
@@ -120,7 +137,7 @@ def command(hashes,entry,args):
 def current_hashes():
     _check(_finder is not None and _finder in sys.meta_path)
     return {key:hashlib.sha256(_finder.snapshot[name[:-3]]).hexdigest()
-            for key,name in SOURCES.items()}
+            for key,name in (NATIVE_SOURCES if 'pgcat_native_controller' in _finder.snapshot else SOURCES).items()}
 
 
 def load_controller(binding_path):
@@ -132,10 +149,21 @@ def load_controller(binding_path):
     return importlib.import_module('pgcat_rehearsal_controller').Controller(binding_path)
 
 
+def load_native_controller(binding_path):
+    value=json.loads(_read(Path(binding_path)).decode('ascii'))
+    hashes=value['laneBindings']['sourceHashes']
+    _check(set(hashes)==set(NATIVE_SOURCES))
+    _check(value['sourceHashes']=={k:hashes[k] for k in ('nativeController','client','runner')})
+    install(hashes)
+    return importlib.import_module('pgcat_native_controller').NativeController(binding_path)
+
+
 def main():
     _check(len(sys.argv)>=3)
-    entry,raw=sys.argv[1:3];_check(entry in ('runner','providerFeed','laneWrapper'))
+    entry,raw=sys.argv[1:3];_check(entry in ('runner','providerFeed','laneWrapper','nativeController','collectorControl'))
+    if entry in ('nativeController','collectorControl'):_check(set(json.loads(raw))==set(NATIVE_SOURCES))
     install(json.loads(raw))
-    name=SOURCES[entry][:-3];module=importlib.import_module(name)
-    sys.argv=[str(Path(__file__).parent/SOURCES[entry])]+sys.argv[3:]
+    sources=select_sources(json.loads(raw))
+    name=sources[entry][:-3];module=importlib.import_module(name)
+    sys.argv=[str(Path(__file__).parent/sources[entry])]+sys.argv[3:]
     return module.main()

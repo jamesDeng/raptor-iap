@@ -88,7 +88,7 @@ func TestRestartStartupExposesOnlyRestartMutation(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(tools.Tools) != 4 {
+	if len(tools.Tools) != 6 {
 		t.Fatalf("catalog=%v", tools)
 	}
 	found := false

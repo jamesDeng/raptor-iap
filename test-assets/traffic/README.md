@@ -95,6 +95,32 @@ the process remembers exact earlier ESS IDs and sequential desired decreases
 only those exact earlier IDs may remain NLB backends after leaving ESS. Approval
 receipts remain a separate final acceptance gate.
 
+The explicit `full-replacement-direct-v2` mode describes a single direct **2→4→2**
+transition. Its first publication binds exactly two originals at desired two.
+Desired four may converge through two and three physical members, but both exact
+originals and every observed replacement must remain until the full four-member
+cohort has been observed. The one desired-four to desired-two drop permits only
+those two originals to depart, either together or through four/three physical
+members while desired stays two. Both exact replacements must remain; desired
+three, another expansion, new identities after the drop, and original reappearance
+are rejected. Completion requires exactly the replacement pair as members,
+backends and healthy registered IDs, plus both originals retired by the existing
+complete-zero and later-backend-absence evidence. Fully covered nonzero old series
+cannot complete this new mode; later nonzero samples or re-registration invalidate
+the corresponding retirement proof. Historical modes retain their existing completion rules.
+
+This mode is recognized by the CLI, producer and retained-evidence sanitizer for
+source and fixture integration. The current CLI still requires the existing native
+run context, whose admission accepts only `disabled-rehearsal`; selecting the direct
+mode therefore refuses runtime startup before provider reads or publication.
+Native observer integration and receipt admission require separate reviewed work.
+The mode does not change any source age, receipt, deadline or metrics rule. Each
+original retains its metrics obligation until complete fresh zero triplets across
+its pool/users and a later fresh provider publication establishes backend absence.
+A desired decrease or ESS departure alone never drops its targets or metrics
+obligation. Learned scrape targets remain retained until authorized explicit
+cleanup, including after an original's evidence obligation has been retired.
+
 The worker file is atomically replaced in its own directory, fsynced and mode
 0600. Schema 2 contains `schemaVersion`, `feedSession`, `sequence`,
 `observedAt`, `desired`, sorted `members`, sorted `memberStates`, sorted
@@ -194,6 +220,25 @@ The assessor does not read this log; it does not change the three-second gap
 rule, missing-poll count, or traffic verdict.
 
 ### Exact client finalization boundary
+
+Application rolling restarts keep `maxUnavailable: 0` and `maxSurge: 1`. SIGTERM
+stops new schedules, drains the active operation and one accepted queued operation
+per worker, and closes active and idle sessions. Each operation has five seconds
+including any reconnect, with up to one second rollback and one second close.
+The three active workers drain concurrently (at most 14 seconds), followed by the
+one idle session close (one second), ten seconds of final evidence retention,
+and two seconds for overlapping control/HTTP shutdown: 27 seconds within the
+30-second termination grace. Existing SQL failures, timeouts, ambiguous outcomes
+and overload skips remain adverse evidence. The private finish socket remains
+available throughout the final hold; its exact identity and two-minute hold are
+unchanged, and a signal can interrupt that controlled hold.
+
+Keep one capture through the surge: retain every retiring process's final
+counters and each successor's startup events and cumulative counters. Finalize
+the terminal successor pair separately after the rollout. A clean successor
+cannot repair a missing predecessor final, lost startup history, or SQL failure.
+The rollout fixture exercises this retained-evidence contract locally; it does
+not establish a live rollout or the originals' independent zero/absence proof.
 
 After separate action-time authorization for client finish, start the collector
 with a fresh shared private directory:

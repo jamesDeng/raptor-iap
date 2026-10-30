@@ -22,7 +22,8 @@ from pgcat_lane_protocol import (Refused, require, private, read_private, identi
     sha, token, monotonic, validate_result, validate_finish_receipts,
     encode, roster_sha, expected_roster, removing_roster_shas, original_roster, Journal,
     validate_no_scale_stop, no_scale_stop_ack, NO_SCALE_STOP_INTENT, NO_SCALE_STOP_ACK, NO_SCALE_PROOF,
-    no_scale_assessment, private_json, digest, read_finish)
+    no_scale_assessment, private_json, digest, read_finish,
+    REHEARSAL_STOP_INTENT, REHEARSAL_STOP_ACK, validate_rehearsal_stop_receipt, rehearsal_stop_ack)
 from pgcat_lane_supervisor import read_json, save_once
 import provider_feed as provider
 import pgcat_workbench_lane as lane
@@ -127,9 +128,9 @@ class Controller:
         self.binding_sha=hashlib.sha256(self.binding_path.read_bytes()).hexdigest()
         self.client=None; self.feed=None; self.receipt=None
         self.state='new'; self.collector_identity=None; self.mode=None
-        self.pending_proof=None; self.pre_drain_proof=None; self.zero_proof=None
+        self.pending_proof=None; self.pre_drain_proof=None; self.zero_proof=None; self.reconcile_proof=None
         self.collector_exit=None; self.verdict_result=None; self.verdict_proof=None
-        self.no_scale_stop=None; self.stop_attempted=False
+        self.no_scale_stop=None; self.rehearsal_stop=None; self.stop_attempted=False
         self.feed_deadline=None; self.local_cleanup_verified=False
 
     def close(self):
@@ -170,7 +171,7 @@ class Controller:
 
     def _live(self):
         require(self.state in ('active','scaled-three','pending-bound','pre-drain-bound',
-                               'nlb-absent','zero-bound','scaled-two') and
+                               'nlb-absent','zero-bound','scaled-two','reconciled-two') and
                 self.feed is not None and self.feed.poll() is None,'child')
         require(self.client is not None,'incomplete')
         self.client._active()
@@ -210,15 +211,31 @@ class Controller:
     def call_no_scale(self, action):
         """Only harmless fixed actions; each waits for a successful successor."""
         try:
-            require(type(action) is str and action in NO_SCALE_ACTIONS)
+            require(self.mode == 'no-scale' and type(action) is str and action in NO_SCALE_ACTIONS)
             return self._worker_call(action)
         except BaseException:
             self.close(); raise
 
-    def _worker_call(self, action):
+    def _refuse_stopped(self):
+        if self.state not in ('feed-stopped','clients-finalized'):return
         try:
-            require(action in NO_SCALE_ACTIONS or (self.mode == 'disabled-rehearsal'
-                    and action in ('pre-scale-start','pre-scale-status')))
+            require(self.mode == 'disabled-rehearsal' and self.rehearsal_stop is not None and
+                    Journal(Path(self.bindings['laneRoot'])).rehearsal_stop() == self.rehearsal_stop,'source')
+            self.client._active()
+        except BaseException:
+            self.close();raise
+        # Authenticated completion is unchanged by a rejected duplicate/action.
+        raise Refused('incomplete')
+
+    def _worker_call(self, action):
+        self._refuse_stopped()
+        try:
+            require((self.mode == 'no-scale' and action in NO_SCALE_ACTIONS) or
+                    (self.mode == 'disabled-rehearsal' and action in ('baseline-start',
+                    'baseline-status','pre-scale-start','pre-scale-status',
+                    'rehearsal-collector-launch','rehearsal-collector-status','reconcile-close')))
+            if action == 'reconcile-close':
+                require(self.state == 'scaled-two' and self.reconcile_proof is None,'incomplete')
             if action == 'lane-verdict':
                 require(self.mode == 'no-scale' and self.collector_exit is not None and
                         self.verdict_result is None,'incomplete')
@@ -249,8 +266,20 @@ class Controller:
             elif action == 'baseline-status':
                 require(set(payload) == {'status','phase'} and payload['phase'] == 'baseline'
                         and payload['status'] in ('RUNNING','PREPARED'),'parse')
-            elif action == 'collector-launch':
+            elif action in ('collector-launch','rehearsal-collector-launch'):
                 require(payload == dict(status='LAUNCHED'),'parse')
+            elif action == 'reconcile-close':
+                proof=Journal(Path(self.bindings['laneRoot'])).reconcile_binding()
+                require(type(payload) is dict and set(payload) == {'feedSession','sequence','resourceVersion'} and
+                        all(payload[key] == proof.get(key) for key in payload) and
+                        proof.get('runId') == self.client.run_id and proof.get('feedSession') == receipt['feedSession'] and
+                        proof.get('sequence') == receipt['sequence'] and
+                        proof.get('sourceSha256') == self.bindings['laneBindings']['sourceHashes']['rehearsalContract'] and
+                        self.pending_proof is not None and proof.get('pendingBindingSha256') ==
+                            hashlib.sha256(encode(self.pending_proof)).hexdigest() and
+                        lane.finite_number(proof.get('sealedAt')) and
+                        receipt['observedAt'] <= proof['sealedAt'] <= completed_at,'source')
+                identifier(proof.get('requestId'));identifier(proof.get('scaleinRequestId'))
             elif action == 'lane-verdict':
                 require(self.mode == 'no-scale' and self.collector_exit is not None and
                         self.verdict_result is None,'incomplete')
@@ -271,7 +300,11 @@ class Controller:
                 if self.collector_identity is not None:
                     require(payload['identity'] == self.collector_identity,'child')
                 self.collector_identity=copy.deepcopy(payload['identity'])
-            self._next_receipt(receipt['sequence']+1,observed_after=completed_at)
+            later=self._next_receipt(receipt['sequence']+1,observed_after=completed_at,desired=receipt['desired'])
+            if action == 'reconcile-close':
+                require(later['rosterSha256'] == roster_sha(original_roster(
+                    self.bindings['laneBindings']['target']['originalInstanceIds'])),'receipt')
+                self.reconcile_proof=copy.deepcopy(proof)
             if action == 'collector-status' and payload['status'] == 'EXITED':
                 self.collector_exit=copy.deepcopy(payload)
             if action == 'lane-verdict':
@@ -331,20 +364,17 @@ class Controller:
             '--run-context',str(Path(value['laneRoot'])/'run-context.json'),
             '--contract-dir',b['contractDir']]
         if mode == 'no-scale':argv += ['--no-scale-target',encode(b['target']).decode('ascii')]
-        if mode=='no-scale':
-            self.feed_deadline=monotonic()+180.+60.
-            self.feed=self.client.start_feed(argv,env,self.binding_path)
-        else:
-            self.feed=subprocess.Popen(argv,
-                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-                start_new_session=True,close_fds=True,env=env)
+        if mode=='no-scale':self.feed_deadline=monotonic()+180.+60.
+        self.feed=self.client.start_feed(argv,env,self.binding_path)
         self.state='active'; self._next_receipt(1)
 
     def _baseline_collector(self):
-        self.call_no_scale('baseline-start')
-        while self.call_no_scale('baseline-status')['status'] != 'PREPARED': pass
-        self.call_no_scale('collector-launch')
-        self.call_no_scale('collector-status')
+        self._worker_call('baseline-start')
+        while self._worker_call('baseline-status')['status'] != 'PREPARED': pass
+        launch,status=(('collector-launch','collector-status') if self.mode == 'no-scale' else
+                       ('rehearsal-collector-launch','rehearsal-collector-status'))
+        self._worker_call(launch)
+        self._worker_call(status)
 
     def start_no_scale(self):
         try:
@@ -556,7 +586,7 @@ class Controller:
             while True:
                 proof=self._worker_call('pre-scale-status')
                 if proof['status'] == 'PREPARED': break
-            self.call_no_scale('collector-status')
+            self._worker_call('rehearsal-collector-status')
             self._paid_gate(preflight_path,evidence,probed_at)
             b=self.bindings['laneBindings']; proof_path=Path(b['preScaleProofPath'])
             save_once(proof_path.parent,proof_path.name,dict(feedSession=proof['feedSession'],sequence=proof['sequence']))
@@ -789,6 +819,91 @@ class Controller:
             raise Refused('timeout')
         except BaseException:
             self.close(); raise
+
+    def reconcile_rehearsal(self):
+        """Reconcile once while the exact feed remains alive; require its successor."""
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.state == 'scaled-two' and
+                    self.reconcile_proof is None,'incomplete')
+            self._live();receipt=self.receipt
+            require(receipt is not None and receipt['desired'] == 2 and
+                    0 <= time.time()-receipt['observedAt'] < 3.5 and
+                    receipt['rosterSha256'] == roster_sha(original_roster(
+                        self.bindings['laneBindings']['target']['originalInstanceIds'])),'receipt')
+            self._worker_call('reconcile-close')
+            self.state='reconciled-two'
+            return copy.deepcopy(self.reconcile_proof)
+        except BaseException:
+            self.close();raise
+
+    def stop_rehearsal(self):
+        """Stop the retained paid feed once; retain the owner for later finalization."""
+        self._refuse_stopped()
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.state == 'reconciled-two' and
+                    not self.stop_attempted and self.rehearsal_stop is None,'incomplete')
+            self._live();require(isinstance(self.feed,Popen) and
+                    self.feed is getattr(self.client,'feed_process',None),'child')
+            journal=Journal(Path(self.bindings['laneRoot']))
+            proof=journal.reconcile_binding()
+            require(proof == self.reconcile_proof and
+                    hashlib.sha256(self.binding_path.read_bytes()).hexdigest() == self.binding_sha,'source')
+            root=Path(self.bindings['captureRoot'])
+            require(Path(self.bindings['laneBindings']['receiptPath']).parent == root,'source')
+            receipt,_=private_json(self.bindings['laneBindings']['receiptPath'])
+            require(self.receipt is not None and receipt['feedSession'] == self.receipt['feedSession'] and
+                    type(receipt['sequence']) is int and receipt['sequence'] >= self.receipt['sequence'],'receipt')
+            intent=dict(schemaVersion=1,runId=self.client.run_id,feedSession=receipt['feedSession'],
+                minimumSequence=receipt['sequence'],reconcileBindingSha256=digest(proof))
+            validate_rehearsal_stop_receipt(intent,receipt,proof,journal.run_snapshot())
+            self.stop_attempted=True
+            save_once(root,REHEARSAL_STOP_INTENT,intent,atomic=True)
+            try:code=self.feed.wait(timeout=30.)
+            except subprocess.TimeoutExpired:raise Refused('timeout') from None
+            actual=self.feed.poll()
+            require(type(code) is int and type(actual) is int and actual == code,'child')
+            # Retain truthful same-handle exit evidence even when stop validation fails.
+            self.client.confirm_feed_exit(self.feed)
+            require(code == 0,'child')
+            self.client._active()
+            final,_=private_json(self.bindings['laneBindings']['receiptPath'])
+            validate_rehearsal_stop_receipt(intent,final,proof,journal.run_snapshot())
+            current,raw=private_json(root/REHEARSAL_STOP_INTENT)
+            require(raw == encode(intent) and current == intent,'receipt')
+            ack,raw=private_json(root/REHEARSAL_STOP_ACK)
+            require(raw == encode(rehearsal_stop_ack(intent,final)) and ack == rehearsal_stop_ack(intent,final),'receipt')
+            stopped=journal.record_rehearsal_stop()
+            require(stopped['receipt'] == final and stopped['intent'] == intent and
+                    stopped['ack'] == ack and stopped['reconcileBinding'] == proof,'source')
+            self.rehearsal_stop=copy.deepcopy(stopped);self.receipt=copy.deepcopy(final)
+            self.state='feed-stopped'
+            return copy.deepcopy(stopped['feedExit'])
+        except (OSError,ValueError,UnicodeError,KeyError,TypeError):
+            self.close();raise Refused('receipt') from None
+        except BaseException:
+            self.close();raise
+
+    def finish_rehearsal_clients(self):
+        """Seal the fixed worker boundary while retaining this run's owner."""
+        if self.state == 'clients-finalized':self._refuse_stopped()
+        try:
+            require(self.mode == 'disabled-rehearsal' and self.state == 'feed-stopped','incomplete')
+            self.client._active()
+            require(isinstance(self.feed,Popen) and self.feed is getattr(self.client,'feed_process',None) and
+                    type(self.feed.poll()) is int and self.feed.poll() == 0,'child')
+            journal=Journal(Path(self.bindings['laneRoot']));stopped=journal.rehearsal_stop()
+            require(stopped == self.rehearsal_stop and self.feed.pid == stopped['feedExit']['pid'] and
+                    hashlib.sha256(self.binding_path.read_bytes()).hexdigest() == self.binding_sha,'source')
+            result=self.client.post_stop_call();binding=journal.post_stop_binding()
+            require(result == dict(state='complete',category='ok',payload=binding['workerResult']) and
+                    binding['runId'] == self.client.run_id and binding['feedSession'] == stopped['feedSession'] and
+                    binding['stopProofSha256'] == digest(stopped) and
+                    binding['workerResult']['sourceSha256'] == self.bindings['laneBindings']['sourceHashes']['rehearsalContract'],'source')
+            self.client._active()
+            self.post_stop_proof=copy.deepcopy(binding);self.state='clients-finalized'
+            return copy.deepcopy(binding)
+        except BaseException:
+            self.close();raise
 
     def _pending_marker(self, action):
         require(action in ('pending-start','pending-status') and self.state == 'scaled-three')

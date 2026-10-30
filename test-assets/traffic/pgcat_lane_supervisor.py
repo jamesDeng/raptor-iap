@@ -35,6 +35,14 @@ GLOBAL_ROOT = Path('/private/tmp/pgcat-lane-'+str(os.getuid()))
 GRACEFUL = {signal.SIGINT,signal.SIGTERM,signal.SIGHUP}
 
 
+class _StoppedRefusal(Refused):
+    """Only an authenticated stopped request may preserve the live owner."""
+    def __init__(self, request):
+        super().__init__('incomplete')
+        self.request_id=request['requestId']
+        self.request_raw=encode(request)
+
+
 def receipt_identity(identity):
     stat, raw = identity
     return hashlib.sha256(encode({'stat':list(stat),'receipt':raw.decode('ascii')})).hexdigest()
@@ -131,6 +139,8 @@ class LaneSupervisor:
             segmentedCapture=here/'segmented_capture.py',
             collectorControl=here/'pgcat_collector_control.py',
             laneTimingAssessor=here/'pgcat_lane_timing_assessor.py')
+        if b.get('mode')=='full-replacement-direct-v2':
+            paths.update(nativeController=here/'pgcat_native_controller.py',nativeIngress=here/'pgcat_native_ingress.py',nativeEvidence=here/'pgcat_native_evidence.py',nativeClosure=here/'pgcat_native_closure.py')
         for name,path in paths.items():
             require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == b['sourceHashes'][name],'source')
         self.bundle=hashlib.sha256(encode(b['sourceHashes'])).hexdigest()
@@ -177,7 +187,8 @@ class LaneSupervisor:
                 self.child=None
 
     def _receipt(self, req):
-        try: identity,value,_=lane.read_receipt(self.bindings['receiptPath'],req['feedSession'],req['minimumSequence'])
+        try: identity,value,_=lane.read_receipt(self.bindings['receiptPath'],req['feedSession'],req['minimumSequence'],
+            expected_mode='full-replacement-direct-v2' if self.bindings.get('mode')=='full-replacement-direct-v2' else 'disabled-rehearsal')
         except lane.Refused: raise Refused('receipt') from None
         require(receipt_identity(identity) == req['receiptIdentity'],'receipt')
         return identity,value
@@ -289,10 +300,77 @@ class LaneSupervisor:
         require(child.returncode == 0 and not streams[child.stderr],'child')
         return streams[child.stdout]
 
+    def _post_stop_owner(self):
+        require(self.owner_fd is not None,'incomplete')
+        active,_=private_json(GLOBAL_ROOT/'active-run')
+        require(active == dict(runId=self.run_id,supervisorId=self.supervisor_id,laneRoot=str(self.root)),'source')
+
+    def _revalidate_stopped_refusal(self, req):
+        """Authenticate a benign historical refusal without granting execution."""
+        try:
+            self._alive();self._verify_sources();self._post_stop_owner()
+            require(req['runId'] == self.run_id and req['supervisorId'] == self.supervisor_id and
+                    req['target'] == self.bindings['target'] and req['bundleSha256'] == self.bundle,'source')
+            with self.journal._connection() as db:
+                run=db.execute('SELECT * FROM run').fetchone()
+                stopped=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
+                duplicate=db.execute('SELECT 1 FROM post_stop_admission').fetchone() is not None
+            require(run is not None and run['state'] == 'active' and run['mode'] == 'disabled-rehearsal' and
+                    run['run_id'] == self.run_id and run['supervisor'] == self.supervisor_id and
+                    json.loads(run['target']) == self.bindings['target'] and
+                    json.loads(run['hashes']) == dict(self.bindings['sourceHashes'],bundleSha256=self.bundle) and
+                    stopped is not None,'source')
+            stop=json.loads(stopped['proof'])
+            require(stop['runId'] == self.run_id and req['feedSession'] == run['session'] == stop['feedSession'] and
+                    req['minimumSequence'] == stop['receipt']['sequence'] and
+                    req['receiptIdentity'] == stop['receiptIdentity'] and
+                    (req['action'] != 'rehearsal-finish' or duplicate),'source')
+        except (KeyError,TypeError,ValueError,UnicodeError):
+            raise Refused('source') from None
+
+    def _post_stop(self, req):
+        with self.journal._connection() as db:
+            require(db.execute('SELECT 1 FROM post_stop_admission').fetchone() is None,'incomplete')
+        admitted=False;deadline=req['deadlineMonotonic']
+        try:
+            self._alive();self._verify_sources()
+            self._post_stop_owner()
+            context=self.journal.post_stop_context(req)
+            argv,env,budget=ActionCatalog.command('rehearsal-finish',self.bindings,self.run_id,
+                run_context=context,lane_root=str(self.root),request_id=req['requestId'])
+            require(0 < deadline-monotonic() <= budget,'timeout')
+            with self._masked() as old_mask:
+                self._alive();self._post_stop_owner();self._verify_sources();self.journal.admit(req);admitted=True
+                self.journal.post_stop_admission(req['requestId'])
+                require(monotonic() < deadline,'timeout')
+                child_mask=set(old_mask)-GRACEFUL
+                self.child=subprocess.Popen(argv,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,start_new_session=True,close_fds=True,
+                    preexec_fn=lambda:signal.pthread_sigmask(signal.SIG_SETMASK,child_mask))
+            raw=self._communicate(deadline)
+            payload=ActionCatalog.parse('rehearsal-finish',raw,req,
+                source_sha=self.bindings['sourceHashes']['rehearsalContract'])
+            self._alive();require(monotonic() < deadline,'timeout');self._cleanup()
+            with self._masked():
+                self._alive();self._post_stop_owner();self._verify_sources();self.journal.post_stop_admission(req['requestId'])
+                require(monotonic() < deadline,'timeout')
+                self.journal.seal(req['requestId'],dict(state='complete',category='ok',payload=payload),
+                    post_stop_source_sha=self.bindings['sourceHashes']['rehearsalContract'])
+            require(monotonic() < deadline,'timeout')
+            return self.journal.snapshot(req['requestId'])
+        except (Refused,lane.Refused,OSError,ValueError,KeyError,TypeError) as error:
+            category=error.category if isinstance(error,Refused) else 'configuration'
+            self._cleanup();self.cancel(category)
+            if not admitted:raise Refused(category) from None
+            with self._masked():
+                if self.journal.snapshot(req['requestId'])['state'] == 'dispatching':
+                    self.journal.seal(req['requestId'],dict(state='uncertain',category=category,payload={}))
+            return self.journal.snapshot(req['requestId'])
+
     def run_once(self, request_id):
         require(self.owner_fd is not None,'incomplete')
         with self._handlers():
-            admitted=False
+            admitted=False;preserve_owner=False
             try:
                 self._alive(); req=read_request(self.root,request_id)
                 require(req['supervisorId'] == self.supervisor_id and req['runId'] == self.run_id)
@@ -304,14 +382,29 @@ class LaneSupervisor:
                     require(run['mode'] != 'no-scale' or req['action'] in NO_SCALE_ACTIONS)
                     require(req['action'] not in ('scaleout-two-to-three','pending-proof',
                         'pre-drain-proof','deregister-new-node','zero-proof',
-                        'scaling-activity-check','scalein-three-to-two') or
+                        'scaling-activity-check','scalein-three-to-two','reconcile-close') or
                             run['mode'] == 'disabled-rehearsal')
+                with self.journal._connection() as db:
+                    stopped=db.execute('SELECT proof FROM rehearsal_stop').fetchone()
+                    duplicate=db.execute('SELECT 1 FROM post_stop_admission').fetchone() is not None
+                if stopped is not None:
+                    stop=json.loads(stopped['proof'])
+                    require(run['mode'] == 'disabled-rehearsal' and req['feedSession'] == stop['feedSession'] and
+                        req['minimumSequence'] == stop['receipt']['sequence'] and
+                        req['receiptIdentity'] == stop['receiptIdentity'],'source')
+                    self._post_stop_owner()
+                    if req['action'] != 'rehearsal-finish' or duplicate:
+                        # Only authenticated stopped calls bypass the existing failure cancellation.
+                        self._revalidate_stopped_refusal(req)
+                        preserve_owner=True
+                        raise Refused('incomplete')
+                if req['action'] == 'rehearsal-finish':return self._post_stop(req)
                 identity,receipt=self._receipt(req); self._unused(req,receipt)
                 if req['action'] in ('pending-proof','pre-drain-proof','zero-proof',
                                      'scaling-activity-check','scalein-three-to-two'):
                     require(receipt['desired'] == 3 and time.time()-receipt['observedAt'] < 3.5,'receipt')
                 binding=(self.journal.pending_binding() if req['action'] in
-                    ('pre-drain-proof','deregister-new-node') else
+                    ('pre-drain-proof','deregister-new-node','reconcile-close') else
                     self.journal.pre_drain_binding() if req['action']=='zero-proof' else None)
                 verdict_context=None
                 if req['action']=='lane-verdict':
@@ -320,8 +413,16 @@ class LaneSupervisor:
                     verdict_context=dict(runId=self.run_id,feedSession=req['feedSession'],
                         collectorIdentity=collector['payload']['identity'],
                         completionSha256=collector['payload']['exit']['completionSha256'])
-                argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
-                    self.run_id,binding,run_context=verdict_context)
+                if req['action'] == 'reconcile-close':
+                    verdict_context=self.journal.reconcile_context(receipt)
+                native=run['mode']=='full-replacement-direct-v2'
+                if native:
+                    from pgcat_lane_protocol import native_action
+                    native_action(req['action'],self.journal.native_plan()['executionKind'])
+                    budget=5.;env={}
+                else:
+                    argv,env,budget=ActionCatalog.command(req['action'],self.bindings,
+                        self.run_id,binding,run_context=verdict_context)
                 deadline=req['deadlineMonotonic']
                 require(0 < deadline-monotonic() <= budget,'timeout')
                 if req['action'] == 'scaleout-two-to-three': self._ess(req,receipt)
@@ -339,11 +440,15 @@ class LaneSupervisor:
                                          'scalein-three-to-two'):
                         require(before_cutoff() and time.time()-receipt['observedAt'] < 3.5,'receipt')
                     if req['action'] in ('pending-proof','pre-drain-proof','deregister-new-node',
-                                         'zero-proof','scaling-activity-check','scalein-three-to-two'):
+                                         'zero-proof','scaling-activity-check','scalein-three-to-two','reconcile-close'):
                         self.journal.admit(req,receipt)
                     else:
                         self.journal.admit(req)
                     admitted=True
+                    if native:
+                        context=self.journal.native_admission(req['requestId'])
+                        argv,env,budget=ActionCatalog.command(req['action'],self.bindings,self.run_id,run_context=context,lane_root=str(self.root))
+                        env.update(PGCAT_LANE_SESSION=req['feedSession'],PGCAT_LANE_MIN_SEQUENCE=str(req['minimumSequence']))
                     if req['action'] in ('scaleout-two-to-three','deregister-new-node',
                                          'scalein-three-to-two'):
                         lane.consume_intent(self.bindings['laneIntentDir'],req['feedSession'],receipt['sequence'])
@@ -359,7 +464,11 @@ class LaneSupervisor:
                         preexec_fn=lambda:signal.pthread_sigmask(signal.SIG_SETMASK,child_mask))
                 self._alive(); require(monotonic() < deadline,'timeout')
                 raw=self._communicate(deadline)
-                if req['action'] in ('pending-proof','pre-drain-proof','zero-proof'):
+                if native:
+                    from pgcat_native_controller import validate_action_result
+                    require(len(raw)<=32768,'parse')
+                    payload=validate_action_result(json.loads(raw.decode('ascii'),object_pairs_hook=unique),self.journal.native_plan(),req['action'],req['requestId'])
+                elif req['action'] in ('pending-proof','pre-drain-proof','zero-proof'):
                     payload=ActionCatalog.parse(req['action'],raw,req,receipt,
                         source_sha=self.bindings['sourceHashes'][
                             {'pending-proof':'pendingProofWorker','pre-drain-proof':'preDrainProofWorker',
@@ -376,12 +485,17 @@ class LaneSupervisor:
                     self._alive()
                     require(monotonic() < deadline,'timeout')
                     result=dict(state='complete',category='ok',payload=payload)
-                    if req['action'] == 'pending-proof':
+                    if native:
+                        self.journal.seal_native(request_id,result)
+                    elif req['action'] == 'pending-proof':
                         self.journal.seal(request_id,result,
                             pending_source_sha=self.bindings['sourceHashes']['pendingProofWorker'])
                     elif req['action'] == 'pre-drain-proof':
                         self.journal.seal(request_id,result,
                             pre_drain_source_sha=self.bindings['sourceHashes']['preDrainProofWorker'])
+                    elif req['action'] == 'reconcile-close':
+                        self.journal.seal(request_id,result,
+                            reconcile_source_sha=self.bindings['sourceHashes']['rehearsalContract'])
                     elif req['action']=='lane-verdict':
                         self.journal.seal(request_id,result,
                             lane_verdict_source_sha=self.bindings['sourceHashes']['laneTimingAssessor'],
@@ -398,6 +512,7 @@ class LaneSupervisor:
                 return self.journal.snapshot(request_id)
             except (Refused,lane.Refused,OSError,ValueError,KeyError,TypeError) as error:
                 category=error.category if isinstance(error,Refused) else 'configuration'
+                if preserve_owner:raise _StoppedRefusal(req) from None
                 self._cleanup()
                 self.cancel(category)
                 if not admitted: raise Refused(category) from None
@@ -444,6 +559,7 @@ class LaneSupervisor:
     def serve(self, liveness_fd):
         require(self.owner_fd is not None,'incomplete')
         self.liveness_fd=liveness_fd
+        refused={}
         try:
             with self._handlers():
                 while True:
@@ -452,12 +568,28 @@ class LaneSupervisor:
                         self.finish()
                         return
                     folder=self.root/'requests'
-                    if folder.exists():
+                    if folder.exists() or refused:
                         private(folder,True)
-                        for marker in sorted(folder.glob('*.ready')):
-                            request_id=marker.name[:-6]
-                            try: self.journal.snapshot(request_id)
-                            except Refused: self.run_once(request_id)
+                        request_ids={marker.name[:-6] for marker in folder.glob('*.ready')}
+                        for request_id in sorted(request_ids | set(refused)):
+                            marker=folder/(request_id+'.ready')
+                            if request_id in refused:
+                                original,raw=refused[request_id]
+                                require(lane.identity(os.lstat(marker)) == original,'source')
+                                request=read_request(self.root,request_id)
+                                require(encode(request) == raw and lane.identity(os.lstat(marker)) == original,'source')
+                                self._revalidate_stopped_refusal(request)
+                            else:
+                                try: self.journal.snapshot(request_id)
+                                except Refused:
+                                    original=lane.identity(os.lstat(marker))
+                                    try:self.run_once(request_id)
+                                    except _StoppedRefusal as refusal:
+                                        request=read_request(self.root,request_id)
+                                        require(refusal.request_id == request_id and encode(request) == refusal.request_raw and
+                                                lane.identity(os.lstat(marker)) == original,'source')
+                                        self._revalidate_stopped_refusal(request)
+                                        refused[request_id]=(original,refusal.request_raw)
                             self._alive()
                     select.select([liveness_fd],[],[],.02)
         except (Refused, OSError, ValueError, TypeError):

@@ -67,7 +67,7 @@ func DeregistrationAllowed(s ProxySnapshot, backend string, ids []string) error 
 	if s.ServerGroupID == "" || s.ServerGroupID != backend {
 		return refuse("ScopeMismatch")
 	}
-	if s.Desired < 0 {
+	if s.Min < 0 || s.Max < s.Min || s.Desired < s.Min || s.Desired > s.Max {
 		return refuse("TargetChanged")
 	}
 	if e := Membership(s, ids); e != nil {
@@ -77,14 +77,60 @@ func DeregistrationAllowed(s ProxySnapshot, backend string, ids []string) error 
 	for _, id := range ids {
 		removed[id] = true
 	}
-	remaining := 0
+	remaining, protectedRemaining := 0, 0
 	for _, n := range s.Nodes {
 		if n.Registered && n.Healthy && !removed[n.ID] {
 			remaining++
+			if n.Protected {
+				protectedRemaining++
+			}
 		}
 	}
+	if remaining < s.Min {
+		return refuse("InsufficientHealthyCapacity")
+	}
 	// Division avoids overflowing 2*remaining while retaining strict majority.
-	if remaining <= s.Desired/2 {
+	if remaining > s.Desired/2 {
+		return nil
+	}
+	// The dedicated 2→4→2 cohort may retain a protected healthy pair. This
+	// capacity check establishes no original/replacement lineage authority.
+	if s.Desired == 4 && s.Min == 2 && s.Max == 4 && len(s.Nodes) == 4 && protectedRemaining >= 2 {
+		return nil
+	}
+	return refuse("InsufficientHealthyCapacity")
+}
+
+// DirectReplacementScaleInAllowed constrains only the dedicated four-to-two
+// reduction. Metrics, approval and fresh unchanged snapshots remain separate
+// requirements; this generic snapshot cannot establish replacement lineage.
+func DirectReplacementScaleInAllowed(s ProxySnapshot, desired int) error {
+	if s.Desired != 4 || s.Min != 2 || s.Max != 4 || desired != 2 {
+		return nil
+	}
+	if len(s.Nodes) != 4 {
+		return refuse("TargetChanged")
+	}
+	members := map[string]bool{}
+	retained, withdrawn := 0, 0
+	for _, n := range s.Nodes {
+		if n.ID == "" || members[n.ID] {
+			return refuse("TargetChanged")
+		}
+		members[n.ID] = true
+		if n.Protected {
+			if !n.Healthy || !n.Registered {
+				return refuse("InsufficientHealthyCapacity")
+			}
+			retained++
+		} else {
+			if n.Registered {
+				return refuse("InsufficientHealthyCapacity")
+			}
+			withdrawn++
+		}
+	}
+	if retained != 2 || withdrawn != 2 {
 		return refuse("InsufficientHealthyCapacity")
 	}
 	return nil
@@ -98,6 +144,7 @@ func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.T
 		observed[r.InstanceID] = r
 	}
 	eligible := 0
+	totalClients := float64(0)
 	members := map[string]bool{}
 	for _, n := range s.Nodes {
 		if n.ID == "" || members[n.ID] {
@@ -112,12 +159,14 @@ func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.T
 		if !ok || math.IsNaN(r.Clients) || math.IsInf(r.Clients, 0) || r.Clients < 0 || math.Trunc(r.Clients) != r.Clients || r.ObservedAt.IsZero() || now.Sub(r.ObservedAt) > 45*time.Second || r.ObservedAt.Sub(now) > 5*time.Second {
 			return refuse("MetricsInvalid")
 		}
-		if r.Clients != 0 {
-			return refuse("ConnectedClientsPresent")
-		}
+		totalClients += r.Clients
 	}
 	if eligible == 0 {
 		return refuse("NoEligibleNodes")
+	}
+	// The one-client budget is shared across all eligible retiring nodes.
+	if totalClients > 1 {
+		return refuse("ConnectedClientsPresent")
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -99,5 +100,45 @@ func TestObserverProgressIsReplacementOnly(t *testing.T) {
 		if !ProgressToolAllowed("db-proxy.replace-nodes", name) || ProgressToolAllowed("application.question", name) {
 			t.Fatalf("unexpected observer catalog %s", name)
 		}
+	}
+}
+
+func TestReplacementJournalStoresBothContractVersions(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			s := testStore(t)
+			ctx := context.Background()
+			id := NewID()
+			if _, err := s.Receive(ctx, id); err != nil {
+				t.Fatal(err)
+			}
+			x, err := s.ClaimNext(ctx, "owner")
+			if err != nil || x == nil {
+				t.Fatal(err)
+			}
+			b, r := directHarnessFixture(t)
+			b.RequestID = id
+			b.AttemptID = x.AttemptID
+			r.RequestID = id
+			r.AttemptID = x.AttemptID
+			if version == 1 {
+				r.Replacement.Version = 1
+				r.Replacement.RestartGeneration = 0
+				r.Replacement.Actions = []ReplacementScaleAction{{ActionID: "expand", Previous: 2, Desired: 4, Outcome: "submitted"}, {ActionID: "shrink-a", Previous: 4, Desired: 3, Outcome: "submitted"}, {ActionID: "shrink-b", Previous: 3, Desired: 2, Outcome: "unknown"}}
+			}
+			if err = s.BindLive(ctx, x.AttemptID, "owner", b, b.DefinitionSHA256); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.SaveLiveResult(ctx, x.AttemptID, "owner", r); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.FinalizeLive(ctx, x.AttemptID, "owner", LiveOutcome{Status: "completed", Checkpoint: verifiedCheckpoint(), SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.Get(ctx, id)
+			if err != nil || got.Result == nil || got.Result.Replacement == nil || got.Result.Replacement.Version != version || got.Result.Replacement.RestartGeneration != r.Replacement.RestartGeneration {
+				t.Fatalf("contract lost: %+v %v", got, err)
+			}
+		})
 	}
 }

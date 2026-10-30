@@ -78,6 +78,7 @@ func (p *ObservationProxy) Register(in execution.LiveStart, m ObservationMateria
 	if len(p.entries) > 0 {
 		return ObservationMaterial{}, ErrConfiguration
 	}
+	m.Secrets = append(append([]string{}, m.Secrets...), gatewayObservationSecrets(in.Access.Credential)...)
 	p.entries[sha256.Sum256([]byte(token))] = observationEntry{start: in, material: m, expires: expires, check: check}
 	return ObservationMaterial{Config: raw, Secrets: append(append([]string{}, m.Secrets...), token)}, nil
 }

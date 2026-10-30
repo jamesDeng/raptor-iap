@@ -102,11 +102,13 @@ func run() error {
 	}
 	stop, done := context.WithTimeout(context.Background(), 2*time.Second)
 	defer done()
+	// Keep finish available throughout the final hold, then overlap the
+	// control socket's bounded request drain with HTTP shutdown.
+	stopControl()
 	_ = srv.Shutdown(stop)
 	if err := <-srvErr; err != http.ErrServerClosed {
 		return fmt.Errorf("evidence server stopped")
 	}
-	stopControl()
 	if err := <-controlErr; err != nil {
 		return err
 	}

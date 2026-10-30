@@ -33,3 +33,10 @@ export function pinnedReplacementInstructions(skills){
   return `\nVerified pinned PgCat replacement instructions (${skills.tag}, commit ${skills.commitSHA}). Follow these instructions for this request; their references are included below.\n${sections.join('\n')}`;
  }catch{throw Error('InvalidSkillsRelease');}
 }
+
+export function pinnedReplacementProfile(skills){
+ const instructions=pinnedReplacementInstructions(skills);
+ const markers=instructions.split('\n').filter(line=>line.startsWith('replacement-contract:'));
+ if(markers.length!==1||markers[0]!=='replacement-contract: direct-v2')throw Error('InvalidSkillsRelease');
+ return 'direct-v2';
+}

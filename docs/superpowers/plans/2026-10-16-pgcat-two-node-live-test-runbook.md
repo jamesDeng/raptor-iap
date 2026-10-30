@@ -1,5 +1,105 @@
 # PgCat two-node live-test operator runbook
 
+## 2026-10-30 policy correction and release status
+
+For the unreleased direct-v2 workflow, the owner accepts a combined TOTAL
+active+idle+waiting client count of at most1 across BOTH originals, including
+every pool/user. Two nodes with one client each must refuse. Preserve fresh
+complete observations, withdrawal, app rolling restart, exact scale-in approval
+and healthy retained capacity at least the live minimum. Desired may equal
+minimum; leave the Terraform-owned minimum2 unchanged. Any minimum change needs
+approved Terraform/GitOps, and runtime scaling never changes min/max.
+
+This correction is implemented/reviewed and source1c71b27 passed all8CI workflows;
+it is not deployed or live-qualified. Historical strict-zero instructions below
+remain history/legacy policy and do not override this direct-v2 correction.
+Normal Infra MCP ESS/NLB and Prometheus read routing still requires the proposed
+cross-component integration; complete endpoints do not already exist. No paid
+run or source-release bypass is authorized by this status note.
+
+## 2026-10-29 sequence (connection gate updated 2026-10-30)
+
+The owner explicitly selected this full-run sequence, superseding the earlier
+staged 2→4→3→2 design:
+
+1. Expand ESS once from two to four and qualify both replacement nodes.
+2. Stop new connections to **both** exact originals; verify their backend
+   withdrawal while both replacements remain healthy and registered.
+3. Rolling-restart the related, scope-bound application Deployments.
+4. Observe fresh complete active/idle/waiting counts across every pool/user on
+   BOTH originals; require their **combined TOTAL ≤1**.
+5. Scale ESS directly from four to two, retaining exactly the two replacements.
+
+Keep both replacements protected; make only the verified drained originals
+eligible for removal. Bind one scale-in action/approval to desiredCapacity 2 and
+the immutable request scope. Recheck both zero gates and retained capacity after
+any pause before dispatch. Never accept arbitrary two-node fleet convergence.
+
+This direction supersedes the earlier same-Pod/no-restart drain restriction for
+future restart-based runs and the proposed private session-rotation mechanism.
+It does not change historical verdicts or make current fixed-roster code admit a
+restart. A replacement-disabled no-scale native observer proof must test startup,
+the same restart behavior, retained evidence and closure before full replacement.
+The superseded paid2→3→2 candidate rehearsal is not a prerequisite for the new
+strategy. No new session-rotation command is required by this choice.
+
+The reviewed client source/chart now uses RollingUpdate, maxUnavailable 0,
+maxSurge 1 and a 30-second termination grace period, with accepted SQL jobs
+draining under one five-second reconnect-plus-operation budget. Source tests
+and task review passed; this does not establish an actual deployed rollout.
+Verify bounded graceful draining and retain final evidence for every retiring
+Pod/process, plus exact successor identities and advancing SQL, in the same
+continuous capture. Never reset counters, discard failures or splice windows to
+accommodate the rollout. Keep the Deployment UID and reviewed image binding;
+record the authorized template/generation and ReplicaSet transition explicitly.
+
+After rollout, require two distinct fresh complete zero active/idle/waiting client
+scrapes across every pool/user on each withdrawn PgCat node and fresh provider
+absence evidence before scale-in. A completed rollout or restart receipt is
+not a zero-connection proof. Missing final evidence, remaining connections or an
+uncertain restart blocks scale-in; observed SQL failures remain FAIL.
+
+Status: the capacity guard, direct native result/skill contract, topology assessor
+and graceful shutdown source changes are implemented, tested and task-reviewed.
+They have not established deployment or live replacement readiness. The old
+strict-majority-only guard and staged 4→3→2 result contract motivated the update;
+the new source has a narrow protected-pair exception and version2 direct contract.
+Do not bypass source/runtime admission or mutate immutable skills-v0.4.0.
+Native observer rolling-cohort admission/closure and a fresh disabled proof remain
+required. No live restart or cloud operation was executed by this amendment.
+
+## Current authorization and source binding
+
+The owner has explicitly authorized implementing, reviewing, merging, deploying
+and testing this direct sequence without repeated routine approval pauses.
+Standing authorization also covers a temporary72-hour private-network kubeconfig
+for the exact ACK cluster/worker below, through local Workbench CLI only; reuse a
+valid bound copy first, otherwise create just in time, preserve0600/private paths
+and remove the exact owned copies after completion or failure. Do not request the
+same authorization again. A different destination or broader credential use still
+needs specific authorization. Record actual artifacts, identities and outcomes
+before action; authorization does not replace fresh safety checks.
+
+The committed [native observer design](../specs/2026-10-29-pgcat-native-observer-design.md)
+controls the remaining rolling evidence, authenticated ingress and closure work.
+Its disabled proof has an immutable separate verdict class and cannot become a
+full replacement PASS. Source-hash tables and older rehearsal commands below are
+historical bindings, not pins for the changed direct source. Generate and verify
+the final reviewed transitive source manifest before staging; never copy stale
+hashes or use an older paid-rehearsal command to bypass native admission.
+
+## Earlier verification and implementation status
+
+2026-10-28 update: reviewed merge `7508dfac` completed a tracked no-scale timing
+**PASS**, independently reassessed from retained capture and sealed records:
+64.003 seconds measurement, 66 frames, maximum gap 1.002616 seconds and 195 SQL
+successes per client. Exact feed/supervisor exits, both credential absences and
+the finished reservation release were verified. This proves only that source's
+no-scale timing path. Ordinary transition assessment is INCONCLUSIVE; the paid
+rehearsal and full replacement remain unproven. Paid admission remains
+structurally disabled pending the long collector and Task 6D close/abort path.
+See project-root `working/handoffs/2026-10-28-pgcat-live.md` for evidence hashes.
+
 Status as of 2026-10-26: request `570533ed-e417-4bc5-beba-ad4db3db8d20`
 ended **failed/ToolFailed** before approval or scale-in. Its retained full
 capture is **INCONCLUSIVE** (`missing metrics coverage`), not replacement PASS.
@@ -76,16 +176,16 @@ and rollout and keep them quiesced until verification. `gateway --idle-check`
 is a database snapshot, not an admission lock. If producers cannot be quiesced,
 STOP. Recheck idle immediately before changes through the guard.
 
-Present exact artifact hashes, targets, time/duration, credential paths, retention
-prefix/expiry and deletion commands for separate authorization of (a) temporary
-kubeconfig Workbench upload, (b) provider ConfigMap reconciliation and disabled
-capture, (c) guarded enable/rollout and one replacement, (d) controlled client
-finalization/restoration, and (e) settled disable/rollout and cleanup. Each requires
-current action-time authorization; approval of this document alone is insufficient.
+Record exact artifact hashes, targets, time/duration, credential paths, retention
+prefix/expiry and deletion commands before (a) temporary kubeconfig Workbench
+upload, (b) provider ConfigMap reconciliation and disabled capture, (c) guarded
+enable/rollout and one replacement, (d) controlled client finalization/restoration,
+and (e) settled disable/rollout and cleanup. Apply the owner's standing scope
+above; ask only for genuinely new scope. This document alone grants no authority.
 New IAM or cloud resources return to the component Terraform PR with sanitized
 plan comment and reviewed apply. Do not provision via CLI or expand IAM here.
 
-## Transition evidence release gate (2026-10-25)
+## Historical transition evidence release gate (2026-10-25)
 
 The recorded replacement request `0bad9b07-625e-42cb-a021-257775e08930`
 was cancelled and settled after its provider feed stopped; its retained result
@@ -656,23 +756,26 @@ never reupload that trigger or assume the mutation did not happen.
    Verification checks effective loaded config, owner chain, new Pod UID and readiness.
 3. Resume only authorized producers to create **one new immutable** signed-in
    `db-proxy.replace-nodes` request, `executionMode: replacement`, model
-   `gpt-6-luna`, pinned `skills-v0.4.0`, resolved exact scope. Record request ID,
+   `gpt-6-luna`, a verified new direct-v2 skill release (candidate
+   `skills-v0.5.0`, only after immutable publication), resolved exact scope. Record request ID,
    definition SHA and skills commit; keep identical across all resumes. Prior
    qualification `87b0ba57-a6d3-487a-96e7-530426e35878` cannot be converted/reused.
 4. Agent records/protects originals; expand once 2→4; qualify both new nodes with
-   healthy NLB registration and SQL probes; protect new nodes. Deregister/drain
-   only first original, restart only the bound client Deployment, require fresh
-   complete zero active/idle/waiting for every reported pool/user on that original.
-5. First distinct approval binds this request, action ID A, `ess.scale-in`,
-   `rdev.ali`, exact DP00001/group and `desiredCapacity: 3` (observed 4→3).
+   healthy NLB registration and SQL probes; protect both new nodes. Under the
+   reviewed direct-replacement contract, withdraw both exact originals from new
+   connections, restart only the related bound application Deployments, and require
+   fresh complete zero active/idle/waiting for every reported pool/user on both
+   originals. Only those originals may become eligible for removal.
+5. One exact approval binds this request, action ID A, `ess.scale-in`,
+   `rdev.ali`, exact DP00001/group and `desiredCapacity: 2` (observed 4→2).
    Verify completed checkpointed pause and human decision; resume same immutable
-   binding, gather fresh evidence, submit A once. Record provider acknowledgement
-   separately from convergence. Denial or stale gate ends that action.
-6. Authoritatively reconcile 3 before draining second original. Repeat fresh drain,
-   bound client restart and complete zero gate. Require a **different** action ID B
-   and approval ID, exact `desiredCapacity: 2` (3→2), separate checkpointed pause,
-   verified human decision, same immutable request on resume and new evidence.
-   Approval A and chat text never authorize B. Submit B once.
+   binding, gather fresh evidence for both originals and both retained replacements,
+   submit A once. Record provider acknowledgement separately from convergence.
+   Denial or stale gate ends that action.
+6. Observe direct 4→2 convergence. Intermediate membership observations may occur
+   during one provider action; they do not authorize another scale action or an
+   application restart. Require both originals absent and both exact replacements
+   retained, protected, healthy and registered.
 7. Unknown/submitted acknowledgement is not convergence. Never replay it or invent
    another action ID. Read authoritative desired capacity, complete ESS membership
    and protection, NLB registration/health, deployment, SQL and metrics. Unresolved
@@ -896,7 +999,8 @@ are staged together locally. The repeated three outer hashes must equal their
 lane-map values. The outer `sourceHashes` has exactly
 `controller`, `client`, and `runner`, each a lowercase SHA-256 of the current
 local source bytes. All declared hashes are checked before either process starts.
-The feed executable binding must be a regular executable named `aliyun`; its
+The feed executable binding must be a non-symlink regular executable named
+`aliyun` (resolve the Homebrew launcher to its actual Cellar executable); its
 directory leads the minimal feed PATH and exact resolution is checked before
 spawn. Scaling-group and NLB bindings must match the fixed provider targets.
 Local `captureRoot` must not exist; `laneRoot`, provider status, lane lock,
@@ -907,7 +1011,12 @@ Never reuse retired scratch paths, copy credentials into the manifest, or put
 this private manifest in Git.
 
 The reviewed worker layout has sibling `run` and `contract` directories under
-one private run root. `workerInventory` is exactly `run/provider-inventory.json`;
+one private mode-0700 run root. Before baseline launch, verify an existing empty
+mode-0700 `run/disabled-boundary` directory. Both capture paths must still be
+absent; do not reuse an old boundary or collector job. Missing boundary was a
+confirmed pre-collector staging blocker on October 28; it is not safe to infer
+that code import smoke checked this runtime prerequisite.
+`workerInventory` is exactly `run/provider-inventory.json`;
 the private provider source is `contract/provider-source`, outside the retained
 capture tree. Each sequence writes an immutable ECS address sidecar there before
 publishing the unchanged address-free inventory in the same remote write call.
