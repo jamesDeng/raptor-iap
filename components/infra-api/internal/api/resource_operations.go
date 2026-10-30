@@ -157,6 +157,17 @@ func (o resourceOperations) execute(ctx context.Context, path string, q url.Valu
 		result := resourceEnvelope{Resource: root}
 		switch kind {
 		case "application":
+			if identity != nil {
+				// Check the environment even when discovery returns no workloads.
+				if r.Environment.ClusterID != identity.Binding.ClusterID {
+					return nil, &operationError{409, "IdentityChanged"}
+				}
+				for _, workload := range r.ApplicationWorkloads {
+					if e := validateApplicationWorkload(r, workload, identity); e != nil {
+						return nil, e
+					}
+				}
+			}
 			rows := r.ApplicationWorkloads
 			if rows == nil {
 				rows = []domain.ApplicationWorkload{}
@@ -221,20 +232,25 @@ func selectApplication(r domain.ResolvedResource, key string, i *AgentIdentity) 
 	if count != 1 {
 		return found, &operationError{409, "AmbiguousTarget"}
 	}
-	t := found.Target
-	if t.EnvCode != r.Context.EnvCode || t.AppCode != r.Context.Code || t.ClusterID != r.Environment.ClusterID || !textOK(t.Namespace) || !textOK(t.Name) || !textOK(t.UID) {
-		return found, &operationError{409, "IdentityChanged"}
+	return found, validateApplicationWorkload(r, found, i)
+}
+
+// Discovery and exact workload selection enforce the same private/public identity.
+func validateApplicationWorkload(r domain.ResolvedResource, workload domain.ApplicationWorkload, i *AgentIdentity) error {
+	t := workload.Target
+	if r.Environment.Code != r.Context.EnvCode || t.EnvCode != r.Context.EnvCode || t.AppCode != r.Context.Code || t.ClusterID != r.Environment.ClusterID || !textOK(t.Namespace) || !textOK(t.Name) || !textOK(t.UID) || workload.Type != "kubernetes" || !textOK(workload.WorkloadKey) || workload.ClusterID != t.ClusterID || workload.Namespace != t.Namespace || workload.Name != t.Name || workload.UID != t.UID {
+		return &operationError{409, "IdentityChanged"}
 	}
 	if i != nil && (i.Binding == nil || t.ClusterID != i.Binding.ClusterID) {
-		return found, &operationError{409, "IdentityChanged"}
+		return &operationError{409, "IdentityChanged"}
 	}
 	if i != nil && i.ReplacementScope != nil {
 		a := i.ReplacementScope.Application
 		if t.EnvCode != a.EnvCode || t.AppCode != a.AppCode || t.ClusterID != a.ClusterID || t.Namespace != a.Namespace || t.Name != a.Name || t.UID != a.UID {
-			return found, &operationError{409, "IdentityChanged"}
+			return &operationError{409, "IdentityChanged"}
 		}
 	}
-	return found, nil
+	return nil
 }
 func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map[string]string) (any, error) {
 	field, options := proxyReadOptions(tool)
