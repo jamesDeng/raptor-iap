@@ -12,14 +12,16 @@ import (
 // Typed SDK boundaries retain presence information: omitted provider fields are
 // never converted to zero capacity, healthy state or unprotected membership.
 type proxySDK struct {
-	groups    func(context.Context, *ess.DescribeScalingGroupsRequest, *dara.RuntimeOptions) (*ess.DescribeScalingGroupsResponse, error)
-	instances func(context.Context, *ess.DescribeScalingInstancesRequest, *dara.RuntimeOptions) (*ess.DescribeScalingInstancesResponse, error)
-	servers   func(context.Context, *nlb.ListServerGroupServersRequest, *dara.RuntimeOptions) (*nlb.ListServerGroupServersResponse, error)
-	health    func(context.Context, *nlb.GetListenerHealthStatusRequest, *dara.RuntimeOptions) (*nlb.GetListenerHealthStatusResponse, error)
-	listener  func(context.Context, *nlb.GetListenerAttributeRequest, *dara.RuntimeOptions) (*nlb.GetListenerAttributeResponse, error)
-	scale     func(context.Context, *ess.ModifyScalingGroupRequest, *dara.RuntimeOptions) (*ess.ModifyScalingGroupResponse, error)
-	protect   func(context.Context, *ess.SetInstancesProtectionRequest, *dara.RuntimeOptions) (*ess.SetInstancesProtectionResponse, error)
-	remove    func(context.Context, *nlb.RemoveServersFromServerGroupRequest, *dara.RuntimeOptions) (*nlb.RemoveServersFromServerGroupResponse, error)
+	serverGroups func(context.Context, *nlb.ListServerGroupsRequest, *dara.RuntimeOptions) (*nlb.ListServerGroupsResponse, error)
+	listeners    func(context.Context, *nlb.ListListenersRequest, *dara.RuntimeOptions) (*nlb.ListListenersResponse, error)
+	groups       func(context.Context, *ess.DescribeScalingGroupsRequest, *dara.RuntimeOptions) (*ess.DescribeScalingGroupsResponse, error)
+	instances    func(context.Context, *ess.DescribeScalingInstancesRequest, *dara.RuntimeOptions) (*ess.DescribeScalingInstancesResponse, error)
+	servers      func(context.Context, *nlb.ListServerGroupServersRequest, *dara.RuntimeOptions) (*nlb.ListServerGroupServersResponse, error)
+	health       func(context.Context, *nlb.GetListenerHealthStatusRequest, *dara.RuntimeOptions) (*nlb.GetListenerHealthStatusResponse, error)
+	listener     func(context.Context, *nlb.GetListenerAttributeRequest, *dara.RuntimeOptions) (*nlb.GetListenerAttributeResponse, error)
+	scale        func(context.Context, *ess.ModifyScalingGroupRequest, *dara.RuntimeOptions) (*ess.ModifyScalingGroupResponse, error)
+	protect      func(context.Context, *ess.SetInstancesProtectionRequest, *dara.RuntimeOptions) (*ess.SetInstancesProtectionResponse, error)
+	remove       func(context.Context, *nlb.RemoveServersFromServerGroupRequest, *dara.RuntimeOptions) (*nlb.RemoveServersFromServerGroupResponse, error)
 }
 type ProxyBackend struct {
 	identity func(context.Context, domain.Environment) (string, error)

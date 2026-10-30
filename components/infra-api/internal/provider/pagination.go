@@ -30,7 +30,7 @@ func (p *reader) discover(ctx context.Context, env domain.Environment, kind, cod
 		if e != nil {
 			return nil, e
 		}
-		if pg.Total < 0 || (total >= 0 && total != pg.Total) {
+		if pg.Total < 0 || pg.Total > 10000 || (total >= 0 && total != pg.Total) {
 			return nil, errors.New("incomplete discovery")
 		}
 		total = pg.Total
@@ -52,4 +52,43 @@ func (p *reader) discover(ctx context.Context, env domain.Environment, kind, cod
 }
 func project(r record, env domain.Environment, kind, code, evidence string) domain.Deployment {
 	return domain.Deployment{ResourceID: r.ID, Kind: kind, EnvCode: env.Code, ObjectCode: code, Name: r.Name, State: r.State, Endpoint: r.Endpoint, TargetDBCode: r.Tags["target-db-code"], EvidenceMode: evidence}
+}
+
+// tokenPages enforces complete stable totals and unique records/tokens for NLB.
+type tokenPages struct {
+	total       int
+	token       string
+	tokens, ids map[string]bool
+}
+
+func newTokenPages() *tokenPages {
+	return &tokenPages{total: -1, tokens: map[string]bool{}, ids: map[string]bool{}}
+}
+func (p *tokenPages) add(id string) bool {
+	if id == "" || p.ids[id] {
+		return false
+	}
+	p.ids[id] = true
+	return true
+}
+func (p *tokenPages) next(total *int32, token string, count int) (bool, error) {
+	if total == nil || *total < 0 || *total > 10000 || (p.total >= 0 && p.total != int(*total)) {
+		return false, providerRefusal()
+	}
+	p.total = int(*total)
+	if len(p.ids) > p.total {
+		return false, providerRefusal()
+	}
+	if token == "" {
+		if len(p.ids) != p.total {
+			return false, providerRefusal()
+		}
+		return true, nil
+	}
+	if count == 0 || p.tokens[token] || len(p.ids) >= p.total {
+		return false, providerRefusal()
+	}
+	p.tokens[token] = true
+	p.token = token
+	return false, nil
 }
