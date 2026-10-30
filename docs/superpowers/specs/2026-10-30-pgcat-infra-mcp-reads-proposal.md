@@ -1,6 +1,6 @@
-# PgCat Infra MCP read routing — proposal requiring owner approval
+# PgCat Infra MCP read routing — owner-approved bounded integration
 
-Status: design only; no API/routing implementation or cloud changes performed.
+Status: owner explicitly approved this bounded integration on2026-10-30. No API/routing implementation or cloud changes have yet been performed.
 
 ## Corrected current facts
 The existing Infra API exposes identity, deployments and app status, and has internal Alibaba SDK reads for mutation guards. It does not expose the complete ESS/NLB observation contract. The normal Gateway observer translates CLI-shaped requests into direct Alibaba SDK calls; it does not call Infra API for these reads. Its custom PgCat metrics tool queries Prometheus over private HTTP, rather than through an Infra MCP read tool. Earlier statements that these complete MCP read paths already existed were incorrect.
@@ -25,4 +25,4 @@ Tests must cover wrong/expired/revoked/application scope refusal; pending/partia
 The connection-budget correction (combined total active+idle+waiting<=1, live minimum capacity floor, desired>=minimum, existing scale-in approval) is already implemented/reviewed separately at1c71b27; current CI is separate. This proposal does not finish the full2→4→2 POC or authorize a larger test-controller redesign.
 
 ## Approval requested
-Approve this precise medium read-routing integration before source implementation, per the owner's instruction that large changes need approval.
+Owner approved this precise medium read-routing integration before source implementation. Material scope expansion, new cloud resources/IAM or controller work still requires approval.
