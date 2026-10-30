@@ -32,8 +32,8 @@ def direct_frames():
               transition_frame(9, ('c','d'))]
     for f in frames:
         f['inventory']['mode'] = MODE
-        # Both old nodes serve traffic at ready-four. A reaches complete zero
-        # at 5 and later backend absence at 6; B reaches zero at 6, absence at 7.
+        # Both originals must qualify together: B is still busy at 5;
+        # complete pair metrics at 6 precede fresh absence for both at 7.
         for row in f['metrics']['raw']:
             if row['node'] in ('a','b') and (f['at'] == 4 or row['node'] == 'b' and f['at'] == 5):
                 row['value'] = 1
@@ -145,7 +145,7 @@ class DirectReplacementModeTests(unittest.TestCase):
         value['privateAddresses'] = {n:'10.0.0.'+str(ord(n)-ord('a')+1) for n in ids}
         return value
 
-    def test_direct_sequence_passes_with_independent_old_retirement_and_segment_history(self):
+    def test_direct_sequence_passes_with_combined_old_budget_and_segment_history(self):
         frames = direct_frames()
         result = assess(frames, completed=True)
         self.assertEqual(result['status'], 'PASS', result)
@@ -153,7 +153,7 @@ class DirectReplacementModeTests(unittest.TestCase):
         for f in frames:
             history.assess(clean_inventory(f['inventory']), f['metrics'], f['at'], issues.append)
             if f['at'] == 5: self.assertEqual(history.retired, set())
-            if f['at'] == 6: self.assertEqual(history.retired, {'a'})
+            if f['at'] == 6: self.assertEqual(history.retired, set())
             if f['at'] == 7: self.assertEqual(history.retired, {'a','b'})
         self.assertEqual(issues, [])
         self.assertEqual(history.departures, 2)
@@ -215,9 +215,9 @@ class DirectReplacementModeTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(assess(fs, completed=True)['status'], 'INCONCLUSIVE')
 
-    def test_old_nodes_keep_metrics_obligations_until_each_complete_zero_and_later_absence(self):
+    def test_old_nodes_keep_metrics_obligations_until_combined_budget_and_later_absence(self):
         for case in ('missing old metrics', 'missing replacement metrics', 'stale scrape', 'stale raw',
-                     'missing other pool idle', 'nonzero other pool', 'no old zero', 'same publication',
+                     'missing other pool idle', 'overbudget other pool', 'no old zero', 'same publication',
                      'later nonzero', 'stale provider', 'unfinished', 'sql failure'):
             fs = direct_frames()
             if case in ('missing old metrics','missing replacement metrics'):
@@ -230,8 +230,8 @@ class DirectReplacementModeTests(unittest.TestCase):
                     if r['node'] == 'b': r['sourceAt'] = -100
             if case == 'missing other pool idle':
                 fs[6]['metrics']['raw'] = [r for r in fs[6]['metrics']['raw'] if (r['node'],r['pool'],r['kind']) != ('b','other','idle')]
-            if case == 'nonzero other pool':
-                fs[6]['metrics']['raw'][-1]['value'] = 1
+            if case == 'overbudget other pool':
+                fs[6]['metrics']['raw'][-1]['value'] = 2
             if case == 'no old zero':
                 for f in fs[5:7]:
                     for r in f['metrics']['raw']:
@@ -258,17 +258,89 @@ class DirectReplacementModeTests(unittest.TestCase):
             start = 9 if case == 'later nonzero' else 5
             nodes = ('a','b') if case == 'neither retired' else ('b',)
             for f in fs[start:]:
-                for node in nodes:
+                for node in ('a','b'):
                     if node not in f['metrics']['nodes']:
                         f['metrics']['nodes'].append(node)
                         f['metrics']['raw'] += [dict(node=node, pool='test', user='poc_app',
-                            kind=k, value=1, sourceAt=f['at']) for k in ('active','idle','waiting')]
+                            kind=k, value=0, sourceAt=f['at']) for k in ('active','idle','waiting')]
                 for row in f['metrics']['raw']:
                     if row['node'] in nodes: row['value'] = 1
             with self.subTest(case=case):
                 result = assess(fs, completed=True)
                 self.assertEqual(result['status'], 'INCONCLUSIVE', result)
                 self.assertNotIn('missing metrics coverage', result['reasons'])
+
+    def test_direct_budget_sums_both_originals_all_pools_and_excludes_survivors(self):
+        for node in ('a','b'):
+            for pool in ('test','other'):
+                for kind in ('active','idle','waiting'):
+                    for total, expected in ((0,'PASS'),(1,'PASS'),(2,'INCONCLUSIVE')):
+                        fs = direct_frames()
+                        for row in fs[6]['metrics']['raw']:
+                            if (row['node'],row['pool'],row['kind']) == (node,pool,kind): row['value'] = total
+                            if row['node'] in ('c','d'): row['value'] = 100
+                        with self.subTest(node=node,pool=pool,kind=kind,total=total):
+                            self.assertEqual(assess(fs, completed=True)['status'], expected)
+        fs = direct_frames()
+        for row in fs[6]['metrics']['raw']:
+            if (row['node'],row['pool'],row['kind']) in (('a','test','idle'),('b','other','waiting')):
+                row['value'] = 1
+        self.assertEqual(assess(fs, completed=True)['status'], 'INCONCLUSIVE')
+
+    def test_direct_budget_cannot_combine_originals_from_different_frames(self):
+        fs = direct_frames()
+        fs[6]['metrics']['nodes'].remove('a')
+        fs[6]['metrics']['raw'] = [r for r in fs[6]['metrics']['raw'] if r['node'] != 'a']
+        # A's complete zero at 5 cannot combine with B's complete zero at 6.
+        self.assertEqual(assess(fs, completed=True)['status'], 'INCONCLUSIVE')
+
+    def test_direct_later_overbudget_invalidates_both_original_proofs(self):
+        for totals in ({'a':2}, {'b':2}, {'a':1,'b':1}, {'b':1}):
+            fs = direct_frames()
+            for node,total in totals.items():
+                fs[7]['metrics']['nodes'].append(node)
+                fs[7]['metrics']['raw'] += [dict(node=node,pool='test',user='poc_app',kind=k,
+                    value=total if k=='idle' else 0,sourceAt=7) for k in ('active','idle','waiting')]
+            history = TransitionEvidence(); issues = []
+            for f in fs[:8]: history.assess(clean_inventory(f['inventory']),f['metrics'],f['at'],issues.append)
+            with self.subTest(totals=totals):
+                expected = 'PASS' if totals == {'b':1} else 'INCONCLUSIVE'
+                self.assertEqual(assess(fs, completed=True)['status'], expected)
+                self.assertEqual(history.retired, {'a','b'} if expected=='PASS' else set())
+
+    def test_direct_one_residual_does_not_mask_invalid_evidence_or_sql_failure(self):
+        for case in ('missing node','missing triplet','duplicate','unknown','fractional','negative',
+                     'bool','stale raw','stale scrape','stale provider','poll gap','sql failure'):
+            fs = direct_frames(); met = fs[6]['metrics']
+            next(r for r in met['raw'] if (r['node'],r['pool'],r['kind'])==('b','other','waiting'))['value'] = 1
+            if case == 'missing node':
+                met['nodes'].remove('a'); met['raw'] = [r for r in met['raw'] if r['node']!='a']
+            if case == 'missing triplet': met['raw'].pop(0)
+            if case == 'duplicate': met['raw'].append(copy.deepcopy(met['raw'][0]))
+            if case == 'unknown': met['raw'][0]['node'] = 'unknown'
+            if case in ('fractional','negative','bool'): met['raw'][0]['value'] = {'fractional':0.5,'negative':-1,'bool':True}[case]
+            if case == 'stale raw': met['raw'][0]['sourceAt'] = -100
+            if case == 'stale scrape': met['sourceAt'] = -100
+            if case == 'stale provider': fs[6]['inventory']['observedAt'] = -100
+            if case == 'poll gap': fs[6]['at'] = 20
+            if case == 'sql failure':
+                fs[6]['pods'][0]['snapshot']['sample']['Failure'] = 1
+                met['available'] = False
+            with self.subTest(case=case):
+                self.assertEqual(assess(fs, completed=True)['status'], 'FAIL' if case=='sql failure' else 'INCONCLUSIVE')
+
+    def test_historical_retirement_still_requires_strict_zero(self):
+        from test_capture_window import transition_window
+        from test_rehearsal_mode import lingering_drained_member_frames
+        for mode in ('full-replacement','disabled-rehearsal'):
+            fs = transition_window() if mode=='full-replacement' else lingering_drained_member_frames()
+            node = 'a' if mode=='full-replacement' else 'c'
+            for f in fs:
+                f['inventory']['mode'] = mode
+                for row in f['metrics']['raw']:
+                    if row['node']==node: row['value'] = 1 if row['pool']=='test' and row['kind']=='idle' else 0
+            with self.subTest(mode=mode):
+                self.assertEqual(assess(fs, completed=True)['status'], 'INCONCLUSIVE')
 
     def test_producer_emits_sanitizable_mode_and_retains_all_targets_after_departures(self):
         op = self.operator(); publications = []; updates = []

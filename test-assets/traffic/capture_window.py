@@ -173,7 +173,7 @@ class TransitionEvidence:
             if not row['addressKnown'] and (node in self.address_required or node in backends or node in nonpending):issue('missing required member address')
             if row['addressKnown'] or node in backends or node in nonpending:self.address_required.add(node)
         self.ever_serving.update(nonpending|backends)
-        # Only a subsequent fresh publication can close a prior zero observation.
+        # Only a subsequent fresh publication can close a prior retirement observation.
         for node,zero in list(self.obligations.items()):
             if (node not in backends and zero is not None and
                 inv['feedSession']==zero[1] and inv['sequence']>zero[2] and
@@ -188,7 +188,7 @@ class TransitionEvidence:
         valid=met['available'] is True and isinstance(nodes,list) and len(nodes)==len(set(nodes)) and set(nodes).issubset(allowed)
         if not valid:issue('missing metrics coverage')
         if not fresh:issue('stale metrics')
-        triplets={};node_valid={n:True for n in nodes};nonzero=set()
+        triplets={};node_valid={n:True for n in nodes};nonzero=set();totals={}
         for row in met['raw']:
             node=row['node'];key=(node,row['pool'],row['user']);kind=row['kind'];value=row['value']
             ok=(node in nodes and node in allowed and bool(row['pool']) and bool(row['user']) and kind in ('active','idle','waiting'))
@@ -202,12 +202,23 @@ class TransitionEvidence:
             bucket.add(kind)
             node_valid[node]=node_valid.get(node,False) and ok and numeric and row_fresh
             if numeric and value>0:nonzero.add(node)
+            if ok and numeric and row_fresh:totals[node]=totals.get(node,0)+int(value)
         for key,kinds in triplets.items():
             if kinds!={'active','idle','waiting'}:node_valid[key[0]]=False;issue('missing expected raw triplets')
         for node in nodes:
             if (node,'test','poc_app') not in triplets:node_valid[node]=False;issue('missing expected raw triplets')
-        # A later nonzero sample restores even a previously retired obligation.
-        for node in nonzero:
+        originals=self.mode.originals if self.mode.mode=='full-replacement-direct-v2' else set()
+        observed_originals={n for n in originals if node_valid.get(n,False)}
+        original_total=sum(totals[n] for n in observed_originals)
+        within_budget=(len(originals)==2 and observed_originals==originals and valid and fresh and
+                       -1<=now-seconds(inv['observedAt'])<=30 and original_total<=1)
+        # A valid observed subtotal above one disproves the shared budget even
+        # when the other original is absent. Requalification needs BOTH again.
+        if originals and valid and fresh and original_total>1:
+            self.retired.difference_update(originals)
+            for node in originals:self.obligations[node]=None
+        # Historical modes and nodes outside the direct retiring pair stay zero-only.
+        for node in nonzero-originals:
             if node in allowed:
                 self.retired.discard(node)
                 self.obligations[node]=None
@@ -217,9 +228,13 @@ class TransitionEvidence:
         required.update((members-nonpending) & self.ever_serving)
         if not required.issubset(nodes) or any(not node_valid.get(n,False) for n in required):issue('missing metrics coverage')
         for node in self.obligations:
-            if node in nonzero:self.obligations[node]=None
-            elif valid and fresh and node_valid.get(node,False):
-                # Do not move an existing proof forward on repeated zero samples.
+            if node in originals:
+                qualifies=within_budget
+            else:
+                if node in nonzero:self.obligations[node]=None
+                qualifies=node not in nonzero and valid and fresh and node_valid.get(node,False)
+            if qualifies:
+                # Do not move an existing proof forward on repeated qualifying samples.
                 if self.obligations[node] is None:
                     # Clock skew cannot turn this same publication into later proof.
                     self.obligations[node]=(max(now,seconds(met['observedAt'])),inv['feedSession'],inv['sequence'])
