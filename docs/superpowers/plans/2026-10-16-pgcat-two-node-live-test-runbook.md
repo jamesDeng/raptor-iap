@@ -1,6 +1,23 @@
 # PgCat two-node live-test operator runbook
 
-## 2026-10-29 owner direction: replace both originals with 2→4→2
+## 2026-10-30 policy correction and release status
+
+For the unreleased direct-v2 workflow, the owner accepts a combined TOTAL
+active+idle+waiting client count of at most1 across BOTH originals, including
+every pool/user. Two nodes with one client each must refuse. Preserve fresh
+complete observations, withdrawal, app rolling restart, exact scale-in approval
+and healthy retained capacity at least the live minimum. Desired may equal
+minimum; leave the Terraform-owned minimum2 unchanged. Any minimum change needs
+approved Terraform/GitOps, and runtime scaling never changes min/max.
+
+This correction is implemented/reviewed and source1c71b27 passed all8CI workflows;
+it is not deployed or live-qualified. Historical strict-zero instructions below
+remain history/legacy policy and do not override this direct-v2 correction.
+Normal Infra MCP ESS/NLB and Prometheus read routing still requires the proposed
+cross-component integration; complete endpoints do not already exist. No paid
+run or source-release bypass is authorized by this status note.
+
+## 2026-10-29 sequence (connection gate updated 2026-10-30)
 
 The owner explicitly selected this full-run sequence, superseding the earlier
 staged 2→4→3→2 design:
@@ -9,8 +26,8 @@ staged 2→4→3→2 design:
 2. Stop new connections to **both** exact originals; verify their backend
    withdrawal while both replacements remain healthy and registered.
 3. Rolling-restart the related, scope-bound application Deployments.
-4. Observe fresh complete zero active/idle/waiting client counts across every
-   pool/user on **each** original.
+4. Observe fresh complete active/idle/waiting counts across every pool/user on
+   BOTH originals; require their **combined TOTAL ≤1**.
 5. Scale ESS directly from four to two, retaining exactly the two replacements.
 
 Keep both replacements protected; make only the verified drained originals

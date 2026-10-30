@@ -29,3 +29,6 @@ Modify replacement-sequence.mjs and direct tests/pinned current skill wording on
 
 ### Task 3: Direct assessment policy correction
 Inspect capture_window.py direct transition branch and direct fixtures; adopt explicit direct-v2 combined retirement budget1 consistently, preserving historical zero behavior, full coverage and FAIL precedence. No new assessment framework. RED a single residual across two old nodes accepted while2refuses; preserve missing-series/stale/unknown/gaps refusal. If existing retirement proof cannot express owner budget without major redesign, report concrete conflict before editing. Run focused direct/legacy tests and full affected suite once frozen, review. Update current docs and test-only verification claim; do not enable or claim live PASS.
+
+## Completion — source only
+All three tasks and final bounded integration review completed at1c71b27. FullGo9packages+vet, Node292, Python114normal/114optimized/full980 passed. All8remoteCIworkflows passed for1c71b27. See planworkspace reports for exact commands/expected timing-fixture diagnostics. No deployment, native unlock, livePASS or claim of completedAPIreadrouting. LargerPR304 remainsdraft/unmerged.
