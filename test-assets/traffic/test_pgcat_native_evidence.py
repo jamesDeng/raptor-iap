@@ -112,6 +112,40 @@ class NativeContextCohort(unittest.TestCase):
             if case=='deployment':live['deployment']['metadata']['name']='other'
             with self.subTest(case=case),self.assertRaises((ValueError,KeyError)):worker_capture.native_owner_evidence(live['deployment'],live['replicaSets'],live['pods'],context())
 
+    def test_dormant_old_image_history_does_not_change_current_owners(self):
+        for stage in (0,4):
+            with self.subTest(stage=stage):
+                live=kubernetes(stage)
+                history=copy.deepcopy(live['replicaSets'][0])
+                history['metadata'].update(uid='rs-history',labels={'pod-template-hash':'hash-history'})
+                history['spec']['template']['metadata']['labels']['pod-template-hash']='hash-history'
+                history['spec']['template']['spec']['containers'][0]['image']='repo@sha256:'+'b'*64
+                history['spec']['replicas']=0;history['status']={'replicas':0}
+                live['replicaSets'].append(history)
+                result=worker_capture.native_owner_evidence(live['deployment'],live['replicaSets'],live['pods'],context())
+                expected={('uid-' if stage==0 else 'new-uid-')+str(i):ownership(stage!=0) for i in range(2)}
+                self.assertEqual(result,expected)
+
+    def test_wrong_image_relevant_replicasets_and_invalid_history_still_reject(self):
+        for case in ('initial','owning','desired','observed','unknown-count','namespace','duplicate','owner','template'):
+            live=kubernetes();history=copy.deepcopy(live['replicaSets'][1])
+            history['metadata'].update(uid='rs-history',labels={'pod-template-hash':'hash-history'})
+            history['spec']['template']['metadata']['labels']['pod-template-hash']='hash-history'
+            history['spec']['replicas']=0;history['status']={'replicas':0}
+            live['replicaSets'].append(history)
+            target=live['replicaSets'][0 if case=='initial' else 1] if case in ('initial','owning') else history
+            target['spec']['template']['spec']['containers'][0]['image']='repo@sha256:'+'b'*64
+            target['spec']['replicas']=0;target['status']={'replicas':0}
+            if case=='desired':history['spec']['replicas']=1
+            if case=='observed':history['status']['replicas']=1
+            if case=='unknown-count':history['status'].pop('replicas')
+            if case=='namespace':history['metadata']['namespace']='other'
+            if case=='duplicate':history['metadata']['uid']='rs-old'
+            if case=='owner':history['metadata']['ownerReferences'][0]['uid']='other'
+            if case=='template':history['spec']['template']['metadata']['labels']['pod-template-hash']='other'
+            with self.subTest(case=case),self.assertRaises(ValueError):
+                worker_capture.native_owner_evidence(live['deployment'],live['replicaSets'],live['pods'],context())
+
     def test_native_rejects_reincarnation_extra_cohort_and_generation(self):
         for case in ('process','container','fifth','second-rs','generation','regression','disappearance','events'):
             cohort = native.NativeCohort(context());cohort.observe(rolling(0));cohort.observe(rolling(1))

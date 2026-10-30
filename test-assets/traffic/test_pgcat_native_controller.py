@@ -110,6 +110,77 @@ class NativeStartupTests(unittest.TestCase):
                 probe_process=probe,live_clients=f.live_clients,now=lambda:f.now)
         self.assertFalse((f.run/'native-ready.json').exists())
 
+    def test_ready_accepts_latest_pair_after_three_or_more_frames(self):
+        from segmented_capture import read_progress
+        f=Fixture(self.root);(f.run/'native-ready.json').unlink()
+        for last in (2,3,4):
+            f.append(last)
+            ready=native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,
+                probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
+            progress,_,_=read_progress(f.run/'native-capture',f.context)
+            self.assertEqual(ready['frames'],{k:progress[k] for k in ('previous','latest')})
+            self.assertEqual(ready['readyAt'],f.now)
+            (f.run/'native-ready.json').unlink()
+
+    def test_ready_accepts_healthy_tail_advancement_during_live_read(self):
+        from segmented_capture import read_progress
+        f=Fixture(self.root);(f.run/'native-ready.json').unlink()
+        def advancing_clients():
+            for n in (2,3,4):f.append(n)
+            return f.live_clients()
+        ready=native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,
+            probe_process=f.probe_process,live_clients=advancing_clients,now=lambda:f.now)
+        progress,_,_=read_progress(f.run/'native-capture',f.context)
+        self.assertEqual(ready['frames'],{k:progress[k] for k in ('previous','latest')})
+        self.assertEqual(ready['readyAt'],f.now)
+
+    def test_ready_tail_advancement_never_masks_invalid_evidence_or_identity(self):
+        for case in ('stale','history','segment-inode','context-inode','source','process','owner','sticky','bad-frame'):
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as d:
+                root=Path(d).resolve();root.chmod(0o700);f=Fixture(root)
+                (f.run/'native-ready.json').unlink()
+                if case=='history':
+                    f.append(2);f.append(3)
+                def changed_clients():
+                    f.append(4 if case=='history' else 2)
+                    if case=='stale':f.now+=10
+                    if case=='history':
+                        path=f.run/'native-capture'/'segment-0001.jsonl'
+                        rows=path.read_bytes().splitlines(keepends=True)
+                        # Interior frame: outside both the first-frame refs and
+                        # the previous/latest pair, but inside the pinned prefix.
+                        rows[1]=rows[1].replace(b'"observedAt":',b'"observedAx":',1)
+                        path.write_bytes(b''.join(rows))
+                    if case in ('segment-inode','context-inode'):
+                        path=f.run/('native-capture/segment-0001.jsonl' if case=='segment-inode' else 'native-context.json')
+                        raw=path.read_bytes();path.rename(path.with_name('held-'+path.name));path.write_bytes(raw);path.chmod(0o600)
+                    if case=='source':(f.run/'worker_capture.py').write_text('changed')
+                    if case=='process':f.guardian['startTicks']+=1
+                    if case=='owner':f.live['replicaSets'][0]['metadata']['ownerReferences'][0]['uid']='foreign'
+                    if case=='sticky':f.writer.note_poll_error(f.now)
+                    if case=='bad-frame':
+                        value=copy.deepcopy(f.frame);value['pods'][0]['ownership']['imageDigest']='sha256:'+'b'*64
+                        f.append(3,value)
+                    return f.live_clients()
+                guardian=copy.deepcopy(f.guardian)
+                with self.assertRaises((ValueError,OSError)):
+                    native.seal_ready(f.run,prepared=f.prepared,guardian_identity=guardian,
+                        probe_process=f.probe_process,live_clients=changed_clients,now=lambda:f.now)
+                self.assertFalse((f.run/'native-ready.json').exists())
+
+    def test_ready_rechecks_freshness_after_source_verification(self):
+        f=Fixture(self.root);(f.run/'native-ready.json').unlink()
+        original=native.verify_source_inventory;reads=[]
+        def delayed_verification(*args):
+            result=original(*args);reads.append(result)
+            if len(reads)==2:f.now+=10
+            return result
+        with patch.object(native,'verify_source_inventory',side_effect=delayed_verification):
+            with self.assertRaises(ValueError):
+                native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,
+                    probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
+        self.assertFalse((f.run/'native-ready.json').exists())
+
     def test_nonterminal_ingress_observation_and_exact_final_mirror(self):
         f=Fixture(self.root)
         result=native.collect_ingress(f.run,dict(requestId=REQUEST,approvalIds=[]),gate=f,

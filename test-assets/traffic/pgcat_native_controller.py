@@ -245,16 +245,17 @@ def seal_capture_context(run_dir,hashes,*,prepared,probe_process,live_clients,no
 
 
 def seal_ready(run_dir,*,prepared,guardian_identity,probe_process,live_clients,now):
-    """Seal exactly the first two committed, active baseline frames.
+    """Seal a fresh baseline pair from a validated committed prefix.
 
     This pure evidence kernel has no transport or runtime authority. Its caller
     must anchor the returned file identity in its completed Journal action.
     """
-    from pgcat_native_ingress import (_identity,validate_plan,_baseline,_runtime,_ready_pair,_process)
+    from pgcat_native_ingress import (_identity,validate_plan,_baseline,_runtime,_ready_pair,_process,_capture_prefix)
     from pgcat_native_evidence import validate_context,_replay
     from segmented_capture import decode_private,canonical,sha,read_progress,open_directory
     from worker_capture import native_owner_evidence
     from pgcat_rehearsal_contract import fresh_provider_source
+    from types import SimpleNamespace
     run=Path(run_dir);check(run.is_absolute() and run.name=='run')
     paths=dict(plan=run/'native-plan.json',baseline=run/'native-baseline.json',context=run/'native-context.json',
         feedBinding=run/'native-feed-binding.json',providerRunContext=run.parent/'contract'/'provider-source'/'run-context.json',
@@ -283,35 +284,54 @@ def seal_ready(run_dir,*,prepared,guardian_identity,probe_process,live_clients,n
     _process(guardian_identity);_process(context['collectorIdentity'])
     check(guardian_identity['pid']!=context['collectorIdentity']['pid'])
     for identity in (guardian_identity,context['collectorIdentity']):check(probe_process(identity['pid'])==identity)
-    progress,previous,latest=read_progress(run/'native-capture',context)
-    check(progress['committedFrames']==2 and not any(progress['flags'].values()) and progress['maxGapSeconds']<=3)
-    _ready_pair([previous,latest],baseline,context,at)
     from capture_window import seconds
-    check(0<seconds(latest['at'])-seconds(previous['at'])<=3)
-    fd=open_directory(run/'native-capture')
-    try:
-        info=os.fstat(fd)
-        check(values['progressBinding']==dict(context,captureDirectoryIdentity=dict(device=info.st_dev,inode=info.st_ino)))
-        snapshot,count,_=_replay(fd,context,progress['latest'])
-    finally:os.close(fd)
-    check(snapshot==progress['nativeCohort'] and count==2)
+    chain=SimpleNamespace(run=run)
+    def validated_prefix(progress,previous,latest,at):
+        check(progress['committedFrames']>=2 and not any(progress['flags'].values()) and progress['maxGapSeconds']<=3)
+        _ready_pair([previous,latest],baseline,context,at)
+        check(0<seconds(latest['at'])-seconds(previous['at'])<=3)
+        prefix=_capture_prefix(chain,progress['latest'])
+        fd=open_directory(run/'native-capture')
+        try:
+            info=os.fstat(fd)
+            check(values['progressBinding']==dict(context,captureDirectoryIdentity=dict(device=info.st_dev,inode=info.st_ino)))
+            snapshot,count,gap=_replay(fd,context,progress['latest'])
+        finally:os.close(fd)
+        check(snapshot==progress['nativeCohort'] and count==progress['committedFrames'] and gap==progress['maxGapSeconds'])
+        check(_capture_prefix(chain,progress['latest'])==prefix)
+        return prefix
+    progress,previous,latest=read_progress(run/'native-capture',context)
+    prefix=validated_prefix(progress,previous,latest,at)
     live=live_clients();check(set(live)=={'deployment','replicaSets','pods','roster'})
     owners=native_owner_evidence(live['deployment'],live['replicaSets'],live['pods'],context)
     check(sorted(live['roster'],key=lambda r:r['uid'])==baseline['roster'])
-    check(owners=={p['uid']:p['ownership'] for p in latest['pods']})
     source=fresh_provider_source(run.parent/'contract',plan['runId'],run/'provider-inventory.json',require_fresh=False,mode=MODE)
+    at=now();check(number(at) and baseline['observedAt']<=at)
+    _runtime(values['gatewayRuntime'],plan,at)
     check(source['feedSession']==context['feedSession'] and source['providerRunContextSha256']==context['providerRunContextSha256'] and 0<=at-source['observedAt']<30)
     check(source['privateAddresses']=={r['id']:r['address'] for r in baseline['originals']})
+    # Two bounded snapshots permit healthy commits during live reads. Never
+    # adopt changed history: retain the old prefix's bytes and inode identities,
+    # then independently replay the actual new prefix and fresh latest pair.
+    current,previous,latest=read_progress(run/'native-capture',context)
+    check(all(current[k]>=progress[k] for k in ('generation','attempts','committedFrames','lastCommitMonotonic')))
+    check(current['firstAt']==progress['firstAt'])
+    validated_prefix(current,previous,latest,at)
+    check(_capture_prefix(chain,progress['latest'])==prefix)
+    check(owners=={p['uid']:p['ownership'] for p in latest['pods']})
+    progress=current
+    check(verify_source_inventory(run,plan['sourceHashes'])==source_inventory)
+    verify_prepared(run,plan,prepared)
     check(all(_identity(path)==files[key] for key,path in paths.items()))
-    current,_,_=read_progress(run/'native-capture',context);check(current==progress)
     for identity in (guardian_identity,context['collectorIdentity']):check(probe_process(identity['pid'])==identity)
+    at=now();check(number(at) and baseline['observedAt']<=at and 0<=at-source['observedAt']<30)
+    _runtime(values['gatewayRuntime'],plan,at)
+    _ready_pair([previous,latest],baseline,context,at)
     ready=dict(schemaVersion=1,mode=MODE,executionKind=plan['executionKind'],runId=plan['runId'],
         planSha256=context['planSha256'],baselineSha256=plan['baselineSha256'],contextSha256=sha(files['context'][0]),
         progressBindingSha256=sha(files['progressBinding'][0]),feedBindingSha256=sha(files['feedBinding'][0]),
         feedSession=context['feedSession'],collectorIdentity=context['collectorIdentity'],guardianIdentity=guardian_identity,
         sources={k:identity for k,(_,identity) in files.items()},frames={k:progress[k] for k in ('previous','latest')},readyAt=at)
-    check(verify_source_inventory(run,plan['sourceHashes'])==source_inventory)
-    verify_prepared(run,plan,prepared)
     _write_bytes(run/'native-ready.json',canonical(ready))
     return ready
 

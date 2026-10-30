@@ -99,24 +99,29 @@ def _native_owner_records_for_deployment(deployment, replicasets, pods, bound, a
         rows=[row for row in refs if row.get('controller') is True]
         require(len(rows)==1 and rows[0].get('kind')==kind and token(rows[0].get('uid')))
         return rows[0]
-    def image(obj):
+    def image(obj,pinned=True):
         containers=obj['spec']['containers']
         require(type(containers) is list and len(containers)==1 and containers[0]['name']=='client')
         value=containers[0]['image']
-        require(type(value) is str and value.endswith('@'+bound['imageDigest']))
+        require(type(value) is str and value and (not pinned or value.endswith('@'+bound['imageDigest'])))
     meta=deployment['metadata']
     require(all(meta.get(key)==bound[key] for key in ('name','namespace','uid')))
     require(type(meta.get('generation')) is int and meta['generation'] in (bound['generation'],bound['generation']+1))
     image(deployment['spec']['template'])
     require(type(replicasets) is list and type(pods) is list and 1<=len(pods)<=4)
     indexed={};successors=set()
+    owning={controller(pod,'ReplicaSet')['uid'] for pod in pods}
     for rs in replicasets:
         meta=rs['metadata'];uid=meta['uid'];owner=controller(rs,'Deployment')
         require(token(uid) and uid not in indexed and meta.get('namespace')==bound['namespace'])
         require(owner['uid']==bound['uid'] and owner.get('name')==bound['name'])
         template=meta['labels']['pod-template-hash']
         require(token(template) and template==rs['spec']['template']['metadata']['labels']['pod-template-hash'])
-        image(rs['spec']['template'])
+        # Only proven dormant history may retain an older image. Missing or
+        # nonzero counts, the initial binding and every pod owner stay pinned.
+        counts=(rs['spec'].get('replicas'),rs.get('status',{}).get('replicas'))
+        dormant=uid!=bound['initialReplicaSetUid'] and uid not in owning and all(type(n) is int and n==0 for n in counts)
+        image(rs['spec']['template'],pinned=not dormant)
         if uid==bound['initialReplicaSetUid']:require(template==bound['initialTemplateHash'])
         indexed[uid]=template
     result={};starting=[];seen=set()
