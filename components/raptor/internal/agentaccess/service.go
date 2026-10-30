@@ -2,6 +2,7 @@
 package agentaccess
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -428,18 +429,19 @@ func RepositorySelectorsAllowed(b Binding, audience, tool string, selectors map[
 	}
 }
 
-// VerifyRequestReplacement uses the request's existing immutable execution pins.
-// Callers hold the request row lock when creating/claiming an approval.
-func (s *Service) VerifyRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool) error {
-	if s.ResolveReplacement == nil {
-		return domain.ErrUnavailable
-	}
-	rows, e := s.Pool.Query(ctx, `SELECT a.binding,a.replacement_scope,r.definition FROM raptor.agent_attempt_access a JOIN raptor.requests r ON r.id=a.request_id WHERE a.request_id=$1 AND a.replacement_scope IS NOT NULL`, request)
+// replacementRows releases its query connection before any catalog/provider proof.
+type replacementQuery interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func replacementRows(ctx context.Context, query replacementQuery, request, env, proxy string, mutation bool) (ReplacementScope, Binding, []byte, error) {
+	rows, e := query.Query(ctx, `SELECT a.binding,a.replacement_scope,r.definition FROM raptor.agent_attempt_access a JOIN raptor.requests r ON r.id=a.request_id WHERE a.request_id=$1 AND (a.replacement_scope IS NOT NULL OR a.binding->>'operation'='db-proxy.replace-nodes') ORDER BY a.attempt_id`, request)
 	if e != nil {
-		return domain.ErrUnavailable
+		return ReplacementScope{}, Binding{}, nil, domain.ErrUnavailable
 	}
 	var frozen ReplacementScope
 	var binding Binding
+	var snapshot bytes.Buffer
 	count := 0
 	invalid := false
 	for rows.Next() {
@@ -451,6 +453,12 @@ func (s *Service) VerifyRequestReplacement(ctx context.Context, request, env, pr
 			invalid = true
 			continue
 		}
+		snapshot.Write(br)
+		snapshot.WriteByte(0)
+		snapshot.Write(sr)
+		snapshot.WriteByte(0)
+		snapshot.Write(dr)
+		snapshot.WriteByte(0)
 		fingerprint, err := Fingerprint(def)
 		if err != nil || fingerprint != b.DefinitionSHA256 || !supported(def) || b.RequestID != request || b.EnvCode != env || b.ObjectCode != proxy || !scope.ResourceValidFor(b) || (mutation && b.ExecutionMode != "replacement") || (!mutation && b.ExecutionMode != "qualification") {
 			invalid = true
@@ -466,17 +474,44 @@ func (s *Service) VerifyRequestReplacement(ctx context.Context, request, env, pr
 	e = rows.Err()
 	rows.Close()
 	if e != nil {
-		return domain.ErrUnavailable
+		return ReplacementScope{}, Binding{}, nil, domain.ErrUnavailable
 	}
 	if invalid || count == 0 {
-		return domain.ErrConflict
+		return ReplacementScope{}, Binding{}, nil, domain.ErrConflict
+	}
+	return frozen, binding, snapshot.Bytes(), nil
+}
+
+// PrepareRequestReplacement resolves current proof without holding an approval
+// transaction. The returned validator rechecks the exact DB snapshot through the
+// locked transaction's existing connection, never borrowing another pool slot.
+func (s *Service) PrepareRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool) (func(context.Context, pgx.Tx) error, error) {
+	if s.ResolveReplacement == nil {
+		return nil, domain.ErrUnavailable
+	}
+	frozen, binding, snapshot, e := replacementRows(ctx, s.Pool, request, env, proxy, mutation)
+	if e != nil {
+		return nil, e
 	}
 	current, e := s.ResolveReplacement(ctx, binding)
 	if e != nil {
-		return domain.ErrUnavailable
+		return nil, domain.ErrUnavailable
 	}
 	if current != frozen || !current.ResourceValidFor(binding) {
-		return domain.ErrConflict
+		return nil, domain.ErrConflict
 	}
-	return nil
+	return func(ctx context.Context, tx pgx.Tx) error {
+		_, _, locked, e := replacementRows(ctx, tx, request, env, proxy, mutation)
+		if e != nil {
+			return e
+		}
+		if !bytes.Equal(snapshot, locked) {
+			return domain.ErrConflict
+		}
+		return nil
+	}, nil
+}
+func (s *Service) VerifyRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool) error {
+	_, e := s.PrepareRequestReplacement(ctx, request, env, proxy, mutation)
+	return e
 }

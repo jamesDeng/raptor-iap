@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
@@ -11,20 +12,27 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/testutil"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 type resourceInfraFixture struct {
+	mu            sync.Mutex
 	proof         adapters.ResolutionProof
 	proofs, reads int
 }
 
 func (f *resourceInfraFixture) ResolutionProof(context.Context, string, string) (adapters.ResolutionProof, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.proofs++
 	return f.proof, nil
 }
 func (f *resourceInfraFixture) ListDeployments(_ context.Context, env domain.Environment, o domain.Object) ([]adapters.Deployment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.reads++
 	return []adapters.Deployment{{EnvCode: env.Code, Kind: o.Kind, ObjectCode: o.Code, EvidenceMode: "live", ResourceID: "actual"}}, nil
 }
@@ -222,5 +230,116 @@ func TestResourceForeignApprovalReadDeniedBeforeProof(t *testing.T) {
 	f.proofs = 0
 	if active(t, introspection(h, token, "raptor", "approval_get", map[string]string{"requestId": r.ID, "approvalId": domain.NewID()})) || f.proofs != 0 {
 		t.Fatal("foreign approval ID reached proof", f.proofs)
+	}
+}
+
+func TestResourceApprovalSmallPoolActualVerifierCompletes(t *testing.T) {
+	for _, phase := range []string{"request", "claim"} {
+		t.Run(phase, func(t *testing.T) {
+			h, r, f, _ := resourceRuntimeFixture(t)
+			ctx := context.Background()
+			in := approvals.ApprovalInput{RequestID: r.ID, ActionID: domain.NewID(), Interface: "db-proxy.scale-in", EnvCode: "dev", Target: map[string]any{"proxyCode": r.Definition.Object.Code}, Parameters: map[string]any{"desiredCapacity": 2}}
+			a, e := h.Approvals.Request(ctx, in)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = h.Approvals.Decide(ctx, domain.User{ID: domain.NewID(), Role: "user"}, a.ID, approvals.DecisionInput{Decision: "approve"}); e != nil {
+				t.Fatal(e)
+			}
+			config := h.Requests.Pool.Config()
+			config.MaxConns = 1
+			small, e := pgxpool.NewWithConfig(ctx, config)
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer small.Close()
+			limited := New(small)
+			limited.Catalog.Infra = f
+			limited.RegisterService("fixture-controller", "fixture-controller-password")
+			if phase == "request" {
+				in.ActionID = domain.NewID()
+			}
+			bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			var wg sync.WaitGroup
+			results := make(chan error, 4)
+			var winners atomic.Int32
+			for i := 0; i < 4; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if phase == "request" {
+						_, e := limited.Approvals.Request(bounded, in)
+						results <- e
+					} else {
+						v, e := limited.Approvals.Claim(bounded, in)
+						if v.Claimed {
+							winners.Add(1)
+						}
+						results <- e
+					}
+				}()
+			}
+			wg.Wait()
+			close(results)
+			for e := range results {
+				if e != nil {
+					t.Error("small-pool operation did not complete", phase, e)
+				}
+			}
+			if phase == "claim" && winners.Load() != 1 {
+				t.Error("claim winners", winners.Load())
+			}
+		})
+	}
+}
+
+func TestResourceApprovalRejectsChangesBetweenProofAndLock(t *testing.T) {
+	for _, phase := range []string{"request", "claim"} {
+		for _, change := range []string{"definition", "scope", "cancel"} {
+			t.Run(phase+"/"+change, func(t *testing.T) {
+				h, r, _, _ := resourceRuntimeFixture(t)
+				ctx := context.Background()
+				in := approvals.ApprovalInput{RequestID: r.ID, ActionID: domain.NewID(), Interface: "db-proxy.scale-in", EnvCode: "dev", Target: map[string]any{"proxyCode": r.Definition.Object.Code}, Parameters: map[string]any{"desiredCapacity": 2}}
+				if phase == "claim" {
+					a, e := h.Approvals.Request(ctx, in)
+					if e != nil {
+						t.Fatal(e)
+					}
+					if _, e = h.Approvals.Decide(ctx, domain.User{ID: domain.NewID(), Role: "user"}, a.ID, approvals.DecisionInput{Decision: "approve"}); e != nil {
+						t.Fatal(e)
+					}
+				}
+				real := h.Approvals.VerifyResource
+				h.Approvals.VerifyResource = func(ctx context.Context, input approvals.ApprovalInput) (approvals.ResourceVerification, error) {
+					verify, e := real(ctx, input)
+					if e != nil {
+						return nil, e
+					}
+					switch change {
+					case "definition":
+						_, e = h.Requests.Pool.Exec(ctx, `UPDATE raptor.requests SET definition=jsonb_set(definition,'{model}','"changed"') WHERE id=$1`, r.ID)
+					case "scope":
+						_, e = h.Requests.Pool.Exec(ctx, `UPDATE raptor.agent_attempt_access SET replacement_scope=jsonb_set(replacement_scope,'{listenerId}','"changed"') WHERE request_id=$1`, r.ID)
+					case "cancel":
+						_, e = h.Requests.Pool.Exec(ctx, `UPDATE raptor.requests SET status='cancelled',control_state='cancelled' WHERE id=$1`, r.ID)
+					}
+					return verify, e
+				}
+				if phase == "request" {
+					if _, e := h.Approvals.Request(ctx, in); e == nil {
+						t.Fatal("intervening change recorded approval", change)
+					}
+				} else {
+					if v, e := h.Approvals.Claim(ctx, in); v.Claimed || (change != "cancel" && e == nil) {
+						t.Fatal("intervening change consumed approval", change, v, e)
+					}
+				}
+				var count int
+				if e := h.Requests.Pool.QueryRow(ctx, "SELECT count(*) FROM raptor.approval_submissions WHERE request_id=$1 AND action_id=$2", r.ID, in.ActionID).Scan(&count); e != nil || count != 0 {
+					t.Fatal("unexpected claim", count, e)
+				}
+			})
+		}
 	}
 }

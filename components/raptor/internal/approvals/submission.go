@@ -24,6 +24,16 @@ func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimR
 	if e != nil || in.Interface != "db-proxy.scale-in" {
 		return out, domain.ErrInvalid
 	}
+	if s.VerifyResource == nil {
+		return out, domain.ErrUnavailable
+	}
+	verify, e := s.VerifyResource(ctx, in)
+	if e != nil {
+		return out, e
+	}
+	if verify == nil {
+		return out, domain.ErrUnavailable
+	}
 	tx, e := s.Pool.Begin(ctx)
 	if e != nil {
 		return out, domain.ErrUnavailable
@@ -52,12 +62,10 @@ func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimR
 	if approved != "approved" || !equalJSON(binding, b) {
 		return out, nil
 	}
-	if s.VerifyResource == nil {
-		return out, domain.ErrUnavailable
-	}
-	if e = s.VerifyResource(ctx, in); e != nil {
+	if e = verify(ctx, tx); e != nil {
 		return out, e
 	}
+
 	tag, e := tx.Exec(ctx, `INSERT INTO raptor.approval_submissions(request_id,action_id,binding) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, in.RequestID, in.ActionID, b)
 	if e != nil {
 		return out, domain.ErrUnavailable

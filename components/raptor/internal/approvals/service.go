@@ -11,9 +11,11 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 )
 
+type ResourceVerification func(context.Context, pgx.Tx) error
+
 type Service struct {
 	Pool           *pgxpool.Pool
-	VerifyResource func(context.Context, ApprovalInput) error
+	VerifyResource func(context.Context, ApprovalInput) (ResourceVerification, error)
 }
 type ApprovalInput struct {
 	RequestID  string         `json:"requestId"`
@@ -78,6 +80,19 @@ func (s *Service) Request(ctx context.Context, in ApprovalInput) (domain.Approva
 	if e != nil {
 		return domain.Approval{}, e
 	}
+	var verify ResourceVerification
+	if in.Interface == "db-proxy.scale-in" || in.Interface == "runtime.qualification-resume" {
+		if s.VerifyResource == nil {
+			return domain.Approval{}, domain.ErrUnavailable
+		}
+		verify, e = s.VerifyResource(ctx, in)
+		if e != nil {
+			return domain.Approval{}, e
+		}
+		if verify == nil {
+			return domain.Approval{}, domain.ErrUnavailable
+		}
+	}
 	tx, e := s.Pool.Begin(ctx)
 	if e != nil {
 		return domain.Approval{}, domain.ErrUnavailable
@@ -93,14 +108,12 @@ func (s *Service) Request(ctx context.Context, in ApprovalInput) (domain.Approva
 	if state == "cancelled" || state == "completed" {
 		return domain.Approval{}, domain.ErrConflict
 	}
-	if in.Interface == "db-proxy.scale-in" || in.Interface == "runtime.qualification-resume" {
-		if s.VerifyResource == nil {
-			return domain.Approval{}, domain.ErrUnavailable
-		}
-		if e = s.VerifyResource(ctx, in); e != nil {
+	if verify != nil {
+		if e = verify(ctx, tx); e != nil {
 			return domain.Approval{}, e
 		}
 	}
+
 	if _, e = tx.Exec(ctx, "INSERT INTO raptor.approvals(id,request_id,action_id,binding) VALUES($1,$2,$3,$4) ON CONFLICT(request_id,action_id) DO NOTHING", domain.NewID(), in.RequestID, in.ActionID, b); e != nil {
 		return domain.Approval{}, domain.ErrUnavailable
 	}
@@ -220,7 +233,7 @@ func (s *Service) Check(ctx context.Context, in ApprovalCheckInput) (ApprovalChe
 		if s.VerifyResource == nil {
 			return ApprovalCheckResult{}, domain.ErrUnavailable
 		}
-		if e = s.VerifyResource(ctx, in); e != nil {
+		if _, e = s.VerifyResource(ctx, in); e != nil {
 			return ApprovalCheckResult{}, e
 		}
 	}

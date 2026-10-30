@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/jackc/pgx/v5"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
@@ -25,7 +26,9 @@ func TestSubmissionServiceRoutes(t *testing.T) {
 	if _, e := p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash) VALUES($1,$2,'route','hash','{"type":"agent","envCode":"rdev.ali"}','schema')`, id, u.ID); e != nil {
 		t.Fatal(e)
 	}
-	h.Approvals.VerifyResource = func(context.Context, approvals.ApprovalInput) error { return nil }
+	h.Approvals.VerifyResource = func(context.Context, approvals.ApprovalInput) (approvals.ResourceVerification, error) {
+		return func(context.Context, pgx.Tx) error { return nil }, nil
+	}
 	in := approvals.ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "db-proxy.scale-in", EnvCode: "rdev.ali", Target: map[string]any{"proxyCode": "p"}, Parameters: map[string]any{"desiredCapacity": 3}}
 	a, e := h.Approvals.Request(ctx, in)
 	if e != nil {

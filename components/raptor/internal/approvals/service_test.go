@@ -3,6 +3,7 @@ package approvals
 import (
 	"context"
 	"encoding/json"
+	"github.com/jackc/pgx/v5"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/testutil"
@@ -19,7 +20,9 @@ func TestApprovalQueuesWaitingRequestAndRetiresPendingPause(t *testing.T) {
 	if _, err := p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash,status) VALUES($1,$2,'resume','hash','{"type":"agent","envCode":"adev"}','schema','waiting_approval')`, id, user.ID); err != nil {
 		t.Fatal(err)
 	}
-	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) error { return nil }}
+	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		return func(context.Context, pgx.Tx) error { return nil }, nil
+	}}
 	a, err := s.Request(ctx, ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "runtime.qualification-resume", EnvCode: "adev", Target: map[string]any{"proxyCode": "proxy"}, Parameters: map[string]any{"phase": "resume"}})
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +56,9 @@ func TestBoundApproval(t *testing.T) {
 	}
 	id, user := domain.NewID(), domain.User{ID: domain.NewID(), Role: "user"}
 	p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash) VALUES($1,$2,'test','hash','{"type":"agent","envCode":"adev"}','schema')`, id, user.ID)
-	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) error { return nil }}
+	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		return func(context.Context, pgx.Tx) error { return nil }, nil
+	}}
 	in := ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "db-proxy.scale-in", EnvCode: "adev", Target: map[string]any{"proxyCode": "proxy"}, Parameters: map[string]any{"desiredCapacity": float64(1)}}
 	a, e := s.Request(ctx, in)
 	if e != nil {
@@ -103,7 +108,9 @@ func TestApprovalRejectsForeignRequestScope(t *testing.T) {
 	}
 	id := domain.NewID()
 	p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash) VALUES($1,$2,'scope','hash','{"type":"agent","envCode":"adev"}','schema')`, id, domain.NewID())
-	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) error { return nil }}
+	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		return func(context.Context, pgx.Tx) error { return nil }, nil
+	}}
 	in := ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "ess.scale-in", EnvCode: "bdev", Target: map[string]any{"groupId": "synthetic"}, Parameters: map[string]any{}}
 	if _, e := s.Request(ctx, in); e == nil {
 		t.Fatal("foreign environment approval accepted through shared REST service")

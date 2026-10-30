@@ -2,6 +2,7 @@ package approvals
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/testutil"
@@ -23,7 +24,9 @@ func submissionFixture(t *testing.T) (*Service, ApprovalInput) {
 	if _, e := p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash) VALUES($1,$2,'claim','hash','{"type":"agent","envCode":"rdev.ali"}','schema')`, id, user.ID); e != nil {
 		t.Fatal(e)
 	}
-	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) error { return nil }}
+	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		return func(context.Context, pgx.Tx) error { return nil }, nil
+	}}
 	in := ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "db-proxy.scale-in", EnvCode: "rdev.ali", Target: map[string]any{"proxyCode": "proxy"}, Parameters: map[string]any{"desiredCapacity": 3}}
 	a, e := s.Request(ctx, in)
 	if e != nil {

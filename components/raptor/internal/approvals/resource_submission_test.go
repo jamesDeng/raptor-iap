@@ -2,6 +2,7 @@ package approvals
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"testing"
 )
@@ -12,11 +13,17 @@ func TestResourceApprovalClaimRejectsRetargetBeforeConsumption(t *testing.T) {
 	in.Interface = "db-proxy.scale-in"
 	in.Target = map[string]any{"proxyCode": "proxy"}
 	calls := 0
-	s.VerifyResource = func(context.Context, ApprovalInput) error { calls++; return domain.ErrConflict }
+	s.VerifyResource = func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		calls++
+		return nil, domain.ErrConflict
+	}
 	if _, e := s.Request(context.Background(), in); e == nil {
 		t.Fatal("retargeted approval recorded")
 	}
-	s.VerifyResource = func(context.Context, ApprovalInput) error { calls++; return nil }
+	s.VerifyResource = func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		calls++
+		return func(context.Context, pgx.Tx) error { return nil }, nil
+	}
 	a, e := s.Request(context.Background(), in)
 	if e != nil {
 		t.Fatal(e)
@@ -24,7 +31,10 @@ func TestResourceApprovalClaimRejectsRetargetBeforeConsumption(t *testing.T) {
 	if _, e = s.Decide(context.Background(), domain.User{ID: domain.NewID(), Role: "user"}, a.ID, DecisionInput{Decision: "approve"}); e != nil {
 		t.Fatal(e)
 	}
-	s.VerifyResource = func(context.Context, ApprovalInput) error { calls++; return domain.ErrConflict }
+	s.VerifyResource = func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		calls++
+		return nil, domain.ErrConflict
+	}
 	if v, e := s.Claim(context.Background(), in); e == nil && v.Claimed {
 		t.Fatal("changed proof consumed approval")
 	}
@@ -32,7 +42,10 @@ func TestResourceApprovalClaimRejectsRetargetBeforeConsumption(t *testing.T) {
 	if e = s.Pool.QueryRow(context.Background(), "SELECT count(*) FROM raptor.approval_submissions WHERE request_id=$1 AND action_id=$2", in.RequestID, in.ActionID).Scan(&n); e != nil || n != 0 {
 		t.Fatal("retarget recorded claim", n, e)
 	}
-	s.VerifyResource = func(context.Context, ApprovalInput) error { calls++; return nil }
+	s.VerifyResource = func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		calls++
+		return func(context.Context, pgx.Tx) error { return nil }, nil
+	}
 	if v, e := s.Claim(context.Background(), in); e != nil || !v.Claimed {
 		t.Fatal(v, e)
 	}

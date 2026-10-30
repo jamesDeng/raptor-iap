@@ -24,9 +24,9 @@ func (s *Server) RegisterService(user, password string) {
 	}); ok {
 		resolver := agentaccess.ReplacementResolver{Context: s.Catalog.InfraResourceContext, Proof: proofReader.ResolutionProof}
 		access.ResolveReplacement = resolver.Resolve
-		s.Approvals.VerifyResource = func(ctx context.Context, in approvals.ApprovalInput) error {
+		s.Approvals.VerifyResource = func(ctx context.Context, in approvals.ApprovalInput) (approvals.ResourceVerification, error) {
 			proxy, _ := in.Target["proxyCode"].(string)
-			return access.VerifyRequestReplacement(ctx, in.RequestID, in.EnvCode, proxy, in.Interface == "db-proxy.scale-in")
+			return access.PrepareRequestReplacement(ctx, in.RequestID, in.EnvCode, proxy, in.Interface == "db-proxy.scale-in")
 		}
 	}
 
