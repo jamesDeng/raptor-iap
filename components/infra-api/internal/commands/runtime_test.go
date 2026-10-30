@@ -85,7 +85,7 @@ func TestScaleInGatesAndLostReplayClaimFailClosed(t *testing.T) {
 			claim := &claimFixture{allowed: mode != "claim"}
 			m := metricsFixture{}
 			if mode == "clients" {
-				m.clients = 1
+				m.clients = 2
 			}
 			r := Runtime{Backend: b, Metrics: m, Approval: a, Claims: claim, Now: func() time.Time { return time.Unix(1000, 0) }, EvidenceMode: "simulated"}
 			if mode == "no-claim" {

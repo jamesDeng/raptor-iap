@@ -67,7 +67,7 @@ func DeregistrationAllowed(s ProxySnapshot, backend string, ids []string) error 
 	if s.ServerGroupID == "" || s.ServerGroupID != backend {
 		return refuse("ScopeMismatch")
 	}
-	if s.Desired < 0 {
+	if s.Min < 0 || s.Max < s.Min || s.Desired < s.Min || s.Desired > s.Max {
 		return refuse("TargetChanged")
 	}
 	if e := Membership(s, ids); e != nil {
@@ -85,6 +85,9 @@ func DeregistrationAllowed(s ProxySnapshot, backend string, ids []string) error 
 				protectedRemaining++
 			}
 		}
+	}
+	if remaining < s.Min {
+		return refuse("InsufficientHealthyCapacity")
 	}
 	// Division avoids overflowing 2*remaining while retaining strict majority.
 	if remaining > s.Desired/2 {
@@ -141,6 +144,7 @@ func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.T
 		observed[r.InstanceID] = r
 	}
 	eligible := 0
+	totalClients := float64(0)
 	members := map[string]bool{}
 	for _, n := range s.Nodes {
 		if n.ID == "" || members[n.ID] {
@@ -155,12 +159,14 @@ func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.T
 		if !ok || math.IsNaN(r.Clients) || math.IsInf(r.Clients, 0) || r.Clients < 0 || math.Trunc(r.Clients) != r.Clients || r.ObservedAt.IsZero() || now.Sub(r.ObservedAt) > 45*time.Second || r.ObservedAt.Sub(now) > 5*time.Second {
 			return refuse("MetricsInvalid")
 		}
-		if r.Clients != 0 {
-			return refuse("ConnectedClientsPresent")
-		}
+		totalClients += r.Clients
 	}
 	if eligible == 0 {
 		return refuse("NoEligibleNodes")
+	}
+	// The one-client budget is shared across all eligible retiring nodes.
+	if totalClients > 1 {
+		return refuse("ConnectedClientsPresent")
 	}
 	return nil
 }
