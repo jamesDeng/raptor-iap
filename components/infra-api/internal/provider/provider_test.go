@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
+	"github.com/alibabacloud-go/tea/tea"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -113,5 +115,29 @@ func TestRepeatedKubernetesToken(t *testing.T) {
 	p := &reader{identity: func(context.Context, domain.Environment) (string, error) { return "1", nil }, kube: func(context.Context, domain.Environment) (kubernetes.Interface, error) { return c, nil }}
 	if _, e := p.applications(context.Background(), domain.Environment{AccountID: "1", ClusterID: "cluster"}, "app"); e == nil {
 		t.Fatal("accepted repeated token")
+	}
+}
+
+// Building must attach observations without recursively calling NewProxyBackend
+// or creating another credential chain; identity remains this reader's identity.
+func TestReaderCompositionSharesBackendAndIdentity(t *testing.T) {
+	configs := []string{}
+	p, err := newReaderWithConfig(func(endpoint string) *openapi.Config {
+		configs = append(configs, endpoint)
+		return &openapi.Config{Endpoint: tea.String(endpoint), AccessKeyId: tea.String("fixture"), AccessKeySecret: tea.String("fixture")}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.proxy == nil || p.page == nil || p.kube == nil || p.identity == nil {
+		t.Fatal("incomplete composed reader")
+	}
+	if len(configs) != 2 || configs[0] != "ess.ap-southeast-1.aliyuncs.com" || configs[1] != "nlb.ap-southeast-1.aliyuncs.com" {
+		t.Fatal("unexpected SDK configuration", configs)
+	}
+	p.identity = func(context.Context, domain.Environment) (string, error) { return "shared-account", nil }
+	account, err := p.proxy.identity(context.Background(), domain.Environment{})
+	if err != nil || account != "shared-account" {
+		t.Fatal("backend identity separated from reader", account, err)
 	}
 }

@@ -20,6 +20,12 @@ type Reader interface {
 	Status(context.Context, domain.Environment, domain.Target) (domain.Status, error)
 }
 
+// ProxyObserver is optional; existing readers and command interfaces stay unchanged.
+type ProxyObserver interface {
+	ObserveProxy(context.Context, domain.Environment, domain.ProxyReadTarget, string) (domain.ProxyObservation, error)
+	ObservePgcatSeries(context.Context, domain.Environment, domain.ProxyReadTarget, string) (domain.PgcatSeriesObservation, error)
+}
+
 func New(reader Reader, envs map[string]domain.Environment, username, password, authHeader string) (http.Handler, error) {
 	return NewWithCommands(reader, envs, username, password, authHeader, nil, nil)
 }

@@ -14,6 +14,7 @@ import (
 )
 
 type reader struct {
+	proxy        *ProxyBackend
 	identity     func(context.Context, domain.Environment) (string, error)
 	page         func(context.Context, domain.Environment, string, string, int) (page, error)
 	kube         kubeFactory
@@ -29,6 +30,11 @@ func New() (api.Reader, error) {
 	config := func(endpoint string) *openapi.Config {
 		return &openapi.Config{Credential: cred, Endpoint: tea.String(endpoint), ConnectTimeout: tea.Int(5000), ReadTimeout: tea.Int(10000)}
 	}
+	return newReaderWithConfig(config)
+}
+
+// The single config closure carries the existing credential chain to every SDK.
+func newReaderWithConfig(config func(string) *openapi.Config) (*reader, error) {
 	p := &reader{evidence: "live"}
 	p.identity = func(ctx context.Context, env domain.Environment) (string, error) {
 		c, e := sts.NewClient(config("sts.ap-southeast-1.aliyuncs.com"))
@@ -46,6 +52,11 @@ func New() (api.Reader, error) {
 	}
 	p.page = cloudPages(config)
 	p.kube = cloudKube(config)
+	sdk, e := cloudProxy(config)
+	if e != nil {
+		return nil, e
+	}
+	p.proxy = &ProxyBackend{identity: p.Identity, sdk: sdk}
 	return p, nil
 }
 func (p *reader) Identity(ctx context.Context, env domain.Environment) (string, error) {
