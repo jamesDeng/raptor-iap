@@ -78,6 +78,11 @@ func ReplacementSelectorsAllowed(b Binding, s ReplacementScope, audience, tool s
 		case "deployments_list":
 			expected["kind"] = b.ObjectKind
 			expected["code"] = b.ObjectCode
+		case "proxy_observation_get", "proxy_pgcat_metrics_get":
+			expected["requestId"] = b.RequestID
+			expected["proxyCode"] = s.ProxyCode
+			expected["groupId"] = s.GroupID
+			expected["serverGroupId"] = s.ServerGroupID
 		case "db_proxy_scale", "db_proxy_node_protection_set", "db_proxy_nodes_deregister":
 			expected["requestId"] = b.RequestID
 			expected["proxyCode"] = s.ProxyCode

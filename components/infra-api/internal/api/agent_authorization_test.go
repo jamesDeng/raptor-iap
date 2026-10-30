@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"raptor-iap/infra-api/internal/domain"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -208,5 +209,47 @@ func TestAgentCannotInvokeDisabledHTTPCommand(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != 403 || cmd.calls != 0 {
 		t.Fatal("disabled command reached provider", w.Code, cmd.calls)
+	}
+}
+
+func TestProxyReadAuthorizationNormalization(t *testing.T) {
+	identity := proxyIdentity()
+	pins := map[string]string{"requestId": "request", "envCode": "dev", "proxyCode": "proxy", "groupId": "group", "serverGroupId": "backend"}
+	for _, tc := range []struct {
+		tool, field string
+		values      []string
+	}{{"proxy_observation_get", "kind", []string{"fleet", "backend", "capacity"}}, {"proxy_pgcat_metrics_get", "series", []string{"up", "upTimestamp", "active", "activeTimestamp", "idle", "idleTimestamp", "waiting", "waitingTimestamp"}}} {
+		for _, value := range tc.values {
+			tool, selectors, err := agentSelectors(tc.tool, proxyReadArgs(tc.field, value))
+			if err != nil || tool != tc.tool || !reflect.DeepEqual(selectors, pins) || !identity.permits(tool, selectors) {
+				t.Errorf("fixed read failed normalization: %s %s %v %v", tc.tool, value, selectors, err)
+			}
+		}
+		for _, value := range []string{"db_proxy_scale", "deployment_restart", "", "up) or arbitrary"} {
+			if _, _, err := agentSelectors(tc.tool, proxyReadArgs(tc.field, value)); err == nil {
+				t.Fatal("unbounded selection normalized", tc.tool, value)
+			}
+		}
+		extra := proxyReadArgs(tc.field, tc.values[0])
+		extra["targetDBCode"] = "db"
+		if _, _, err := agentSelectors(tc.tool, extra); err == nil {
+			t.Fatal("raw extra dropped before authorization")
+		}
+		for key, value := range pins {
+			pins[key] = "foreign"
+			if identity.permits(tc.tool, pins) {
+				t.Fatal("foreign pin allowed", key)
+			}
+			pins[key] = value
+		}
+		if err := NewServiceAuthorizer("user").Authorize(context.Background(), "user", tc.tool, nil); err != nil {
+			t.Fatal("service read denied", err)
+		}
+		if err := NewServiceAuthorizer("user").Authorize(context.Background(), "foreign", tc.tool, nil); err == nil {
+			t.Fatal("foreign service principal allowed")
+		}
+	}
+	if err := NewServiceAuthorizer("user").Authorize(context.Background(), "user", "db_proxy_scale", nil); err == nil {
+		t.Fatal("new read policy authorized unrelated command")
 	}
 }

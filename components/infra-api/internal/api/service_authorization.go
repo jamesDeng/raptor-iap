@@ -25,7 +25,7 @@ func (a ServiceAuthorizer) Authorize(_ context.Context, principal, path string, 
 		return domain.ErrScope
 	}
 	switch path {
-	case "/v1/cloud/identity", "/v1/deployments", "/v1/deployment-status":
+	case "/v1/cloud/identity", "/v1/deployments", "/v1/deployment-status", "proxy_observation_get", "proxy_pgcat_metrics_get":
 		return nil
 	}
 	if a.commands[path] {

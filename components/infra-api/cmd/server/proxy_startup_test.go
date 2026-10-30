@@ -124,7 +124,7 @@ func TestEnabledProxyCatalogAndMCPDispatch(t *testing.T) {
 	for _, tool := range catalog.Tools {
 		names[tool.Name] = true
 	}
-	if len(names) != 6 || !names["db_proxy_scale"] || !names["db_proxy_node_protection_set"] || !names["db_proxy_nodes_deregister"] || names["deployment_restart"] {
+	if len(names) != 8 || !names["db_proxy_scale"] || !names["db_proxy_node_protection_set"] || !names["db_proxy_nodes_deregister"] || names["deployment_restart"] {
 		t.Fatalf("unexpected catalog %v", names)
 	}
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "db_proxy_scale", Arguments: map[string]any{"requestId": "r", "actionId": "a", "envCode": "dev", "proxyCode": "proxy", "groupId": "asg", "desiredCapacity": 3}})

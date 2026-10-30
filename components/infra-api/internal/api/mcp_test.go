@@ -61,7 +61,7 @@ func TestMCPTransportAndReadResults(t *testing.T) {
 	f := &observedReader{}
 	s, ctx := mcpSession(t, f)
 	list, e := s.ListTools(ctx, &mcp.ListToolsParams{})
-	if e != nil || len(list.Tools) != 3 {
+	if e != nil || len(list.Tools) != 5 {
 		t.Fatalf("list: %v %v", list, e)
 	}
 	cases := []struct {
