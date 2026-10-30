@@ -3,8 +3,14 @@ package agentaccess
 import "testing"
 
 func TestReplacementScopeRefusesForeignDependency(t *testing.T) {
-	b := Binding{RequestID: "request", EnvCode: "rdev.ali", ObjectKind: "db-proxy", ObjectCode: "proxy", Operation: "db-proxy.replace-nodes", ClusterID: "cluster"}
+	b := Binding{RequestID: "request", EnvCode: "rdev.ali", ObjectKind: "db-proxy", ObjectCode: "proxy", ExecutionMode: "replacement", Operation: "db-proxy.replace-nodes", ClusterID: "cluster"}
 	s := ReplacementScope{EnvCode: "rdev.ali", ProxyCode: "proxy", GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: "rdev.ali", AppCode: "client", ClusterID: "cluster", Namespace: "test", Name: "traffic", UID: "uid"}}
+	s.AccountID = "123"
+	s.Region = "ap-southeast-1"
+	s.ListenerID = "listener"
+	s.Port = 5432
+	s.DatabaseResourceID = "rds"
+	s.ResolutionDigest = s.Identity().Digest()
 	if !s.ValidFor(b) {
 		t.Fatal("matching scope rejected")
 	}
@@ -31,17 +37,23 @@ func TestReplacementScopeRefusesForeignDependency(t *testing.T) {
 }
 
 func TestReplacementCapabilitySelectors(t *testing.T) {
-	b := Binding{RequestID: "request", EnvCode: "rdev.ali", ObjectKind: "db-proxy", ObjectCode: "proxy", Operation: "db-proxy.replace-nodes", ClusterID: "cluster"}
+	b := Binding{RequestID: "request", EnvCode: "rdev.ali", ObjectKind: "db-proxy", ObjectCode: "proxy", ExecutionMode: "replacement", Operation: "db-proxy.replace-nodes", ClusterID: "cluster"}
 	s := ReplacementScope{EnvCode: "rdev.ali", ProxyCode: "proxy", GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: "rdev.ali", AppCode: "client", ClusterID: "cluster", Namespace: "test", Name: "traffic", UID: "uid"}}
-	in := map[string]string{"requestId": "request", "envCode": "rdev.ali", "proxyCode": "proxy", "groupId": "group"}
+	s.AccountID = "123"
+	s.Region = "ap-southeast-1"
+	s.ListenerID = "listener"
+	s.Port = 5432
+	s.DatabaseResourceID = "rds"
+	s.ResolutionDigest = s.Identity().Digest()
+	in := map[string]string{"requestId": "request", "envCode": "rdev.ali", "proxyCode": "proxy"}
 	if !ReplacementSelectorsAllowed(b, s, "infra", "db_proxy_scale", in) {
 		t.Fatal("bound scale denied")
 	}
-	in["groupId"] = "foreign"
+	in["proxyCode"] = "foreign"
 	if ReplacementSelectorsAllowed(b, s, "infra", "db_proxy_scale", in) {
 		t.Fatal("foreign group allowed")
 	}
-	restart := map[string]string{"requestId": "request", "envCode": "rdev.ali", "appCode": "client", "clusterId": "cluster", "namespace": "test", "name": "traffic", "uid": "uid"}
+	restart := map[string]string{"requestId": "request", "envCode": "rdev.ali", "appCode": "client", "workloadKey": "key"}
 	if !ReplacementSelectorsAllowed(b, s, "infra", "deployment_restart", restart) {
 		t.Fatal("dependent restart denied")
 	}
@@ -55,12 +67,18 @@ func TestReplacementCapabilitySelectors(t *testing.T) {
 }
 
 func TestProxyReadReplacementSelectors(t *testing.T) {
-	b := Binding{RequestID: "request", EnvCode: "dev", ObjectKind: "db-proxy", ObjectCode: "proxy", Operation: "db-proxy.replace-nodes", ClusterID: "cluster"}
+	b := Binding{RequestID: "request", EnvCode: "dev", ObjectKind: "db-proxy", ObjectCode: "proxy", ExecutionMode: "replacement", Operation: "db-proxy.replace-nodes", ClusterID: "cluster"}
 	s := ReplacementScope{EnvCode: "dev", ProxyCode: "proxy", GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: "dev", AppCode: "client", ClusterID: "cluster", Namespace: "ns", Name: "client", UID: "uid"}}
-	for _, mode := range []string{"", "replacement", "qualification"} {
+	s.AccountID = "123"
+	s.Region = "ap-southeast-1"
+	s.ListenerID = "listener"
+	s.Port = 5432
+	s.DatabaseResourceID = "rds"
+	s.ResolutionDigest = s.Identity().Digest()
+	for _, mode := range []string{"replacement", "qualification"} {
 		b.ExecutionMode = mode
 		for _, tool := range []string{"proxy_observation_get", "proxy_pgcat_metrics_get"} {
-			selectors := map[string]string{"requestId": "request", "envCode": "dev", "proxyCode": "proxy", "groupId": "group", "serverGroupId": "backend"}
+			selectors := map[string]string{"requestId": "request", "envCode": "dev", "proxyCode": "proxy"}
 			if !ReplacementSelectorsAllowed(b, s, "infra", tool, selectors) {
 				t.Errorf("bound %s read denied in %s", tool, mode)
 			}
@@ -84,7 +102,7 @@ func TestProxyReadReplacementSelectors(t *testing.T) {
 				}
 				delete(selectors, key)
 			}
-			delete(selectors, "serverGroupId")
+			delete(selectors, "proxyCode")
 			if ReplacementSelectorsAllowed(b, s, "infra", tool, selectors) {
 				t.Fatal("missing backend allowed")
 			}

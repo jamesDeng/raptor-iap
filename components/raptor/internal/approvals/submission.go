@@ -21,7 +21,7 @@ type SubmissionRecordInput struct {
 func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimResult, error) {
 	out := SubmissionClaimResult{}
 	b, e := canonical(in)
-	if e != nil || in.Interface != "ess.scale-in" {
+	if e != nil || in.Interface != "db-proxy.scale-in" {
 		return out, domain.ErrInvalid
 	}
 	tx, e := s.Pool.Begin(ctx)
@@ -52,6 +52,12 @@ func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimR
 	if approved != "approved" || !equalJSON(binding, b) {
 		return out, nil
 	}
+	if s.VerifyResource == nil {
+		return out, domain.ErrUnavailable
+	}
+	if e = s.VerifyResource(ctx, in); e != nil {
+		return out, e
+	}
 	tag, e := tx.Exec(ctx, `INSERT INTO raptor.approval_submissions(request_id,action_id,binding) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, in.RequestID, in.ActionID, b)
 	if e != nil {
 		return out, domain.ErrUnavailable
@@ -67,7 +73,7 @@ func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimR
 // safe; neither not_submitted nor unknown permits this action to be claimed again.
 func (s *Service) RecordSubmission(ctx context.Context, in SubmissionRecordInput) error {
 	b, e := canonical(in.Binding)
-	if e != nil || in.Binding.Interface != "ess.scale-in" {
+	if e != nil || in.Binding.Interface != "db-proxy.scale-in" {
 		return domain.ErrInvalid
 	}
 	if len(in.ProviderRequestID) > 512 {

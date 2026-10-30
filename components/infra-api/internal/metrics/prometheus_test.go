@@ -135,3 +135,49 @@ func TestMetricsRefusesMissingStaleOrAmbiguousCoverage(t *testing.T) {
 		})
 	}
 }
+
+func TestResourceMetricsResolveCurrentMappingBeforeQuery(t *testing.T) {
+	calls := 0
+	queries := 0
+	c, e := NewResource(func(_ context.Context, env, kind, code string) (domain.ResolvedResource, error) {
+		calls++
+		if env != "dev" || kind != "db-proxy" || code != "proxy" {
+			t.Fatal("logical identity")
+		}
+		return domain.ResolvedResource{Environment: domain.Environment{Code: "dev", AccountID: "123", Region: "ap-southeast-1", ClusterID: "c"}, Proxy: &domain.ProxyMapping{Code: "proxy", GroupID: "changed", TargetDBCode: "db"}}, nil
+	}, func(context.Context, domain.Environment, string, string) ([]byte, error) { queries++; return nil, nil })
+	if e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; i < 2; i++ {
+		if _, e = c.ConnectedClients(context.Background(), policy.ProxySnapshot{EnvCode: "dev", ProxyCode: "proxy", GroupID: "original", Nodes: []policy.Node{{ID: "one"}}}); e == nil {
+			t.Fatal("changed group accepted")
+		}
+	}
+	if calls != 2 || queries != 0 {
+		t.Fatal("cached or premature query", calls, queries)
+	}
+}
+
+func TestResourceMetricsRetainsCompletePoolGate(t *testing.T) {
+	legacy, s, _, _ := metricFixture(t)
+	calls := 0
+	c, e := NewResource(func(_ context.Context, env, kind, code string) (domain.ResolvedResource, error) {
+		calls++
+		current := legacy.scopes[env]
+		mapping := current.Proxies[0]
+		return domain.ResolvedResource{Environment: current, Proxy: &mapping}, nil
+	}, legacy.query)
+	if e != nil {
+		t.Fatal(e)
+	}
+	rows, e := c.ConnectedClients(context.Background(), s)
+	if e != nil || len(rows) != len(s.Nodes) || calls != 1 {
+		t.Fatal(rows, e, calls)
+	}
+	for _, row := range rows {
+		if row.Clients != 0 || row.ObservedAt.IsZero() {
+			t.Fatal("dynamic resolver changed source observations", row)
+		}
+	}
+}

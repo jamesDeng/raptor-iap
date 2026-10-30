@@ -57,19 +57,4 @@ progress:
   origins: https://raptor.rdev.raptor-iap.top
   connectOrigin: wss://raptor.rdev.raptor-iap.top
 
-# Exact dedicated test scope; discovery verifies the live identities before use.
-replacement:
-  scopeConfigMapName: pgcat-replacement-scope
-  scope:
-    envCode: rdev.ali
-    proxyCode: DP00001
-    groupId: asg-t4necb4dfmu6o3z2rn0g
-    serverGroupId: sgp-xs5s42tihtl6ja2a67
-    targetDbCode: D00002
-    application:
-      envCode: rdev.ali
-      appCode: A00003
-      clusterId: c92787e953503492ea141a744c81498f1
-      namespace: raptor-test
-      name: rdev-test-client-client
-      uid: 17b7b33c-fd64-4d07-863e-f65b6563e504
+# Resource relationships are catalog settings; exact realization pins are request-owned.

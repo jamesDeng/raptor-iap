@@ -87,11 +87,11 @@ func TestOpaqueMCPReadOnlyPrincipal(t *testing.T) {
 	}
 	defer session.Close()
 	tools, e := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if e != nil || len(tools.Tools) != 3 {
+	if e != nil || len(tools.Tools) != 4 {
 		t.Fatal("agent catalog not restricted", e)
 	}
 	for _, tool := range tools.Tools {
-		if tool.Name != "request_get" && tool.Name != "environment_get" && tool.Name != "object_get" {
+		if tool.Name != "request_get" && tool.Name != "environment_get" && tool.Name != "object_get" && tool.Name != "deployments_list" {
 			t.Fatal("mutation tool exposed")
 		}
 	}

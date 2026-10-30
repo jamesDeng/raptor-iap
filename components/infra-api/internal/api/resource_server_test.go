@@ -245,3 +245,56 @@ func TestResourceGenericReplacementReadsRejectActualIdentityDrift(t *testing.T) 
 		}
 	}
 }
+
+func TestResourceProofUsesExistingDeploymentsRouteServiceRepresentation(t *testing.T) {
+	for _, mode := range []string{"service", "agent", "no-authorizer", "ordinary", "foreign-kind", "cloud-selector"} {
+		t.Run(mode, func(t *testing.T) {
+			f := &resourceFixture{rows: resourceRows(), proof: resources.Proof{ResolutionDigest: "private-proof"}}
+			checks := 0
+			check := func(context.Context, string, string, map[string]string) (AgentIdentity, error) {
+				checks++
+				return resourceIdentity(), nil
+			}
+			var authorizer Authorizer = NewServiceAuthorizer("user")
+			if mode == "no-authorizer" {
+				authorizer = nil
+			}
+			h, e := NewResourceServer(&observedReader{}, f, "user", "secret", "X-Infra-Authorization", nil, authorizer, check)
+			if e != nil {
+				t.Fatal(e)
+			}
+			path := "/v1/deployments?envCode=dev&kind=db-proxy&code=p"
+			if mode == "foreign-kind" {
+				path = "/v1/deployments?envCode=dev&kind=application&code=app"
+			}
+			if mode == "cloud-selector" {
+				path += "&groupId=g"
+			}
+			r := httptest.NewRequest("GET", path, nil)
+			r.Header.Set("Accept", "application/vnd.raptor.resolution-proof+json")
+			r.Header.Set("X-Infra-Authorization", valid())
+			if mode == "agent" {
+				r.Header.Set("X-Infra-Authorization", agentCredential())
+			}
+			if mode == "ordinary" {
+				r.Header.Set("Accept", "application/json")
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			switch mode {
+			case "service":
+				if w.Code != 200 || f.proofs != 1 || f.calls != 0 || !strings.Contains(w.Body.String(), "private-proof") {
+					t.Fatal(w.Code, w.Body.String(), f.proofs, f.calls)
+				}
+			case "ordinary":
+				if w.Code != 200 || f.proofs != 0 || f.calls != 1 || strings.Contains(w.Body.String(), "private-proof") {
+					t.Fatal(w.Code, w.Body.String(), f.proofs, f.calls)
+				}
+			default:
+				if w.Code == 200 || f.proofs != 0 || f.calls != 0 || checks != 0 {
+					t.Fatal("proof representation reached unauthorized resolver", w.Code, f.proofs, f.calls, checks)
+				}
+			}
+		})
+	}
+}

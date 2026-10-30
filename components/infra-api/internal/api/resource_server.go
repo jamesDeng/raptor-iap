@@ -66,7 +66,12 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 			fail(401, "Unauthenticated")
 			return
 		}
-		if op.principal == "agent" && r.URL.Path == "/v1/resource-resolution-proof" {
+		proofRepresentation := r.URL.Path == "/v1/deployments" && r.Header.Get("Accept") == "application/vnd.raptor.resolution-proof+json"
+		if proofRepresentation && len(r.Header.Values("Accept")) != 1 {
+			fail(400, "InvalidInput")
+			return
+		}
+		if op.principal == "agent" && (r.URL.Path == "/v1/resource-resolution-proof" || proofRepresentation) {
 			fail(403, "ScopeMismatch")
 			return
 		}
@@ -116,7 +121,15 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 				fail(400, "InvalidInput")
 				return
 			}
-			data, e = op.execute(r.Context(), r.URL.Path, q)
+			if proofRepresentation {
+				if !resourceInput(q, []string{"envCode", "kind", "code"}, nil) || q.Get("kind") != "db-proxy" {
+					fail(400, "InvalidInput")
+					return
+				}
+				data, e = op.execute(r.Context(), "/v1/resource-resolution-proof", url.Values{"envCode": {q.Get("envCode")}, "proxyCode": {q.Get("code")}})
+			} else {
+				data, e = op.execute(r.Context(), r.URL.Path, q)
+			}
 		}
 		if e != nil {
 			oe := e.(*operationError)

@@ -2,10 +2,12 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/approvals"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	githubservice "github.com/jamesDeng/raptor-iap/components/raptor/internal/github"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/httpx"
 	"net/http"
@@ -17,16 +19,17 @@ func (s *Server) RegisterService(user, password string) {
 		s.ModelProviders.RegisterPrivate(s.Mux, auth.Credentials{Username: user, Password: password})
 	}
 	access := &agentaccess.Service{Pool: s.Requests.Pool, RaptorMCPURL: os.Getenv("RAPTOR_AGENT_MCP_URL"), InfraMCPURL: os.Getenv("INFRA_AGENT_MCP_URL")}
-	if s.ReplacementScope != nil {
-		resolver := agentaccess.ReplacementResolver{Scope: *s.ReplacementScope, Read: func(ctx context.Context, kind, code, env string) ([]adapters.Deployment, error) {
-			object, err := s.Catalog.FindObject(ctx, kind, code)
-			if err != nil {
-				return nil, err
-			}
-			return s.Catalog.Deployments(ctx, object.ID, env)
-		}}
+	if proofReader, ok := s.Catalog.Infra.(interface {
+		ResolutionProof(context.Context, string, string) (adapters.ResolutionProof, error)
+	}); ok {
+		resolver := agentaccess.ReplacementResolver{Context: s.Catalog.InfraResourceContext, Proof: proofReader.ResolutionProof}
 		access.ResolveReplacement = resolver.Resolve
+		s.Approvals.VerifyResource = func(ctx context.Context, in approvals.ApprovalInput) error {
+			proxy, _ := in.Target["proxyCode"].(string)
+			return access.VerifyRequestReplacement(ctx, in.RequestID, in.EnvCode, proxy, in.Interface == "db-proxy.scale-in")
+		}
 	}
+
 	access.Register(s.Mux, auth.Credentials{Username: user, Password: password}, auth.Credentials{Username: os.Getenv("AGENT_INTROSPECTION_USERNAME"), Password: os.Getenv("AGENT_INTROSPECTION_PASSWORD")})
 	wrap := func(pattern string, h http.HandlerFunc) {
 		s.Mux.Handle(pattern, auth.BasicAuth(h, auth.Credentials{Username: user, Password: password}))
@@ -104,6 +107,50 @@ func (s *Server) RegisterService(user, password string) {
 		d, e := s.Catalog.Deployments(r.Context(), o.ID, v.Definition.EnvCode)
 		httpx.Result(w, 200, d, e)
 	})
+	wrap("GET /v1/requests/{id}/resource-deployments", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if len(q) != 3 || len(q["envCode"]) != 1 || len(q["kind"]) != 1 || len(q["code"]) != 1 {
+			httpx.Error(w, 400, "InvalidInput")
+			return
+		}
+		request, e := s.Requests.Get(r.Context(), r.PathValue("id"))
+		if e != nil {
+			httpx.Result(w, 200, nil, e)
+			return
+		}
+		env, kind, code := q.Get("envCode"), q.Get("kind"), q.Get("code")
+		allowed := env == request.Definition.EnvCode && kind == request.Definition.Object.Kind && code == request.Definition.Object.Code
+		if !allowed && env == request.Definition.EnvCode && request.Definition.Object.Kind == "db-proxy" {
+			var raw []byte
+			e = s.Requests.Pool.QueryRow(r.Context(), "SELECT replacement_scope FROM raptor.agent_attempt_access WHERE request_id=$1 AND replacement_scope IS NOT NULL LIMIT 1", request.ID).Scan(&raw)
+			var scope agentaccess.ReplacementScope
+			if e == nil && json.Unmarshal(raw, &scope) == nil && scope.Identity().Digest() != "" && scope.Identity().Digest() == scope.ResolutionDigest {
+				allowed = (kind == "application" && code == scope.Application.AppCode) || (kind == "database" && code == scope.TargetDBCode)
+			}
+		}
+		if !allowed {
+			httpx.Error(w, 403, "Forbidden")
+			return
+		}
+		if request.Definition.Object.Kind == "db-proxy" {
+			mode := ""
+			if len(request.Definition.Operations) == 1 {
+				mode, _ = request.Definition.Operations[0].Parameters["mode"].(string)
+			}
+			if e = access.VerifyRequestReplacement(r.Context(), request.ID, env, request.Definition.Object.Code, mode == "replacement"); e != nil {
+				httpx.Result(w, 200, nil, e)
+				return
+			}
+		}
+		object, e := s.Catalog.FindObject(r.Context(), kind, code)
+		if e != nil {
+			httpx.Result(w, 200, nil, e)
+			return
+		}
+		deployments, e := s.Catalog.Deployments(r.Context(), object.ID, env)
+		httpx.Result(w, 200, map[string]any{"resource": domain.ObjectRef{Kind: kind, Code: code}, "envCode": env, "deployments": deployments}, e)
+	})
+
 	wrap("POST /v1/requests/{id}/approvals", func(w http.ResponseWriter, r *http.Request) {
 		var in approvals.ApprovalInput
 		if !httpx.Decode(w, r, &in) {

@@ -45,3 +45,4 @@ node_modules/
 
 # Private generated Infra API artifact/configuration
 components/infra-api/.build/
+components/infra-api/.build-resource/

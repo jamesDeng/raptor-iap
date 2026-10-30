@@ -28,15 +28,13 @@ func (b Binding) Wire() any {
 		EnvCode   string `json:"envCode"`
 		Target    struct {
 			ProxyCode string `json:"proxyCode"`
-			GroupID   string `json:"groupId"`
 		} `json:"target"`
 		Parameters struct {
 			DesiredCapacity int `json:"desiredCapacity"`
 		} `json:"parameters"`
-	}{RequestID: b.RequestID, ActionID: b.ActionID, Interface: "ess.scale-in", EnvCode: b.EnvCode, Target: struct {
+	}{RequestID: b.RequestID, ActionID: b.ActionID, Interface: "db-proxy.scale-in", EnvCode: b.EnvCode, Target: struct {
 		ProxyCode string `json:"proxyCode"`
-		GroupID   string `json:"groupId"`
-	}{b.ProxyCode, b.GroupID}, Parameters: struct {
+	}{b.ProxyCode}, Parameters: struct {
 		DesiredCapacity int `json:"desiredCapacity"`
 	}{b.DesiredCapacity}}
 }

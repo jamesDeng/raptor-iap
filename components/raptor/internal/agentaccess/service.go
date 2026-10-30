@@ -13,7 +13,6 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"net/url"
 	"regexp"
-	"strings"
 	"time"
 )
 
@@ -162,7 +161,7 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 		return out, domain.ErrConflict
 	}
 	var cluster string
-	if e = tx.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
+	if e = tx.QueryRow(ctx, "SELECT CASE WHEN ack_cluster_id<>'' AND cluster_id<>'' AND ack_cluster_id<>cluster_id THEN '' ELSE coalesce(nullif(ack_cluster_id,''),nullif(cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') END FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
 		return out, domain.ErrUnavailable
 	}
 	out.Binding = Binding{ExecutionMode: replacementMode(def), RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}
@@ -175,7 +174,28 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 		if err != nil {
 			return out, domain.ErrUnavailable
 		}
-		if !scope.ValidFor(out.Binding) {
+		if !scope.ResourceValidFor(out.Binding) {
+			return out, domain.ErrConflict
+		}
+		// The request row lock serializes issuance across every attempt ID.
+		rows, err := tx.Query(ctx, "SELECT replacement_scope FROM raptor.agent_attempt_access WHERE request_id=$1 AND (replacement_scope IS NOT NULL OR binding->>'operation'='db-proxy.replace-nodes')", id)
+		if err != nil {
+			return out, domain.ErrUnavailable
+		}
+		mismatch := false
+		for rows.Next() {
+			var raw []byte
+			var saved ReplacementScope
+			if rows.Scan(&raw) != nil || json.Unmarshal(raw, &saved) != nil || !saved.ResourceValidFor(out.Binding) || saved != scope {
+				mismatch = true
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return out, domain.ErrUnavailable
+		}
+		if mismatch {
 			return out, domain.ErrConflict
 		}
 		out.ReplacementScope = &scope
@@ -286,7 +306,7 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 		return out, nil
 	}
 	var cluster string
-	if e = s.Pool.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", binding.EnvCode).Scan(&cluster); e != nil {
+	if e = s.Pool.QueryRow(ctx, "SELECT CASE WHEN ack_cluster_id<>'' AND cluster_id<>'' AND ack_cluster_id<>cluster_id THEN '' ELSE coalesce(nullif(ack_cluster_id,''),nullif(cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') END FROM raptor.environments WHERE code=$1", binding.EnvCode).Scan(&cluster); e != nil {
 		return out, domain.ErrUnavailable
 	}
 	if cluster != binding.ClusterID {
@@ -294,14 +314,7 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 	}
 	if !question(def) && !repositoryChange(def) {
 		var saved ReplacementScope
-		if s.ResolveReplacement == nil || json.Unmarshal(scopeRaw, &saved) != nil {
-			return out, nil
-		}
-		current, err := s.ResolveReplacement(ctx, binding)
-		if err != nil {
-			return out, domain.ErrUnavailable
-		}
-		if current != saved || !ReplacementSelectorsAllowed(binding, saved, in.Audience, in.Tool, in.Selectors) {
+		if s.ResolveReplacement == nil || json.Unmarshal(scopeRaw, &saved) != nil || !saved.ResourceValidFor(binding) || !ReplacementSelectorsAllowed(binding, saved, in.Audience, in.Tool, in.Selectors) {
 			return out, nil
 		}
 		if in.Audience == "raptor" && in.Tool == "approval_get" {
@@ -309,13 +322,21 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 			if !uuid.MatchString(in.Selectors["approvalId"]) {
 				return out, nil
 			}
-			if err = s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.approvals WHERE id=$1 AND request_id=$2)", in.Selectors["approvalId"], binding.RequestID).Scan(&found); err != nil {
+			if err := s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.approvals WHERE id=$1 AND request_id=$2)", in.Selectors["approvalId"], binding.RequestID).Scan(&found); err != nil {
 				return out, domain.ErrUnavailable
 			}
 			if !found {
 				return out, nil
 			}
 		}
+		current, err := s.ResolveReplacement(ctx, binding)
+		if err != nil {
+			return out, domain.ErrUnavailable
+		}
+		if current != saved || !current.ResourceValidFor(binding) {
+			return out, nil
+		}
+
 		out.ReplacementScope = &saved
 	} else if repositoryChange(def) && !RepositorySelectorsAllowed(binding, in.Audience, in.Tool, in.Selectors) {
 		return out, nil
@@ -341,7 +362,11 @@ func SelectorsAllowed(b Binding, audience, tool string, selectors map[string]str
 		case "environment_get":
 			expected["envCode"] = b.EnvCode
 			required = append(required, "envCode")
-		case "object_get":
+		case "object_get", "deployments_list":
+			if tool == "deployments_list" {
+				expected["envCode"] = b.EnvCode
+				required = append(required, "envCode")
+			}
 			expected["kind"] = b.ObjectKind
 			expected["code"] = b.ObjectCode
 			required = append(required, "kind", "code")
@@ -352,21 +377,20 @@ func SelectorsAllowed(b Binding, audience, tool string, selectors map[string]str
 		expected["envCode"] = b.EnvCode
 		required = []string{"envCode"}
 		switch tool {
-		case "cloud_identity_get":
 		case "deployments_list":
 			expected["kind"] = b.ObjectKind
 			expected["code"] = b.ObjectCode
 			required = append(required, "kind", "code")
 		case "deployment_status_get":
 			expected["appCode"] = b.ObjectCode
-			expected["clusterId"] = b.ClusterID
-			required = append(required, "appCode", "clusterId", "namespace", "name", "uid")
-			for _, key := range []string{"namespace", "name", "uid"} {
-				expected[key] = selectors[key]
-				if strings.TrimSpace(selectors[key]) == "" {
+			required = append(required, "appCode")
+			if value, ok := selectors["workloadKey"]; ok {
+				if !scopeText(value) {
 					return false
 				}
+				expected["workloadKey"] = value
 			}
+
 		default:
 			return false
 		}
@@ -402,4 +426,57 @@ func RepositorySelectorsAllowed(b Binding, audience, tool string, selectors map[
 	default:
 		return false
 	}
+}
+
+// VerifyRequestReplacement uses the request's existing immutable execution pins.
+// Callers hold the request row lock when creating/claiming an approval.
+func (s *Service) VerifyRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool) error {
+	if s.ResolveReplacement == nil {
+		return domain.ErrUnavailable
+	}
+	rows, e := s.Pool.Query(ctx, `SELECT a.binding,a.replacement_scope,r.definition FROM raptor.agent_attempt_access a JOIN raptor.requests r ON r.id=a.request_id WHERE a.request_id=$1 AND a.replacement_scope IS NOT NULL`, request)
+	if e != nil {
+		return domain.ErrUnavailable
+	}
+	var frozen ReplacementScope
+	var binding Binding
+	count := 0
+	invalid := false
+	for rows.Next() {
+		var br, sr, dr []byte
+		var b Binding
+		var scope ReplacementScope
+		var def domain.RequestInput
+		if rows.Scan(&br, &sr, &dr) != nil || json.Unmarshal(br, &b) != nil || json.Unmarshal(sr, &scope) != nil || json.Unmarshal(dr, &def) != nil {
+			invalid = true
+			continue
+		}
+		fingerprint, err := Fingerprint(def)
+		if err != nil || fingerprint != b.DefinitionSHA256 || !supported(def) || b.RequestID != request || b.EnvCode != env || b.ObjectCode != proxy || !scope.ResourceValidFor(b) || (mutation && b.ExecutionMode != "replacement") || (!mutation && b.ExecutionMode != "qualification") {
+			invalid = true
+			continue
+		}
+		if count > 0 && scope != frozen {
+			invalid = true
+		}
+		frozen = scope
+		binding = b
+		count++
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return domain.ErrUnavailable
+	}
+	if invalid || count == 0 {
+		return domain.ErrConflict
+	}
+	current, e := s.ResolveReplacement(ctx, binding)
+	if e != nil {
+		return domain.ErrUnavailable
+	}
+	if current != frozen || !current.ResourceValidFor(binding) {
+		return domain.ErrConflict
+	}
+	return nil
 }

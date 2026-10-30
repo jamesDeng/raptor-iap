@@ -1,10 +1,14 @@
 # Infra API read service
 
-Independent stateless Go HTTP service. Discovery reads STS/RDS/ESS and registered ACK Deployment status. Missing providers/cluster configuration return errors rather than successful empty inventories. This slice has no mutations.
+Independent stateless Go HTTP/MCP service. Raptor catalog context owns logical environment/resource relationships; Infra resolves current Alibaba workloads internally. Production startup uses `NewResourceServer` and the explicit resource-mode token inspector. Proxy mutations and restart remain separately opt-in and retain the existing runtime guards.
 
-Read [the setup guide](../../docs/setup/infra-api-read.md) before cloud deployment. Supply private scope JSON (array of code/accountId/region/optional clusterId) and caller credentials through private runtime configuration. Serverless Devs owns FC3 code/function/HTTP trigger; Terraform owns RAM roles and API Gateway. Gateway forwards `X-Infra-Authorization`, while FC's `authType: function` requires IAM signatures.
+`make build` creates a static Linux binary in ignored `.build-resource/`. The package directory must contain only `server`; the build refuses symlinks or unexpected contents and never deletes a previous package. Active Serverless templates package this directory. Old `.build/` artifacts are not packaged. No scope JSON file is loaded or bundled.
 
-`make build INFRA_SCOPE_FILE=/private/path/scope.json` builds a static Linux binary and copies the credential-free private scope. `.build` is ignored. Caller credentials are not in the code package; they are externally injected in the function configuration. Do not publish rendered Serverless configuration or logs.
+Set `RAPTOR_CATALOG_ORIGIN` to the fixed HTTPS Raptor backend/API origin, and inject the existing `RAPTOR_SERVICE_USERNAME` / `RAPTOR_SERVICE_PASSWORD` service credentials. This is the catalog-only `/v1/infra/resource-context` route, not an agent MCP endpoint. Catalog context is fetched per operation. Environment catalog fields must specify `cloud=aliyun`, `region=ap-southeast-1`, account and a consistent ACK cluster identity. Proxy replacement additionally requires `proxyApplications` mapping its canonical proxy code to exactly one canonical application code; admission requires exactly one Deployment. Missing or ambiguous data fails closed. No deployment process populates these settings automatically.
+
+`RAPTOR_APPROVAL_ORIGIN` remains the fixed HTTPS approval service origin when proxy commands are enabled. Caller credentials, service credentials and token-introspection credentials are injected privately outside the package. Raptor requests immutable realization evidence through the existing `GET /v1/deployments?envCode=...&kind=db-proxy&code=...` route with `Accept: application/vnd.raptor.resolution-proof+json`. This service-only representation requires the configured authorizer and never introspects an agent; opaque agent credentials are refused before any check or resolver call. Ordinary deployments HTTP/MCP responses remain typed workload envelopes. The separate `/v1/resource-resolution-proof` path is local/internal only and is not required in the deployed API Gateway route inventory. Raptor stores this proof in existing request attempt records and rechecks it before each typed operation and approval claim. No backend replacement-scope file is required. Gateway forwards `X-Infra-Authorization`; the FC trigger remains IAM protected.
+
+Read [the setup guide](../../docs/setup/infra-api-read.md) before release. Source wiring does not authorize a deployment or new IAM permissions. The new NLB discovery reads require release permission review; replacement remains disabled pending coordinated consumer migration and qualification.
 
 Every kubeconfig read requests a fresh 15-minute credential, validates HTTPS/CA, and rejects external credential plugins and local paths. Role permissions do not by themselves establish Kubernetes RBAC: bind get/list Deployments, ReplicaSets and Pods for the selected cluster before live ACK acceptance.
 
@@ -14,11 +18,10 @@ Every kubeconfig read requests a fresh 15-minute credential, validates HTTPS/CA,
 
 | Tool | Required selectors |
 |---|---|
-| `cloud_identity_get` | `envCode` |
 | `deployments_list` | `envCode`, `kind`, `code` |
-| `deployment_status_get` | `envCode`, `appCode`, `clusterId`, `namespace`, `name`, `uid` |
+| `deployment_status_get` | `envCode`, `appCode`, optional `workloadKey` |
 
-Tools return structured `{data: ...}` results. Unknown properties, missing/empty selectors and non-string selectors are rejected. These are read operations only. Existing HTTP endpoints remain unchanged. Stateless clients should disable standalone SSE; no GET event stream or persistent MCP session is required.
+Tools return structured `{data: ...}` results. Unknown properties, missing/empty selectors and non-string selectors are rejected. These public selectors are logical resource identities. Discovery returns resource-rooted typed workload envelopes; old cloud-selector calls fail closed. Stateless clients should disable standalone SSE; no GET event stream or persistent MCP session is required.
 
 The subsequent Pi runtime will connect directly to Raptor and Infra API MCP with `direct` exposure. This transport does not itself implement request-specific authorization or a live agent worker. Track **MCP-001** for both catalogs: measure tool-definition tokens, first useful call latency, wrong selections and task success as interfaces grow; evaluate Pi's built-in deferred/tool_search when costs become material. Exposure settings never replace authorization or approval gates.
 

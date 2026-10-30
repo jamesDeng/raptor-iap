@@ -20,7 +20,7 @@ type agentPrincipal struct {
 	credential         string
 }
 
-func (p agentPrincipal) check(ctx context.Context, tool string, selectors map[string]string) (*agentaccess.Binding, error) {
+func (p agentPrincipal) checkResult(ctx context.Context, tool string, selectors map[string]string) (*agentaccess.CheckResult, error) {
 	if p.inspector.Username == "" || p.inspector.Password == "" {
 		return nil, errors.New("Unavailable")
 	}
@@ -40,7 +40,7 @@ func (p agentPrincipal) check(ctx context.Context, tool string, selectors map[st
 		return nil, errors.New("Forbidden")
 	}
 	if out.Binding.Operation == "db-proxy.replace-nodes" {
-		if out.ReplacementScope == nil || !agentaccess.ReplacementSelectorsAllowed(*out.Binding, *out.ReplacementScope, "raptor", tool, selectors) {
+		if out.ReplacementScope == nil || !out.ReplacementScope.ResourceValidFor(*out.Binding) || !agentaccess.ReplacementSelectorsAllowed(*out.Binding, *out.ReplacementScope, "raptor", tool, selectors) {
 			return nil, errors.New("Forbidden")
 		}
 	} else if out.Binding.Operation == "repository.change" {
@@ -50,8 +50,16 @@ func (p agentPrincipal) check(ctx context.Context, tool string, selectors map[st
 	} else if !agentaccess.SelectorsAllowed(*out.Binding, "raptor", tool, selectors) {
 		return nil, errors.New("Forbidden")
 	}
+	return &out, nil
+}
+func (p agentPrincipal) check(ctx context.Context, tool string, selectors map[string]string) (*agentaccess.Binding, error) {
+	out, e := p.checkResult(ctx, tool, selectors)
+	if e != nil {
+		return nil, e
+	}
 	return out.Binding, nil
 }
+
 func agentHandler(backend, inspector Client, credential string) http.Handler {
 	principal := agentPrincipal{backend: backend, inspector: inspector, credential: credential}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,10 +136,11 @@ func agentHandler(backend, inspector Client, credential string) http.Handler {
 func newAgentMCP(p agentPrincipal) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "raptor-agent-read-only", Version: "0.1.0"}, nil)
 	mcp.AddTool(s, &mcp.Tool{Name: "request_get", Description: "Read canonical context for the credential-bound request. Catalog data is not deployment health."}, func(ctx context.Context, r *mcp.CallToolRequest, in RequestArgs) (*mcp.CallToolResult, any, error) {
-		b, e := p.check(ctx, "request_get", map[string]string{"requestId": in.RequestID})
+		identity, e := p.checkResult(ctx, "request_get", map[string]string{"requestId": in.RequestID})
 		if e != nil {
 			return nil, nil, e
 		}
+		b := identity.Binding
 		v, e := p.backend.Call(ctx, "GET", requestPath(b.RequestID)+"/context", nil)
 		if e != nil {
 			return nil, nil, e
@@ -154,6 +163,11 @@ func newAgentMCP(p agentPrincipal) *mcp.Server {
 			return nil, nil, errors.New("Unavailable")
 		}
 		out := map[string]any{"definition": def, "definitionSha256": fingerprint, "environment": publicEnvironment(env), "skills": def.Skills, "model": def.Model}
+		related := []domain.ObjectRef{}
+		if scope := identity.ReplacementScope; scope != nil {
+			related = append(related, domain.ObjectRef{Kind: "application", Code: scope.Application.AppCode}, domain.ObjectRef{Kind: "database", Code: scope.TargetDBCode})
+		}
+		out["relatedResources"] = related
 		stamp(out, b)
 		return nil, map[string]any{"data": out}, nil
 	})
@@ -179,12 +193,12 @@ func newAgentMCP(p agentPrincipal) *mcp.Server {
 		if e != nil {
 			return nil, nil, e
 		}
-		v, e := p.backend.Call(ctx, "GET", "/v1/objects/"+url.PathEscape(b.ObjectKind)+"/"+url.PathEscape(b.ObjectCode), nil)
+		v, e := p.backend.Call(ctx, "GET", "/v1/objects/"+url.PathEscape(in.Kind)+"/"+url.PathEscape(in.Code), nil)
 		if e != nil {
 			return nil, nil, e
 		}
 		obj, ok := v["data"].(map[string]any)
-		if !ok || obj["code"] != b.ObjectCode || obj["kind"] != b.ObjectKind {
+		if !ok || obj["code"] != in.Code || obj["kind"] != in.Kind {
 			return nil, nil, errors.New("Unavailable")
 		}
 		out := map[string]any{}
@@ -196,6 +210,20 @@ func newAgentMCP(p agentPrincipal) *mcp.Server {
 		stamp(out, b)
 		return nil, map[string]any{"data": out}, nil
 	})
+	mcp.AddTool(s, &mcp.Tool{Name: "deployments_list", Description: "Discover workloads for an authorized logical resource in this request"}, func(ctx context.Context, r *mcp.CallToolRequest, in struct {
+		RequestID string `json:"requestId"`
+		EnvCode   string `json:"envCode"`
+		Kind      string `json:"kind"`
+		Code      string `json:"code"`
+	}) (*mcp.CallToolResult, any, error) {
+		if _, e := p.check(ctx, "deployments_list", map[string]string{"requestId": in.RequestID, "envCode": in.EnvCode, "kind": in.Kind, "code": in.Code}); e != nil {
+			return nil, nil, e
+		}
+		q := url.Values{"envCode": {in.EnvCode}, "kind": {in.Kind}, "code": {in.Code}}
+		v, e := p.backend.Call(ctx, "GET", requestPath(in.RequestID)+"/resource-deployments?"+q.Encode(), nil)
+		return nil, v, e
+	})
+
 	return s
 }
 func publicEnvironment(env map[string]any) map[string]any {

@@ -24,6 +24,12 @@ func TestQualificationCredentialIsDefinitionBoundAndNeverAuthorizesScale(t *test
 	}
 	h, _ := agentaccess.Fingerprint(r.Definition)
 	scope := agentaccess.ReplacementScope{EnvCode: "rdev.ali", ProxyCode: o.Code, GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: agentaccess.ApplicationScope{EnvCode: "rdev.ali", AppCode: "client", ClusterID: "cluster", Namespace: "test", Name: "traffic", UID: "uid"}}
+	scope.AccountID = "123"
+	scope.Region = "ap-southeast-1"
+	scope.ListenerID = "listener"
+	scope.Port = 5432
+	scope.DatabaseResourceID = "rds"
+	scope.ResolutionDigest = scope.Identity().Digest()
 	a := agentaccess.Service{Pool: s.Requests.Pool, RaptorMCPURL: "https://raptor.fixture/mcp", InfraMCPURL: "https://infra.fixture/mcp", ResolveReplacement: func(context.Context, agentaccess.Binding) (agentaccess.ReplacementScope, error) { return scope, nil }}
 	issued, e := a.Issue(ctx, r.ID, agentaccess.IssueInput{AttemptID: domain.NewID(), DefinitionSHA256: h, ExpiresAt: time.Now().Add(time.Minute)})
 	if e != nil || issued.Binding.ExecutionMode != "qualification" {
@@ -33,7 +39,7 @@ func TestQualificationCredentialIsDefinitionBoundAndNeverAuthorizesScale(t *test
 	if v, e := a.Check(ctx, scale); e != nil || v.Active {
 		t.Fatal("qualification scale grant", e)
 	}
-	read := agentaccess.CheckInput{Credential: issued.Credential, Audience: "infra", Tool: "cloud_identity_get", Selectors: map[string]string{"envCode": "rdev.ali"}}
+	read := agentaccess.CheckInput{Credential: issued.Credential, Audience: "infra", Tool: "deployments_list", Selectors: map[string]string{"envCode": "rdev.ali", "kind": "db-proxy", "code": o.Code}}
 	if v, e := a.Check(ctx, read); e != nil || !v.Active {
 		t.Fatal("read denied", e)
 	}
