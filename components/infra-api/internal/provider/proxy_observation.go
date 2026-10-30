@@ -42,15 +42,8 @@ func (p *reader) observationGroup(ctx context.Context, env domain.Environment, t
 	if err != nil {
 		return m, nil, err
 	}
-	if tea.StringValue(g.LifecycleState) != "Active" || g.EnableDesiredCapacity == nil || !*g.EnableDesiredCapacity || g.DesiredCapacity == nil || g.MinSize == nil || g.MaxSize == nil || *g.MinSize < 0 || *g.MaxSize < *g.MinSize || *g.DesiredCapacity < *g.MinSize || *g.DesiredCapacity > *g.MaxSize {
-		return m, nil, providerRefusal()
-	}
-	if len(g.ServerGroups) != 1 || g.ServerGroups[0] == nil {
-		return m, nil, providerRefusal()
-	}
-	sg := g.ServerGroups[0]
-	if tea.StringValue(sg.ServerGroupId) != m.ServerGroupID || tea.StringValue(sg.Type) != "NLB" || sg.Port == nil || int(*sg.Port) != m.Port {
-		return m, nil, domain.ErrScope
+	if err := validateProxyGroup(g, m); err != nil {
+		return m, nil, err
 	}
 	return m, g, nil
 }

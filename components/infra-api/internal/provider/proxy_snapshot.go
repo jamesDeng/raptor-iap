@@ -246,15 +246,11 @@ func (p *ProxyBackend) Snapshot(ctx context.Context, env domain.Environment, cod
 	if e != nil {
 		return nil, e
 	}
-	if tea.StringValue(g.ScalingGroupId) != m.GroupID || tea.StringValue(g.LifecycleState) != "Active" || g.EnableDesiredCapacity == nil || !*g.EnableDesiredCapacity || g.DesiredCapacity == nil || g.MinSize == nil || g.MaxSize == nil || *g.MinSize < 0 || *g.MaxSize < *g.MinSize || *g.DesiredCapacity < *g.MinSize || *g.DesiredCapacity > *g.MaxSize {
+	if tea.StringValue(g.ScalingGroupId) != m.GroupID {
 		return nil, providerRefusal()
 	}
-	if len(g.ServerGroups) != 1 || g.ServerGroups[0] == nil {
-		return nil, providerRefusal()
-	}
-	sg := g.ServerGroups[0]
-	if tea.StringValue(sg.ServerGroupId) != m.ServerGroupID || tea.StringValue(sg.Type) != "NLB" || sg.Port == nil || int(*sg.Port) != m.Port {
-		return nil, domain.ErrScope
+	if e := validateProxyGroup(g, m); e != nil {
+		return nil, e
 	}
 	nodes, e := p.members(ctx, env, m)
 	if e != nil {

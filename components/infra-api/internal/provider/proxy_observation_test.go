@@ -349,3 +349,65 @@ func TestProxyObservationRefusesBrokenPagination(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyGroupValidationPreservesRefusalCategories(t *testing.T) {
+	for _, name := range []string{"foreign group", "inactive", "desired disabled", "missing desired", "missing minimum", "missing maximum", "minimum negative", "maximum below minimum", "desired below minimum", "desired above maximum", "missing association", "nil association", "foreign association", "wrong association type", "missing association port", "wrong association port"} {
+		t.Run(name, func(t *testing.T) {
+			p, env, target, g, _, _, _ := observationFixture(t)
+			scopeRefusal := false
+			switch name {
+			case "foreign group":
+				g.ScalingGroupId = tea.String("foreign")
+				scopeRefusal = true
+			case "inactive":
+				g.LifecycleState = tea.String("Inactive")
+			case "desired disabled":
+				g.EnableDesiredCapacity = tea.Bool(false)
+			case "missing desired":
+				g.DesiredCapacity = nil
+			case "missing minimum":
+				g.MinSize = nil
+			case "missing maximum":
+				g.MaxSize = nil
+			case "minimum negative":
+				g.MinSize = tea.Int32(-1)
+			case "maximum below minimum":
+				g.MaxSize = tea.Int32(0)
+			case "desired below minimum":
+				g.DesiredCapacity = tea.Int32(0)
+			case "desired above maximum":
+				g.DesiredCapacity = tea.Int32(5)
+			case "missing association":
+				g.ServerGroups = nil
+			case "nil association":
+				g.ServerGroups[0] = nil
+			case "foreign association":
+				g.ServerGroups[0].ServerGroupId = tea.String("foreign")
+				scopeRefusal = true
+			case "wrong association type":
+				g.ServerGroups[0].Type = tea.String("ALB")
+				scopeRefusal = true
+			case "missing association port":
+				g.ServerGroups[0].Port = nil
+				scopeRefusal = true
+			case "wrong association port":
+				g.ServerGroups[0].Port = tea.Int32(123)
+				scopeRefusal = true
+			}
+			_, observationErr := p.ObserveProxy(context.Background(), env, target, "capacity")
+			_, snapshotErr := p.proxy.Snapshot(context.Background(), env, "proxy")
+			for _, err := range []error{observationErr, snapshotErr} {
+				if scopeRefusal {
+					if !errors.Is(err, domain.ErrScope) {
+						t.Fatalf("expected scope refusal, got %v", err)
+					}
+					continue
+				}
+				var refusal *domain.CommandError
+				if !errors.As(err, &refusal) || refusal.Code != "ProviderStateInvalid" {
+					t.Fatalf("expected invalid provider state, got %v", err)
+				}
+			}
+		})
+	}
+}
