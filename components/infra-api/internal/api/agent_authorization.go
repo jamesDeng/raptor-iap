@@ -34,12 +34,18 @@ type AgentApplication struct {
 	UID       string `json:"uid"`
 }
 type AgentReplacementScope struct {
-	EnvCode       string           `json:"envCode"`
-	ProxyCode     string           `json:"proxyCode"`
-	GroupID       string           `json:"groupId"`
-	ServerGroupID string           `json:"serverGroupId"`
-	TargetDBCode  string           `json:"targetDbCode"`
-	Application   AgentApplication `json:"application"`
+	AccountID          string           `json:"accountId,omitempty"`
+	Region             string           `json:"region,omitempty"`
+	ListenerID         string           `json:"listenerId,omitempty"`
+	Port               int              `json:"port,omitempty"`
+	DatabaseResourceID string           `json:"databaseResourceId,omitempty"`
+	ResolutionDigest   string           `json:"resolutionDigest,omitempty"`
+	EnvCode            string           `json:"envCode"`
+	ProxyCode          string           `json:"proxyCode"`
+	GroupID            string           `json:"groupId"`
+	ServerGroupID      string           `json:"serverGroupId"`
+	TargetDBCode       string           `json:"targetDbCode"`
+	Application        AgentApplication `json:"application"`
 }
 type AgentIdentity struct {
 	Active           bool                   `json:"active"`
@@ -244,6 +250,14 @@ func (a agentAuthorizer) Authorize(ctx context.Context, _ string, path string, a
 // NewAgentInspector uses private service credentials only on the controller-side
 // introspection hop. No credential or positive authorization cache is returned.
 func NewAgentInspector(origin, user, password string, client *http.Client) (AgentCheck, error) {
+	return newAgentInspector(origin, user, password, client, false)
+}
+
+// NewResourceAgentInspector validates resource-mode introspection independently of legacy selectors.
+func NewResourceAgentInspector(origin, user, password string, client *http.Client) (AgentCheck, error) {
+	return newAgentInspector(origin, user, password, client, true)
+}
+func newAgentInspector(origin, user, password string, client *http.Client, resourceMode bool) (AgentCheck, error) {
 	u, err := url.Parse(origin)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || user == "" || password == "" {
 		return nil, domain.ErrNotConfigured
@@ -282,7 +296,14 @@ func NewAgentInspector(origin, user, password string, client *http.Client) (Agen
 		var envelope struct {
 			Data AgentIdentity `json:"data"`
 		}
-		if json.Unmarshal(body, &envelope) != nil || !envelope.Data.permits(tool, selectors) {
+		if json.Unmarshal(body, &envelope) != nil {
+			return bad, errors.New("agent access denied")
+		}
+		permitted := envelope.Data.permits(tool, selectors)
+		if resourceMode {
+			permitted = envelope.Data.permitsResource(tool, selectors)
+		}
+		if !permitted {
 			return bad, errors.New("agent access denied")
 		}
 		return envelope.Data, nil
