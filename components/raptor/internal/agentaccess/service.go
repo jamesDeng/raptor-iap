@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"net/url"
 	"regexp"
@@ -23,7 +24,8 @@ type Service struct {
 	Now                       func() time.Time
 	// Nil keeps replacement admission disabled. The resolver must obtain live
 	// proxy/dependency identity from trusted configuration and provider reads.
-	ResolveReplacement func(context.Context, Binding) (ReplacementScope, error)
+	ResolveReplacement  func(context.Context, Binding) (ReplacementScope, error)
+	ValidateReplacement func(context.Context, Binding, adapters.ResolutionProof) (ReplacementScope, error)
 }
 type IssueInput struct {
 	AttemptID        string    `json:"attemptId"`
@@ -401,6 +403,22 @@ func (s *Service) Revoke(ctx context.Context, id, attempt string) error {
 	return nil
 }
 func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error) {
+	out, e := s.checkEligibility(ctx, in)
+	if e != nil || !out.Active || out.ReplacementScope == nil {
+		return out, e
+	}
+	current, e := s.ResolveReplacement(ctx, *out.Binding)
+	if e != nil {
+		return CheckResult{}, domain.ErrUnavailable
+	}
+	if current != *out.ReplacementScope || !current.ResourceValidFor(*out.Binding) {
+		return CheckResult{}, nil
+	}
+	return out, nil
+}
+
+// Eligibility alone is private preparation, never final operation authority.
+func (s *Service) checkEligibility(ctx context.Context, in CheckInput) (CheckResult, error) {
 	out := CheckResult{}
 	if !tokenPattern.MatchString(in.Credential) || (in.Audience != "raptor" && in.Audience != "infra") {
 		return out, nil
@@ -452,13 +470,6 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 			if !found {
 				return out, nil
 			}
-		}
-		current, err := s.ResolveReplacement(ctx, binding)
-		if err != nil {
-			return out, domain.ErrUnavailable
-		}
-		if current != saved || !current.ResourceValidFor(binding) {
-			return out, nil
 		}
 
 		out.ReplacementScope = &saved
@@ -609,14 +620,35 @@ func replacementRows(ctx context.Context, query replacementQuery, request, env, 
 // transaction. The returned validator rechecks the exact DB snapshot through the
 // locked transaction's existing connection, never borrowing another pool slot.
 func (s *Service) PrepareRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool) (func(context.Context, pgx.Tx) error, error) {
-	if s.ResolveReplacement == nil {
+	return s.prepareRequestReplacement(ctx, request, env, proxy, mutation, s.ResolveReplacement)
+}
+
+func (s *Service) PrepareRequestReplacementProof(ctx context.Context, request, env, proxy string, mutation bool, proof adapters.ResolutionProof) (func(context.Context, pgx.Tx) error, error) {
+	if s.ValidateReplacement == nil {
+		return nil, domain.ErrUnavailable
+	}
+	return s.prepareRequestReplacement(ctx, request, env, proxy, mutation, func(ctx context.Context, b Binding) (ReplacementScope, error) {
+		return s.ValidateReplacement(ctx, b, proof)
+	})
+}
+
+func (s *Service) RequestReplacementSnapshot(ctx context.Context, request, env, proxy string, mutation bool) (string, error) {
+	_, _, snapshot, e := replacementRows(ctx, s.Pool, request, env, proxy, mutation)
+	if e != nil {
+		return "", e
+	}
+	return digest(string(snapshot)), nil
+}
+
+func (s *Service) prepareRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool, resolve func(context.Context, Binding) (ReplacementScope, error)) (func(context.Context, pgx.Tx) error, error) {
+	if resolve == nil {
 		return nil, domain.ErrUnavailable
 	}
 	frozen, binding, snapshot, e := replacementRows(ctx, s.Pool, request, env, proxy, mutation)
 	if e != nil {
 		return nil, e
 	}
-	current, e := s.ResolveReplacement(ctx, binding)
+	current, e := resolve(ctx, binding)
 	if e != nil {
 		return nil, domain.ErrUnavailable
 	}

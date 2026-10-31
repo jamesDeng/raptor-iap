@@ -24,12 +24,14 @@ func (s *Server) RegisterService(user, password string) {
 	}); ok {
 		resolver := agentaccess.ReplacementResolver{Context: s.Catalog.InfraResourceContext, Proof: proofReader.ResolutionProof}
 		access.ResolveReplacement = resolver.Resolve
+		access.ValidateReplacement = resolver.Validate
 		s.Approvals.VerifyResource = func(ctx context.Context, in approvals.ApprovalInput) (approvals.ResourceVerification, error) {
 			proxy, _ := in.Target["proxyCode"].(string)
 			return access.PrepareRequestReplacement(ctx, in.RequestID, in.EnvCode, proxy, in.Interface == "db-proxy.scale-in")
 		}
 	}
 
+	s.registerInfraApprovals(access, auth.Credentials{Username: user, Password: password})
 	access.Register(s.Mux, auth.Credentials{Username: user, Password: password}, auth.Credentials{Username: os.Getenv("AGENT_INTROSPECTION_USERNAME"), Password: os.Getenv("AGENT_INTROSPECTION_PASSWORD")})
 	wrap := func(pattern string, h http.HandlerFunc) {
 		s.Mux.Handle(pattern, auth.BasicAuth(h, auth.Credentials{Username: user, Password: password}))

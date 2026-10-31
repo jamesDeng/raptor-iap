@@ -160,6 +160,11 @@ jobs:
         run: |
           (cd components/raptor; go test ./...; go vet ./...)
           (cd components/agent-gateway; go test ./...; go vet ./...)
+      - name: Bounded Infra and Raptor private authorization graph
+        run: |
+          export RAPTOR_GRAPH_PEER_BINARY="$RUNNER_TEMP/raptor-resource-capacity-peer"
+          (cd components/raptor; go test -race -c -o "$RAPTOR_GRAPH_PEER_BINARY" ./internal/backend)
+          (cd components/infra-api; go test -race ./internal/api -run '^TestResourceBoundedPrivateHTTPGraph$' -count=1 -v)
 
   infra-read-tests:
     runs-on: ubuntu-24.04

@@ -36,7 +36,7 @@ func liveDependencies(resolver api.ResourceResolver, opts runtimeOptions, origin
 	if !opts.Proxy {
 		return runtimeDependencies{}, nil
 	}
-	a, e := approval.New(origin, user, password, nil)
+	a, e := approval.NewResource(origin, user, password, nil, resolver.ResolveProof)
 	if e != nil {
 		return runtimeDependencies{}, domain.ErrNotConfigured
 	}

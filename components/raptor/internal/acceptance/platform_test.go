@@ -209,7 +209,7 @@ func TestLocalHTTPPlatformAcceptance(t *testing.T) {
 		t.Fatal(e)
 	}
 	serviceClient := openapi.Client{BaseURL: openServer.URL, Username: "fixture-service", Password: "fixture-password"}
-	binding := map[string]any{"requestId": id, "actionId": domain.NewID(), "interface": "ess.scale-in", "envCode": "rdev.ali", "target": map[string]string{"groupId": "synthetic-group"}, "parameters": map[string]int{"desiredCapacity": 1}}
+	binding := map[string]any{"requestId": id, "actionId": domain.NewID(), "interface": "simulation.database-deploy-resume", "envCode": "rdev.ali", "target": map[string]string{"databaseCode": code}, "parameters": map[string]string{"phase": "resume"}}
 	approvalResult, e := serviceClient.Call(ctx, "POST", "/v1/requests/"+id+"/approvals", binding)
 	if e != nil {
 		t.Fatal(e)

@@ -234,30 +234,43 @@ func (s *Service) Check(ctx context.Context, in ApprovalCheckInput) (ApprovalChe
 		out.Reason = "resource contract required"
 		return out, nil
 	}
-	b, e := canonical(in)
-	if e != nil {
+	eligible, snapshot, e := approvalEligibility(ctx, s.Pool, in, false)
+	if e != nil || !eligible {
 		return out, e
 	}
-	var binding []byte
-	var state, requestState, kind, env, control string
-	e = s.Pool.QueryRow(ctx, "SELECT a.binding,a.state,r.status,coalesce(r.definition->>'type',''),coalesce(r.definition->>'envCode',''),r.control_state FROM raptor.approvals a JOIN raptor.requests r ON r.id=a.request_id WHERE a.request_id=$1 AND a.action_id=$2", in.RequestID, in.ActionID).Scan(&binding, &state, &requestState, &kind, &env, &control)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return out, nil
+	var verify ResourceVerification
+	if in.Interface == "db-proxy.scale-in" {
+		if s.VerifyResource == nil {
+			return out, domain.ErrUnavailable
+		}
+		verify, e = s.VerifyResource(ctx, in)
+		if e != nil {
+			return out, e
+		}
+		if verify == nil {
+			return out, domain.ErrUnavailable
+		}
 	}
+	tx, e := s.Pool.Begin(ctx)
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}
-	out.Allowed = kind == "agent" && env == in.EnvCode && control == "" && state == "approved" && requestState != "blocked" && requestState != "cancelled" && requestState != "completed" && equalJSON(binding, b)
-	if out.Allowed && in.Interface == "db-proxy.scale-in" {
-		if s.VerifyResource == nil {
-			return ApprovalCheckResult{}, domain.ErrUnavailable
-		}
-		if _, e = s.VerifyResource(ctx, in); e != nil {
-			return ApprovalCheckResult{}, e
+	defer tx.Rollback(ctx)
+	var id string
+	if e = tx.QueryRow(ctx, "SELECT id::text FROM raptor.requests WHERE id=$1 FOR UPDATE", in.RequestID).Scan(&id); e != nil {
+		return out, domain.ErrUnavailable
+	}
+	eligible, current, e := approvalEligibility(ctx, tx, in, false)
+	if e != nil || !eligible || current != snapshot {
+		return out, e
+	}
+	if verify != nil {
+		if e = verify(ctx, tx); e != nil {
+			return out, e
 		}
 	}
-	if out.Allowed {
-		out.Reason = "approved"
+	if e = tx.Commit(ctx); e != nil {
+		return out, domain.ErrUnavailable
 	}
-	return out, nil
+	return ApprovalCheckResult{Allowed: true, Reason: "approved"}, nil
 }

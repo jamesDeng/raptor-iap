@@ -36,7 +36,7 @@ func main() {
 		log.Fatal("proxy runtime configuration unavailable")
 	}
 	if origin := os.Getenv("INFRA_AGENT_INSPECTOR_ORIGIN"); origin != "" || os.Getenv("INFRA_AGENT_INSPECTOR_USERNAME") != "" || os.Getenv("INFRA_AGENT_INSPECTOR_PASSWORD") != "" {
-		deps.AgentCheck, e = api.NewResourceAgentInspector(origin, os.Getenv("INFRA_AGENT_INSPECTOR_USERNAME"), os.Getenv("INFRA_AGENT_INSPECTOR_PASSWORD"), nil)
+		deps.AgentCheck, e = api.NewResourceAgentInspector(origin, os.Getenv("INFRA_AGENT_INSPECTOR_USERNAME"), os.Getenv("INFRA_AGENT_INSPECTOR_PASSWORD"), nil, resolver.ResolveProof)
 		if e != nil {
 			log.Fatal("agent authorization configuration unavailable")
 		}

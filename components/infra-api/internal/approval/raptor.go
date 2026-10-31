@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"raptor-iap/infra-api/internal/jsoninput"
+	"raptor-iap/infra-api/internal/resources"
 	"strings"
 	"time"
 )
@@ -42,6 +43,7 @@ func (b Binding) Wire() any {
 type Client struct {
 	origin, user, password string
 	http                   *http.Client
+	resolveProof           func(context.Context, string, string) (resources.Proof, error)
 }
 
 func New(origin, user, password string, client *http.Client) (*Client, error) {
@@ -54,11 +56,21 @@ func New(origin, user, password string, client *http.Client) (*Client, error) {
 	}
 	copy := *client
 	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Client{strings.TrimSuffix(origin, "/"), user, password, &copy}, nil
+	return &Client{origin: strings.TrimSuffix(origin, "/"), user: user, password: password, http: &copy}, nil
 }
 func (c *Client) Check(ctx context.Context, b Binding) (bool, error) {
 	if b.RequestID == "" || b.ActionID == "" || b.EnvCode == "" || b.ProxyCode == "" || b.GroupID == "" || b.DesiredCapacity < 0 {
 		return false, errors.New("invalid approval binding")
+	}
+	if c.resolveProof != nil {
+		var out struct {
+			Data struct {
+				Allowed bool   `json:"allowed"`
+				Reason  string `json:"reason"`
+			} `json:"data"`
+		}
+		e := c.resourceCall(ctx, b, "check", &out)
+		return out.Data.Allowed, e
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

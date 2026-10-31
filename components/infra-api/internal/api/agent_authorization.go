@@ -16,14 +16,19 @@ import (
 )
 
 type AgentBinding struct {
-	ExecutionMode string `json:"executionMode,omitempty"`
-	RequestID     string `json:"requestId"`
-	AttemptID     string `json:"attemptId"`
-	Operation     string `json:"operation"`
-	ObjectKind    string `json:"objectKind"`
-	ObjectCode    string `json:"objectCode"`
-	EnvCode       string `json:"envCode"`
-	ClusterID     string `json:"clusterId"`
+	SkillsCommit      string `json:"skillsCommit"`
+	Model             string `json:"model"`
+	ProviderID        string `json:"providerId,omitempty"`
+	ConnectionVersion int64  `json:"connectionVersion,omitempty"`
+	DefinitionSHA256  string `json:"definitionSha256"`
+	ExecutionMode     string `json:"executionMode,omitempty"`
+	RequestID         string `json:"requestId"`
+	AttemptID         string `json:"attemptId"`
+	Operation         string `json:"operation"`
+	ObjectKind        string `json:"objectKind"`
+	ObjectCode        string `json:"objectCode"`
+	EnvCode           string `json:"envCode"`
+	ClusterID         string `json:"clusterId"`
 }
 type AgentApplication struct {
 	EnvCode   string `json:"envCode"`
@@ -253,10 +258,6 @@ func NewAgentInspector(origin, user, password string, client *http.Client) (Agen
 	return newAgentInspector(origin, user, password, client, false)
 }
 
-// NewResourceAgentInspector validates resource-mode introspection independently of legacy selectors.
-func NewResourceAgentInspector(origin, user, password string, client *http.Client) (AgentCheck, error) {
-	return newAgentInspector(origin, user, password, client, true)
-}
 func newAgentInspector(origin, user, password string, client *http.Client, resourceMode bool) (AgentCheck, error) {
 	u, err := url.Parse(origin)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || user == "" || password == "" {

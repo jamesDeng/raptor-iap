@@ -50,7 +50,13 @@ func (c *Client) Claim(ctx context.Context, b Binding) (bool, error) {
 			Claimed *bool `json:"claimed"`
 		} `json:"data"`
 	}
-	if e := c.submissionCall(ctx, "/v1/approval-claim", b.Wire(), &out); e != nil {
+	var e error
+	if c.resolveProof != nil {
+		e = c.resourceCall(ctx, b, "claim", &out)
+	} else {
+		e = c.submissionCall(ctx, "/v1/approval-claim", b.Wire(), &out)
+	}
+	if e != nil {
 		return false, e
 	}
 	if out.Data.Claimed == nil {

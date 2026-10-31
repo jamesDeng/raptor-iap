@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"raptor-iap/infra-api/internal/resources"
 	"reflect"
 	"strings"
 	"testing"
@@ -81,24 +83,25 @@ func TestResourceInspectorIsExplicitAndLegacyModeRemainsStrict(t *testing.T) {
 	calls := 0
 	client := &http.Client{Transport: resourceRoundTripper(func(r *http.Request) (*http.Response, error) {
 		calls++
-		if r.URL.String() != "https://raptor.test/v1/agent-access/introspect" || r.Method != "POST" {
-			t.Fatal(r.Method, r.URL)
-		}
 		user, password, ok := r.BasicAuth()
 		if !ok || user != "svc" || password != "pw" {
 			t.Fatal("missing service auth")
 		}
-		var request struct {
-			Tool      string            `json:"tool"`
-			Selectors map[string]string `json:"selectors"`
+		var body []byte
+		if r.URL.Path == "/v1/agent-access/prepare-infra" {
+			body, _ = json.Marshal(map[string]any{"data": map[string]any{"eligible": true, "prepared": strings.Repeat("a", 64), "identity": identity}})
+		} else if r.URL.Path == "/v1/agent-access/validate-infra" || r.URL.Path == "/v1/agent-access/introspect" {
+			body, _ = json.Marshal(map[string]any{"data": identity})
+		} else {
+			t.Fatal(r.URL)
 		}
-		if json.NewDecoder(r.Body).Decode(&request) != nil || request.Tool != "deployment_status_get" || request.Selectors["appCode"] != "app" {
-			t.Fatal(request)
-		}
-		body, _ := json.Marshal(map[string]any{"data": identity})
-		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body))}, nil
 	})}
-	resourceCheck, e := NewResourceAgentInspector("https://raptor.test", "svc", "pw", client)
+	resolve := func(context.Context, string, string) (resources.Proof, error) {
+		t.Fatal("question must not resolve proxy proof")
+		return resources.Proof{}, nil
+	}
+	resourceCheck, e := NewResourceAgentInspector("https://raptor.test", "svc", "pw", client, resolve)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -113,7 +116,7 @@ func TestResourceInspectorIsExplicitAndLegacyModeRemainsStrict(t *testing.T) {
 	if _, e = legacyCheck(context.Background(), "raptor_at_"+strings.Repeat("a", 43), "deployment_status_get", selectors); e == nil {
 		t.Fatal("legacy inspector accepted logical mode")
 	}
-	if calls != 2 {
+	if calls != 3 {
 		t.Fatal(calls)
 	}
 }
