@@ -11,7 +11,12 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 )
 
-type Service struct{ Pool *pgxpool.Pool }
+type ResourceVerification func(context.Context, pgx.Tx) error
+
+type Service struct {
+	Pool           *pgxpool.Pool
+	VerifyResource func(context.Context, ApprovalInput) (ResourceVerification, error)
+}
 type ApprovalInput struct {
 	RequestID  string         `json:"requestId"`
 	ActionID   string         `json:"actionId"`
@@ -35,6 +40,21 @@ func canonical(in ApprovalInput) ([]byte, error) {
 	if in.RequestID == "" || in.ActionID == "" || in.Interface == "" || in.EnvCode == "" || len(in.Target) == 0 || in.Parameters == nil {
 		return nil, domain.ErrInvalid
 	}
+	if in.Interface == "db-proxy.scale-in" || in.Interface == "runtime.qualification-resume" {
+		proxy, ok := in.Target["proxyCode"].(string)
+		if len(in.Target) != 1 || !ok || proxy == "" || len(in.Parameters) != 1 {
+			return nil, domain.ErrInvalid
+		}
+		if in.Interface == "db-proxy.scale-in" {
+			raw, _ := json.Marshal(in.Parameters["desiredCapacity"])
+			var n int
+			if json.Unmarshal(raw, &n) != nil || n < 0 || string(raw) == "null" {
+				return nil, domain.ErrInvalid
+			}
+		} else if in.Parameters["phase"] != "resume" {
+			return nil, domain.ErrInvalid
+		}
+	}
 	b, e := json.Marshal(in)
 	if e != nil || len(b) > 8192 {
 		return nil, domain.ErrInvalid
@@ -52,26 +72,67 @@ func scan(row pgx.Row) (domain.Approval, error) {
 func (s *Service) Get(ctx context.Context, id string) (domain.Approval, error) {
 	return scan(s.Pool.QueryRow(ctx, "SELECT id::text,request_id::text,action_id,binding,state,guidance FROM raptor.approvals WHERE id=$1", id))
 }
+func requestInactive(state, control string) bool {
+	return control != "" || state == "blocked" || state == "cancelled" || state == "completed"
+}
+
 func (s *Service) Request(ctx context.Context, in ApprovalInput) (domain.Approval, error) {
+	if in.Interface == "ess.scale-in" {
+		return domain.Approval{}, domain.ErrInvalid
+	}
 	b, e := canonical(in)
 	if e != nil {
 		return domain.Approval{}, e
+	}
+	// QueryRow.Scan releases its pool connection before any external proof work.
+	var state, kind, env, control string
+	e = s.Pool.QueryRow(ctx, "SELECT status,coalesce(definition->>'type',''),coalesce(definition->>'envCode',''),control_state FROM raptor.requests WHERE id=$1", in.RequestID).Scan(&state, &kind, &env, &control)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return domain.Approval{}, domain.ErrNotFound
+	}
+	if e != nil {
+		return domain.Approval{}, domain.ErrUnavailable
+	}
+	if kind != "agent" || env != in.EnvCode {
+		return domain.Approval{}, domain.ErrInvalid
+	}
+	if requestInactive(state, control) {
+		return domain.Approval{}, domain.ErrConflict
+	}
+	var verify ResourceVerification
+	if in.Interface == "db-proxy.scale-in" || in.Interface == "runtime.qualification-resume" {
+		if s.VerifyResource == nil {
+			return domain.Approval{}, domain.ErrUnavailable
+		}
+		verify, e = s.VerifyResource(ctx, in)
+		if e != nil {
+			return domain.Approval{}, e
+		}
+		if verify == nil {
+			return domain.Approval{}, domain.ErrUnavailable
+		}
 	}
 	tx, e := s.Pool.Begin(ctx)
 	if e != nil {
 		return domain.Approval{}, domain.ErrUnavailable
 	}
 	defer tx.Rollback(ctx)
-	var state, kind, env string
-	if e = tx.QueryRow(ctx, "SELECT status,coalesce(definition->>'type',''),coalesce(definition->>'envCode','') FROM raptor.requests WHERE id=$1 FOR UPDATE", in.RequestID).Scan(&state, &kind, &env); e != nil {
+	// Recheck under the request lock; the nonlocking precheck grants no authority.
+	if e = tx.QueryRow(ctx, "SELECT status,coalesce(definition->>'type',''),coalesce(definition->>'envCode',''),control_state FROM raptor.requests WHERE id=$1 FOR UPDATE", in.RequestID).Scan(&state, &kind, &env, &control); e != nil {
 		return domain.Approval{}, domain.ErrNotFound
 	}
 	if kind != "agent" || env != in.EnvCode {
 		return domain.Approval{}, domain.ErrInvalid
 	}
-	if state == "cancelled" || state == "completed" {
+	if requestInactive(state, control) {
 		return domain.Approval{}, domain.ErrConflict
 	}
+	if verify != nil {
+		if e = verify(ctx, tx); e != nil {
+			return domain.Approval{}, e
+		}
+	}
+
 	if _, e = tx.Exec(ctx, "INSERT INTO raptor.approvals(id,request_id,action_id,binding) VALUES($1,$2,$3,$4) ON CONFLICT(request_id,action_id) DO NOTHING", domain.NewID(), in.RequestID, in.ActionID, b); e != nil {
 		return domain.Approval{}, domain.ErrUnavailable
 	}
@@ -169,22 +230,47 @@ func (s *Service) Decide(ctx context.Context, user domain.User, id string, in De
 }
 func (s *Service) Check(ctx context.Context, in ApprovalCheckInput) (ApprovalCheckResult, error) {
 	out := ApprovalCheckResult{Reason: "not approved"}
-	b, e := canonical(in)
-	if e != nil {
-		return out, e
-	}
-	var binding []byte
-	var state, requestState, kind, env, control string
-	e = s.Pool.QueryRow(ctx, "SELECT a.binding,a.state,r.status,coalesce(r.definition->>'type',''),coalesce(r.definition->>'envCode',''),r.control_state FROM raptor.approvals a JOIN raptor.requests r ON r.id=a.request_id WHERE a.request_id=$1 AND a.action_id=$2", in.RequestID, in.ActionID).Scan(&binding, &state, &requestState, &kind, &env, &control)
-	if errors.Is(e, pgx.ErrNoRows) {
+	if in.Interface == "ess.scale-in" {
+		out.Reason = "resource contract required"
 		return out, nil
 	}
+	eligible, snapshot, e := approvalEligibility(ctx, s.Pool, in, false)
+	if e != nil || !eligible {
+		return out, e
+	}
+	var verify ResourceVerification
+	if in.Interface == "db-proxy.scale-in" {
+		if s.VerifyResource == nil {
+			return out, domain.ErrUnavailable
+		}
+		verify, e = s.VerifyResource(ctx, in)
+		if e != nil {
+			return out, e
+		}
+		if verify == nil {
+			return out, domain.ErrUnavailable
+		}
+	}
+	tx, e := s.Pool.Begin(ctx)
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}
-	out.Allowed = kind == "agent" && env == in.EnvCode && control == "" && state == "approved" && requestState != "blocked" && requestState != "cancelled" && requestState != "completed" && equalJSON(binding, b)
-	if out.Allowed {
-		out.Reason = "approved"
+	defer tx.Rollback(ctx)
+	var id string
+	if e = tx.QueryRow(ctx, "SELECT id::text FROM raptor.requests WHERE id=$1 FOR UPDATE", in.RequestID).Scan(&id); e != nil {
+		return out, domain.ErrUnavailable
 	}
-	return out, nil
+	eligible, current, e := approvalEligibility(ctx, tx, in, false)
+	if e != nil || !eligible || current != snapshot {
+		return out, e
+	}
+	if verify != nil {
+		if e = verify(ctx, tx); e != nil {
+			return out, e
+		}
+	}
+	if e = tx.Commit(ctx); e != nil {
+		return out, domain.ErrUnavailable
+	}
+	return ApprovalCheckResult{Allowed: true, Reason: "approved"}, nil
 }

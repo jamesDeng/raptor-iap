@@ -7,6 +7,7 @@ import (
 )
 
 func (s *Service) Register(m *http.ServeMux, controller, inspector auth.Credentials) {
+	s.registerInfra(m, inspector)
 	m.Handle("POST /v1/requests/{id}/agent-access", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in IssueInput
 		if !httpx.Decode(w, r, &in) {

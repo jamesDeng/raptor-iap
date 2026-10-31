@@ -10,6 +10,11 @@
     "converged": true,
     "acceptance": "pending",
     "scope": {
+      "accountId": "1360282071200743",
+      "region": "ap-southeast-1",
+      "listenerId": "listener",
+      "port": 6432,
+      "databaseResourceId": "db",
       "envCode": "rdev.ali",
       "proxyCode": "proxy",
       "groupId": "group",
@@ -22,7 +27,8 @@
         "namespace": "test",
         "name": "client",
         "uid": "uid"
-      }
+      },
+      "resolutionDigest": "fd5bc1fcc7d2c44610c632ee2bdd3295bdf951d99a02e4910b8822b8a98b9f1b"
     },
     "oldInstanceIds": [
       "old-a",

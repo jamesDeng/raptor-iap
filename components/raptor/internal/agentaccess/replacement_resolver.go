@@ -6,50 +6,48 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 )
 
-// Scope is a controller-owned POC dependency binding, never a request parameter.
-// Revalidate discovered identities on issue and introspection; a changed UID
-// requires a new reviewed binding rather than silently retargeting execution.
+// ReplacementResolver combines catalog-only relationships with a trusted Infra
+// proof. No file or manually maintained provider mapping can authorize execution.
 type ReplacementResolver struct {
-	Scope ReplacementScope
-	Read  func(context.Context, string, string, string) ([]adapters.Deployment, error)
+	Context func(context.Context, string, string, string) (domain.InfraResourceContext, error)
+	Proof   func(context.Context, string, string) (adapters.ResolutionProof, error)
 }
 
 func (r ReplacementResolver) Resolve(ctx context.Context, b Binding) (ReplacementScope, error) {
-	s := r.Scope
-	if r.Read == nil || !s.ValidFor(b) {
+	if r.Context == nil || r.Proof == nil {
 		return ReplacementScope{}, domain.ErrUnavailable
 	}
-	read := func(kind, code string) ([]adapters.Deployment, error) {
-		rows, err := r.Read(ctx, kind, code, s.EnvCode)
-		if err != nil || len(rows) == 0 || len(rows) > 10 {
-			return nil, domain.ErrUnavailable
-		}
-		for _, row := range rows {
-			if row.Kind != kind || row.ObjectCode != code || row.EnvCode != s.EnvCode || row.EvidenceMode != "live" {
-				return nil, domain.ErrUnavailable
-			}
-		}
-		return rows, nil
-	}
-	proxies, err := read("db-proxy", s.ProxyCode)
-	if err != nil || len(proxies) != 1 || proxies[0].ResourceID != s.GroupID || proxies[0].TargetDBCode != s.TargetDBCode {
+	c, err := r.Context(ctx, b.EnvCode, "db-proxy", b.ObjectCode)
+	if err != nil || c.EnvCode != b.EnvCode || c.Kind != "db-proxy" || c.Code != b.ObjectCode || c.ClusterID != b.ClusterID || len(c.RelatedResources) != 1 || c.RelatedResources[0].Kind != "application" {
 		return ReplacementScope{}, domain.ErrUnavailable
 	}
-	databases, err := read("database", s.TargetDBCode)
-	if err != nil || len(databases) != 1 || databases[0].ResourceID == "" {
-		return ReplacementScope{}, domain.ErrUnavailable
-	}
-	apps, err := read("application", s.Application.AppCode)
+	proof, err := r.Proof(ctx, b.EnvCode, b.ObjectCode)
 	if err != nil {
 		return ReplacementScope{}, domain.ErrUnavailable
 	}
-	matches := 0
-	for _, app := range apps {
-		if app.ClusterID == s.Application.ClusterID && app.Namespace == s.Application.Namespace && app.Name == s.Application.Name && app.UID == s.Application.UID {
-			matches++
-		}
+	return scopeFromProof(c, b, proof)
+}
+
+// Validate uses only current catalog and the fresh proof from trusted Infra;
+// it never calls back into Infra while that invocation is occupied.
+func (r ReplacementResolver) Validate(ctx context.Context, b Binding, proof adapters.ResolutionProof) (ReplacementScope, error) {
+	if r.Context == nil {
+		return ReplacementScope{}, domain.ErrUnavailable
 	}
-	if matches != 1 {
+	c, err := r.Context(ctx, b.EnvCode, "db-proxy", b.ObjectCode)
+	if err != nil || c.EnvCode != b.EnvCode || c.Kind != "db-proxy" || c.Code != b.ObjectCode || c.ClusterID != b.ClusterID || len(c.RelatedResources) != 1 || c.RelatedResources[0].Kind != "application" {
+		return ReplacementScope{}, domain.ErrUnavailable
+	}
+	return scopeFromProof(c, b, proof)
+}
+
+func scopeFromProof(c domain.InfraResourceContext, b Binding, proof adapters.ResolutionProof) (ReplacementScope, error) {
+	i := proof.Identity
+	if i.EnvCode != c.EnvCode || i.ProxyCode != c.Code || i.AccountID != c.AccountID || i.Region != c.Region || i.ClusterID != c.ClusterID || i.Application.AppCode != c.RelatedResources[0].Code {
+		return ReplacementScope{}, domain.ErrUnavailable
+	}
+	s := ReplacementScope{AccountID: i.AccountID, Region: i.Region, ListenerID: i.ListenerID, Port: i.Port, DatabaseResourceID: i.DatabaseResourceID, ResolutionDigest: proof.ResolutionDigest, EnvCode: i.EnvCode, ProxyCode: i.ProxyCode, GroupID: i.GroupID, ServerGroupID: i.ServerGroupID, TargetDBCode: i.TargetDBCode, Application: ApplicationScope{EnvCode: i.Application.EnvCode, AppCode: i.Application.AppCode, ClusterID: i.Application.ClusterID, Namespace: i.Application.Namespace, Name: i.Application.Name, UID: i.Application.UID}}
+	if !s.ResourceValidFor(b) {
 		return ReplacementScope{}, domain.ErrUnavailable
 	}
 	return s, nil

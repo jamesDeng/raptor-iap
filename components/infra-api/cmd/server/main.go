@@ -8,14 +8,14 @@ import (
 	"raptor-iap/infra-api/internal/api"
 	"raptor-iap/infra-api/internal/domain"
 	"raptor-iap/infra-api/internal/provider"
-	"raptor-iap/infra-api/internal/scope"
+	"raptor-iap/infra-api/internal/resources"
 	"time"
 )
 
 func main() {
-	envs, e := scope.Load(os.Getenv("INFRA_SCOPE_FILE"))
+	catalog, e := resources.NewCatalog(os.Getenv("RAPTOR_CATALOG_ORIGIN"), os.Getenv("RAPTOR_SERVICE_USERNAME"), os.Getenv("RAPTOR_SERVICE_PASSWORD"), nil)
 	if e != nil {
-		log.Fatal("scope configuration unavailable")
+		log.Fatal("catalog configuration unavailable")
 	}
 	header := os.Getenv("INFRA_AUTH_HEADER")
 	if header == "" {
@@ -25,18 +25,23 @@ func main() {
 	if e != nil {
 		log.Fatal("credential provider unavailable")
 	}
+	backend, e := provider.NewResourceBackend()
+	if e != nil {
+		log.Fatal("resource resolver unavailable")
+	}
+	resolver := resources.NewResolver(catalog, backend)
 	opts := runtimeOptions{Restart: os.Getenv("INFRA_ENABLE_RESTART") == "true", Proxy: os.Getenv("INFRA_ENABLE_PROXY_COMMANDS") == "true"}
-	deps, e := liveDependencies(envs, opts, os.Getenv("RAPTOR_APPROVAL_ORIGIN"), os.Getenv("RAPTOR_SERVICE_USERNAME"), os.Getenv("RAPTOR_SERVICE_PASSWORD"))
+	deps, e := liveDependencies(resolver, opts, os.Getenv("RAPTOR_APPROVAL_ORIGIN"), os.Getenv("RAPTOR_SERVICE_USERNAME"), os.Getenv("RAPTOR_SERVICE_PASSWORD"))
 	if e != nil {
 		log.Fatal("proxy runtime configuration unavailable")
 	}
 	if origin := os.Getenv("INFRA_AGENT_INSPECTOR_ORIGIN"); origin != "" || os.Getenv("INFRA_AGENT_INSPECTOR_USERNAME") != "" || os.Getenv("INFRA_AGENT_INSPECTOR_PASSWORD") != "" {
-		deps.AgentCheck, e = api.NewAgentInspector(origin, os.Getenv("INFRA_AGENT_INSPECTOR_USERNAME"), os.Getenv("INFRA_AGENT_INSPECTOR_PASSWORD"), nil)
+		deps.AgentCheck, e = api.NewResourceAgentInspector(origin, os.Getenv("INFRA_AGENT_INSPECTOR_USERNAME"), os.Getenv("INFRA_AGENT_INSPECTOR_PASSWORD"), nil, resolver.ResolveProof)
 		if e != nil {
 			log.Fatal("agent authorization configuration unavailable")
 		}
 	}
-	h, e := buildRuntimeHandler(reader, envs, os.Getenv("INFRA_USERNAME"), os.Getenv("INFRA_PASSWORD"), header, opts, deps)
+	h, e := buildResourceRuntimeHandler(reader, resolver, os.Getenv("INFRA_USERNAME"), os.Getenv("INFRA_PASSWORD"), header, opts, deps)
 	if e != nil {
 		log.Fatal("authentication configuration unavailable")
 	}

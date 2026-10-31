@@ -30,4 +30,28 @@ func TestExportGatewayContract(t *testing.T) {
 	if e = os.WriteFile(filepath.Join(dir, "gateway-execution.json"), append(raw, '\n'), 0644); e != nil {
 		t.Fatal(e)
 	}
+	r.EvidenceVersion = 2
+	current := []ToolEvidence{}
+	for _, row := range r.Evidence {
+		if row.Tool == "cloud_identity_get" {
+			continue
+		}
+		if row.Server == "infra" {
+			row.Identity.WorkloadKey = "opaque-key"
+		}
+		if row.Tool == "deployments_list" {
+			row.EvidenceMode = "discovery"
+		}
+		current = append(current, row)
+	}
+	r.Evidence = current
+	x.Result = &r
+	raw, e = json.MarshalIndent(x, "", "  ")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(dir, "gateway-resource-execution.json"), append(raw, '\n'), 0644); e != nil {
+		t.Fatal(e)
+	}
+
 }

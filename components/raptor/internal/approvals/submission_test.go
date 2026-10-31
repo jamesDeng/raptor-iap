@@ -2,6 +2,7 @@ package approvals
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/testutil"
@@ -23,8 +24,10 @@ func submissionFixture(t *testing.T) (*Service, ApprovalInput) {
 	if _, e := p.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash) VALUES($1,$2,'claim','hash','{"type":"agent","envCode":"rdev.ali"}','schema')`, id, user.ID); e != nil {
 		t.Fatal(e)
 	}
-	s := &Service{Pool: p}
-	in := ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "ess.scale-in", EnvCode: "rdev.ali", Target: map[string]any{"proxyCode": "proxy", "groupId": "group"}, Parameters: map[string]any{"desiredCapacity": 3}}
+	s := &Service{Pool: p, VerifyResource: func(context.Context, ApprovalInput) (ResourceVerification, error) {
+		return func(context.Context, pgx.Tx) error { return nil }, nil
+	}}
+	in := ApprovalInput{RequestID: id, ActionID: domain.NewID(), Interface: "db-proxy.scale-in", EnvCode: "rdev.ali", Target: map[string]any{"proxyCode": "proxy"}, Parameters: map[string]any{"desiredCapacity": 3}}
 	a, e := s.Request(ctx, in)
 	if e != nil {
 		t.Fatal(e)
@@ -56,7 +59,7 @@ func TestSubmissionClaimConcurrentAndDurable(t *testing.T) {
 	if winners.Load() != 1 {
 		t.Fatalf("provider submissions permitted: %d", winners.Load())
 	}
-	fresh := &Service{Pool: s.Pool}
+	fresh := &Service{Pool: s.Pool, VerifyResource: s.VerifyResource}
 	v, e := fresh.Claim(ctx, in)
 	if e != nil || v.Claimed {
 		t.Fatal("claim replay after service recreation", e)
@@ -95,8 +98,8 @@ func TestSubmissionExactBindingAndRequestState(t *testing.T) {
 				s.Pool.Exec(ctx, "UPDATE raptor.requests SET status=$2 WHERE id=$1", in.RequestID, mode)
 			}
 			v, e := s.Claim(ctx, in)
-			if e != nil || v.Claimed {
-				t.Fatal("invalid claim permitted", e)
+			if v.Claimed || (mode == "target" && e != domain.ErrInvalid) || (mode != "target" && e != nil) {
+				t.Fatal("invalid claim result", mode, v, e)
 			}
 		})
 	}

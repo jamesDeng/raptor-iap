@@ -43,6 +43,9 @@ func (p ObserverPreparation) Prepare(ctx context.Context, in execution.LiveStart
 		}
 	}
 	scope := *in.Access.ReplacementScope
+	if scope.ResolutionDigest != "" && (!scope.ResourceValidFor(in.Binding) || scope.AccountID != "1360282071200743" || scope.Region != "ap-southeast-1" || scope.ListenerID != p.ListenerID || scope.DatabaseResourceID != p.DBInstanceID) {
+		return ObservationMaterial{}, ErrConfiguration
+	}
 	cloud, err := p.Cloud(ctx, in)
 	if err != nil {
 		return ObservationMaterial{}, ErrRuntimeUnavailable

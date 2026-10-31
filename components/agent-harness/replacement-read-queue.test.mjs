@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {loadPiRuntime} from './pi-adapter.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
-import {observations} from './replacement-sequence-fixtures.mjs';
+import {observations,withResourceProof} from './replacement-sequence-fixtures.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
 
 async function runScenario(failureKind,baselineCase,expansionCase){
@@ -14,24 +14,24 @@ async function runScenario(failureKind,baselineCase,expansionCase){
   const state=path.join(root,'state'),skills=path.join(root,'skills');
   fs.mkdirSync(state);
   fs.mkdirSync(path.join(skills,'pgcat-replacement','references'),{recursive:true});
-  fs.writeFileSync(path.join(skills,'pgcat-replacement','SKILL.md'),'---\nname: pgcat-replacement\ndescription: Safe replacement.\n---\nreplacement-contract: direct-v2\nProtect and expand.\n');
+  fs.writeFileSync(path.join(skills,'pgcat-replacement','SKILL.md'),'---\nname: pgcat-replacement\ndescription: Safe replacement.\n---\nreplacement-contract: resource-v1\nProtect and expand.\n');
   fs.writeFileSync(path.join(skills,'pgcat-replacement','references','contracts.md'),'Exact contracts.\n');
   fs.writeFileSync(path.join(skills,'pgcat-replacement','references','recovery.md'),'Reconcile uncertainty.\n');
   fs.writeFileSync(path.join(state,'auth.json'),JSON.stringify({openai:{type:'oauth',access:'synthetic',refresh:'synthetic',expires:Date.now()+999999}}));
   const b={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',definitionSha256:'a'.repeat(64),skillsCommit:'b'.repeat(40),operation:'db-proxy.replace-nodes',executionMode:'replacement',objectKind:'db-proxy',objectCode:'proxy',envCode:'dev',clusterId:'cluster',model:'gpt-5.6-luna'};
-  const scope={envCode:'dev',proxyCode:'proxy',groupId:'group',serverGroupId:'backend',targetDbCode:'db',application:{envCode:'dev',appCode:'client',clusterId:'cluster',namespace:'test',name:'traffic',uid:'uid'}};
+  const scope=withResourceProof({envCode:'dev',proxyCode:'proxy',groupId:'group',serverGroupId:'backend',targetDbCode:'db',application:{envCode:'dev',appCode:'client',clusterId:'cluster',namespace:'test',name:'traffic',uid:'uid'}});
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
  const {getCurrentTools}=await import('@earendil-works/pi-ai');
   const {runtime}=await loadPiRuntime({stateRoot:state});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
  let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[],writes=[];
- const target={requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode,groupId:scope.groupId};
+ const target={requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode};
  const expand={name:'mcp__infra__db_proxy_scale',arguments:{...target,actionId:'expand',desiredCapacity:4}};
  const postWrites={
- restart:{name:'mcp__infra__deployment_restart',arguments:{requestId:b.requestId,envCode:b.envCode,...scope.application}},
- protection:{name:'mcp__infra__db_proxy_node_protection_set',arguments:{...target,instanceIds:['new-a','new-b'],protected:true}},
- deregister:{name:'mcp__infra__db_proxy_nodes_deregister',arguments:{...target,serverGroupId:scope.serverGroupId,instanceIds:['i-one']}},
+ restart:{name:'mcp__infra__deployment_restart',arguments:{requestId:b.requestId,envCode:b.envCode,appCode:scope.application.appCode,workloadKey:'opaque-app'}},
+ protection:{name:'mcp__infra__db_proxy_node_protection_set',arguments:{...target,nodeIds:['new-a','new-b'],protected:true}},
+ deregister:{name:'mcp__infra__db_proxy_nodes_deregister',arguments:{...target,nodeIds:['i-one']}},
  scale:{name:'mcp__infra__db_proxy_scale',arguments:{...target,actionId:'shrink',desiredCapacity:3}},
- approval:{name:'mcp__raptor__approval_request',arguments:{requestId:b.requestId,envCode:b.envCode,actionId:'shrink',interface:'ess.scale-in',target:{proxyCode:scope.proxyCode,groupId:scope.groupId},parameters:{desiredCapacity:3}}}
+ approval:{name:'mcp__raptor__approval_request',arguments:{requestId:b.requestId,envCode:b.envCode,actionId:'shrink',interface:'db-proxy.scale-in',target:{proxyCode:scope.proxyCode},parameters:{desiredCapacity:3}}}
  };
  runtime.streamSimple=(model,context)=>{
    round++;
@@ -42,9 +42,9 @@ async function runScenario(failureKind,baselineCase,expansionCase){
    {name:'mcp__raptor__request_get',arguments:{requestId:b.requestId}},
    {name:'mcp__raptor__environment_get',arguments:{requestId:b.requestId,envCode:b.envCode}},
    {name:'mcp__raptor__object_get',arguments:{requestId:b.requestId,kind:'db-proxy',code:'proxy'}},
-   {name:'mcp__infra__cloud_identity_get',arguments:{envCode:b.envCode}},
+   {name:'mcp__raptor__deployments_list',arguments:{requestId:b.requestId,envCode:b.envCode,kind:'application',code:'client'}},
    {name:'mcp__infra__deployments_list',arguments:{envCode:b.envCode,kind:'db-proxy',code:'proxy'}},
-   {name:'mcp__infra__deployment_status_get',arguments:scope.application},
+   {name:'mcp__infra__deployment_status_get',arguments:{envCode:b.envCode,appCode:'client',workloadKey:'opaque-app'}},
    ...['fleet','backend','capacity'].map(kind=>({name:'cloud_read',arguments:{kind}})),
    {name:'deployment_read',arguments:{}},
    ...['trafficFailures','connections','pgcatClients'].map(kind=>({name:'metrics_read',arguments:{kind}})),
@@ -54,7 +54,7 @@ async function runScenario(failureKind,baselineCase,expansionCase){
     {name:'mcp__raptor__request_get',arguments:{requestId:b.requestId}},
     {name:'cloud_read',arguments:{kind:'backend'}},
     {name:'metrics_read',arguments:{kind:'trafficFailures'}},
-    {name:'mcp__infra__cloud_identity_get',arguments:{envCode:b.envCode}}
+    {name:'mcp__raptor__deployments_list',arguments:{requestId:b.requestId,envCode:b.envCode,kind:'application',code:'client'}}
    ]:[{name:'resource_wait',arguments:{seconds:60}}];
    const stream=createAssistantMessageEventStream();
    const message={role:'assistant',content:calls.map((call,i)=>({type:'toolCall',id:'call-'+round+'-'+i,...call})),api:model.api,provider:model.provider,model:model.id,usage:{input:3,output:2,totalTokens:5,cacheRead:0,cacheWrite:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:'toolUse',timestamp:Date.now()};
@@ -75,7 +75,7 @@ async function runScenario(failureKind,baselineCase,expansionCase){
     if(failureKind==='http'&&serviceCalls===1)return new Response('Unavailable',{status:503});
     if(failureKind==='malformed'&&serviceCalls===1)return new Response('{bad json',{headers:{'Content-Type':'application/json'}});
     const args=rpc.params.arguments;
-    const data=rpc.params.name==='deployments_list'?[{resourceId:'group',kind:'db-proxy',objectCode:'proxy',envCode:'dev','target-db-code':'db',evidenceMode:'live',observedAt:new Date().toISOString()}]:rpc.params.name==='deployment_status_get'?{...scope.application,generation:5,observedGeneration:5,replicas:2,updatedReplicas:2,readyReplicas:2,evidenceMode:'live',observedAt:new Date().toISOString()}:rpc.params.name==='deployment_restart'?{evidenceMode:'live',accepted:true,generation:2,target:args}:rpc.params.name==='db_proxy_scale'?{evidenceMode:'live',groupId:scope.groupId,previousDesiredCapacity:args.desiredCapacity===4?2:4,desiredCapacity:args.desiredCapacity,outcome:['unknown','ready-unknown'].includes(expansionCase)?'unknown':'accepted'}:rpc.params.name==='db_proxy_node_protection_set'||rpc.params.name==='db_proxy_nodes_deregister'?{evidenceMode:'live',instanceIds:args.instanceIds,outcome:'submitted'}:rpc.params.name==='approval_request'?{requestId:b.requestId,approvalId:'approval',actionId:args.actionId,binding:args,state:'pending'}:server==='raptor'?{requestId:b.requestId,definition:{envCode:b.envCode,object:{kind:b.objectKind,code:b.objectCode},operations:[{name:b.operation,parameters:{mode:'replacement'}}]}}:{envCode:b.envCode,accountMatches:true,evidenceMode:'live',observedAt:new Date().toISOString()};
+    const data=rpc.params.name==='deployments_list'?(server==='raptor'?{resource:{kind:'application',code:'client'},envCode:'dev',deployments:[{workloadKey:'opaque-app',resourceId:'uid',kind:'application',objectCode:'client',envCode:'dev',...scope.application,state:'Running',evidenceMode:'live'}]}:{resource:{envCode:'dev',kind:'db-proxy',code:'proxy'},pgproxyWorkload:{type:'ess',code:'proxy',workloadKey:'opaque-proxy',state:'Running',targetDbCode:'db'}}):rpc.params.name==='deployment_status_get'?{resource:{envCode:'dev',kind:'application',code:'client'},applicationWorkload:{type:'kubernetes',workloadKey:'opaque-app',...scope.application,state:'Running'},status:{...scope.application,generation:5,observedGeneration:5,replicas:2,updatedReplicas:2,readyReplicas:2,evidenceMode:'live',observedAt:new Date().toISOString()}}:rpc.params.name==='deployment_restart'?{evidenceMode:'live',accepted:true,generation:2,target:{requestId:b.requestId,...scope.application}}:rpc.params.name==='db_proxy_scale'?{evidenceMode:'live',groupId:scope.groupId,previousDesiredCapacity:args.desiredCapacity===4?2:4,desiredCapacity:args.desiredCapacity,outcome:['unknown','ready-unknown'].includes(expansionCase)?'unknown':'accepted'}:rpc.params.name==='db_proxy_node_protection_set'||rpc.params.name==='db_proxy_nodes_deregister'?{evidenceMode:'live',instanceIds:args.nodeIds,outcome:'submitted'}:rpc.params.name==='approval_request'?{requestId:b.requestId,approvalId:'approval',actionId:args.actionId,binding:args,state:'pending'}:server==='raptor'?{requestId:b.requestId,relatedResources:[{kind:'application',code:'client'},{kind:'database',code:'db'}],definition:{envCode:b.envCode,object:{kind:b.objectKind,code:b.objectCode},operations:[{name:b.operation,parameters:{mode:'replacement'}}]}}:{envCode:b.envCode,accountMatches:true,evidenceMode:'live',observedAt:new Date().toISOString()};
     result={structuredContent:{data},content:[{type:'text',text:JSON.stringify({data})}]};
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});

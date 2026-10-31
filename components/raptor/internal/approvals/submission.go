@@ -21,15 +21,39 @@ type SubmissionRecordInput struct {
 func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimResult, error) {
 	out := SubmissionClaimResult{}
 	b, e := canonical(in)
-	if e != nil || in.Interface != "ess.scale-in" {
+	if e != nil || in.Interface != "db-proxy.scale-in" {
 		return out, domain.ErrInvalid
+	}
+	// Establish request eligibility and the exact approved, unconsumed action
+	// without a transaction. Scan releases the connection before external proof.
+	var state, kind, env, control, approved string
+	var binding []byte
+	var consumed bool
+	e = s.Pool.QueryRow(ctx, `SELECT r.status,coalesce(r.definition->>'type',''),coalesce(r.definition->>'envCode',''),r.control_state,a.binding,a.state,EXISTS(SELECT 1 FROM raptor.approval_submissions u WHERE u.request_id=a.request_id AND u.action_id=a.action_id) FROM raptor.requests r JOIN raptor.approvals a ON a.request_id=r.id AND a.action_id=$2 WHERE r.id=$1`, in.RequestID, in.ActionID).Scan(&state, &kind, &env, &control, &binding, &approved, &consumed)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return out, nil
+	}
+	if e != nil {
+		return out, domain.ErrUnavailable
+	}
+	if kind != "agent" || env != in.EnvCode || requestInactive(state, control) || approved != "approved" || !equalJSON(binding, b) || consumed {
+		return out, nil
+	}
+	if s.VerifyResource == nil {
+		return out, domain.ErrUnavailable
+	}
+	verify, e := s.VerifyResource(ctx, in)
+	if e != nil {
+		return out, e
+	}
+	if verify == nil {
+		return out, domain.ErrUnavailable
 	}
 	tx, e := s.Pool.Begin(ctx)
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}
 	defer tx.Rollback(ctx)
-	var state, kind, env, control string
 	e = tx.QueryRow(ctx, `SELECT status,coalesce(definition->>'type',''),coalesce(definition->>'envCode',''),control_state FROM raptor.requests WHERE id=$1 FOR UPDATE`, in.RequestID).Scan(&state, &kind, &env, &control)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return out, nil
@@ -37,11 +61,9 @@ func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimR
 	if e != nil {
 		return out, domain.ErrUnavailable
 	}
-	if kind != "agent" || env != in.EnvCode || control != "" || state == "blocked" || state == "cancelled" || state == "completed" {
+	if kind != "agent" || env != in.EnvCode || requestInactive(state, control) {
 		return out, nil
 	}
-	var binding []byte
-	var approved string
 	e = tx.QueryRow(ctx, `SELECT binding,state FROM raptor.approvals WHERE request_id=$1 AND action_id=$2 FOR UPDATE`, in.RequestID, in.ActionID).Scan(&binding, &approved)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return out, nil
@@ -52,6 +74,10 @@ func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimR
 	if approved != "approved" || !equalJSON(binding, b) {
 		return out, nil
 	}
+	if e = verify(ctx, tx); e != nil {
+		return out, e
+	}
+
 	tag, e := tx.Exec(ctx, `INSERT INTO raptor.approval_submissions(request_id,action_id,binding) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, in.RequestID, in.ActionID, b)
 	if e != nil {
 		return out, domain.ErrUnavailable
@@ -67,7 +93,7 @@ func (s *Service) Claim(ctx context.Context, in ApprovalInput) (SubmissionClaimR
 // safe; neither not_submitted nor unknown permits this action to be claimed again.
 func (s *Service) RecordSubmission(ctx context.Context, in SubmissionRecordInput) error {
 	b, e := canonical(in.Binding)
-	if e != nil || in.Binding.Interface != "ess.scale-in" {
+	if e != nil || in.Binding.Interface != "db-proxy.scale-in" {
 		return domain.ErrInvalid
 	}
 	if len(in.ProviderRequestID) > 512 {

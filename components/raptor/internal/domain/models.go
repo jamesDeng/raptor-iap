@@ -35,6 +35,19 @@ type Environment struct {
 	Repositories []EnvironmentRepository `json:"repositories,omitempty"`
 	Config       map[string]any          `json:"config"`
 }
+
+// InfraResourceContext is the minimal trusted catalog projection for Infra.
+type InfraResourceContext struct {
+	EnvCode          string      `json:"envCode"`
+	Kind             string      `json:"kind"`
+	Code             string      `json:"code"`
+	Cloud            string      `json:"cloud"`
+	Region           string      `json:"region"`
+	AccountID        string      `json:"accountId"`
+	ClusterID        string      `json:"clusterId"`
+	RelatedResources []ObjectRef `json:"relatedResources"`
+}
+
 type EnvironmentRepository struct {
 	Purpose    string `json:"purpose"`
 	URL        string `json:"url"`

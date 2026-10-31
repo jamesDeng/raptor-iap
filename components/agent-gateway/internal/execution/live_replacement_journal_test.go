@@ -117,6 +117,9 @@ func TestReplacementJournalStoresBothContractVersions(t *testing.T) {
 				t.Fatal(err)
 			}
 			b, r := directHarnessFixture(t)
+			if version == 2 {
+				b.ExecutionMode = "replacement"
+			}
 			b.RequestID = id
 			b.AttemptID = x.AttemptID
 			r.RequestID = id
@@ -127,6 +130,25 @@ func TestReplacementJournalStoresBothContractVersions(t *testing.T) {
 				r.Replacement.Actions = []ReplacementScaleAction{{ActionID: "expand", Previous: 2, Desired: 4, Outcome: "submitted"}, {ActionID: "shrink-a", Previous: 4, Desired: 3, Outcome: "submitted"}, {ActionID: "shrink-b", Previous: 3, Desired: 2, Outcome: "unknown"}}
 			}
 			if err = s.BindLive(ctx, x.AttemptID, "owner", b, b.DefinitionSHA256); err != nil {
+				t.Fatal(err)
+			}
+			if version == 1 {
+				if err = s.SaveLiveResult(ctx, x.AttemptID, "owner", r); err == nil {
+					t.Fatal("legacy result authorized without issued proof")
+				}
+				// Historical rows remain readable, but cannot authorize new work.
+				raw, _ := json.Marshal(r)
+				if _, err = s.Pool.Exec(ctx, "UPDATE gateway.executions SET result=$2 WHERE request_id=$1", id, raw); err != nil {
+					t.Fatal(err)
+				}
+				got, err := s.Get(ctx, id)
+				if err != nil || got.Result == nil || got.Result.Replacement.Version != 1 {
+					t.Fatal("historical result not readable", err)
+				}
+				return
+			}
+			r.Replacement.Scope = resourceTestScope(b)
+			if err = s.SaveIssuedScope(ctx, x.AttemptID, "owner", r.Replacement.Scope); err != nil {
 				t.Fatal(err)
 			}
 			if err = s.SaveLiveResult(ctx, x.AttemptID, "owner", r); err != nil {

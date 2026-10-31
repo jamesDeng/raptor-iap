@@ -39,7 +39,7 @@ func gatewayObservationSecrets(credential string) []string {
 // Private execution input is built from the existing trusted attempt access.
 func gatewayObservationInput(ctx context.Context, in execution.LiveStart, m ObservationMaterial, tool string, args json.RawMessage) ([]byte, time.Time, error) {
 	bad := func() ([]byte, time.Time, error) { return nil, time.Time{}, ErrConfiguration }
-	if ctx.Err() != nil || !validObservationInput(tool, args) || in.Access.Binding != in.Binding || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ValidFor(in.Binding) || !regexp.MustCompile(`^raptor_at_[A-Za-z0-9_-]{43}$`).MatchString(in.Access.Credential) {
+	if ctx.Err() != nil || !validObservationInput(tool, args) || in.Access.Binding != in.Binding || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ResourceValidFor(in.Binding) || !regexp.MustCompile(`^raptor_at_[A-Za-z0-9_-]{43}$`).MatchString(in.Access.Credential) {
 		return bad()
 	}
 	endpoint, err := url.Parse(in.Access.InfraMcpURL)

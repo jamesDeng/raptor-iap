@@ -11,6 +11,7 @@ const QualificationAnswer = "Native read-only qualification completed; replaceme
 var qualificationChecks = []string{"mcp.raptor.request_get", "mcp.raptor.environment_get", "mcp.raptor.object_get", "mcp.infra.cloud_identity_get", "mcp.infra.deployments_list", "mcp.infra.deployment_status_get", "cloud.fleet", "cloud.backend", "cloud.capacity", "deployment.status", "metrics.trafficFailures", "metrics.connections", "metrics.pgcatClients"}
 
 type QualificationResult struct {
+	TransportContract string           `json:"transportContract,omitempty"`
 	Version           int              `json:"version"`
 	Passed            bool             `json:"passed"`
 	ReadOnly          bool             `json:"readOnly"`
@@ -27,7 +28,10 @@ type QualificationResult struct {
 
 func validateQualificationResult(r LiveResult, b AttemptBinding) error {
 	q := r.Qualification
-	if q == nil || r.Replacement != nil || b.ExecutionMode != "qualification" || q.Version != 1 || !q.Passed || !q.ReadOnly || q.TrafficAcceptance != "not_assessed" || !q.Scope.ValidFor(b) || r.Answer != QualificationAnswer || !journalName.MatchString(q.ApprovalID) || !journalName.MatchString(q.ActionID) || !shaPattern.MatchString(q.BindingDigest) || q.ObservedAt.IsZero() || time.Since(q.ObservedAt) > 120*time.Second || q.ObservedAt.After(time.Now().Add(2*time.Second)) || len(q.InstanceIDs) != 2 || len(q.ConnectedNodeIDs) != 2 || len(r.Evidence) != 0 {
+	if q == nil || r.Replacement != nil || b.ExecutionMode != "qualification" || (q.Version != 1 && q.Version != 2) || !q.Passed || !q.ReadOnly || q.TrafficAcceptance != "not_assessed" || !q.Scope.ValidFor(b) || r.Answer != QualificationAnswer || !journalName.MatchString(q.ApprovalID) || !journalName.MatchString(q.ActionID) || !shaPattern.MatchString(q.BindingDigest) || q.ObservedAt.IsZero() || time.Since(q.ObservedAt) > 120*time.Second || q.ObservedAt.After(time.Now().Add(2*time.Second)) || len(q.InstanceIDs) != 2 || len(q.ConnectedNodeIDs) != 2 || len(r.Evidence) != 0 {
+		return ErrInvalid
+	}
+	if q.Version == 2 && (q.TransportContract != "raptor-resource-v1" || !q.Scope.ResourceValidFor(b)) {
 		return ErrInvalid
 	}
 	for _, ids := range [][]string{q.InstanceIDs, q.ConnectedNodeIDs} {
@@ -36,7 +40,7 @@ func validateQualificationResult(r LiveResult, b AttemptBinding) error {
 		}
 	}
 	sorted := func(s []string) []string { v := append([]string{}, s...); sort.Strings(v); return v }
-	if !reflect.DeepEqual(sorted(q.InstanceIDs), sorted(q.ConnectedNodeIDs)) || !reflect.DeepEqual(sorted(q.Checks), sorted(qualificationChecks)) {
+	if !reflect.DeepEqual(sorted(q.InstanceIDs), sorted(q.ConnectedNodeIDs)) || !reflect.DeepEqual(sorted(q.Checks), sorted(qualificationChecksFor(q.Version))) {
 		return ErrInvalid
 	}
 	return validateUsage(r.Usage)
@@ -52,4 +56,16 @@ func resultScope(r *LiveResult) *ReplacementScope {
 		return &r.Replacement.Scope
 	}
 	return nil
+}
+
+func qualificationChecksFor(version int) []string {
+	checks := append([]string{}, qualificationChecks...)
+	if version == 2 {
+		for i, name := range checks {
+			if name == "mcp.infra.cloud_identity_get" {
+				checks[i] = "mcp.raptor.deployments_list"
+			}
+		}
+	}
+	return checks
 }

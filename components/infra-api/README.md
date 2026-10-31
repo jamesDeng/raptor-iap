@@ -1,10 +1,14 @@
 # Infra API read service
 
-Independent stateless Go HTTP service. Discovery reads STS/RDS/ESS and registered ACK Deployment status. Missing providers/cluster configuration return errors rather than successful empty inventories. This slice has no mutations.
+Independent stateless Go HTTP/MCP service. Raptor catalog context owns logical environment/resource relationships; Infra resolves current Alibaba workloads internally. Production startup uses `NewResourceServer` and the explicit resource-mode token inspector. Proxy mutations and restart remain separately opt-in and retain the existing runtime guards.
 
-Read [the setup guide](../../docs/setup/infra-api-read.md) before cloud deployment. Supply private scope JSON (array of code/accountId/region/optional clusterId) and caller credentials through private runtime configuration. Serverless Devs owns FC3 code/function/HTTP trigger; Terraform owns RAM roles and API Gateway. Gateway forwards `X-Infra-Authorization`, while FC's `authType: function` requires IAM signatures.
+`make build` creates a static Linux binary in ignored `.build-resource/`. The package directory must contain only `server`; the build refuses symlinks or unexpected contents and never deletes a previous package. Active Serverless templates package this directory. Old `.build/` artifacts are not packaged. No scope JSON file is loaded or bundled.
 
-`make build INFRA_SCOPE_FILE=/private/path/scope.json` builds a static Linux binary and copies the credential-free private scope. `.build` is ignored. Caller credentials are not in the code package; they are externally injected in the function configuration. Do not publish rendered Serverless configuration or logs.
+Set `RAPTOR_CATALOG_ORIGIN` to the fixed HTTPS Raptor backend/API origin, and inject the existing `RAPTOR_SERVICE_USERNAME` / `RAPTOR_SERVICE_PASSWORD` service credentials. This is the catalog-only `/v1/infra/resource-context` route, not an agent MCP endpoint. Catalog context is fetched per operation. Environment catalog fields must specify `cloud=aliyun`, `region=ap-southeast-1`, account and a consistent ACK cluster identity. Proxy replacement additionally requires `proxyApplications` mapping its canonical proxy code to exactly one canonical application code; admission requires exactly one Deployment. Missing or ambiguous data fails closed. No deployment process populates these settings automatically.
+
+`RAPTOR_APPROVAL_ORIGIN` remains the fixed HTTPS approval service origin when proxy commands are enabled. Caller credentials, service credentials and token-introspection credentials are injected privately outside the package. Raptor requests immutable realization evidence through the existing `GET /v1/deployments?envCode=...&kind=db-proxy&code=...` route with `Accept: application/vnd.raptor.resolution-proof+json`. This service-only representation requires the configured authorizer and never introspects an agent; opaque agent credentials are refused before any check or resolver call. Ordinary deployments HTTP/MCP responses remain typed workload envelopes. The separate `/v1/resource-resolution-proof` path is local/internal only and is not required in the deployed API Gateway route inventory. Raptor stores this proof in existing request attempt records and rechecks it before each typed operation and approval claim. No backend replacement-scope file is required. Gateway forwards `X-Infra-Authorization`; the FC trigger remains IAM protected.
+
+Read [the setup guide](../../docs/setup/infra-api-read.md) before release. Source wiring does not authorize a deployment or new IAM permissions. The inspected FC role policy lacks `nlb:ListServerGroups` (exact component-owned servergroup ARNs) and `nlb:ListListeners` (account/region `listener/*`). A reviewed component Terraform policy change, sanitized PR plan comment and reviewed apply are release prerequisites; request filters are not IAM conditions. No permission grant is included here. Replacement remains disabled pending coordinated receipts, compatible immutable skill release and qualification.
 
 Every kubeconfig read requests a fresh 15-minute credential, validates HTTPS/CA, and rejects external credential plugins and local paths. Role permissions do not by themselves establish Kubernetes RBAC: bind get/list Deployments, ReplicaSets and Pods for the selected cluster before live ACK acceptance.
 
@@ -14,13 +18,14 @@ Every kubeconfig read requests a fresh 15-minute credential, validates HTTPS/CA,
 
 | Tool | Required selectors |
 |---|---|
-| `cloud_identity_get` | `envCode` |
 | `deployments_list` | `envCode`, `kind`, `code` |
-| `deployment_status_get` | `envCode`, `appCode`, `clusterId`, `namespace`, `name`, `uid` |
+| `deployment_status_get` | `envCode`, `appCode`, optional `workloadKey` |
+| `proxy_observation_get` | `requestId`, `envCode`, `proxyCode`, `kind` (`fleet`, `backend`, `capacity`) |
+| `proxy_pgcat_metrics_get` | `requestId`, `envCode`, `proxyCode`, `series` (eight fixed PgCat series) |
 
-Tools return structured `{data: ...}` results. Unknown properties, missing/empty selectors and non-string selectors are rejected. These are read operations only. Existing HTTP endpoints remain unchanged. Stateless clients should disable standalone SSE; no GET event stream or persistent MCP session is required.
+Tools return structured `{data: ...}` results. Unknown properties, missing/empty selectors and non-string selectors are rejected. These public selectors are logical resource identities. Discovery returns resource-rooted typed workload envelopes; old cloud-selector calls fail closed. Stateless clients should disable standalone SSE; no GET event stream or persistent MCP session is required.
 
-The subsequent Pi runtime will connect directly to Raptor and Infra API MCP with `direct` exposure. This transport does not itself implement request-specific authorization or a live agent worker. Track **MCP-001** for both catalogs: measure tool-definition tokens, first useful call latency, wrong selections and task success as interfaces grow; evaluate Pi's built-in deferred/tool_search when costs become material. Exposure settings never replace authorization or approval gates.
+Current Gateway/harness transport connects to the logical Raptor and Infra MCP catalogs with request-bound attempt credentials. Infra introspects typed calls before resolution and verifies fresh private proof for replacement/qualification operations. Question and qualification discovery excludes mutation tools; qualification mutations are also refused at execution. Opt-in commands are `deployment_restart`, `db_proxy_scale`, `db_proxy_node_protection_set` and `db_proxy_nodes_deregister`. Private proof is service-only HTTP evidence, never an MCP tool or model selector. See the [current endpoint inventory](../../docs/setup/infra-api-resource-endpoints.md) for exact inputs, fixed read options and legacy reachability. Track **MCP-001** for both catalogs: measure tool-definition tokens, first useful call latency, wrong selections and task success as interfaces grow; evaluate Pi's built-in deferred/tool_search when costs become material. Exposure settings never replace authorization or approval gates.
 
 A model-free probe is available with `go run ./cmd/mcp-probe`. Supply `INFRA_MCP_URL` (HTTPS endpoint ending in `/mcp`), `INFRA_USERNAME`, `INFRA_PASSWORD`, `INFRA_ENV_CODE` and `INFRA_APP_CODE` privately through the environment. It refuses redirects, prints deployment evidence only, and does not print credentials.
 
@@ -33,9 +38,12 @@ use Basic Auth with username `agent` and the opaque, short-lived Raptor attempt
 token as password, sent in `X-Infra-Authorization`. The shared Infra service
 password must never be staged in a sandbox. HTTP and MCP both introspect every
 request and each typed operation; there is no positive authorization cache.
-Question attempts expose no mutations. Replacement attempts are restricted to
-the resolved environment, proxy/ESS/backend group and associated client
-Deployment. Scale-in retains its separate exact human-approval gate.
+Question attempts expose no mutations. Replacement/qualification attempts bind
+the logical environment/proxy and the exact related application/database; full
+immutable private realization evidence is freshly rechecked. Qualification
+refuses all mutations. Replacement scale-in retains its separate exact private
+human-approval claim and durable fleet guard. Returned provider identity fields
+are evidence, not public selectors.
 
 Set `INFRA_AGENT_INSPECTOR_ORIGIN`, `INFRA_AGENT_INSPECTOR_USERNAME` and
 `INFRA_AGENT_INSPECTOR_PASSWORD` privately during FC packaging/deployment.

@@ -7,7 +7,7 @@ import {qualifyReplacementConvergence} from './replacement-completion.mjs';
 test('Gateway fixture is produced by the native trace readiness sequence and completion path',async t=>{
  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-10-29T00:00:00Z')});
  const x=restarted();
- mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
+ mutate(x,'db_proxy_node_protection_set',{nodeIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
  observe(x,observations([...old,...added],{withdrawn:old,unprotected:old,zero:true,generation:6}));
  mutate(x,'db_proxy_scale',{actionId:'shrink',desiredCapacity:2},{previousDesiredCapacity:4,desiredCapacity:2,outcome:'unknown'});
  const final=observations(added,{zero:true,generation:6});

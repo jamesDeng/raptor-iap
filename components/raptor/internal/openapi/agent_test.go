@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/backend"
@@ -87,11 +88,11 @@ func TestOpaqueMCPReadOnlyPrincipal(t *testing.T) {
 	}
 	defer session.Close()
 	tools, e := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if e != nil || len(tools.Tools) != 3 {
+	if e != nil || len(tools.Tools) != 4 {
 		t.Fatal("agent catalog not restricted", e)
 	}
 	for _, tool := range tools.Tools {
-		if tool.Name != "request_get" && tool.Name != "environment_get" && tool.Name != "object_get" {
+		if tool.Name != "request_get" && tool.Name != "environment_get" && tool.Name != "object_get" && tool.Name != "deployments_list" {
 			t.Fatal("mutation tool exposed")
 		}
 	}
@@ -228,5 +229,53 @@ func TestPrivateIntrospectionCallerHasOnlyItsRoute(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != 401 || calls != 1 {
 		t.Fatal("inspector reached broader service route")
+	}
+}
+
+func TestPrivateInfraHandoffRoutesRetainInspectorTrust(t *testing.T) {
+	t.Setenv("AGENT_INTROSPECTION_USERNAME", "inspector")
+	t.Setenv("AGENT_INTROSPECTION_PASSWORD", "fixture-inspector-password")
+	for _, path := range []string{"/v1/agent-access/prepare-infra", "/v1/agent-access/validate-infra"} {
+		t.Run(path, func(t *testing.T) {
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				u, p, ok := r.BasicAuth()
+				if !ok || u != "inspector" || p != "fixture-inspector-password" || r.URL.Path != path {
+					t.Error("private caller/path changed")
+				}
+				calls++
+				w.Write([]byte(`{"data":{"active":false}}`))
+			}))
+			defer upstream.Close()
+			h, e := NewHandler(Client{BaseURL: upstream.URL, Username: "controller", Password: "fixture-controller-password"})
+			if e != nil {
+				t.Fatal(e)
+			}
+			for _, method := range []string{"POST", "GET"} {
+				r := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+				r.SetBasicAuth("inspector", "fixture-inspector-password")
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				want := 200
+				if method == "GET" {
+					want = 405
+				}
+				if w.Code != want {
+					t.Fatalf("%s %s: %d want %d", method, path, w.Code, want)
+				}
+			}
+			for _, authorization := range []string{"Bearer raptor_at_" + strings.Repeat("a", 43), "Basic " + base64.StdEncoding.EncodeToString([]byte("controller:fixture-controller-password"))} {
+				r := httptest.NewRequest("POST", path, strings.NewReader(`{}`))
+				r.Header.Set("Authorization", authorization)
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				if w.Code == 200 {
+					t.Fatal("non-inspector accessed private handoff")
+				}
+			}
+			if calls != 1 {
+				t.Fatal("unexpected upstream calls", calls)
+			}
+		})
 	}
 }

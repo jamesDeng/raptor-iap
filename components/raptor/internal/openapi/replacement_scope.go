@@ -83,14 +83,14 @@ func agentToolSelectors(tool string, raw json.RawMessage) (map[string]string, er
 			}
 			out[key] = v
 		}
-		if out["interface"] != "ess.scale-in" && out["interface"] != "runtime.qualification-resume" {
+		if out["interface"] != "db-proxy.scale-in" && out["interface"] != "runtime.qualification-resume" {
 			return bad()
 		}
 		target, e := strictAgentObject(fields["target"])
-		if e != nil || len(target) != 2 {
+		if e != nil || len(target) != 1 {
 			return bad()
 		}
-		for _, key := range []string{"proxyCode", "groupId"} {
+		for _, key := range []string{"proxyCode"} {
 			var v string
 			if json.Unmarshal(target[key], &v) != nil || v == "" {
 				return bad()

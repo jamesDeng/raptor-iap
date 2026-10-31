@@ -1,0 +1,1 @@
+{"resource":{"envCode":"dev","kind":"application","code":"app"},"applicationWorkloads":[{"type":"kubernetes","workloadKey":"opaque-key","clusterId":"cluster","namespace":"ns","name":"gateway","uid":"uid","state":""}]}

@@ -1,9 +1,9 @@
 environment: rdev.ali
 images:
-  raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:d441c826653b262517767ec69ee1cf5527f7d0491df8e7af038c10731c7f7958
-  gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:6cba5f1b17a94c178f49c201d46e5b5a8e7ee4c85e33d316002ccfb2fd892553
+  raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:b215a68fd95b0ae9fd25a6cbed588fec683c470a0e4530e593848befeec13adf
+  gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:ac0c20533a5be47eab552afd3f913d702a7d9bf8b7283fcac04df8526df2a6f3
 repository:
-  revision: 1b1df23c9446755d43157d7e5a3245fbf3240c22
+  revision: aa53574d266f301f44f00ed833f8a4e455599402
 appCodes:
   raptor-admin: A00006
   agent-gateway: A00005
@@ -57,19 +57,4 @@ progress:
   origins: https://raptor.rdev.raptor-iap.top
   connectOrigin: wss://raptor.rdev.raptor-iap.top
 
-# Exact dedicated test scope; discovery verifies the live identities before use.
-replacement:
-  scopeConfigMapName: pgcat-replacement-scope
-  scope:
-    envCode: rdev.ali
-    proxyCode: DP00001
-    groupId: asg-t4necb4dfmu6o3z2rn0g
-    serverGroupId: sgp-xs5s42tihtl6ja2a67
-    targetDbCode: D00002
-    application:
-      envCode: rdev.ali
-      appCode: A00003
-      clusterId: c92787e953503492ea141a744c81498f1
-      namespace: raptor-test
-      name: rdev-test-client-client
-      uid: 17b7b33c-fd64-4d07-863e-f65b6563e504
+# Resource relationships are catalog settings; exact realization pins are request-owned.

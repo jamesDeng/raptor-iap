@@ -148,7 +148,7 @@ func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (t
 	if out.Passed && b.Operation == "db-proxy.replace-nodes" && out.SessionReference == nil {
 		return out, terminalRejection{"session_reference"}
 	}
-	allowed := map[string]bool{"NeedsSignIn": true, "Cancelled": true, "Timeout": true, "TurnLimit": true, "McpUnavailable": true, "ToolFailed": true, "MissingEvidence": true, "MutationAlreadySubmitted": true, "InvalidEvidence": true, "InvalidResult": true, "UnexpectedToolCatalog": true, "InvalidProgress": true, "ModelFailed": true, "RunnerFailed": true, "CheckpointFailed": true, "CredentialRefreshUnconfirmed": true, "InvalidJob": true, "InvalidApprovalPause": true, "InvalidSessionReference": true, "InvalidSkillsRelease": true, "ObservationCleanupFailed": true}
+	allowed := map[string]bool{"NeedsSignIn": true, "Cancelled": true, "Timeout": true, "TurnLimit": true, "McpUnavailable": true, "ToolFailed": true, "MissingEvidence": true, "MutationAlreadySubmitted": true, "InvalidEvidence": true, "InvalidResult": true, "UnexpectedToolCatalog": true, "InvalidProgress": true, "ModelFailed": true, "RunnerFailed": true, "CheckpointFailed": true, "CredentialRefreshUnconfirmed": true, "InvalidJob": true, "InvalidApprovalPause": true, "InvalidSessionReference": true, "InvalidSkillsRelease": true, "ObservationCleanupFailed": true, "ResourceContractMigrationRequired": true}
 	if out.Paused != nil {
 		p := out.Paused
 		if b.Operation != "db-proxy.replace-nodes" || b.ObjectKind != "db-proxy" || !p.Valid() || (p.Kind == "resource" && p.BindingDigest != b.DefinitionSHA256) || p.RequestID != b.RequestID || p.DefinitionSHA256 != b.DefinitionSHA256 || out.SessionReference == nil || out.Passed || out.Error != "" || out.CheckpointError != "" || out.Result != nil || out.Phase != "live-inference" {
@@ -245,6 +245,11 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 		skillsBundle, e = BuildSkillsBundle(ctx, n.Config.SkillsRepository, in.Skills)
 		if e != nil || in.Skills.CommitSHA != b.SkillsCommit || in.Access.ReplacementScope == nil {
 			return h, ErrConfiguration
+		}
+		if b.ExecutionMode != "qualification" {
+			if e = resourceReplacementContract(skillsBundle); e != nil {
+				return h, e
+			}
 		}
 	}
 	if n.Config.Validate() != nil || in.Access.Binding != b || in.Access.RaptorMcpURL != n.Config.RaptorMcpURL || in.Access.InfraMcpURL != n.Config.InfraMcpURL || len(in.Access.Credential) < 32 || !in.Deadline.After(time.Now()) {

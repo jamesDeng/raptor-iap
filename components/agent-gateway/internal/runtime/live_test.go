@@ -33,7 +33,7 @@ func TestTerminalRejectsIdentityPartialAndSecret(t *testing.T) {
 
 func TestTerminalAcceptsHarnessFailureCodesWithoutLosingFailure(t *testing.T) {
 	b := execution.AttemptBinding{RequestID: "request", AttemptID: "attempt"}
-	for _, code := range []string{"InvalidJob", "InvalidApprovalPause", "InvalidSessionReference", "InvalidSkillsRelease", "ObservationCleanupFailed"} {
+	for _, code := range []string{"InvalidJob", "InvalidApprovalPause", "InvalidSessionReference", "InvalidSkillsRelease", "ObservationCleanupFailed", "ResourceContractMigrationRequired"} {
 		raw, _ := json.Marshal(map[string]any{"phase": "live-inference", "passed": false, "error": code})
 		out, err := decodeTerminal(raw, b, nil)
 		if err != nil || out.Error != code || out.Passed {

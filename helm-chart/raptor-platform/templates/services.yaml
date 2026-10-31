@@ -49,10 +49,6 @@ spec:
       app.kubernetes.io/name: {{ $service.name }}
   template:
     metadata:
-      {{ if and (eq $service.name "raptor-backend") $.Values.replacement.scope }}
-      annotations:
-        checksum/replacement-scope: {{ $.Values.replacement.scope | toJson | sha256sum | quote }}
-      {{ end }}
       labels:
         app.kubernetes.io/name: {{ $service.name }}
         raptor.appcode: {{ $code | quote }}
@@ -184,9 +180,6 @@ spec:
             - {name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN, value: {{ $.Values.githubPAT.providerARN | quote }}}
             - {name: ALIBABA_CLOUD_OIDC_TOKEN_FILE, value: '/run/raptor/github-pat-rrsa/token'}
             {{ end }}
-            {{ if $.Values.replacement.scopeConfigMapName }}
-            - {name: RAPTOR_REPLACEMENT_SCOPE_FILE, value: '/run/raptor/replacement/scope.json'}
-            {{ end }}
             - {name: RAPTOR_ENABLE_RESTART, value: {{ $.Values.directRestart.enabled | quote }}}
             - {name: RAPTOR_MODEL_PROVIDERS_ENABLED, value: {{ $.Values.modelProviders.enabled | quote }}}
             {{ if $.Values.modelProviders.enabled }}
@@ -269,9 +262,6 @@ spec:
             {{ if $.Values.modelProviders.enabled }}
             - {name: model-key-private, mountPath: /run/raptor/model-key, readOnly: true}
             {{ end }}
-            {{ if $.Values.replacement.scopeConfigMapName }}
-            - {name: replacement-scope, mountPath: /run/raptor/replacement, readOnly: true}
-            {{ end }}
             {{ end }}
       volumes:
         {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
@@ -323,12 +313,6 @@ spec:
                   audience: sts.aliyuncs.com
                   expirationSeconds: 3600
                   path: token
-        {{ end }}
-        {{ if $.Values.replacement.scopeConfigMapName }}
-        - name: replacement-scope
-          configMap:
-            name: {{ $.Values.replacement.scopeConfigMapName | quote }}
-            items: [{key: scope.json, path: scope.json}]
         {{ end }}
         - name: repository
           emptyDir: {sizeLimit: 256Mi}

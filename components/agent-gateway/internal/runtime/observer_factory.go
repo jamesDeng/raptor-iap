@@ -99,9 +99,15 @@ func buildObservationPreparer(c LiveConfig, m Management, mount func(string, int
 		return kube.Issue(ctx)
 	}, SQL: sql.Load}
 	return func(ctx context.Context, in execution.LiveStart) (ObservationMaterial, error) {
-		if in.Access.ReplacementScope == nil || *in.Access.ReplacementScope != scope {
+		if in.Access.ReplacementScope == nil || !observerResourceFence(c, cfg, in.Binding, *in.Access.ReplacementScope) {
 			return ObservationMaterial{}, ErrConfiguration
 		}
 		return preparation.Prepare(ctx, in)
 	}, nil
+}
+
+// Configured deployment material is an additional operator fence. Only the
+// fresh complete issued proof supplies resource authority for this attempt.
+func observerResourceFence(c LiveConfig, cfg ReplacementObserverConfig, b execution.AttemptBinding, s execution.ReplacementScope) bool {
+	return s.ResourceValidFor(b) && s.MatchesFence(cfg.Scope) && s.AccountID == c.AccountID && s.Region == c.Region && s.ListenerID == cfg.ListenerID && s.DatabaseResourceID == cfg.DBInstanceID
 }

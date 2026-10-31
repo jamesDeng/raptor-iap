@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
-	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/auth"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/backend"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
@@ -101,18 +100,7 @@ func main() {
 			}
 		}()
 	}
-	if scopePath := os.Getenv("RAPTOR_REPLACEMENT_SCOPE_FILE"); scopePath != "" {
-		file, err := os.Open(scopePath)
-		if err != nil {
-			log.Fatal("replacement scope unavailable")
-		}
-		scope, err := agentaccess.DecodeReplacementScope(file)
-		file.Close()
-		if err != nil {
-			log.Fatal("replacement scope invalid")
-		}
-		h.ReplacementScope = &scope
-	}
+
 	h.RegisterService(os.Getenv("SERVICE_USERNAME"), os.Getenv("SERVICE_PASSWORD"))
 	h.Mux.Handle("POST /webhooks/github", h.GitHub.Handler(os.Getenv("GITHUB_WEBHOOK_SECRET")))
 	var directCommands adapters.InfraCommands

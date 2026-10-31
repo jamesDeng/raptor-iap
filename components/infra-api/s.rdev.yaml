@@ -14,7 +14,7 @@ resources:
         vSwitchIds: [vsw-t4nop9qf6v46gw2sa8l7d]
         securityGroupId: ${env(INFRA_SECURITY_GROUP_ID)}
       runtime: custom.debian10
-      code: .build
+      code: .build-resource
       memorySize: 512
       timeout: 30
       instanceConcurrency: 2
@@ -26,7 +26,9 @@ resources:
       environmentVariables:
         INFRA_ENABLE_RESTART: "true"
         INFRA_LISTEN: "0.0.0.0:9000"
-        INFRA_SCOPE_FILE: "/code/scope.json"
+        RAPTOR_SERVICE_USERNAME: ${env(RAPTOR_SERVICE_USERNAME)}
+        RAPTOR_SERVICE_PASSWORD: ${env(RAPTOR_SERVICE_PASSWORD)}
+        RAPTOR_CATALOG_ORIGIN: ${env(RAPTOR_CATALOG_ORIGIN)}
         INFRA_USERNAME: ${env(INFRA_USERNAME)}
         INFRA_PASSWORD: ${env(INFRA_PASSWORD)}
         INFRA_AUTH_HEADER: "X-Infra-Authorization"

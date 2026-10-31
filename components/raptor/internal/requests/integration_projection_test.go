@@ -138,3 +138,27 @@ func TestActionDelayedOutboxProjectsLateCancelledAnswer(t *testing.T) {
 		t.Fatal("late cancellation lost answer or remained pending", e)
 	}
 }
+
+func TestCurrentGatewayResourceResultProjectsIntoRaptor(t *testing.T) {
+	_, r := producerExecution(t)
+	raw, e := os.ReadFile("../../../../scripts/contracts/live-question/fixtures/gateway-resource-execution.json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	var wire map[string]any
+	json.Unmarshal(raw, &wire)
+	out, e := publicExecution(wire, r)
+	if e != nil {
+		t.Fatal("current source result rejected", e)
+	}
+	result := out["result"].(map[string]any)
+	if result["evidenceVersion"] != float64(2) {
+		t.Fatal("current version lost")
+	}
+	for _, row := range result["evidence"].([]any) {
+		item := row.(map[string]any)
+		if item["tool"] == "cloud_identity_get" {
+			t.Fatal("removed account tool fabricated")
+		}
+	}
+}

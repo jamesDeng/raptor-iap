@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"net/http/httptest"
 	"strings"
@@ -13,8 +15,9 @@ import (
 )
 
 func proxyStart() execution.LiveStart {
-	b := execution.AttemptBinding{RequestID: "request", AttemptID: "attempt", DefinitionSHA256: "hash", EnvCode: "rdev.ali", ClusterID: "cluster", Operation: "db-proxy.replace-nodes", ObjectKind: "db-proxy", ObjectCode: "proxy"}
+	b := execution.AttemptBinding{RequestID: "request", AttemptID: "attempt", DefinitionSHA256: "hash", EnvCode: "rdev.ali", ClusterID: "cluster", Operation: "db-proxy.replace-nodes", ExecutionMode: "replacement", ObjectKind: "db-proxy", ObjectCode: "proxy"}
 	scope := execution.ReplacementScope{EnvCode: b.EnvCode, ProxyCode: b.ObjectCode, TargetDBCode: "db", GroupID: "group", ServerGroupID: "backend", Application: execution.ApplicationScope{EnvCode: b.EnvCode, AppCode: "app", ClusterID: b.ClusterID, Namespace: "raptor-test", Name: "client", UID: "uid"}}
+	scope = resourceRuntimeScope(scope)
 	return execution.LiveStart{Binding: b, Access: execution.AgentAccess{Binding: b, ReplacementScope: &scope, ExpiresAt: time.Now().Add(180 * time.Second)}, Deadline: time.Now().Add(180 * time.Second)}
 }
 func TestObservationProxyBindsAndRevokes(t *testing.T) {
@@ -145,4 +148,16 @@ func TestObservationProxyRejectsAttemptCredentialRepresentations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func resourceRuntimeScope(s execution.ReplacementScope) execution.ReplacementScope {
+	s.AccountID = "1360282071200743"
+	s.Region = "ap-southeast-1"
+	s.ListenerID = "listener"
+	s.Port = 6432
+	s.DatabaseResourceID = "db-instance"
+	a := s.Application
+	raw := fmt.Sprintf(`{"envCode":%q,"accountId":%q,"region":%q,"clusterId":%q,"proxyCode":%q,"groupId":%q,"serverGroupId":%q,"listenerId":%q,"port":%d,"targetDbCode":%q,"databaseResourceId":%q,"application":{"envCode":%q,"appCode":%q,"clusterId":%q,"namespace":%q,"name":%q,"uid":%q}}`, s.EnvCode, s.AccountID, s.Region, a.ClusterID, s.ProxyCode, s.GroupID, s.ServerGroupID, s.ListenerID, s.Port, s.TargetDBCode, s.DatabaseResourceID, a.EnvCode, a.AppCode, a.ClusterID, a.Namespace, a.Name, a.UID)
+	s.ResolutionDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(raw)))
+	return s
 }

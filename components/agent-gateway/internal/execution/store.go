@@ -10,6 +10,7 @@ import (
 )
 
 var ErrUnavailable = errors.New("Unavailable")
+var ErrResourceContractMigrationRequired = errors.New("ResourceContractMigrationRequired")
 var ErrInvalid = errors.New("InvalidInput")
 
 type Store struct {

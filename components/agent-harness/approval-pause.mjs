@@ -7,7 +7,7 @@ function canonical(value){
 export class ApprovalPause {
  constructor(binding){if(!binding?.requestId||!/^[a-f0-9]{64}$/.test(binding.definitionSha256))throw Error('InvalidApprovalPause');this.binding={...binding};}
  requested(args,approval){
-  if(args?.requestId!==this.binding.requestId||args.interface!==(this.binding.executionMode==='qualification'?'runtime.qualification-resume':'ess.scale-in')||typeof args.actionId!=='string'||!args.actionId||approval?.requestId!==this.binding.requestId||typeof approval.approvalId!=='string'||!approval.approvalId||approval.actionId!==args.actionId||!['pending','approved','denied'].includes(approval.state)||canonical(approval.binding)!==canonical(args))throw Error('InvalidApprovalPause');
+  if(args?.requestId!==this.binding.requestId||args.interface!==(this.binding.executionMode==='qualification'?'runtime.qualification-resume':'db-proxy.scale-in')||typeof args.actionId!=='string'||!args.actionId||approval?.requestId!==this.binding.requestId||typeof approval.approvalId!=='string'||!approval.approvalId||approval.actionId!==args.actionId||!['pending','approved','denied'].includes(approval.state)||canonical(approval.binding)!==canonical(args))throw Error('InvalidApprovalPause');
   const digest=createHash('sha256').update(canonical(args)).digest('hex');
   if(this.candidate&&(this.candidate.approvalId!==approval.approvalId||this.candidate.bindingDigest!==digest))throw Error('InvalidApprovalPause');
   this.candidate??={kind:'approval',approvalId:approval.approvalId,actionId:args.actionId,bindingDigest:digest,requestId:this.binding.requestId,definitionSha256:this.binding.definitionSha256,startedAt:new Date().toISOString()};

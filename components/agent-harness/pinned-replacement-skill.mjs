@@ -37,6 +37,7 @@ export function pinnedReplacementInstructions(skills){
 export function pinnedReplacementProfile(skills){
  const instructions=pinnedReplacementInstructions(skills);
  const markers=instructions.split('\n').filter(line=>line.startsWith('replacement-contract:'));
- if(markers.length!==1||markers[0]!=='replacement-contract: direct-v2')throw Error('InvalidSkillsRelease');
- return 'direct-v2';
+ if(markers.length===1&&markers[0]==='replacement-contract: direct-v2')throw Error('ResourceContractMigrationRequired');
+ if(markers.length!==1||markers[0]!=='replacement-contract: resource-v1')throw Error('InvalidSkillsRelease');
+ return 'resource-v1';
 }

@@ -1,3 +1,4 @@
+import {validateResourceScope} from './operation-profile.mjs';
 import {createObservationTools} from './observation-tools.mjs';
 import {McpClient,StreamableHttpTransport} from '@earendil-works/pi-mcp';
 import {isDeepStrictEqual} from 'node:util';
@@ -6,12 +7,23 @@ const methods={cloud_read:'cloudRead',deployment_read:'deploymentRead',metrics_r
 const invalid=()=>Error('InvalidObservation');
 const metricSeries=['up','upTimestamp','active','activeTimestamp','idle','idleTimestamp','waiting','waitingTimestamp'];
 
+
+// The only resource-to-private-observation boundary. Never infer provider IDs
+// from opaque workloadKey, stamp source observations or normalize metric rows.
+export function resourceObservation(data,scope,kind){
+ const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.slice().sort().join(',');
+ const w=data?.pgproxyWorkload;
+ if(!['fleet','backend','capacity','metrics'].includes(kind)||!exact(data,['envCode','proxyCode','observedAt','pgproxyWorkload'])||data.envCode!==scope.envCode||data.proxyCode!==scope.proxyCode||!exact(w,['type','code','workloadKey','state','targetDbCode',kind])||w.type!=='ess'||w.code!==scope.proxyCode||w.targetDbCode!==scope.targetDbCode||typeof w.workloadKey!=='string'||!w.workloadKey||w.workloadKey.length>256||typeof w.state!=='string'||!Number.isFinite(Date.parse(data.observedAt))||w[kind]?.observedAt!==data.observedAt)throw invalid();
+ return w[kind];
+}
+
 export async function runGatewayObservation(input,{probe=invokeProbe,fetch=globalThis.fetch}={}){
  let client,timer;
  try{
   const deadline=Date.parse(input?.deadlineAt),remaining=()=>deadline-Date.now();
   const infra=input?.infra,scope=input?.scope,binding=input?.binding;
   const endpoint=new URL(infra?.url);
+  validateResourceScope(binding,scope);
   if(!input||!Object.hasOwn(methods,input.tool)||input.config?.transport||!Number.isFinite(deadline)||remaining()<=0||remaining()>20000||endpoint.protocol!=='https:'||!endpoint.host||endpoint.username||endpoint.password||endpoint.search||endpoint.hash||!endpoint.pathname.endsWith('/mcp')||typeof infra.credential!=='string'||!/^raptor_at_[A-Za-z0-9_-]{43}$/.test(infra.credential)||!scope||scope.envCode!==binding?.envCode||scope.proxyCode!==binding?.objectCode||scope.application?.clusterId!==binding?.clusterId)throw invalid();
   const controller=new AbortController();timer=setTimeout(()=>controller.abort(),remaining());
   const check=()=>{if(controller.signal.aborted||remaining()<=0)throw invalid();};
@@ -37,7 +49,7 @@ export async function runGatewayObservation(input,{probe=invokeProbe,fetch=globa
   const transport=new StreamableHttpTransport({url:endpoint,headers:{'X-Infra-Authorization':authorization},fetch:guardedFetch,openGetStream:false,maxMessageBytes:262144,reconnect:{maxRetries:0}});
   client=new McpClient({name:'raptor-gateway-observer',version:'1.0.0',requestTimeoutMs:remaining()});
   let connected=false;
-  const selectors={requestId:binding.requestId,envCode:scope.envCode,proxyCode:scope.proxyCode,groupId:scope.groupId,serverGroupId:scope.serverGroupId};
+  const selectors={requestId:binding.requestId,envCode:scope.envCode,proxyCode:scope.proxyCode};
   const call=async(name,selection)=>{
    check();if(!connected){await client.connect(transport);connected=true;}
    check();const result=await client.callTool(name,{...selectors,...selection},{signal:controller.signal,timeoutMs:remaining()});check();
@@ -48,8 +60,8 @@ export async function runGatewayObservation(input,{probe=invokeProbe,fetch=globa
    return envelope.data;
   };
   const tools=createObservationTools({binding,config:input.config,replacementScope:scope,fetch,
-   readCloud:async({kind})=>call('proxy_observation_get',{kind}),
-   readPgcatSeries:async series=>{if(!metricSeries.includes(series))throw invalid();const data=await call('proxy_pgcat_metrics_get',{series});if(data.series!==series||Object.keys(data).sort().join(',')!=='observedAt,rows,series'||!Number.isFinite(Date.parse(data.observedAt))||!Array.isArray(data.rows))throw invalid();return data.rows;},
+   readCloud:async({kind})=>resourceObservation(await call('proxy_observation_get',{kind}),scope,kind),
+   readPgcatSeries:async series=>{if(!metricSeries.includes(series))throw invalid();const data=resourceObservation(await call('proxy_pgcat_metrics_get',{series}),scope,'metrics');if(data.series!==series||Object.keys(data).sort().join(',')!=='observedAt,rows,series'||!Number.isFinite(Date.parse(data.observedAt))||!Array.isArray(data.rows))throw invalid();return data.rows;},
    exec:(command,args,env)=>{check();if(command==='aliyun')throw invalid();return probe({command,args,env,kubeconfig:input.kubeconfig,config:input.config});}});
   const result=await within(tools[methods[input.tool]](input.arguments));check();safe(JSON.stringify(result));return result;
  }catch{throw invalid();}finally{if(client)await client.close().catch(()=>{});clearTimeout(timer);}

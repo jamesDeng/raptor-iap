@@ -60,6 +60,3 @@ progress:
   origins: ''
   connectOrigin: ''
 # Public controller binding; absent keeps replacement access disabled.
-replacement:
-  scopeConfigMapName: ''
-  scope: {}

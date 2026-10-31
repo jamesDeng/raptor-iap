@@ -274,6 +274,9 @@ func (s *Store) SaveLiveResult(ctx context.Context, attempt, owner string, r Liv
 	if e = ValidateLiveResult(r, b, s.KnownSecrets...); e != nil {
 		return e
 	}
+	if e = persistedResultScope(ctx, tx, attempt, b, r); e != nil {
+		return e
+	}
 	if b.ExecutionMode == "qualification" {
 		var rawContext []byte
 		if e = tx.QueryRow(ctx, "SELECT resume_context FROM gateway.executions WHERE request_id=$1", b.RequestID).Scan(&rawContext); e != nil {
@@ -331,7 +334,7 @@ func (s *Store) FinalizeLive(ctx context.Context, attempt, owner string, o LiveO
 		return ErrInvalid
 	}
 	switch o.FailureCode {
-	case "", "CheckpointFailed", "NeedsSignIn", "ModelFailed", "Timeout", "InvalidResult", "Interrupted", "Cancelled", "ProviderUnavailable", "PreparationFailed", "CleanupUnconfirmed", "McpUnavailable", "ToolFailed", "TurnLimit", "MissingEvidence", "UnexpectedToolCatalog", "InvalidProgress", "InvalidEvidence", "RunnerFailed", "MutationAlreadySubmitted", "CredentialRefreshUnconfirmed", "InvalidJob", "InvalidApprovalPause", "InvalidSessionReference", "InvalidSkillsRelease", "ObservationCleanupFailed":
+	case "", "CheckpointFailed", "NeedsSignIn", "ModelFailed", "Timeout", "InvalidResult", "Interrupted", "Cancelled", "ProviderUnavailable", "PreparationFailed", "CleanupUnconfirmed", "McpUnavailable", "ToolFailed", "TurnLimit", "MissingEvidence", "UnexpectedToolCatalog", "InvalidProgress", "InvalidEvidence", "RunnerFailed", "MutationAlreadySubmitted", "CredentialRefreshUnconfirmed", "InvalidJob", "InvalidApprovalPause", "InvalidSessionReference", "InvalidSkillsRelease", "ObservationCleanupFailed", "ResourceContractMigrationRequired":
 	default:
 		return ErrInvalid
 	}
@@ -377,7 +380,7 @@ func (s *Store) FinalizeLive(ctx context.Context, attempt, owner string, o LiveO
 		if e = tx.QueryRow(ctx, "SELECT live_result FROM gateway.attempts WHERE id=$1", attempt).Scan(&raw); e != nil {
 			return e
 		}
-		if json.Unmarshal(raw, &result) != nil || ValidateLiveResult(result, b, s.KnownSecrets...) != nil {
+		if json.Unmarshal(raw, &result) != nil || ValidateLiveResult(result, b, s.KnownSecrets...) != nil || persistedResultScope(ctx, tx, attempt, b, result) != nil {
 			return ErrInvalid
 		}
 	}

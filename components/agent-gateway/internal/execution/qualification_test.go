@@ -24,11 +24,13 @@ func TestQualificationHasIndependentReadinessAndImmutableBinding(t *testing.T) {
 		t.Fatal("mode not bound", e)
 	}
 	scope := ReplacementScope{EnvCode: b.EnvCode, ProxyCode: b.ObjectCode, GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: b.EnvCode, AppCode: "client", ClusterID: b.ClusterID, Namespace: "ns", Name: "client", UID: "uid"}}
-	w := LiveWorker{ReplacementScope: &scope}
+	w := LiveWorker{ReplacementEnabled: true, ReplacementScope: &scope}
 	if _, _, _, e = w.admit(in, "attempt"); e == nil {
 		t.Fatal("replacement enablement allowed qualification")
 	}
+	w.QualificationEnabled = true
 	w.QualificationScope = &scope
+	w.ReplacementEnabled = false
 	w.ReplacementScope = nil
 	if _, _, _, e = w.admit(in, "attempt"); e != nil {
 		t.Fatal("qualification disabled", e)

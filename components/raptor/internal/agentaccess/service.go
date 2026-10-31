@@ -2,6 +2,7 @@
 package agentaccess
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,10 +11,10 @@ import (
 	"encoding/json"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/adapters"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"net/url"
 	"regexp"
-	"strings"
 	"time"
 )
 
@@ -23,7 +24,8 @@ type Service struct {
 	Now                       func() time.Time
 	// Nil keeps replacement admission disabled. The resolver must obtain live
 	// proxy/dependency identity from trusted configuration and provider reads.
-	ResolveReplacement func(context.Context, Binding) (ReplacementScope, error)
+	ResolveReplacement  func(context.Context, Binding) (ReplacementScope, error)
+	ValidateReplacement func(context.Context, Binding, adapters.ResolutionProof) (ReplacementScope, error)
 }
 type IssueInput struct {
 	AttemptID        string    `json:"attemptId"`
@@ -123,6 +125,135 @@ func supported(def domain.RequestInput) bool {
 	}
 	return def.Type == "agent" && def.Object.Kind == "db-proxy" && len(def.Operations) == 1 && def.Operations[0].Name == "db-proxy.replace-nodes" && validReplacementParameters(def.Operations[0].Parameters) && replacementModelValid(def) && sha.MatchString(def.Skills.CommitSHA)
 }
+
+// issueQuery lets preparation and locked validation use identical predicates;
+// locked validation always uses the transaction's existing connection.
+type issueQuery interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type issueAttempt struct {
+	exists   bool
+	binding  Binding
+	scope    *ReplacementScope
+	deadline time.Time
+	revoked  bool
+}
+
+func issueBinding(ctx context.Context, q issueQuery, id string, in IssueInput, locked bool) (Binding, bool, error) {
+	var body []byte
+	var status, control string
+	sql := "SELECT definition,status,control_state FROM raptor.requests WHERE id=$1"
+	if locked {
+		sql += " FOR UPDATE"
+	}
+	if e := q.QueryRow(ctx, sql, id).Scan(&body, &status, &control); e == pgx.ErrNoRows {
+		return Binding{}, false, domain.ErrNotFound
+	} else if e != nil {
+		return Binding{}, false, domain.ErrUnavailable
+	}
+	var def domain.RequestInput
+	if json.Unmarshal(body, &def) != nil {
+		return Binding{}, false, domain.ErrUnavailable
+	}
+	fingerprint, e := Fingerprint(def)
+	if e != nil {
+		return Binding{}, false, domain.ErrUnavailable
+	}
+	if !supported(def) || fingerprint != in.DefinitionSHA256 {
+		return Binding{}, false, domain.ErrInvalid
+	}
+	if control != "" || (status != "queued" && status != "running") {
+		return Binding{}, false, domain.ErrConflict
+	}
+	replacement := !question(def) && !repositoryChange(def)
+	if replacement && replacementMode(def) != "replacement" && replacementMode(def) != "qualification" {
+		return Binding{}, false, domain.ErrConflict
+	}
+	var cluster string
+	if e = q.QueryRow(ctx, "SELECT CASE WHEN ack_cluster_id<>'' AND cluster_id<>'' AND ack_cluster_id<>cluster_id THEN '' ELSE coalesce(nullif(ack_cluster_id,''),nullif(cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') END FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
+		return Binding{}, false, domain.ErrUnavailable
+	}
+	return Binding{ExecutionMode: replacementMode(def), RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}, replacement, nil
+}
+
+// Include expired and revoked history: neither can reset a request's frozen
+// realization. Keep observed IDs to detect removal, while allowing compatible
+// concurrent appends (unlike an approval's exact attempt-list snapshot).
+func issueProofs(ctx context.Context, q issueQuery, b Binding) (map[string]ReplacementScope, error) {
+	rows, e := q.Query(ctx, "SELECT attempt_id::text,binding,replacement_scope FROM raptor.agent_attempt_access WHERE request_id=$1 AND (replacement_scope IS NOT NULL OR binding->>'operation'='db-proxy.replace-nodes')", b.RequestID)
+	if e != nil {
+		return nil, domain.ErrUnavailable
+	}
+	defer rows.Close()
+	proofs := map[string]ReplacementScope{}
+	invalid := false
+	var frozen *ReplacementScope
+	for rows.Next() {
+		var id string
+		var br, sr []byte
+		var old Binding
+		var scope ReplacementScope
+		if rows.Scan(&id, &br, &sr) != nil || json.Unmarshal(br, &old) != nil || json.Unmarshal(sr, &scope) != nil {
+			invalid = true
+			continue
+		}
+		expected := b
+		expected.AttemptID = id
+		if old != expected || !scope.ResourceValidFor(b) || (frozen != nil && *frozen != scope) {
+			invalid = true
+		}
+		proofs[id] = scope
+		copy := scope
+		frozen = &copy
+	}
+	if rows.Err() != nil {
+		return nil, domain.ErrUnavailable
+	}
+	if invalid {
+		return nil, domain.ErrConflict
+	}
+	return proofs, nil
+}
+
+func readIssueAttempt(ctx context.Context, q issueQuery, b Binding, in IssueInput, now time.Time, locked bool) (issueAttempt, error) {
+	var a issueAttempt
+	var raw, sr []byte
+	sql := "SELECT binding,expires_at,revoked,replacement_scope FROM raptor.agent_attempt_access WHERE request_id=$1 AND attempt_id=$2"
+	if locked {
+		sql += " FOR UPDATE"
+	}
+	e := q.QueryRow(ctx, sql, b.RequestID, b.AttemptID).Scan(&raw, &a.deadline, &a.revoked, &sr)
+	if e == pgx.ErrNoRows {
+		return a, nil
+	}
+	if e != nil {
+		return a, domain.ErrUnavailable
+	}
+	a.exists = true
+	// Revoke's unknown-attempt tombstone deliberately has an empty binding.
+	if a.revoked || !a.deadline.After(now) || in.ExpiresAt.After(a.deadline) {
+		return a, domain.ErrConflict
+	}
+	if json.Unmarshal(raw, &a.binding) != nil {
+		return a, domain.ErrUnavailable
+	}
+	if a.binding != b {
+		return a, domain.ErrConflict
+	}
+	if len(sr) != 0 {
+		var scope ReplacementScope
+		if json.Unmarshal(sr, &scope) != nil || !scope.ResourceValidFor(b) {
+			return a, domain.ErrConflict
+		}
+		a.scope = &scope
+	} else if b.Operation == "db-proxy.replace-nodes" {
+		return a, domain.ErrConflict
+	}
+	return a, nil
+}
+
 func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, error) {
 	var out Issued
 	now := s.now()
@@ -133,89 +264,104 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 	if !validURL(s.RaptorMCPURL) || !validURL(s.InfraMCPURL) {
 		return out, domain.ErrUnavailable
 	}
-	tx, e := s.Pool.Begin(ctx)
+	// Phase A: finish every SQL read before catalog/provider resolution. Both
+	// resolver callbacks may themselves borrow this same pool, even at MaxConns=1.
+	binding, replacement, e := issueBinding(ctx, s.Pool, id, in, false)
 	if e != nil {
-		return out, domain.ErrUnavailable
+		return out, e
 	}
-	defer tx.Rollback(ctx)
-	var body []byte
-	var status, control string
-	e = tx.QueryRow(ctx, "SELECT definition,status,control_state FROM raptor.requests WHERE id=$1 FOR UPDATE", id).Scan(&body, &status, &control)
-	if e == pgx.ErrNoRows {
-		return out, domain.ErrNotFound
-	}
-	if e != nil {
-		return out, domain.ErrUnavailable
-	}
-	var def domain.RequestInput
-	if json.Unmarshal(body, &def) != nil {
-		return out, domain.ErrUnavailable
-	}
-	fingerprint, e := Fingerprint(def)
-	if e != nil {
-		return out, domain.ErrUnavailable
-	}
-	if !supported(def) || fingerprint != in.DefinitionSHA256 {
-		return out, domain.ErrInvalid
-	}
-	if control != "" || (status != "queued" && status != "running") {
-		return out, domain.ErrConflict
-	}
-	var cluster string
-	if e = tx.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
-		return out, domain.ErrUnavailable
-	}
-	out.Binding = Binding{ExecutionMode: replacementMode(def), RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}
-	var scopeRaw []byte
-	if !question(def) && !repositoryChange(def) {
+	var observed map[string]ReplacementScope
+	if replacement {
 		if s.ResolveReplacement == nil {
 			return out, domain.ErrUnavailable
 		}
-		scope, err := s.ResolveReplacement(ctx, out.Binding)
+		observed, e = issueProofs(ctx, s.Pool, binding)
+		if e != nil {
+			return out, e
+		}
+	}
+	selected, e := readIssueAttempt(ctx, s.Pool, binding, in, now, false)
+	if e != nil {
+		return out, e
+	}
+	var scopeRaw []byte
+	if replacement {
+		scope, err := s.ResolveReplacement(ctx, binding)
 		if err != nil {
 			return out, domain.ErrUnavailable
 		}
-		if !scope.ValidFor(out.Binding) {
+		if !scope.ResourceValidFor(binding) {
 			return out, domain.ErrConflict
+		}
+		for _, saved := range observed {
+			if saved != scope {
+				return out, domain.ErrConflict
+			}
 		}
 		out.ReplacementScope = &scope
 		scopeRaw, _ = json.Marshal(scope)
 	}
-	binding, _ := json.Marshal(out.Binding)
-	var existing, existingScope []byte
-	var deadline time.Time
-	var revoked bool
-	e = tx.QueryRow(ctx, "SELECT binding,expires_at,revoked,replacement_scope FROM raptor.agent_attempt_access WHERE request_id=$1 AND attempt_id=$2 FOR UPDATE", id, in.AttemptID).Scan(&existing, &deadline, &revoked, &existingScope)
-	if e == nil {
-		var old Binding
-		if json.Unmarshal(existing, &old) != nil {
-			return out, domain.ErrUnavailable
+	// Phase B: request-first serialization, with all authorization reads on this
+	// one connection. No catalog or external callback runs while holding its lock.
+	tx, e := s.Pool.Begin(ctx)
+	if e != nil {
+		return Issued{}, domain.ErrUnavailable
+	}
+	defer tx.Rollback(ctx)
+	locked, _, e := issueBinding(ctx, tx, id, in, true)
+	if e != nil {
+		return Issued{}, e
+	}
+	if locked != binding {
+		return Issued{}, domain.ErrConflict
+	}
+	if replacement {
+		current, err := issueProofs(ctx, tx, locked)
+		if err != nil {
+			return Issued{}, err
 		}
-		if revoked || !deadline.After(now) || in.ExpiresAt.After(deadline) || old != out.Binding {
-			return out, domain.ErrConflict
-		}
-		if out.ReplacementScope != nil {
-			var oldScope ReplacementScope
-			if json.Unmarshal(existingScope, &oldScope) != nil || oldScope != *out.ReplacementScope {
-				return out, domain.ErrConflict
+		for _, saved := range current {
+			if saved != *out.ReplacementScope {
+				return Issued{}, domain.ErrConflict
 			}
-		} else if len(existingScope) != 0 {
-			return out, domain.ErrConflict
 		}
-	} else if e == pgx.ErrNoRows {
-		_, e = tx.Exec(ctx, "INSERT INTO raptor.agent_attempt_access(request_id,attempt_id,binding,expires_at,replacement_scope) VALUES($1,$2,$3,$4,$5)", id, in.AttemptID, binding, in.ExpiresAt, scopeRaw)
-		if e != nil {
-			return out, domain.ErrConflict
+		for attempt := range observed {
+			if _, ok := current[attempt]; !ok {
+				return Issued{}, domain.ErrConflict
+			}
 		}
-	} else {
-		return out, domain.ErrUnavailable
+	}
+	current, e := readIssueAttempt(ctx, tx, locked, in, s.now(), true)
+	if e != nil {
+		return Issued{}, e
+	}
+	if selected.exists && (!current.exists || selected.binding != current.binding || !selected.deadline.Equal(current.deadline)) {
+		return Issued{}, domain.ErrConflict
+	}
+	if current.scope != nil && (out.ReplacementScope == nil || *current.scope != *out.ReplacementScope) {
+		return Issued{}, domain.ErrConflict
+	}
+	out.Binding = locked
+	raw, _ := json.Marshal(locked)
+	if !current.exists {
+		if _, e = tx.Exec(ctx, "INSERT INTO raptor.agent_attempt_access(request_id,attempt_id,binding,expires_at,replacement_scope) VALUES($1,$2,$3,$4,$5)", id, in.AttemptID, raw, in.ExpiresAt, scopeRaw); e != nil {
+			return Issued{}, domain.ErrConflict
+		}
 	}
 	if _, e = tx.Exec(ctx, "UPDATE raptor.agent_tokens SET revoked=true WHERE request_id=$1 AND attempt_id=$2", id, in.AttemptID); e != nil {
-		return out, domain.ErrUnavailable
+		return Issued{}, domain.ErrUnavailable
+	}
+	// Slow proof/lock waits must not mint an expired token or extend absolute TTL.
+	finalNow := s.now()
+	if ctx.Err() != nil {
+		return Issued{}, domain.ErrUnavailable
+	}
+	if !in.ExpiresAt.After(finalNow) || (current.exists && !current.deadline.After(finalNow)) {
+		return Issued{}, domain.ErrConflict
 	}
 	var random [32]byte
 	if _, e = rand.Read(random[:]); e != nil {
-		return out, domain.ErrUnavailable
+		return Issued{}, domain.ErrUnavailable
 	}
 	out.Credential = "raptor_at_" + base64.RawURLEncoding.EncodeToString(random[:])
 	out.ExpiresAt = in.ExpiresAt
@@ -257,6 +403,22 @@ func (s *Service) Revoke(ctx context.Context, id, attempt string) error {
 	return nil
 }
 func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error) {
+	out, e := s.checkEligibility(ctx, in)
+	if e != nil || !out.Active || out.ReplacementScope == nil {
+		return out, e
+	}
+	current, e := s.ResolveReplacement(ctx, *out.Binding)
+	if e != nil {
+		return CheckResult{}, domain.ErrUnavailable
+	}
+	if current != *out.ReplacementScope || !current.ResourceValidFor(*out.Binding) {
+		return CheckResult{}, nil
+	}
+	return out, nil
+}
+
+// Eligibility alone is private preparation, never final operation authority.
+func (s *Service) checkEligibility(ctx context.Context, in CheckInput) (CheckResult, error) {
 	out := CheckResult{}
 	if !tokenPattern.MatchString(in.Credential) || (in.Audience != "raptor" && in.Audience != "infra") {
 		return out, nil
@@ -286,7 +448,7 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 		return out, nil
 	}
 	var cluster string
-	if e = s.Pool.QueryRow(ctx, "SELECT coalesce(nullif(ack_cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') FROM raptor.environments WHERE code=$1", binding.EnvCode).Scan(&cluster); e != nil {
+	if e = s.Pool.QueryRow(ctx, "SELECT CASE WHEN ack_cluster_id<>'' AND cluster_id<>'' AND ack_cluster_id<>cluster_id THEN '' ELSE coalesce(nullif(ack_cluster_id,''),nullif(cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') END FROM raptor.environments WHERE code=$1", binding.EnvCode).Scan(&cluster); e != nil {
 		return out, domain.ErrUnavailable
 	}
 	if cluster != binding.ClusterID {
@@ -294,14 +456,7 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 	}
 	if !question(def) && !repositoryChange(def) {
 		var saved ReplacementScope
-		if s.ResolveReplacement == nil || json.Unmarshal(scopeRaw, &saved) != nil {
-			return out, nil
-		}
-		current, err := s.ResolveReplacement(ctx, binding)
-		if err != nil {
-			return out, domain.ErrUnavailable
-		}
-		if current != saved || !ReplacementSelectorsAllowed(binding, saved, in.Audience, in.Tool, in.Selectors) {
+		if s.ResolveReplacement == nil || json.Unmarshal(scopeRaw, &saved) != nil || !saved.ResourceValidFor(binding) || !ReplacementSelectorsAllowed(binding, saved, in.Audience, in.Tool, in.Selectors) {
 			return out, nil
 		}
 		if in.Audience == "raptor" && in.Tool == "approval_get" {
@@ -309,13 +464,14 @@ func (s *Service) Check(ctx context.Context, in CheckInput) (CheckResult, error)
 			if !uuid.MatchString(in.Selectors["approvalId"]) {
 				return out, nil
 			}
-			if err = s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.approvals WHERE id=$1 AND request_id=$2)", in.Selectors["approvalId"], binding.RequestID).Scan(&found); err != nil {
+			if err := s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.approvals WHERE id=$1 AND request_id=$2)", in.Selectors["approvalId"], binding.RequestID).Scan(&found); err != nil {
 				return out, domain.ErrUnavailable
 			}
 			if !found {
 				return out, nil
 			}
 		}
+
 		out.ReplacementScope = &saved
 	} else if repositoryChange(def) && !RepositorySelectorsAllowed(binding, in.Audience, in.Tool, in.Selectors) {
 		return out, nil
@@ -341,7 +497,11 @@ func SelectorsAllowed(b Binding, audience, tool string, selectors map[string]str
 		case "environment_get":
 			expected["envCode"] = b.EnvCode
 			required = append(required, "envCode")
-		case "object_get":
+		case "object_get", "deployments_list":
+			if tool == "deployments_list" {
+				expected["envCode"] = b.EnvCode
+				required = append(required, "envCode")
+			}
 			expected["kind"] = b.ObjectKind
 			expected["code"] = b.ObjectCode
 			required = append(required, "kind", "code")
@@ -352,21 +512,20 @@ func SelectorsAllowed(b Binding, audience, tool string, selectors map[string]str
 		expected["envCode"] = b.EnvCode
 		required = []string{"envCode"}
 		switch tool {
-		case "cloud_identity_get":
 		case "deployments_list":
 			expected["kind"] = b.ObjectKind
 			expected["code"] = b.ObjectCode
 			required = append(required, "kind", "code")
 		case "deployment_status_get":
 			expected["appCode"] = b.ObjectCode
-			expected["clusterId"] = b.ClusterID
-			required = append(required, "appCode", "clusterId", "namespace", "name", "uid")
-			for _, key := range []string{"namespace", "name", "uid"} {
-				expected[key] = selectors[key]
-				if strings.TrimSpace(selectors[key]) == "" {
+			required = append(required, "appCode")
+			if value, ok := selectors["workloadKey"]; ok {
+				if !scopeText(value) {
 					return false
 				}
+				expected["workloadKey"] = value
 			}
+
 		default:
 			return false
 		}
@@ -402,4 +561,112 @@ func RepositorySelectorsAllowed(b Binding, audience, tool string, selectors map[
 	default:
 		return false
 	}
+}
+
+// replacementRows releases its query connection before any catalog/provider proof.
+type replacementQuery interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func replacementRows(ctx context.Context, query replacementQuery, request, env, proxy string, mutation bool) (ReplacementScope, Binding, []byte, error) {
+	rows, e := query.Query(ctx, `SELECT a.binding,a.replacement_scope,r.definition FROM raptor.agent_attempt_access a JOIN raptor.requests r ON r.id=a.request_id WHERE a.request_id=$1 AND (a.replacement_scope IS NOT NULL OR a.binding->>'operation'='db-proxy.replace-nodes') ORDER BY a.attempt_id`, request)
+	if e != nil {
+		return ReplacementScope{}, Binding{}, nil, domain.ErrUnavailable
+	}
+	var frozen ReplacementScope
+	var binding Binding
+	var snapshot bytes.Buffer
+	count := 0
+	invalid := false
+	for rows.Next() {
+		var br, sr, dr []byte
+		var b Binding
+		var scope ReplacementScope
+		var def domain.RequestInput
+		if rows.Scan(&br, &sr, &dr) != nil || json.Unmarshal(br, &b) != nil || json.Unmarshal(sr, &scope) != nil || json.Unmarshal(dr, &def) != nil {
+			invalid = true
+			continue
+		}
+		snapshot.Write(br)
+		snapshot.WriteByte(0)
+		snapshot.Write(sr)
+		snapshot.WriteByte(0)
+		snapshot.Write(dr)
+		snapshot.WriteByte(0)
+		fingerprint, err := Fingerprint(def)
+		if err != nil || fingerprint != b.DefinitionSHA256 || !supported(def) || b.RequestID != request || b.EnvCode != env || b.ObjectCode != proxy || !scope.ResourceValidFor(b) || (mutation && b.ExecutionMode != "replacement") || (!mutation && b.ExecutionMode != "qualification") {
+			invalid = true
+			continue
+		}
+		if count > 0 && scope != frozen {
+			invalid = true
+		}
+		frozen = scope
+		binding = b
+		count++
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return ReplacementScope{}, Binding{}, nil, domain.ErrUnavailable
+	}
+	if invalid || count == 0 {
+		return ReplacementScope{}, Binding{}, nil, domain.ErrConflict
+	}
+	return frozen, binding, snapshot.Bytes(), nil
+}
+
+// PrepareRequestReplacement resolves current proof without holding an approval
+// transaction. The returned validator rechecks the exact DB snapshot through the
+// locked transaction's existing connection, never borrowing another pool slot.
+func (s *Service) PrepareRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool) (func(context.Context, pgx.Tx) error, error) {
+	return s.prepareRequestReplacement(ctx, request, env, proxy, mutation, s.ResolveReplacement)
+}
+
+func (s *Service) PrepareRequestReplacementProof(ctx context.Context, request, env, proxy string, mutation bool, proof adapters.ResolutionProof) (func(context.Context, pgx.Tx) error, error) {
+	if s.ValidateReplacement == nil {
+		return nil, domain.ErrUnavailable
+	}
+	return s.prepareRequestReplacement(ctx, request, env, proxy, mutation, func(ctx context.Context, b Binding) (ReplacementScope, error) {
+		return s.ValidateReplacement(ctx, b, proof)
+	})
+}
+
+func (s *Service) RequestReplacementSnapshot(ctx context.Context, request, env, proxy string, mutation bool) (string, error) {
+	_, _, snapshot, e := replacementRows(ctx, s.Pool, request, env, proxy, mutation)
+	if e != nil {
+		return "", e
+	}
+	return digest(string(snapshot)), nil
+}
+
+func (s *Service) prepareRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool, resolve func(context.Context, Binding) (ReplacementScope, error)) (func(context.Context, pgx.Tx) error, error) {
+	if resolve == nil {
+		return nil, domain.ErrUnavailable
+	}
+	frozen, binding, snapshot, e := replacementRows(ctx, s.Pool, request, env, proxy, mutation)
+	if e != nil {
+		return nil, e
+	}
+	current, e := resolve(ctx, binding)
+	if e != nil {
+		return nil, domain.ErrUnavailable
+	}
+	if current != frozen || !current.ResourceValidFor(binding) {
+		return nil, domain.ErrConflict
+	}
+	return func(ctx context.Context, tx pgx.Tx) error {
+		_, _, locked, e := replacementRows(ctx, tx, request, env, proxy, mutation)
+		if e != nil {
+			return e
+		}
+		if !bytes.Equal(snapshot, locked) {
+			return domain.ErrConflict
+		}
+		return nil
+	}, nil
+}
+func (s *Service) VerifyRequestReplacement(ctx context.Context, request, env, proxy string, mutation bool) error {
+	_, e := s.PrepareRequestReplacement(ctx, request, env, proxy, mutation)
+	return e
 }

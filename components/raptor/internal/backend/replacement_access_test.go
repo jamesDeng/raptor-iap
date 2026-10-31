@@ -43,28 +43,53 @@ func TestReplacementAccessRequiresAuthoritativeScope(t *testing.T) {
 		t.Fatal("replacement enabled without resolver")
 	}
 	scope := agentaccess.ReplacementScope{EnvCode: "rdev.ali", ProxyCode: proxy.Code, GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: agentaccess.ApplicationScope{EnvCode: "rdev.ali", AppCode: "client", ClusterID: "cluster", Namespace: "test", Name: "traffic", UID: "uid"}}
-	service.ResolveReplacement = func(context.Context, agentaccess.Binding) (agentaccess.ReplacementScope, error) { return scope, nil }
+	scope.AccountID = "123"
+	scope.Region = "ap-southeast-1"
+	scope.ListenerID = "listener"
+	scope.Port = 5432
+	scope.DatabaseResourceID = "rds"
+	scope.ResolutionDigest = scope.Identity().Digest()
+	calls := 0
+	service.ResolveReplacement = func(context.Context, agentaccess.Binding) (agentaccess.ReplacementScope, error) {
+		calls++
+		return scope, nil
+	}
 	out, err := service.Issue(ctx, request.ID, input)
 	if err != nil || out.ReplacementScope == nil || *out.ReplacementScope != scope || out.Binding.Operation != "db-proxy.replace-nodes" {
 		t.Fatal("bound issuance failed", err)
 	}
-	check := agentaccess.CheckInput{Credential: out.Credential, Audience: "infra", Tool: "db_proxy_scale", Selectors: map[string]string{"requestId": request.ID, "envCode": "rdev.ali", "proxyCode": proxy.Code, "groupId": "group"}}
+	check := agentaccess.CheckInput{Credential: out.Credential, Audience: "infra", Tool: "db_proxy_scale", Selectors: map[string]string{"requestId": request.ID, "envCode": "rdev.ali", "proxyCode": proxy.Code}}
 	got, err := service.Check(ctx, check)
 	if err != nil || !got.Active {
 		t.Fatal("exact proxy denied", err)
 	}
-	check.Selectors["groupId"] = "foreign"
+	calls = 0
+	check.Selectors["proxyCode"] = "foreign"
 	got, err = service.Check(ctx, check)
 	if err != nil || got.Active {
 		t.Fatal("foreign proxy authorized", err)
 	}
-	check.Selectors["groupId"] = "group"
+	if calls != 0 {
+		t.Fatal("foreign selector reached provider proof", calls)
+	}
+	check.Selectors["proxyCode"] = proxy.Code
 	scope.Application.UID = "changed"
 	got, err = service.Check(ctx, check)
 	if err != nil || got.Active {
 		t.Fatal("changed authoritative scope remained active", err)
 	}
 	scope.Application.UID = "uid"
+	// New attempt must inherit the first request proof even after revocation.
+	driftInput := input
+	driftInput.AttemptID = domain.NewID()
+	scope.GroupID = "changed-group"
+	scope.ResolutionDigest = scope.Identity().Digest()
+	if _, err = service.Issue(ctx, request.ID, driftInput); err == nil {
+		t.Fatal("new attempt rebound request proof")
+	}
+	scope.GroupID = "group"
+	scope.ResolutionDigest = scope.Identity().Digest()
+
 	if err = service.Revoke(ctx, request.ID, input.AttemptID); err != nil {
 		t.Fatal(err)
 	}

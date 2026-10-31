@@ -9,7 +9,7 @@ resources:
       functionName: ${env(INFRA_FUNCTION_NAME)}
       role: ${env(INFRA_READ_ROLE_ARN)}
       runtime: custom.debian10
-      code: .build
+      code: .build-resource
       memorySize: 512
       timeout: 30
       instanceConcurrency: 2
@@ -20,7 +20,9 @@ resources:
         port: 9000
       environmentVariables:
         INFRA_LISTEN: "0.0.0.0:9000"
-        INFRA_SCOPE_FILE: "/code/scope.json"
+        RAPTOR_SERVICE_USERNAME: ${env(RAPTOR_SERVICE_USERNAME)}
+        RAPTOR_SERVICE_PASSWORD: ${env(RAPTOR_SERVICE_PASSWORD)}
+        RAPTOR_CATALOG_ORIGIN: ${env(RAPTOR_CATALOG_ORIGIN)}
         INFRA_USERNAME: ${env(INFRA_USERNAME)}
         INFRA_PASSWORD: ${env(INFRA_PASSWORD)}
         INFRA_AUTH_HEADER: "X-Infra-Authorization"

@@ -75,17 +75,15 @@ class LiveManifest(unittest.TestCase):
   for name in ['raptor-backend','raptor-open-api']:
    c=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']==name)['spec']['template']['spec']['containers'][0];env={v['name']:v for v in c['env']};self.assertEqual(env['AGENT_INTROSPECTION_PASSWORD']['valueFrom']['secretKeyRef']['name'],'raptor-agent-access')
   self.assertFalse(any(d and d.get('kind')=='Secret' for d in docs))
- def test_replacement_binding_mounts_only_into_backend(self):
+ def test_resource_runtime_has_no_provider_scope_mount(self):
   for enabled in [False,True]:
    docs=self.render(True,replacement=enabled)
    for doc in docs:
     if not doc or doc.get('kind')!='Deployment':continue
     pod=doc['spec']['template']['spec'];container=pod['containers'][0];env={v['name']:v.get('value') for v in container['env']}
-    if enabled and doc['metadata']['name']=='raptor-backend':
-     self.assertEqual(env.get('RAPTOR_REPLACEMENT_SCOPE_FILE'),'/run/raptor/replacement/scope.json')
-     self.assertTrue(any(v['name']=='replacement-scope' and v['readOnly'] for v in container['volumeMounts']))
-     volume=next(v for v in pod['volumes'] if v['name']=='replacement-scope');self.assertEqual(volume['configMap']['name'],'pgcat-replacement-scope')
-    else:self.assertNotIn('RAPTOR_REPLACEMENT_SCOPE_FILE',env);self.assertFalse(any(v['name']=='replacement-scope' for v in pod['volumes']))
+    self.assertNotIn('RAPTOR_REPLACEMENT_SCOPE_FILE',env)
+    self.assertFalse(any(v['name']=='replacement-scope' for v in pod['volumes']))
+    self.assertFalse(any(v['name']=='replacement-scope' for v in container.get('volumeMounts',[])))
  def test_ax_mutual_tls_stays_in_gateway_private_files(self):
   docs=self.render(True,ax=True);d=next(v for v in docs if v and v.get('kind')=='Deployment' and v['metadata']['name']=='agent-gateway');pod=d['spec']['template']['spec'];vols={v['name']:v for v in pod['volumes']};self.assertEqual(vols['ax-tls-source']['secret']['secretName'],'gateway-ax-client-tls');init=pod['initContainers'][0];self.assertIn('install -m 0600 /ax-tls-source/tls.key /live-private/ax-client.key',init['args'][0]);self.assertFalse(any(v['name']=='ax-tls-source' for v in pod['containers'][0]['volumeMounts']))
   for other in docs:
@@ -107,14 +105,12 @@ class LiveManifest(unittest.TestCase):
   source=volume['projected']['sources'][0]['serviceAccountToken'];self.assertEqual(source['expirationSeconds'],900);self.assertNotIn('audience',source)
   self.assertTrue(any(d and d.get('kind')=='ServiceAccount' and d['metadata']['name']=='agent-gateway' for d in docs))
 
- def test_catalog_replacement_scope_is_gitops_owned(self):
-  import json
-  scope={'envCode':'rdev.ali','proxyCode':'DP00001','groupId':'asg-fixture','serverGroupId':'sgp-fixture','targetDbCode':'D00002','application':{'envCode':'rdev.ali','appCode':'A00003','clusterId':'cluster-fixture','namespace':'raptor-test','name':'client','uid':'fixture-uid'}}
+ def test_old_provider_scope_values_cannot_restore_authority(self):
+  scope={'envCode':'fixture','proxyCode':'p','groupId':'asg-fixture','serverGroupId':'sgp-fixture'}
   docs=self.render(True,replacement=True,scope=scope)
-  config=next(d for d in docs if d and d.get('kind')=='ConfigMap' and d['metadata']['name']=='pgcat-replacement-scope')
-  self.assertEqual(json.loads(config['data']['scope.json']),scope)
+  self.assertFalse(any(d and d.get('kind')=='ConfigMap' and d['metadata']['name']=='pgcat-replacement-scope' for d in docs))
   backend=next(d for d in docs if d and d.get('kind')=='Deployment' and d['metadata']['name']=='raptor-backend')
-  self.assertTrue(backend['spec']['template']['metadata']['annotations']['checksum/replacement-scope'])
+  self.assertNotIn('checksum/replacement-scope',backend['spec']['template']['metadata'].get('annotations',{}))
   self.assertFalse(any(d and d.get('kind')=='Secret' for d in docs))
 
 if __name__=='__main__':unittest.main()

@@ -24,7 +24,7 @@ func TestApprovalCheckExactBindingAndFailClosed(t *testing.T) {
 			}
 			var binding map[string]any
 			json.NewDecoder(r.Body).Decode(&binding)
-			if binding["interface"] != "ess.scale-in" || binding["actionId"] != "action" || binding["target"].(map[string]any)["groupId"] != "g" || binding["parameters"].(map[string]any)["desiredCapacity"] != float64(2) {
+			if binding["interface"] != "db-proxy.scale-in" || binding["actionId"] != "action" || len(binding["target"].(map[string]any)) != 1 || binding["target"].(map[string]any)["proxyCode"] != "p" || binding["parameters"].(map[string]any)["desiredCapacity"] != float64(2) {
 				t.Fatal(binding)
 			}
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil

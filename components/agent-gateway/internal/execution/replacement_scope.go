@@ -1,15 +1,26 @@
 package execution
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // ReplacementScope is resolved by the service, not supplied by the model.
 type ReplacementScope struct {
-	EnvCode       string           `json:"envCode"`
-	ProxyCode     string           `json:"proxyCode"`
-	GroupID       string           `json:"groupId"`
-	ServerGroupID string           `json:"serverGroupId"`
-	TargetDBCode  string           `json:"targetDbCode"`
-	Application   ApplicationScope `json:"application"`
+	AccountID          string           `json:"accountId,omitempty"`
+	Region             string           `json:"region,omitempty"`
+	ListenerID         string           `json:"listenerId,omitempty"`
+	Port               int              `json:"port,omitempty"`
+	DatabaseResourceID string           `json:"databaseResourceId,omitempty"`
+	ResolutionDigest   string           `json:"resolutionDigest,omitempty"`
+	EnvCode            string           `json:"envCode"`
+	ProxyCode          string           `json:"proxyCode"`
+	GroupID            string           `json:"groupId"`
+	ServerGroupID      string           `json:"serverGroupId"`
+	TargetDBCode       string           `json:"targetDbCode"`
+	Application        ApplicationScope `json:"application"`
 }
 type ApplicationScope struct {
 	EnvCode   string `json:"envCode"`
@@ -31,4 +42,49 @@ func (s ReplacementScope) ValidFor(b AttemptBinding) bool {
 		}
 	}
 	return true
+}
+
+// ResourceValidFor is required at new execution boundaries. ValidFor remains
+// usable by historical result readers; missing legacy proof is never upgraded.
+func (s ReplacementScope) ResourceValidFor(b AttemptBinding) bool {
+	if (b.ExecutionMode != "replacement" && b.ExecutionMode != "qualification") || !s.ValidFor(b) || s.Region != "ap-southeast-1" || s.Port < 1 || s.Port > 65535 || !shaPattern.MatchString(s.ResolutionDigest) {
+		return false
+	}
+	for _, v := range []string{s.AccountID, s.ListenerID, s.DatabaseResourceID} {
+		if !scopeText(v) {
+			return false
+		}
+	}
+	// Declaration order matches Infra resources.ResolutionIdentity exactly.
+	identity := struct {
+		EnvCode            string           `json:"envCode"`
+		AccountID          string           `json:"accountId"`
+		Region             string           `json:"region"`
+		ClusterID          string           `json:"clusterId"`
+		ProxyCode          string           `json:"proxyCode"`
+		GroupID            string           `json:"groupId"`
+		ServerGroupID      string           `json:"serverGroupId"`
+		ListenerID         string           `json:"listenerId"`
+		Port               int              `json:"port"`
+		TargetDBCode       string           `json:"targetDbCode"`
+		DatabaseResourceID string           `json:"databaseResourceId"`
+		Application        ApplicationScope `json:"application"`
+	}{s.EnvCode, s.AccountID, s.Region, s.Application.ClusterID, s.ProxyCode, s.GroupID, s.ServerGroupID, s.ListenerID, s.Port, s.TargetDBCode, s.DatabaseResourceID, s.Application}
+	raw, err := json.Marshal(identity)
+	return err == nil && fmt.Sprintf("%x", sha256.Sum256(raw)) == s.ResolutionDigest
+}
+
+// A configured legacy operator fence may only narrow an issued resource proof.
+// It supplies no missing proof fields and cannot authorize a legacy request.
+func (s ReplacementScope) MatchesFence(fence ReplacementScope) bool {
+	if fence.AccountID != "" || fence.Region != "" || fence.ListenerID != "" || fence.Port != 0 || fence.DatabaseResourceID != "" || fence.ResolutionDigest != "" {
+		return s == fence
+	}
+	s.AccountID = ""
+	s.Region = ""
+	s.ListenerID = ""
+	s.Port = 0
+	s.DatabaseResourceID = ""
+	s.ResolutionDigest = ""
+	return s == fence
 }

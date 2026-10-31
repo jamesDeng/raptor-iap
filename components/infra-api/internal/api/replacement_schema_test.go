@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
-	"raptor-iap/infra-api/internal/domain"
 	"testing"
 )
 
@@ -19,7 +18,7 @@ func TestReplacementInfraSchemasMatchHarness(t *testing.T) {
 		t.Skip("node required for producer/consumer contract test")
 	}
 	ctx := context.Background()
-	h, err := NewWithCommands(fakeReader{}, map[string]domain.Environment{"dev": {Code: "dev"}}, "user", "secret", "X-Infra-Authorization", &commandFixture{}, allowCommands{})
+	h, err := NewResourceServer(&observedReader{}, &resourceFixture{rows: resourceRows()}, "user", "secret", "X-Infra-Authorization", &commandFixture{}, allowCommands{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +34,7 @@ func TestReplacementInfraSchemasMatchHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := map[string]bool{"cloud_identity_get": true, "deployments_list": true, "deployment_status_get": true, "deployment_restart": true, "db_proxy_scale": true, "db_proxy_node_protection_set": true, "db_proxy_nodes_deregister": true}
+	names := map[string]bool{"deployments_list": true, "deployment_status_get": true, "deployment_restart": true, "db_proxy_scale": true, "db_proxy_node_protection_set": true, "db_proxy_nodes_deregister": true}
 	schemas := map[string]any{}
 	for _, tool := range list.Tools {
 		if names[tool.Name] {

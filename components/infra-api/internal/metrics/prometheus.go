@@ -16,8 +16,9 @@ import (
 
 type Query func(context.Context, domain.Environment, string, string) ([]byte, error)
 type Client struct {
-	scopes map[string]domain.Environment
-	query  Query
+	scopes  map[string]domain.Environment
+	query   Query
+	resolve func(context.Context, string, string, string) (domain.ResolvedResource, error)
 }
 type sample struct {
 	Metric map[string]string `json:"metric"`
@@ -37,7 +38,15 @@ func New(scopes map[string]domain.Environment, query Query) (*Client, error) {
 		env.Proxies = append([]domain.ProxyMapping(nil), env.Proxies...)
 		copied[key] = env
 	}
-	return &Client{copied, query}, nil
+	return &Client{scopes: copied, query: query}, nil
+}
+
+// NewResource resolves the current request-local mapping on every gate read.
+func NewResource(resolve func(context.Context, string, string, string) (domain.ResolvedResource, error), query Query) (*Client, error) {
+	if resolve == nil || query == nil {
+		return nil, fail()
+	}
+	return &Client{resolve: resolve, query: query}, nil
 }
 func fresh(stamp float64, now time.Time) bool {
 	n := float64(now.UnixNano()) / 1e9
@@ -95,6 +104,15 @@ func kind(name string) string {
 }
 func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) ([]policy.ClientObservation, error) {
 	env, ok := c.scopes[s.EnvCode]
+	if c.resolve != nil {
+		r, e := c.resolve(ctx, s.EnvCode, "db-proxy", s.ProxyCode)
+		if e != nil || r.Environment.Code != s.EnvCode || r.Environment.AccountID == "" || r.Environment.ClusterID == "" || r.Environment.Region != "ap-southeast-1" || r.Proxy == nil || r.Proxy.Code != s.ProxyCode || r.Proxy.GroupID != s.GroupID || (s.ServerGroupID != "" && r.Proxy.ServerGroupID != s.ServerGroupID) {
+			return nil, fail()
+		}
+		env = r.Environment
+		env.Proxies = []domain.ProxyMapping{*r.Proxy}
+		ok = true
+	}
 	if !ok || len(s.Nodes) == 0 {
 		return nil, fail()
 	}

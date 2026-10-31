@@ -32,11 +32,11 @@ func absent(v any) bool {
 	}
 	return false
 }
-func liveDependencies(scopes map[string]domain.Environment, opts runtimeOptions, origin, user, password string) (runtimeDependencies, error) {
+func liveDependencies(resolver api.ResourceResolver, opts runtimeOptions, origin, user, password string) (runtimeDependencies, error) {
 	if !opts.Proxy {
 		return runtimeDependencies{}, nil
 	}
-	a, e := approval.New(origin, user, password, nil)
+	a, e := approval.NewResource(origin, user, password, nil, resolver.ResolveProof)
 	if e != nil {
 		return runtimeDependencies{}, domain.ErrNotConfigured
 	}
@@ -48,7 +48,7 @@ func liveDependencies(scopes map[string]domain.Environment, opts runtimeOptions,
 	if e != nil {
 		return runtimeDependencies{}, domain.ErrNotConfigured
 	}
-	m, e := metrics.New(scopes, q)
+	m, e := metrics.NewResource(resolver.Resolve, q)
 	if e != nil {
 		return runtimeDependencies{}, domain.ErrNotConfigured
 	}
@@ -84,4 +84,38 @@ func buildRuntimeHandler(reader api.Reader, scopes map[string]domain.Environment
 		paths = append(paths, "/v1/deployment-restart")
 	}
 	return api.NewWithAgentCommands(reader, scopes, user, password, header, runtime, api.NewServiceAuthorizer(user, paths...), deps.AgentCheck)
+}
+
+// buildResourceRuntimeHandler is the sole production HTTP/MCP boundary.
+// Resolved Environment/ProxyMapping values are supplied per operation by resolver.
+func buildResourceRuntimeHandler(reader api.Reader, resolver api.ResourceResolver, user, password, header string, opts runtimeOptions, deps runtimeDependencies) (http.Handler, error) {
+	if absent(reader) || absent(resolver) {
+		return nil, domain.ErrNotConfigured
+	}
+	paths := []string{}
+	var commander api.Commander
+	if opts.Proxy {
+		if absent(deps.Backend) || absent(deps.Metrics) || absent(deps.Approval) || absent(deps.Claims) || absent(deps.Fleet) {
+			return nil, domain.ErrNotConfigured
+		}
+		runtime := commands.Runtime{Backend: deps.Backend, Metrics: deps.Metrics, Approval: deps.Approval, Claims: deps.Claims, Fleet: deps.Fleet, EvidenceMode: "live"}
+		paths = append(paths, "/v1/db-proxy-scale", "/v1/db-proxy-node-protection", "/v1/db-proxy-node-deregistration")
+		if opts.Restart {
+			r, ok := reader.(restarter)
+			if !ok || absent(r) {
+				return nil, domain.ErrNotConfigured
+			}
+			runtime.Restarter = r
+			paths = append(paths, "/v1/deployment-restart")
+		}
+		commander = runtime
+	} else if opts.Restart {
+		r, ok := reader.(restarter)
+		if !ok || absent(r) {
+			return nil, domain.ErrNotConfigured
+		}
+		commander = restartOnly{r}
+		paths = append(paths, "/v1/deployment-restart")
+	}
+	return api.NewResourceServer(reader, resolver, user, password, header, commander, api.NewServiceAuthorizer(user, paths...), deps.AgentCheck)
 }

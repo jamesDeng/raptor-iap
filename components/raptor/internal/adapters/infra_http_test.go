@@ -15,7 +15,7 @@ func TestInfraHTTPContract(t *testing.T) {
 			t.Error("request contract")
 		}
 		w.WriteHeader(status)
-		w.Write([]byte(`{"data":[]}`))
+		w.Write([]byte(`{"data":{"resource":{"envCode":"dev","kind":"application","code":"app"},"applicationWorkloads":[]}}`))
 	}))
 	defer s.Close()
 	p := HTTPInfra{Username: "u", Password: "p", AuthHeader: "X-Infra-Authorization"}
@@ -64,10 +64,14 @@ func TestInfraScopeResponse(t *testing.T) {
 }
 func TestInfraDeploymentStatus(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("uid") != "uid" && r.URL.Query().Get("uid") != "wrong" {
-			t.Error("identity query")
+		if r.URL.Path == "/v1/deployments" {
+			w.Write([]byte(`{"data":{"resource":{"envCode":"dev","kind":"application","code":"app"},"applicationWorkloads":[{"type":"kubernetes","workloadKey":"key","clusterId":"cluster","namespace":"ns","name":"app","uid":"uid"}]}}`))
+			return
 		}
-		w.Write([]byte(`{"data":{"uid":"uid","generation":2,"observedGeneration":2,"replicas":2,"updatedReplicas":2,"readyReplicas":1,"evidenceMode":"live","pods":[]}}`))
+		if len(r.URL.Query()) != 3 || r.URL.Query().Get("workloadKey") != "key" || r.URL.Query().Get("appCode") != "app" {
+			t.Error("nonlogical status selectors", r.URL.Query())
+		}
+		w.Write([]byte(`{"data":{"resource":{"envCode":"dev","kind":"application","code":"app"},"applicationWorkload":{"type":"kubernetes","workloadKey":"key","clusterId":"cluster","namespace":"ns","name":"app","uid":"uid"},"status":{"uid":"uid","generation":2,"observedGeneration":2,"replicas":2,"updatedReplicas":2,"readyReplicas":1,"evidenceMode":"live","pods":[]}}}`))
 	}))
 	defer s.Close()
 	env := domain.Environment{Code: "dev", Config: map[string]any{"infraApiUrl": s.URL, "clusterId": "cluster"}}

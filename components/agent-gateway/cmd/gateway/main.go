@@ -174,17 +174,9 @@ func main() {
 		s.ConversationEnabled = os.Getenv("GATEWAY_CONVERSATION_ENABLED") == "true"
 		s.ConversationRuntime = true
 		router := &runtimeadapter.Providers{Default: config.Provider, Backends: backends, Store: s, Owner: owner, Lease: lease}
-		worker := &execution.LiveWorker{Store: s, Owner: owner, Lease: lease, Runtime: router, Access: raptor, Raptor: raptor, Bootstrap: bootstrap}
-		if config.QualificationEnabled {
-			scope := config.ReplacementObserver.Scope
-			worker.QualificationScope = &scope
-		}
+		worker := &execution.LiveWorker{QualificationEnabled: config.QualificationEnabled, ReplacementEnabled: config.ReplacementEnabled, Store: s, Owner: owner, Lease: lease, Runtime: router, Access: raptor, Raptor: raptor, Bootstrap: bootstrap}
 		if repositoryChangeEnabled {
 			worker.RepositoryResolver = execution.NewGitHubBranchResolver()
-		}
-		if config.ReplacementEnabled {
-			scope := config.ReplacementObserver.Scope
-			worker.ReplacementScope = &scope
 		}
 		if worker.Reconcile(ctx) != nil {
 			log.Fatal("live reconciliation requires attention")

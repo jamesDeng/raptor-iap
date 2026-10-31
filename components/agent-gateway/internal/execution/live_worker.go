@@ -73,12 +73,13 @@ type LiveObservation struct {
 }
 type LiveCleanup struct{ SandboxAbsent, KeyAbsent bool }
 type RecoveryRecord struct {
-	Wait       *LiveWait
-	Binding    AttemptBinding
-	Intents    []RuntimeIntentRecord
-	Result     *LiveResult
-	Checkpoint VerifiedCheckpoint
-	Deadline   time.Time
+	ReplacementScope *ReplacementScope
+	Wait             *LiveWait
+	Binding          AttemptBinding
+	Intents          []RuntimeIntentRecord
+	Result           *LiveResult
+	Checkpoint       VerifiedCheckpoint
+	Deadline         time.Time
 }
 type RuntimeIntentRecord struct{ Kind, Name, ResourceID string }
 type RecoveredRun struct {
@@ -97,16 +98,18 @@ type LiveRuntime interface {
 type RepositoryChangeRuntime interface{ RepositoryChangeReady() bool }
 type repositoryFailure interface{ PublicRepositoryURL() string }
 type LiveWorker struct {
-	QualificationScope *ReplacementScope
-	RepositoryResolver BaseCommitResolver
-	ReplacementScope   *ReplacementScope
-	Store              *Store
-	Owner              string
-	Lease              WorkerLease
-	Runtime            LiveRuntime
-	Access             AgentAccessClient
-	Raptor             RaptorClient
-	Bootstrap          VerifiedCheckpoint
+	QualificationEnabled bool
+	ReplacementEnabled   bool
+	QualificationScope   *ReplacementScope
+	RepositoryResolver   BaseCommitResolver
+	ReplacementScope     *ReplacementScope
+	Store                *Store
+	Owner                string
+	Lease                WorkerLease
+	Runtime              LiveRuntime
+	Access               AgentAccessClient
+	Raptor               RaptorClient
+	Bootstrap            VerifiedCheckpoint
 }
 
 func (w *LiveWorker) authorized(ctx context.Context) error {
@@ -139,9 +142,13 @@ func (w *LiveWorker) admit(in ExecutionInput, attempt string) (AttemptBinding, s
 		}
 		return b, operation.Instruction, b.DefinitionSHA256, nil
 	}
-	if w.scopeFor(b) == nil || !w.scopeFor(b).ValidFor(b) {
+	if (b.ExecutionMode == "qualification" && !w.QualificationEnabled) || (b.ExecutionMode != "qualification" && !w.ReplacementEnabled) {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
+	if fence := w.scopeFor(b); fence != nil && !fence.ValidFor(b) {
+		return AttemptBinding{}, "", "", ErrInvalid
+	}
+
 	return b, operation.Question, b.DefinitionSHA256, nil
 }
 
@@ -241,8 +248,13 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e != nil {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
 	}
-	if b.Operation == "db-proxy.replace-nodes" && (access.Binding != b || access.ReplacementScope == nil || w.scopeFor(b) == nil || *access.ReplacementScope != *w.scopeFor(b)) {
+	if b.Operation == "db-proxy.replace-nodes" && (access.Binding != b || access.ReplacementScope == nil || !access.ReplacementScope.ResourceValidFor(b) || (w.scopeFor(b) != nil && !access.ReplacementScope.MatchesFence(*w.scopeFor(b)))) {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
+	}
+	if b.Operation == "db-proxy.replace-nodes" {
+		if e = w.Store.SaveIssuedScope(ctx, b.AttemptID, w.Owner, *access.ReplacementScope); e != nil {
+			return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
+		}
 	}
 	if access.ExpiresAt.Before(time.Now()) || access.ExpiresAt.After(record.Deadline) {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "ProviderUnavailable")
@@ -255,7 +267,11 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 		if report := w.reportRepositoryFailure(ctx, b, e); report != nil {
 			return report
 		}
-		return w.finish(ctx, b, h, "failed", "PreparationFailed")
+		code := "PreparationFailed"
+		if errors.Is(e, ErrResourceContractMigrationRequired) {
+			code = "ResourceContractMigrationRequired"
+		}
+		return w.finish(ctx, b, h, "failed", code)
 	}
 	return w.Store.SetLiveStage(ctx, b.AttemptID, w.Owner, "running")
 }
@@ -475,7 +491,7 @@ func (w *LiveWorker) Reconcile(ctx context.Context) error {
 		return w.Store.ReleaseLiveWait(ctx, x.AttemptID, w.Owner, recovered.Cleanup, revokeErr == nil)
 	}
 	status, code := "failed", "Interrupted"
-	if recovered.Result != nil && recovered.Checkpoint.valid() && (record.Binding.Operation != "db-proxy.replace-nodes" || (w.scopeFor(record.Binding) != nil && w.scopeFor(record.Binding).ValidFor(record.Binding) && resultScope(recovered.Result) != nil && *resultScope(recovered.Result) == *w.scopeFor(record.Binding))) {
+	if recovered.Result != nil && recovered.Checkpoint.valid() && (record.Binding.Operation != "db-proxy.replace-nodes" || (record.ReplacementScope != nil && record.ReplacementScope.ResourceValidFor(record.Binding) && resultScope(recovered.Result) != nil && *resultScope(recovered.Result) == *record.ReplacementScope)) {
 		if e = w.Store.SaveLiveResult(ctx, x.AttemptID, w.Owner, *recovered.Result); e == nil {
 			status, code = "completed", ""
 		}

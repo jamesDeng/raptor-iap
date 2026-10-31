@@ -49,3 +49,37 @@ func TestObserverFactoryBuildsWithoutAmbientIdentityAndRejectsForeignScope(t *te
 		t.Fatal("foreign target acquired credential", err)
 	}
 }
+
+func TestResourceObserverKeepsLegacyConfigurationOnlyAsAdditionalFence(t *testing.T) {
+	in := proxyStart()
+	s := *in.Access.ReplacementScope
+	s.GroupID = "asg-test"
+	s = resourceRuntimeScope(s)
+	legacy := execution.ReplacementScope{EnvCode: s.EnvCode, ProxyCode: s.ProxyCode, GroupID: s.GroupID, ServerGroupID: s.ServerGroupID, TargetDBCode: s.TargetDBCode, Application: s.Application}
+	c := testCloudConfig()
+	cfg := ReplacementObserverConfig{Scope: legacy, ListenerID: s.ListenerID, DBInstanceID: s.DatabaseResourceID}
+	if !observerResourceFence(c, cfg, in.Binding, s) {
+		t.Fatal("added issued proof fields rejected by legacy operator fence")
+	}
+	for _, what := range []string{"group", "listener", "database", "account", "region", "digest"} {
+		bad := cfg
+		issued := s
+		switch what {
+		case "group":
+			bad.Scope.GroupID = "foreign"
+		case "listener":
+			bad.ListenerID = "foreign"
+		case "database":
+			bad.DBInstanceID = "foreign"
+		case "account":
+			issued.AccountID = "foreign"
+		case "region":
+			issued.Region = "foreign"
+		case "digest":
+			issued.ResolutionDigest = ""
+		}
+		if observerResourceFence(c, bad, in.Binding, issued) {
+			t.Fatal("invalid material admitted", what)
+		}
+	}
+}

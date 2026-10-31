@@ -1,18 +1,19 @@
+import {createHash} from 'node:crypto';
 // Capability selection is a client-side boundary; provider/server authorization
 // remains mandatory. Scope is resolved by trusted preflight, never model input.
 const readRaptor=['request_get','environment_get','object_get'];
-const readInfra=['cloud_identity_get','deployments_list','deployment_status_get'];
+const readInfra=['deployments_list','deployment_status_get'];
 const schemas={
- raptor:{request_get:{requestId:'string'},environment_get:{requestId:'string',envCode:'string'},object_get:{requestId:'string',kind:'string',code:'string'},pull_request_attach:{requestId:'string',attemptId:'string',repository:'string',number:'integer',url:'string',headSha:'string',baseCommit:'string',baseBranch:'string',workingBranch:'string'},approval_request:{requestId:'string',actionId:'string',interface:'string',envCode:'string',target:'object',parameters:'object'},approval_get:{requestId:'string',approvalId:'string'},request_pause:{requestId:'string',reason:'string'}},
- infra:{cloud_identity_get:{envCode:'string'},deployments_list:{envCode:'string',kind:'string',code:'string'},deployment_status_get:{envCode:'string',appCode:'string',clusterId:'string',namespace:'string',name:'string',uid:'string'},deployment_restart:{requestId:'string',envCode:'string',appCode:'string',clusterId:'string',namespace:'string',name:'string',uid:'string'},db_proxy_scale:{requestId:'string',envCode:'string',proxyCode:'string',groupId:'string',actionId:'string',desiredCapacity:'integer'},db_proxy_node_protection_set:{requestId:'string',envCode:'string',proxyCode:'string',groupId:'string',instanceIds:'array',protected:'boolean'},db_proxy_nodes_deregister:{requestId:'string',envCode:'string',proxyCode:'string',groupId:'string',serverGroupId:'string',instanceIds:'array'}}
+ raptor:{deployments_list:{requestId:'string',envCode:'string',kind:'string',code:'string'},request_get:{requestId:'string'},environment_get:{requestId:'string',envCode:'string'},object_get:{requestId:'string',kind:'string',code:'string'},pull_request_attach:{requestId:'string',attemptId:'string',repository:'string',number:'integer',url:'string',headSha:'string',baseCommit:'string',baseBranch:'string',workingBranch:'string'},approval_request:{requestId:'string',actionId:'string',interface:'string',envCode:'string',target:'object',parameters:'object'},approval_get:{requestId:'string',approvalId:'string'},request_pause:{requestId:'string',reason:'string'}},
+ infra:{deployments_list:{envCode:'string',kind:'string',code:'string'},deployment_status_get:{envCode:'string',appCode:'string',workloadKey:'string'},deployment_restart:{requestId:'string',envCode:'string',appCode:'string',workloadKey:'string'},db_proxy_scale:{requestId:'string',envCode:'string',proxyCode:'string',actionId:'string',desiredCapacity:'integer'},db_proxy_node_protection_set:{requestId:'string',envCode:'string',proxyCode:'string',nodeIds:'array',protected:'boolean'},db_proxy_nodes_deregister:{requestId:'string',envCode:'string',proxyCode:'string',nodeIds:'array'}}
 };
 export function operationToolSchema(server,tool){
  const fields=schemas[server]?.[tool];if(!fields)throw Error('UnexpectedToolSchema');
- return {type:'object',properties:Object.fromEntries(Object.entries(fields).map(([name,type])=>[name,{type,...(type==='array'?{items:{type:'string'}}:{})}])),required:Object.keys(fields),additionalProperties:false};
+ return {type:'object',properties:Object.fromEntries(Object.entries(fields).map(([name,type])=>[name,{type,...(type==='array'?{items:{type:'string'}}:{})}])),required:Object.keys(fields).filter(k=>!(server==='infra'&&tool==='deployment_status_get'&&k==='workloadKey')),additionalProperties:false};
 }
 export function validateOperationToolSchema(server,tool,schema){
- const fields=schemas[server]?.[tool],keys=Object.keys(fields??{}).sort().join(',');
- if(!fields||schema?.type!=='object'||schema.additionalProperties!==false||!Array.isArray(schema.required)||[...schema.required].sort().join(',')!==keys||Object.keys(schema.properties??{}).sort().join(',')!==keys||Object.entries(fields).some(([k,type])=>schema.properties[k]?.type!==type||(type==='array'&&schema.properties[k].items?.type!=='string')))throw Error('UnexpectedToolSchema');
+ const fields=schemas[server]?.[tool],keys=Object.keys(fields??{}).sort().join(','),required=Object.keys(fields??{}).filter(k=>!(server==='infra'&&tool==='deployment_status_get'&&k==='workloadKey')).sort().join(',');
+ if(!fields||schema?.type!=='object'||schema.additionalProperties!==false||!Array.isArray(schema.required)||[...schema.required].sort().join(',')!==required||Object.keys(schema.properties??{}).sort().join(',')!==keys||Object.entries(fields).some(([k,type])=>schema.properties[k]?.type!==type||(type==='array'&&schema.properties[k].items?.type!=='string')))throw Error('UnexpectedToolSchema');
 }
 const text=v=>typeof v==='string'&&v.length>0&&v.length<=256&&v.trim()===v;
 function replacementScope(b,s){
@@ -25,8 +26,8 @@ export function operationCapabilities(b,scope){
  if(b?.operation==='repository.change'&&b.objectKind==='application')return {raptor:[...readRaptor,'pull_request_attach'],infra:[]};
  if(b?.operation==='db-proxy.replace-nodes'&&b.objectKind==='db-proxy'){
   replacementScope(b,scope);
-  if(b.executionMode==="qualification")return {raptor:[...readRaptor,"approval_request","approval_get","request_pause"],infra:[...readInfra]};
-  return {raptor:[...readRaptor,'approval_request','approval_get','request_pause'],infra:[...readInfra,'db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart']};
+  if(b.executionMode==="qualification")return {raptor:[...readRaptor,'deployments_list',"approval_request","approval_get","request_pause"],infra:[...readInfra]};
+  return {raptor:[...readRaptor,'deployments_list','approval_request','approval_get','request_pause'],infra:[...readInfra,'db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart']};
  }
  throw Error('UnsupportedOperation');
 }
@@ -35,45 +36,64 @@ function exact(args,required,extra=[]){
 }
 const capacity=v=>Number.isSafeInteger(v)&&v>=0;
 function nodes(v){if(!Array.isArray(v)||!v.length||v.length>50||v.some(x=>!text(x))||new Set(v).size!==v.length)throw Error('ScopeMismatch');}
-export function checkOperationSelectors(server,tool,args,b,scope){
+export function checkOperationSelectors(server,tool,args,b,scope,discovered=new Map()){
  const profile=operationCapabilities(b,scope);
  if(!profile[server]?.includes(tool))throw Error('ScopeMismatch');
  if(server==='raptor'){
   switch(tool){
   case 'request_get':exact(args,{requestId:b.requestId});break;
   case 'environment_get':exact(args,{requestId:b.requestId,envCode:b.envCode});break;
-  case 'object_get':exact(args,{requestId:b.requestId,kind:b.objectKind,code:b.objectCode});break;
+  case 'object_get':
+  case 'deployments_list':{
+   const refs=[[b.objectKind,b.objectCode],...(scope? [['application',scope.application.appCode],['database',scope.targetDbCode]]:[])];
+   if(!refs.some(([kind,code])=>args?.kind===kind&&args?.code===code))throw Error('ScopeMismatch');
+   exact(args,{requestId:b.requestId,...(tool==='deployments_list'?{envCode:b.envCode}:{}),kind:args.kind,code:args.code});break;
+  }
   case 'pull_request_attach':
    exact(args,{requestId:b.requestId,attemptId:b.attemptId},['repository','number','url','headSha','baseCommit','baseBranch','workingBranch']);
    if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repository)||!Number.isSafeInteger(args.number)||args.number<1||!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(args.url)||!['headSha','baseCommit'].every(k=>/^[a-f0-9]{40}$/.test(args[k]))||!text(args.baseBranch)||!text(args.workingBranch))throw Error('ScopeMismatch');break;
   case 'approval_get':exact(args,{requestId:b.requestId},['approvalId']);if(!text(args.approvalId))throw Error('ScopeMismatch');break;
   case 'request_pause':exact(args,{requestId:b.requestId},['reason']);if(b.executionMode==='qualification'?args.reason!=='waiting_approval':!['waiting_approval','waiting_review'].includes(args.reason))throw Error('ScopeMismatch');break;
   case 'approval_request':
-   exact(args,{requestId:b.requestId,envCode:b.envCode,interface:b.executionMode==='qualification'?'runtime.qualification-resume':'ess.scale-in'},['actionId','target','parameters']);
-   exact(args.target,{proxyCode:scope.proxyCode,groupId:scope.groupId});
+   exact(args,{requestId:b.requestId,envCode:b.envCode,interface:b.executionMode==='qualification'?'runtime.qualification-resume':'db-proxy.scale-in'},['actionId','target','parameters']);
+   exact(args.target,{proxyCode:scope.proxyCode});
    if(b.executionMode==='qualification'){exact(args.parameters,{phase:'resume'});if(!text(args.actionId))throw Error('ScopeMismatch');}else{exact(args.parameters,{},['desiredCapacity']);if(!text(args.actionId)||!capacity(args.parameters.desiredCapacity))throw Error('ScopeMismatch');}break;
   }
   return;
  }
- const application=b.operation==='application.question'?{appCode:b.objectCode,clusterId:b.clusterId}:scope.application;
+ const application=b.operation==='application.question'?{appCode:b.objectCode}:scope.application;
  switch(tool){
- case 'cloud_identity_get':exact(args,{envCode:b.envCode});break;
- case 'deployments_list':exact(args,{envCode:b.envCode,kind:b.objectKind,code:b.objectCode});break;
+ case 'deployments_list':{
+  const refs=[[b.objectKind,b.objectCode],...(scope?[['application',scope.application.appCode],['database',scope.targetDbCode]]:[])];
+  if(!refs.some(([kind,code])=>args?.kind===kind&&args?.code===code))throw Error('ScopeMismatch');
+  exact(args,{envCode:b.envCode,kind:args.kind,code:args.code});break;
+ }
  case 'deployment_status_get':
-  if(b.operation==='application.question'){
-   exact(args,{envCode:b.envCode,appCode:b.objectCode,clusterId:b.clusterId},['namespace','name','uid']);
-   if(!['namespace','name','uid'].every(k=>text(args[k])))throw Error('ScopeMismatch');
-  }else exact(args,{envCode:b.envCode,...application});break;
- case 'deployment_restart':exact(args,{requestId:b.requestId,envCode:b.envCode,...application});break;
+ case 'deployment_restart':{
+  const key=args?.workloadKey;
+  exact(args,{...(tool==='deployment_restart'?{requestId:b.requestId}:{}),envCode:b.envCode,appCode:application.appCode},key===undefined?[]:['workloadKey']);
+  if((tool==='deployment_restart'&&key===undefined)||(key!==undefined&&(!text(key)||discovered.get(key)?.appCode!==application.appCode)))throw Error('IdentityChanged');
+  if(key===undefined&&[...discovered.values()].filter(v=>v.appCode===application.appCode).length!==1)throw Error('IdentityChanged');
+  break;
+ }
  default:{
-  const target={requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode,groupId:scope.groupId};
+  const target={requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode};
   if(tool==='db_proxy_scale'){
    exact(args,target,['actionId','desiredCapacity']);if(!text(args.actionId)||!capacity(args.desiredCapacity))throw Error('ScopeMismatch');
   }else if(tool==='db_proxy_node_protection_set'){
-   exact(args,target,['instanceIds','protected']);nodes(args.instanceIds);if(typeof args.protected!=='boolean')throw Error('ScopeMismatch');
+   exact(args,target,['nodeIds','protected']);nodes(args.nodeIds);if(typeof args.protected!=='boolean')throw Error('ScopeMismatch');
   }else if(tool==='db_proxy_nodes_deregister'){
-   exact(args,{...target,serverGroupId:scope.serverGroupId},['instanceIds']);nodes(args.instanceIds);
+   exact(args,target,['nodeIds']);nodes(args.nodeIds);
   }else throw Error('ScopeMismatch');
  }
  }
+}
+
+// The transport scope is a private canonical proof, never model input.
+export function validateResourceScope(b,s){
+ replacementScope(b,s);
+ if(!['qualification','replacement'].includes(b.executionMode)||!['accountId','listenerId','databaseResourceId','resolutionDigest'].every(k=>text(s[k]))||s.region!=='ap-southeast-1'||!Number.isSafeInteger(s.port)||s.port<1||s.port>65535||!/^[a-f0-9]{64}$/.test(s.resolutionDigest))throw Error('InvalidEvidence');
+ const a=s.application;
+ const identity={envCode:s.envCode,accountId:s.accountId,region:s.region,clusterId:a.clusterId,proxyCode:s.proxyCode,groupId:s.groupId,serverGroupId:s.serverGroupId,listenerId:s.listenerId,port:s.port,targetDbCode:s.targetDbCode,databaseResourceId:s.databaseResourceId,application:{envCode:a.envCode,appCode:a.appCode,clusterId:a.clusterId,namespace:a.namespace,name:a.name,uid:a.uid}};
+ if(createHash('sha256').update(JSON.stringify(identity)).digest('hex')!==s.resolutionDigest)throw Error('InvalidEvidence');return s;
 }

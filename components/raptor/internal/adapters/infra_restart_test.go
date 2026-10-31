@@ -21,16 +21,24 @@ func TestHTTPRestartReceiptAndAmbiguousOutcomes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == "GET" {
+					if r.URL.Path != "/v1/deployments" {
+						t.Error("unexpected read")
+					}
+					w.Write([]byte(`{"data":{"resource":{"envCode":"dev","kind":"application","code":"app"},"applicationWorkloads":[{"type":"kubernetes","workloadKey":"key","clusterId":"cluster","namespace":"ns","name":"frontend","uid":"uid"}]}}`))
+					return
+				}
 				calls++
 				u, p, ok := r.BasicAuth()
 				if !ok || u != "service" || p != "fixture" || r.Method != "POST" || r.URL.Path != "/v1/deployment-restart" {
 					t.Error("wrong authenticated route")
 				}
 				var input map[string]any
-				if json.NewDecoder(r.Body).Decode(&input) != nil || input["requestId"] != "request" || input["uid"] != "uid" {
+				if json.NewDecoder(r.Body).Decode(&input) != nil || input["requestId"] != "request" || input["workloadKey"] != "key" || len(input) != 4 {
 					t.Error("wrong selectors")
 				}
 				w.WriteHeader(tc.status)
+				input = map[string]any{"requestId": "request", "envCode": "dev", "appCode": "app", "clusterId": "cluster", "namespace": "ns", "name": "frontend", "uid": "uid"}
 				if tc.changed {
 					input["uid"] = "another"
 				}
