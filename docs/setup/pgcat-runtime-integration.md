@@ -1,14 +1,21 @@
 # PgCat runtime integration
 
 Proxy commands remain disabled unless `INFRA_ENABLE_PROXY_COMMANDS=true`.
-Enabling requires complete scope mappings plus `RAPTOR_APPROVAL_ORIGIN`,
-`RAPTOR_SERVICE_USERNAME` and `RAPTOR_SERVICE_PASSWORD` supplied privately.
-The verified Raptor HTTPS origin for this POC is `https://api.rdev.raptor-iap.top`.
+All resource reads require fixed HTTPS `RAPTOR_CATALOG_ORIGIN` and existing
+`RAPTOR_SERVICE_USERNAME`/`RAPTOR_SERVICE_PASSWORD` supplied privately. Proxy
+commands additionally require `RAPTOR_APPROVAL_ORIGIN` and existing command
+dependencies. Historical POC origin `https://api.rdev.raptor-iap.top` is not a
+current deployment receipt.
 Keep credentials out of source, Terraform variables/state and public logs.
 `INFRA_ENABLE_RESTART` remains independent.
 
-Each scope entry's `proxies` array contains code, groupId, serverGroupId,
-listenerId, port and targetDbCode. No model-supplied endpoint or PromQL is used.
+Catalog-only Raptor context supplies canonical resource relationships, including
+`proxyApplications` with exactly one application code per proxy. Infra freshly
+resolves provider tags/relationships and pins the complete private realization;
+admission requires exactly one client Deployment. No packaged scope mapping
+supplies runtime authority. Model inputs are logical env/proxy codes, finite
+read options, opaque workload keys and proxy-bound observed node IDs; returned
+provider identities remain evidence. No model-supplied endpoint or PromQL is used.
 Current bootstrap expects pool `test` and user `poc_app`; changing this bootstrap
 requires updating the observer before enabling it. All current ESS nodes,
 including protected/deregistered nodes, need complete fresh scrape coverage.
@@ -42,8 +49,14 @@ trust boundary. No RAM role creation, trust changes, direct ECS termination,
 ASG RemoveInstances or resource deletion is granted.
 
 ESS tag enumeration spans Singapore groups to detect ambiguous tag matches;
-instance reads and mutations pin exact configured group IDs. NLB health reads
-are scoped to the owning load balancer because the API's RAM scope is the load
+runtime instance reads and mutations pin freshly resolved exact group IDs.
+Terraform permission resources remain explicitly component-owned configuration;
+runtime discovery does not widen IAM. The inspected FC policy lacks the new
+`nlb:ListServerGroups` read (exact owned servergroup ARNs) and
+`nlb:ListListeners` read (account/region `listener/*`). Their reviewed component
+Terraform delta, sanitized PR plan comment and reviewed apply are prerequisites;
+LB request filtering is not an IAM condition and no grant is included here.
+NLB health reads are scoped to the owning load balancer because the API's RAM scope is the load
 balancer. ListServerGroupServers documentation uses both serverGroup and
 servergroup ARN casing across references; both exact IDs are included for read
 compatibility. Backend removal uses the documented lowercase servergroup ARN.
@@ -59,9 +72,11 @@ consumes the action; reconcile provider state instead of replaying it.
 Use the explicit `s.rdev-proxy.yaml` Serverless Devs package only after
 qualification; it preserves the existing function, VPC and trigger and reads
 approval service credentials from private deployment environment variables.
-The existing `s.rdev.yaml` package retains read/restart behavior without these
-new required variables. Both packages target the same function; do not deploy
-them concurrently.
+Both templates now require catalog origin and existing service credentials;
+`s.rdev.yaml` retains read/restart behavior while the proxy template additionally
+configures approval/command dependencies. Both package only
+`.build-resource/server` and target the same function; do not deploy them
+concurrently.
 
 All proxy mutations also use a Raptor-owned durable fleet guard keyed by env and
 ESS group. It excludes distinct operations across FC instances, including while
@@ -76,3 +91,5 @@ Terraform OSS backend initialization lists the exact existing `rdev.ali/`
 workspace prefix. This reveals object names under that prefix; object contents
 remain restricted to `rdev.ali/infra-api.tfstate`. A condition on the full state
 object name cannot authorize the backend's workspace listing request.
+
+Current source contracts are inventoried in [Infra endpoints](infra-api-resource-endpoints.md). Source fixtures/suites and binary packaging prove source parity only. Release requires matching reviewed Raptor/Gateway/harness/guest/FC receipts, actual catalog relationships/tags/UIDs and effective permissions, with replacement disabled and idle rollout readiness. Read-only qualification uses a new ordinary logical Raptor request, fresh metrics and a persisted baseline, then harmless `runtime.qualification-resume` approval, immediate pause, same-request resume and owned cleanup/token revocation. No source test is live qualification or latency evidence. Published skills remain immutable: current direct-v2 replacement content needs a compatible reviewed new release. Full 2→4→2 and native completion remain NOT PASS pending their separate gates.

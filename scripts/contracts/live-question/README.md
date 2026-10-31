@@ -22,3 +22,13 @@ The files without `resource` in their names describe the historical provider
 selector contract. They remain readable test evidence; they do not authorize new
 resource-contract execution. These synthetic fixtures establish source parity,
 not deployed cloud observations, qualification PASS, or an image release.
+
+`infra-resource-{fleet,backend,capacity,metrics}.json` are actual MCP tool-result
+objects emitted through `NewResourceServer` by
+`TestResourceProxyMCPObservationContract` in Infra's API package. Only external
+provider observations are synthetic. Regenerate with `CONTRACT_FIXTURE_DIR` set
+to this absolute fixtures directory. Harness `binding-contract.test.mjs` feeds
+them into Gateway's `resourceObservation` boundary, checks text/structured parity,
+source timestamp and raw metric samples, and rejects foreign environment/proxy,
+workload code and target database. The fixed dated samples intentionally prove
+preservation; they are not fresh live observations or metrics qualification.

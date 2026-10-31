@@ -1,4 +1,27 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import {validateLiveRequest} from './live-contract.mjs';
+import {resourceObservation} from './gateway-observation-runner.mjs';
+
+// Catches a producer/consumer envelope drift, fabricated freshness, normalized
+// samples, or acceptance of a foreign logical resource at the private boundary.
+test('Gateway consumes Infra resource MCP producer proxy observations unchanged',()=>{
+ const scope={envCode:'dev',proxyCode:'p',targetDbCode:'db'};
+ for(const kind of ['fleet','backend','capacity','metrics']){
+  const file=new URL('../../scripts/contracts/live-question/fixtures/infra-resource-'+kind+'.json',import.meta.url);
+  assert.ok(fs.existsSync(file),'missing resource MCP producer contract: '+kind);
+  const rpc=JSON.parse(fs.readFileSync(file));
+  assert.equal(rpc.isError,undefined);
+  const envelope=rpc.structuredContent;
+  assert.deepEqual(JSON.parse(rpc.content.find(part=>part.type==='text').text),envelope);
+  const out=resourceObservation(envelope.data,scope,kind);
+  assert.equal(out.observedAt,'2026-10-01T00:00:00Z');
+  assert.strictEqual(out,envelope.data.pgproxyWorkload[kind]);
+  if(kind==='metrics')assert.deepEqual(out.rows,[{metric:{instance_id:'i'},value:[123,'4']}]);
+  for(const damage of [data=>{data.envCode='foreign';},data=>{data.proxyCode='foreign';},data=>{data.pgproxyWorkload.code='foreign';},data=>{data.pgproxyWorkload.targetDbCode='foreign';}]){
+   const data=structuredClone(envelope.data);damage(data);
+   assert.throws(()=>resourceObservation(data,scope,kind),/InvalidObservation/);
+  }
+ }
+});
 test('accepts Raptor producer binding with trusted definition and cluster',()=>{const access=JSON.parse(fs.readFileSync(new URL('../../scripts/contracts/live-question/fixtures/raptor-access.json',import.meta.url)));assert.equal(validateLiveRequest({binding:access.data.binding,question:'Is gateway healthy?'}).binding.clusterId,'cluster');});
 
 test('Basic credential redaction includes decoded password',async()=>{const {credentialValues}=await import('./mcp-runtime.mjs');const header='Basic '+Buffer.from('reader:fixture-private').toString('base64');assert.ok(credentialValues({authorization:header}).includes('fixture-private'));assert.ok(credentialValues({authorization:'Bearer opaque'}).includes('opaque'));});
