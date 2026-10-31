@@ -37,7 +37,7 @@ export class ReplacementTrace {
   if(data.groupId!==this.identity.scope.groupId||!fresh(data.observedAt)||!Array.isArray(data.instances)||data.instances.length!==2||new Set(data.instances.map(n=>n.instanceId)).size!==2||data.instances.some(n=>!n.instanceId||!['InService','Protected'].includes(n.lifecycleState)||n.healthStatus!=='Healthy'))return;
   this.append({kind:'baseline',instanceIds:data.instances.map(n=>n.instanceId).sort(),observedAt:data.observedAt});
  }
- key(tool,args){return digest({tool,args:{...args,...(args.instanceIds?{instanceIds:[...args.instanceIds].sort()}:{})}});}
+ key(tool,args){return digest({tool,args:{...args,...(args.nodeIds?{nodeIds:[...args.nodeIds].sort()}:{})}});}
  beforeMutation(tool,args){
   if(!mutations.has(tool))return;
   if(!this.baseline())throw new Error('MissingEvidence');

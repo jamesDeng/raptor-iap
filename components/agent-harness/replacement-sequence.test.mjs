@@ -23,10 +23,10 @@ test('direct sequence prohibits desired three, second expansion and foreign prot
 });
 test('restart requires both old withdrawals and observed absence with protected healthy new pair',()=>{
  const x=expanded();assert.throws(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
- mutate(x,'db_proxy_nodes_deregister',{serverGroupId:'backend',instanceIds:['old-a']},{instanceIds:['old-a'],outcome:'unknown'});
+ mutate(x,'db_proxy_nodes_deregister',{nodeIds:['old-a']},{instanceIds:['old-a'],outcome:'unknown'});
  observe(x,observations([...old,...added],{withdrawn:['old-a']}));assert.throws(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
- assert.throws(()=>x.gate.beforeMutation('db_proxy_nodes_deregister',argsFor('db_proxy_nodes_deregister',{serverGroupId:'backend',instanceIds:old})),/MutationAlreadySubmitted|MissingEvidence/);
- mutate(x,'db_proxy_nodes_deregister',{serverGroupId:'backend',instanceIds:['old-b']},{instanceIds:['old-b'],outcome:'submitted'});
+ assert.throws(()=>x.gate.beforeMutation('db_proxy_nodes_deregister',argsFor('db_proxy_nodes_deregister',{nodeIds:old})),/MutationAlreadySubmitted|MissingEvidence/);
+ mutate(x,'db_proxy_nodes_deregister',{nodeIds:['old-b']},{instanceIds:['old-b'],outcome:'submitted'});
  observe(x,observations([...old,...added],{withdrawn:old,unprotected:['new-a']}));assert.throws(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
  observe(x,observations([...old,...added],{withdrawn:old}));assert.doesNotThrow(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')));
 });
@@ -55,7 +55,7 @@ for(const stage of ['unprotect','approval','reduction'])for(const [name,counts,a
  ['idle plus waiting',[[0,1,0],[0,0,1]],false],
 ])test(`${stage} enforces combined old-node budget: ${name}`,()=>{
  const x=restarted();
- if(stage!=='unprotect')mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
+ if(stage!=='unprotect')mutate(x,'db_proxy_node_protection_set',{nodeIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
  const e=observations([...old,...added],{withdrawn:old,unprotected:stage==='unprotect'?[]:old,zero:true,generation:6});
  for(const [i,[active,idle,waiting]] of counts.entries()){
   Object.assign(e.metrics.nodes[i].pools[0],{active,idle,waiting});e.metrics.nodes[i].connectedClients=active+idle+waiting;
@@ -64,7 +64,7 @@ for(const stage of ['unprotect','approval','reduction'])for(const [name,counts,a
  for(const n of e.metrics.nodes.filter(n=>added.includes(n.instanceId))){n.pools[0].active=3;n.connectedClients=3;}
  observe(x,e);
  const tool=stage==='unprotect'?'db_proxy_node_protection_set':stage==='approval'?'approval_request':'db_proxy_scale';
- const args=stage==='unprotect'?protect(old,false):stage==='approval'?{requestId:'request',actionId:'shrink',interface:'ess.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy',groupId:'group'},parameters:{desiredCapacity:2}}:argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
+ const args=stage==='unprotect'?protect(old,false):stage==='approval'?{requestId:'request',actionId:'shrink',interface:'db-proxy.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy'},parameters:{desiredCapacity:2}}:argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
  if(allowed)assert.doesNotThrow(()=>x.gate.beforeMutation(tool,args));
  else assert.throws(()=>x.gate.beforeMutation(tool,args),/MissingEvidence/);
 });
@@ -88,7 +88,7 @@ test('zero before restart is not rollout evidence and unprotecting replacements 
  const y=restarted();assert.throws(()=>y.gate.beforeMutation('db_proxy_node_protection_set',protect(added,false)),/MissingEvidence/);
 });
 test('resume retains ordering and generation but requires fresh current reads; one exact reduction only',()=>{
- const x=restarted();mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
+ const x=restarted();mutate(x,'db_proxy_node_protection_set',{nodeIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
  const y=setup(x.session),scale=argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
  assert.throws(()=>y.gate.beforeMutation('db_proxy_scale',scale),/MissingEvidence/);
  const e=observations([...old,...added],{withdrawn:old,unprotected:old,zero:true,generation:6});
@@ -117,7 +117,7 @@ test('readyFour allows protection of the as-yet unprotected exact new pair',()=>
 });
 test('early and desired-three approvals fail before creating a pending approval',()=>{
  const x=expanded();
- for(const desiredCapacity of [2,3])assert.throws(()=>x.gate.beforeMutation('approval_request',{requestId:'request',actionId:'shrink',interface:'ess.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy',groupId:'group'},parameters:{desiredCapacity}}),/MissingEvidence/);
+ for(const desiredCapacity of [2,3])assert.throws(()=>x.gate.beforeMutation('approval_request',{requestId:'request',actionId:'shrink',interface:'db-proxy.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy'},parameters:{desiredCapacity}}),/MissingEvidence/);
 });
 test('initial SQL and control reads cannot be replaced by only healthy cloud observations',()=>{
  const x=setup();for(const [kind,data] of Object.entries(observations()))x.gate.observe(kind,data);
@@ -129,7 +129,7 @@ test('historical readyFour cannot substitute for fresh pool and new SQL readines
   const x=expanded(),y=setup(x.session),e=observations([...old,...added]);
   for(const [kind,data] of Object.entries(e))if(kind!==omitted)y.gate.observe(kind,data);
   if(omitted!=='new SQL')for(const instanceId of added)y.gate.observe('sql',{instanceId,connected:true},{instanceId});
-  assert.throws(()=>y.gate.beforeMutation('db_proxy_nodes_deregister',argsFor('db_proxy_nodes_deregister',{serverGroupId:'backend',instanceIds:old})),/MissingEvidence/);
+  assert.throws(()=>y.gate.beforeMutation('db_proxy_nodes_deregister',argsFor('db_proxy_nodes_deregister',{nodeIds:old})),/MissingEvidence/);
  }
 });
 test('each protected sequence permit must follow all prior receipts on reopen',()=>{
@@ -150,7 +150,7 @@ test('malformed SQL timestamp and impossible observedGeneration cannot qualify i
 for(const stage of ['unprotect','approval','reduction'])for(const instanceId of added)for(const fault of ['omitted','failed','expired'])test(`resumed ${stage} rejects ${fault} SQL probe for ${instanceId}`,t=>{
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const x=restarted();
- if(stage!=='unprotect')mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
+ if(stage!=='unprotect')mutate(x,'db_proxy_node_protection_set',{nodeIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
  // Model a resource wait (unprotect/approval) or approval wait (reduction).
  t.mock.timers.tick(60000);
  const y=setup(x.session);
@@ -162,14 +162,14 @@ for(const stage of ['unprotect','approval','reduction'])for(const instanceId of 
  const e=observations([...old,...added],{withdrawn:old,unprotected:stage==='unprotect'?[]:old,zero:true,generation:6});
  for(const [kind,data] of Object.entries(e))y.gate.observe(kind,data);
  const tool=stage==='unprotect'?'db_proxy_node_protection_set':stage==='approval'?'approval_request':'db_proxy_scale';
- const args=stage==='unprotect'?protect(old,false):stage==='approval'?{requestId:'request',actionId:'shrink',interface:'ess.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy',groupId:'group'},parameters:{desiredCapacity:2}}:argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
+ const args=stage==='unprotect'?protect(old,false):stage==='approval'?{requestId:'request',actionId:'shrink',interface:'db-proxy.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy'},parameters:{desiredCapacity:2}}:argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
  assert.throws(()=>y.gate.beforeMutation(tool,args),/MissingEvidence/);
  probe(instanceId);
  assert.doesNotThrow(()=>y.gate.beforeMutation(tool,args),'both fresh successful probes restore eligibility');
 });
 
 test('approval resume cannot reduce with an empty SQL probe map despite fresh zero and rollout evidence',()=>{
- const x=restarted();mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
+ const x=restarted();mutate(x,'db_proxy_node_protection_set',{nodeIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
  const y=setup(x.session);
  for(const [kind,data] of Object.entries(observations([...old,...added],{withdrawn:old,unprotected:old,zero:true,generation:6})))y.gate.observe(kind,data);
  assert.equal(y.gate.probes.size,0);
@@ -178,7 +178,7 @@ test('approval resume cannot reduce with an empty SQL probe map despite fresh ze
 
 for(const first of ['protectOld','expand'])test(`resume rejects first ${first} permit before its baseline`,()=>{
  const x=setup();observe(x);
- if(first==='protectOld')mutate(x,'db_proxy_node_protection_set',{instanceIds:old,protected:true},{instanceIds:old,outcome:'submitted'});
+ if(first==='protectOld')mutate(x,'db_proxy_node_protection_set',{nodeIds:old,protected:true},{instanceIds:old,outcome:'submitted'});
  else mutate(x,'db_proxy_scale',{actionId:'expand',desiredCapacity:4},{previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'});
  assert.doesNotThrow(()=>setup(x.session),'the unmodified baseline-first history must reopen');
  const entries=x.session.entries,index=entries.findIndex(e=>e.customType==='raptor-replacement-sequence-v2');

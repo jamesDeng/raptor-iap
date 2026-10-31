@@ -39,7 +39,7 @@ func NewObservationProxy(origin string, execute ObservationExecutor) (*Observati
 	return &ObservationProxy{origin: origin, execute: execute, entries: map[[32]byte]observationEntry{}, busy: make(chan struct{}, 1)}, nil
 }
 func (p *ObservationProxy) Register(in execution.LiveStart, m ObservationMaterial, check func(context.Context) error) (ObservationMaterial, error) {
-	if in.Binding.Operation != "db-proxy.replace-nodes" || in.Access.Binding != in.Binding || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ValidFor(in.Binding) || check == nil {
+	if in.Binding.Operation != "db-proxy.replace-nodes" || in.Access.Binding != in.Binding || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ResourceValidFor(in.Binding) || check == nil {
 		return ObservationMaterial{}, ErrConfiguration
 	}
 	expires := in.Deadline

@@ -127,6 +127,11 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		if e != nil || in.Skills.CommitSHA != in.Binding.SkillsCommit || in.Access.ReplacementScope == nil {
 			return h, ErrConfiguration
 		}
+		if in.Binding.ExecutionMode != "qualification" {
+			if e = resourceReplacementContract(skillsBundle); e != nil {
+				return h, e
+			}
+		}
 	}
 	if in.Binding.Operation == "repository.change" {
 		var e error

@@ -20,6 +20,13 @@ func TestQualificationReportRequiresPersistedApprovalWaitAndSession(t *testing.T
 	if _, e := s.Pool.Exec(ctx, "UPDATE gateway.attempts SET binding=$2,definition_sha256=$3 WHERE id=$1", x.AttemptID, raw, b.DefinitionSHA256); e != nil {
 		t.Fatal(e)
 	}
+	r.Qualification.Version = 2
+	r.Qualification.TransportContract = "raptor-resource-v1"
+	r.Qualification.Checks = qualificationChecksFor(2)
+	r.Qualification.Scope = resourceTestScope(b)
+	if e := s.SaveIssuedScope(ctx, x.AttemptID, "owner", r.Qualification.Scope); e != nil {
+		t.Fatal(e)
+	}
 	c := ContinuationContext{ApprovalID: r.Qualification.ApprovalID, ActionID: r.Qualification.ActionID, BindingDigest: r.Qualification.BindingDigest, Decision: "resume"}
 	raw, _ = json.Marshal(c)
 	if _, e := s.Pool.Exec(ctx, "UPDATE gateway.executions SET resume_context=$2 WHERE request_id=$1", b.RequestID, raw); e != nil {

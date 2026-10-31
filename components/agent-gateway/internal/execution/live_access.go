@@ -37,7 +37,7 @@ func (c HTTPRaptor) Issue(ctx context.Context, b AttemptBinding, hash string, ex
 		return out, ErrUnavailable
 	}
 	if b.Operation == "db-proxy.replace-nodes" {
-		if v.ReplacementScope == nil || !v.ReplacementScope.ValidFor(b) {
+		if v.ReplacementScope == nil || !v.ReplacementScope.ResourceValidFor(b) {
 			return out, ErrUnavailable
 		}
 	} else if v.ReplacementScope != nil {

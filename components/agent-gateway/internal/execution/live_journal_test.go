@@ -202,7 +202,7 @@ func TestLiveDriverLeaseLostConnectionCannotReacquire(t *testing.T) {
 	}
 }
 func TestLiveTerminalHarnessFailureCodesFinalize(t *testing.T) {
-	for _, code := range []string{"McpUnavailable", "ToolFailed", "TurnLimit", "MissingEvidence", "UnexpectedToolCatalog", "InvalidProgress", "InvalidEvidence", "RunnerFailed", "MutationAlreadySubmitted", "CredentialRefreshUnconfirmed", "InvalidJob", "InvalidApprovalPause", "InvalidSessionReference", "InvalidSkillsRelease", "ObservationCleanupFailed"} {
+	for _, code := range []string{"McpUnavailable", "ToolFailed", "TurnLimit", "MissingEvidence", "UnexpectedToolCatalog", "InvalidProgress", "InvalidEvidence", "RunnerFailed", "MutationAlreadySubmitted", "CredentialRefreshUnconfirmed", "InvalidJob", "InvalidApprovalPause", "InvalidSessionReference", "InvalidSkillsRelease", "ObservationCleanupFailed", "ResourceContractMigrationRequired"} {
 		t.Run(code, func(t *testing.T) {
 			s, _, b := liveAttempt(t)
 			if e := s.FinalizeLive(context.Background(), b.AttemptID, "owner", LiveOutcome{Status: "failed", FailureCode: code, SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}); e != nil {
@@ -335,5 +335,39 @@ func TestCheckpointPiUpgradeCompatibility(t *testing.T) {
 		if ref.valid() != (version != "9.0.0") {
 			t.Errorf("checkpoint version %s compatibility rejected", version)
 		}
+	}
+}
+
+func TestResourceQuestionEvidenceUsesDiscoveryReadTime(t *testing.T) {
+	b := AttemptBinding{RequestID: "request", AttemptID: "attempt", Operation: "application.question", ObjectKind: "application", ObjectCode: "app", EnvCode: "rdev.ali", SkillsCommit: strings.Repeat("a", 40), Model: "gpt-5.6-luna"}
+	r := validLiveResult(b)
+	raw, _ := json.Marshal(r)
+	var wire map[string]any
+	json.Unmarshal(raw, &wire)
+	wire["evidenceVersion"] = 2
+	var evidence []any
+	for _, v := range wire["evidence"].([]any) {
+		row := v.(map[string]any)
+		if row["tool"] == "cloud_identity_get" {
+			continue
+		}
+		if row["tool"] == "deployments_list" {
+			row["evidenceMode"] = "discovery"
+		}
+		evidence = append(evidence, row)
+	}
+	wire["evidence"] = evidence
+	raw, _ = json.Marshal(wire)
+	json.Unmarshal(raw, &r)
+	if err := ValidateLiveResult(r, b); err != nil {
+		t.Fatal("current resource evidence refused", err)
+	}
+	for i := range r.Evidence {
+		if r.Evidence[i].Tool == "deployments_list" {
+			r.Evidence[i].EvidenceMode = "live"
+		}
+	}
+	if ValidateLiveResult(r, b) == nil {
+		t.Fatal("discovery read time accepted as source live freshness")
 	}
 }

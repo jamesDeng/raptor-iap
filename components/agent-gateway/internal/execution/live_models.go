@@ -44,13 +44,14 @@ type RuntimeEvent struct {
 	OccurredAt      time.Time `json:"occurredAt"`
 }
 type EvidenceIdentity struct {
-	RequestID  string `json:"requestId,omitempty"`
-	EnvCode    string `json:"envCode"`
-	ObjectCode string `json:"objectCode,omitempty"`
-	ClusterID  string `json:"clusterId,omitempty"`
-	Namespace  string `json:"namespace,omitempty"`
-	Name       string `json:"name,omitempty"`
-	UID        string `json:"uid,omitempty"`
+	WorkloadKey string `json:"workloadKey,omitempty"`
+	RequestID   string `json:"requestId,omitempty"`
+	EnvCode     string `json:"envCode"`
+	ObjectCode  string `json:"objectCode,omitempty"`
+	ClusterID   string `json:"clusterId,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
+	Name        string `json:"name,omitempty"`
+	UID         string `json:"uid,omitempty"`
 }
 type ToolEvidence struct {
 	Server       string           `json:"server"`
@@ -66,6 +67,7 @@ type Usage struct {
 	TotalTokens int64 `json:"totalTokens"`
 }
 type LiveResult struct {
+	EvidenceVersion  int                     `json:"evidenceVersion,omitempty"`
 	Qualification    *QualificationResult    `json:"qualification,omitempty"`
 	Replacement      *ReplacementConvergence `json:"replacement,omitempty"`
 	RequestID        string                  `json:"requestId"`
@@ -104,7 +106,7 @@ var liveTools = map[string]bool{"mcp__raptor__request_get": true, "mcp__raptor__
 
 func ProgressToolAllowed(operation, tool string) bool {
 	if operation == "application.question" {
-		return liveTools[tool]
+		return liveTools[tool] && tool != "mcp__infra__cloud_identity_get"
 	}
 	if operation == "repository.change" {
 		switch tool {
@@ -116,7 +118,7 @@ func ProgressToolAllowed(operation, tool string) bool {
 	if operation != "db-proxy.replace-nodes" {
 		return false
 	}
-	if liveTools[tool] {
+	if tool == "mcp__raptor__deployments_list" || (liveTools[tool] && tool != "mcp__infra__cloud_identity_get") {
 		return true
 	}
 	switch tool {
@@ -198,10 +200,16 @@ func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 				return ErrInvalid
 			}
 		} else {
-			if v.EvidenceMode != "live" {
+			if r.EvidenceVersion == 2 && v.Tool == "deployments_list" && v.EvidenceMode != "discovery" {
+				return ErrInvalid
+			}
+			if v.EvidenceMode != "live" && !(r.EvidenceVersion == 2 && v.Tool == "deployments_list" && v.EvidenceMode == "discovery") {
 				return ErrInvalid
 			}
 			if v.Tool == "cloud_identity_get" {
+				if r.EvidenceVersion == 2 {
+					return ErrInvalid
+				}
 				var state struct {
 					AccountMatches bool `json:"accountMatches"`
 				}
@@ -225,7 +233,13 @@ func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 			return ErrInvalid
 		}
 	}
-	for _, name := range []string{"mcp__raptor__request_get", "mcp__infra__cloud_identity_get", "mcp__infra__deployments_list", "mcp__infra__deployment_status_get"} {
+	required := []string{"mcp__raptor__request_get", "mcp__infra__deployments_list", "mcp__infra__deployment_status_get"}
+	if r.EvidenceVersion == 0 {
+		required = append(required, "mcp__infra__cloud_identity_get")
+	} else if r.EvidenceVersion != 2 {
+		return ErrInvalid
+	}
+	for _, name := range required {
 		if !seen[name] {
 			return ErrInvalid
 		}

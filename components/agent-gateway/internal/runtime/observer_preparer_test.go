@@ -44,3 +44,33 @@ func TestObserverPreparerRefreshesCredentialsAndBindsMaterial(t *testing.T) {
 		t.Fatal("issued credential before scope validation")
 	}
 }
+
+func TestResourceObserverPreparationRejectsForeignPinsBeforeIssuance(t *testing.T) {
+	in := proxyStart()
+	scope := *in.Access.ReplacementScope
+	calls := 0
+	p := ObserverPreparation{Server: "https://10.70.0.1", CA: []byte("ca"), DBInstanceID: scope.DatabaseResourceID, ListenerID: scope.ListenerID, PrometheusURL: "http://10.70.1.10:9090", ClientTargets: []string{"10.70.1.20:9090"}, Cloud: func(context.Context, execution.LiveStart) (ObserverCredential, error) {
+		calls++
+		return ObserverCredential{}, ErrRuntimeUnavailable
+	}, Kube: func(context.Context, execution.LiveStart) (ObserverKubeCredential, error) {
+		calls++
+		return ObserverKubeCredential{}, nil
+	}, SQL: func(context.Context, execution.LiveStart) (ObserverSQLCredential, error) {
+		calls++
+		return ObserverSQLCredential{}, nil
+	}}
+	for _, pin := range []string{"listener", "database"} {
+		bad := p
+		if pin == "listener" {
+			bad.ListenerID = "foreign"
+		} else {
+			bad.DBInstanceID = "foreign"
+		}
+		if _, err := bad.Prepare(context.Background(), in); err != ErrConfiguration {
+			t.Fatalf("foreign %s pin reached issuance: %v", pin, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatal("foreign prep acquired credentials", calls)
+	}
+}

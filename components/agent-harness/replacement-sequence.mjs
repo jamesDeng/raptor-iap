@@ -10,7 +10,7 @@ const subset=(ids,allowed)=>Array.isArray(ids)&&ids.length>0&&ids.length<=2&&new
 const healthy=n=>n.healthStatus==='Healthy'&&['InService','Protected'].includes(n.lifecycleState);
 const protectedNode=n=>healthy(n)&&n.protectedFromScaleIn===true&&n.lifecycleState==='Protected';
 const registered=n=>n.registered===true&&n.healthy===true&&n.status==='Available';
-const mcpChecks=['raptor.request_get','raptor.environment_get','raptor.object_get','infra.cloud_identity_get','infra.deployments_list','infra.deployment_status_get'];
+const mcpChecks=['raptor.request_get','raptor.environment_get','raptor.object_get','raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'];
 function metricsValid(m,ids,budgeted=[],after=0){
  if(!fresh(m,after)||!Array.isArray(m.pendingInstanceIds)||m.pendingInstanceIds.length||!exact(m.nodes,ids))return false;
  const completed=Date.parse(m.observedAt),sources=[Date.parse(m.sourceAt),Date.parse(m.latestSourceAt)],responses=[Date.parse(m.responseAt),Date.parse(m.latestResponseAt)];
@@ -27,7 +27,7 @@ function metricsValid(m,ids,budgeted=[],after=0){
 }
 export class ReplacementSequence {
  constructor(manager,trace,readiness,profile){
-  if(profile!=='direct-v2')throw Error('InvalidSkillsRelease');
+  if(profile!=='resource-v1')throw Error('InvalidSkillsRelease');
   this.manager=manager;this.trace=trace;this.readiness=readiness;this.current={};this.probes=new Map();this.checks=new Map();
   const entries=manager.getEntries(),saved=entries.filter(e=>e.type==='custom'&&e.customType===TYPE);
   this.permits=[];
@@ -66,14 +66,14 @@ export class ReplacementSequence {
   if(tool==='db_proxy_node_protection_set'){
    const stage=args.protected===true?(!expanded?'protectOld':'protectNew'):args.protected===false?'unprotectOld':null;
    const allowed=stage==='protectNew'?added:old;
-   if(!stage||!subset(args.instanceIds,allowed)||(stage==='protectNew'&&(restarted||this.idsFor('withdraw').length))||(stage==='unprotectOld'&&!restarted)||args.instanceIds.some(id=>this.idsFor(stage).includes(id)))throw missing();
+   if(!stage||!subset(args.nodeIds,allowed)||(stage==='protectNew'&&(restarted||this.idsFor('withdraw').length))||(stage==='unprotectOld'&&!restarted)||args.nodeIds.some(id=>this.idsFor(stage).includes(id)))throw missing();
    return stage;
   }
-  if(tool==='db_proxy_nodes_deregister'&&expanded&&!restarted&&subset(args.instanceIds,old)&&args.instanceIds.every(id=>!this.idsFor('withdraw').includes(id)))return 'withdraw';
+  if(tool==='db_proxy_nodes_deregister'&&expanded&&!restarted&&subset(args.nodeIds,old)&&args.nodeIds.every(id=>!this.idsFor('withdraw').includes(id)))return 'withdraw';
   if(tool==='deployment_restart'&&expanded&&!restarted&&this.idsFor('withdraw').length===2)return 'restart';
   throw missing();
  }
- idsFor(stage){return this.intents(stage).flatMap(i=>i.args.instanceIds??[]);}
+ idsFor(stage){return this.intents(stage).flatMap(i=>i.args.nodeIds??[]);}
  observe(kind,data,args){
   if(kind==='mcp'){for(const row of data??[])if(mcpChecks.includes(row.server+'.'+row.tool))this.checks.set(row.server+'.'+row.tool,row.observedAt);return;}
   if(kind==='sql'){
@@ -104,8 +104,8 @@ export class ReplacementSequence {
   if(this.trace.unresolved())throw missing();
   const stage=this.stage(tool,args),s=this.trace.identity.scope;
   if(args.requestId!==this.trace.identity.requestId||args.envCode!==s.envCode)throw missing();
-  if(tool==='deployment_restart'){if(['appCode','clusterId','namespace','name','uid'].some(k=>args[k]!==s.application[k]))throw missing();}
-  else if(args.proxyCode!==s.proxyCode||args.groupId!==s.groupId||(tool==='db_proxy_nodes_deregister'&&args.serverGroupId!==s.serverGroupId))throw missing();
+  if(tool==='deployment_restart'){if(args.appCode!==s.application.appCode||typeof args.workloadKey!=='string'||!args.workloadKey)throw missing();}
+  else if(args.proxyCode!==s.proxyCode)throw missing();
   if(['protectOld','expand'].includes(stage)){
    if(!this.initial()||(stage==='expand'&&!this.current.fleet.instances.every(protectedNode)))throw missing();
   }else{
@@ -126,7 +126,7 @@ export class ReplacementSequence {
  validateReceipt(tool,args,data){
   if(tool==='deployment_restart'){if(data.accepted!==true||!Number.isSafeInteger(data.generation)||data.generation<1)throw invalid();}
   else if(tool==='db_proxy_scale'){if(data.desiredCapacity!==args.desiredCapacity||data.previousDesiredCapacity!==(args.desiredCapacity===4?2:4)||!['submitted','unknown'].includes(data.outcome))throw invalid();}
-  else if(!subset(data.instanceIds,args.instanceIds)||data.instanceIds.length!==args.instanceIds.length||!['submitted','unknown'].includes(data.outcome))throw invalid();
+  else if(!subset(data.instanceIds,args.nodeIds)||data.instanceIds.length!==args.nodeIds.length||!['submitted','unknown'].includes(data.outcome))throw invalid();
  }
  onMutationResult(tool,args,receipt){
   if(!['db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart'].includes(tool))return;

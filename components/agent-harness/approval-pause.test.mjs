@@ -1,7 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {ApprovalPause} from './approval-pause.mjs';
 const binding={requestId:'request',definitionSha256:'a'.repeat(64)};
-const args={requestId:'request',actionId:'scale-three',envCode:'rdev.ali',interface:'ess.scale-in',target:{proxyCode:'proxy',groupId:'group'},parameters:{desiredCapacity:3}};
+const args={requestId:'request',actionId:'scale-three',envCode:'rdev.ali',interface:'db-proxy.scale-in',target:{proxyCode:'proxy'},parameters:{desiredCapacity:3}};
 const approval={requestId:'request',approvalId:'approval',actionId:'scale-three',binding:args,state:'pending'};
 test('approval pause waits for completed tool round and binds exact action',()=>{
  const pause=new ApprovalPause(binding);pause.requested(args,approval);assert.equal(pause.wait(),undefined);pause.paused({requestId:'request',reason:'waiting_approval'});assert.equal(pause.wait(),undefined);const wait=pause.endRound();assert.equal(wait.kind,'approval');assert.equal(wait.approvalId,'approval');assert.equal(wait.actionId,'scale-three');assert.match(wait.bindingDigest,/^[a-f0-9]{64}$/);assert.equal(pause.endRound(),wait);

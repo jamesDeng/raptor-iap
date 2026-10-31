@@ -62,6 +62,16 @@ func (s *Store) RecoveryRecord(ctx context.Context, attempt string) (RecoveryRec
 	if json.Unmarshal(binding, &r.Binding) != nil || !r.Binding.journalValid() {
 		return r, ErrInvalid
 	}
+	var issued struct {
+		ReplacementScope *ReplacementScope `json:"replacementScope"`
+	}
+	if json.Unmarshal(binding, &issued) != nil {
+		return r, ErrInvalid
+	}
+	r.ReplacementScope = issued.ReplacementScope
+	if r.ReplacementScope != nil && !r.ReplacementScope.ResourceValidFor(r.Binding) {
+		return r, ErrInvalid
+	}
 	if len(checkpoint) > 0 {
 		if json.Unmarshal(checkpoint, &r.Checkpoint) != nil || !r.Checkpoint.valid() {
 			return r, ErrInvalid
@@ -206,4 +216,97 @@ func (s *Store) ReconcileUnbound(ctx context.Context, attempt, owner string) (bo
 		return false, e
 	}
 	return true, tx.Commit(ctx)
+}
+
+// SaveIssuedScope freezes the trusted access proof inside the existing private
+// attempt binding JSON, before runtime dispatch. It never stores credentials.
+func (s *Store) SaveIssuedScope(ctx context.Context, attempt, owner string, scope ReplacementScope) error {
+	tx, id, e := s.liveTx(ctx, attempt, owner)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	b, e := bindingFrom(ctx, tx, attempt)
+	if e != nil {
+		return e
+	}
+	if !scope.ResourceValidFor(b) {
+		return ErrInvalid
+	}
+	rows, e := tx.Query(ctx, "SELECT id::text,binding FROM gateway.attempts WHERE request_id=$1 ORDER BY started_at,id", id)
+	if e != nil {
+		return e
+	}
+	var current map[string]json.RawMessage
+	for rows.Next() {
+		var other string
+		var raw []byte
+		if e = rows.Scan(&other, &raw); e != nil {
+			rows.Close()
+			return e
+		}
+		if len(raw) == 0 {
+			if other != attempt {
+				rows.Close()
+				return ErrInvalid
+			}
+			continue
+		}
+		var saved struct {
+			ReplacementScope *ReplacementScope `json:"replacementScope"`
+		}
+		var binding AttemptBinding
+		if json.Unmarshal(raw, &saved) != nil || json.Unmarshal(raw, &binding) != nil {
+			rows.Close()
+			return ErrInvalid
+		}
+		if other == attempt {
+			if json.Unmarshal(raw, &current) != nil {
+				rows.Close()
+				return ErrInvalid
+			}
+		} else if saved.ReplacementScope == nil {
+			rows.Close()
+			return ErrInvalid
+		}
+		if saved.ReplacementScope != nil && (!saved.ReplacementScope.ResourceValidFor(binding) || *saved.ReplacementScope != scope || binding.DefinitionSHA256 != b.DefinitionSHA256 || binding.SkillsCommit != b.SkillsCommit || binding.Model != b.Model) {
+			rows.Close()
+			return ErrInvalid
+		}
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return e
+	}
+	if current == nil {
+		return ErrInvalid
+	}
+	raw, _ := json.Marshal(scope)
+	current["replacementScope"] = raw
+	encoded, _ := json.Marshal(current)
+	if _, e = tx.Exec(ctx, "UPDATE gateway.attempts SET binding=$2 WHERE id=$1", attempt, encoded); e != nil {
+		return e
+	}
+	return tx.Commit(ctx)
+}
+
+func persistedResultScope(ctx context.Context, tx pgx.Tx, attempt string, b AttemptBinding, r LiveResult) error {
+	if b.Operation != "db-proxy.replace-nodes" {
+		return nil
+	}
+	if b.ExecutionMode == "qualification" && (r.Qualification == nil || r.Qualification.Version != 2) {
+		return ErrInvalid
+	}
+	var raw []byte
+	if e := tx.QueryRow(ctx, "SELECT binding FROM gateway.attempts WHERE id=$1", attempt).Scan(&raw); e != nil {
+		return e
+	}
+	var saved struct {
+		ReplacementScope *ReplacementScope `json:"replacementScope"`
+	}
+	if json.Unmarshal(raw, &saved) != nil || saved.ReplacementScope == nil || !saved.ReplacementScope.ResourceValidFor(b) || resultScope(&r) == nil || *resultScope(&r) != *saved.ReplacementScope {
+		return ErrInvalid
+	}
+	return nil
 }

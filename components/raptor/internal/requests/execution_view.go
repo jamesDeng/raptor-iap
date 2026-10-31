@@ -27,15 +27,16 @@ type PublicExecution struct {
 	Cleanup          string               `json:"cleanup,omitempty"`
 }
 type PublicResult struct {
-	Qualification *PublicQualification `json:"qualification,omitempty"`
-	RequestID     string               `json:"requestId"`
-	AttemptID     string               `json:"attemptId"`
-	SelectedModel string               `json:"selectedModel,omitempty"`
-	ActualModel   string               `json:"actualModel"`
-	Answer        string               `json:"answer"`
-	Evidence      []PublicEvidence     `json:"evidence,omitempty"`
-	GeneratedAt   *time.Time           `json:"generatedAt,omitempty"`
-	Usage         []PublicUsage        `json:"usage,omitempty"`
+	EvidenceVersion int                  `json:"evidenceVersion,omitempty"`
+	Qualification   *PublicQualification `json:"qualification,omitempty"`
+	RequestID       string               `json:"requestId"`
+	AttemptID       string               `json:"attemptId"`
+	SelectedModel   string               `json:"selectedModel,omitempty"`
+	ActualModel     string               `json:"actualModel"`
+	Answer          string               `json:"answer"`
+	Evidence        []PublicEvidence     `json:"evidence,omitempty"`
+	GeneratedAt     *time.Time           `json:"generatedAt,omitempty"`
+	Usage           []PublicUsage        `json:"usage,omitempty"`
 }
 type PublicCleanup struct {
 	SandboxAbsent bool `json:"sandboxAbsent"`
@@ -61,15 +62,16 @@ type PublicEvidence struct {
 	State        json.RawMessage  `json:"state"`
 }
 type EvidenceIdentity struct {
-	RequestID  string `json:"requestId,omitempty"`
-	EnvCode    string `json:"envCode,omitempty"`
-	ObjectCode string `json:"objectCode,omitempty"`
-	AppCode    string `json:"appCode,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	ClusterID  string `json:"clusterId,omitempty"`
-	Namespace  string `json:"namespace,omitempty"`
-	Name       string `json:"name,omitempty"`
-	UID        string `json:"uid,omitempty"`
+	WorkloadKey string `json:"workloadKey,omitempty"`
+	RequestID   string `json:"requestId,omitempty"`
+	EnvCode     string `json:"envCode,omitempty"`
+	ObjectCode  string `json:"objectCode,omitempty"`
+	AppCode     string `json:"appCode,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	ClusterID   string `json:"clusterId,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
+	Name        string `json:"name,omitempty"`
+	UID         string `json:"uid,omitempty"`
 }
 
 func publicExecution(raw map[string]any, request domain.Request) (map[string]any, error) {
@@ -102,7 +104,7 @@ func publicExecution(raw map[string]any, request domain.Request) (map[string]any
 			return nil, domain.ErrUnavailable
 		}
 		for _, o := range r.Evidence {
-			if o.EvidenceMode != "live" && o.EvidenceMode != "simulated" && o.EvidenceMode != "catalog" {
+			if o.EvidenceMode != "live" && o.EvidenceMode != "simulated" && o.EvidenceMode != "catalog" && !(v.Result.EvidenceVersion == 2 && o.Server == "infra" && o.Tool == "deployments_list" && o.EvidenceMode == "discovery") {
 				return nil, domain.ErrUnavailable
 			}
 			if len(o.State) > 4096 {
@@ -132,6 +134,18 @@ func publicExecution(raw map[string]any, request domain.Request) (map[string]any
 			return nil, domain.ErrUnavailable
 		}
 
+	}
+	if v.Result != nil && v.Result.Qualification != nil && v.Result.Qualification.Version == 2 {
+		result := *v.Result
+		q := *result.Qualification
+		q.Scope.AccountID = ""
+		q.Scope.Region = ""
+		q.Scope.ListenerID = ""
+		q.Scope.Port = 0
+		q.Scope.DatabaseResourceID = ""
+		q.Scope.ResolutionDigest = ""
+		result.Qualification = &q
+		v.Result = &result
 	}
 	b, _ = json.Marshal(v)
 	var out map[string]any
@@ -295,10 +309,16 @@ func validQuestionResult(r *PublicResult, request domain.Request) bool {
 			}
 			continue
 		}
-		if o.Server != "infra" || o.EvidenceMode != "live" {
+		if r.EvidenceVersion == 2 && o.Tool == "deployments_list" && o.EvidenceMode != "discovery" {
+			return false
+		}
+		if o.Server != "infra" || (o.EvidenceMode != "live" && !(r.EvidenceVersion == 2 && o.Tool == "deployments_list" && o.EvidenceMode == "discovery")) {
 			return false
 		}
 		if o.Tool == "cloud_identity_get" {
+			if r.EvidenceVersion == 2 {
+				return false
+			}
 			var st struct {
 				AccountMatches bool `json:"accountMatches"`
 			}
@@ -327,5 +347,5 @@ func validQuestionResult(r *PublicResult, request domain.Request) bool {
 			return false
 		}
 	}
-	return contextRead && identityRead && discoveryRead && statusRead
+	return contextRead && ((r.EvidenceVersion == 0 && identityRead) || r.EvidenceVersion == 2) && discoveryRead && statusRead
 }

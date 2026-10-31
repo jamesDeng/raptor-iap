@@ -1,14 +1,15 @@
+import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {ReplacementTrace} from './replacement-trace.mjs';
 import {ReplacementReadiness} from './replacement-readiness.mjs';
 import {ReplacementSequence} from './replacement-sequence.mjs';
 const binding={requestId:'request',definitionSha256:'a'.repeat(64),skillsCommit:'b'.repeat(40),model:'gpt-5.6-luna'};
-const scope={envCode:'rdev.ali',proxyCode:'proxy',groupId:'group',serverGroupId:'backend',targetDbCode:'db',application:{envCode:'rdev.ali',appCode:'client',clusterId:'cluster',namespace:'test',name:'client',uid:'uid'}};
+const scope=withResourceProof({envCode:'rdev.ali',proxyCode:'proxy',groupId:'group',serverGroupId:'backend',targetDbCode:'db',application:{envCode:'rdev.ali',appCode:'client',clusterId:'cluster',namespace:'test',name:'client',uid:'uid'}});
 const old=['old-a','old-b'],added=['new-a','new-b'];
 const stamp=()=>new Date().toISOString();
 function setup(session={entries:[],getEntries(){return this.entries;},appendCustomEntry(customType,data){this.entries.push({type:'custom',customType,data:structuredClone(data)});}}){
  const trace=new ReplacementTrace(session,binding,scope),readiness=new ReplacementReadiness(session,trace);
- return {session,trace,readiness,gate:new ReplacementSequence(session,trace,readiness,'direct-v2')};
+ return {session,trace,readiness,gate:new ReplacementSequence(session,trace,readiness,'resource-v1')};
 }
 function observations(ids=old,{withdrawn=[],unprotected=[],zero=false,generation=5}={}){
  const at=stamp();return {
@@ -24,13 +25,20 @@ function observations(ids=old,{withdrawn=[],unprotected=[],zero=false,generation
 function observe(x,e=observations()){
  for(const [kind,data] of Object.entries(e))x.gate.observe(kind,data);
  for(const instanceId of e.fleet.instances.map(n=>n.instanceId))x.gate.observe('sql',{instanceId,connected:true},{instanceId});
- x.gate.observe('mcp',['raptor.request_get','raptor.environment_get','raptor.object_get','infra.cloud_identity_get','infra.deployments_list','infra.deployment_status_get'].map(name=>({server:name.split('.')[0],tool:name.split('.')[1],observedAt:stamp()})));
+ x.gate.observe('mcp',['raptor.request_get','raptor.environment_get','raptor.object_get','raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'].map(name=>({server:name.split('.')[0],tool:name.split('.')[1],observedAt:stamp()})));
 }
-const argsFor=(tool,extra={})=>({...tool==='deployment_restart'?{requestId:'request',...scope.application}:{requestId:'request',envCode:'rdev.ali',proxyCode:'proxy',groupId:'group'},...extra});
+const argsFor=(tool,extra={})=>({...tool==='deployment_restart'?{requestId:'request',envCode:scope.envCode,appCode:scope.application.appCode,workloadKey:'key'}:{requestId:'request',envCode:'rdev.ali',proxyCode:'proxy'},...extra});
 function mutate(x,tool,extra,receipt){const args=argsFor(tool,extra);x.gate.beforeMutation(tool,args);x.trace.beforeMutation(tool,args);x.trace.mutation(tool,args,receipt);x.gate.onMutationResult(tool,args,receipt);}
 function expanded(){const x=setup();observe(x);mutate(x,'db_proxy_scale',{actionId:'expand',desiredCapacity:4},{previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'});observe(x,observations([...old,...added]));assert.equal(x.readiness.ready(),true);return x;}
-function withdrawn(){const x=expanded();mutate(x,'db_proxy_nodes_deregister',{serverGroupId:'backend',instanceIds:old},{instanceIds:old,outcome:'submitted'});observe(x,observations([...old,...added],{withdrawn:old}));return x;}
+function withdrawn(){const x=expanded();mutate(x,'db_proxy_nodes_deregister',{nodeIds:old},{instanceIds:old,outcome:'submitted'});observe(x,observations([...old,...added],{withdrawn:old}));return x;}
 function restarted(){const x=withdrawn();mutate(x,'deployment_restart',{}, {accepted:true,generation:6});observe(x,observations([...old,...added],{withdrawn:old,zero:true,generation:6}));return x;}
-const protect=(ids,value=true)=>argsFor('db_proxy_node_protection_set',{instanceIds:ids,protected:value});
+const protect=(ids,value=true)=>argsFor('db_proxy_node_protection_set',{nodeIds:ids,protected:value});
 
 export {binding,scope,old,added,setup,observations,observe,argsFor,mutate,expanded,withdrawn,restarted,protect};
+
+// Synthetic private proof fixture, independent of the production validator.
+export function withResourceProof(input){
+ const s={accountId:'1360282071200743',region:'ap-southeast-1',listenerId:'listener',port:6432,databaseResourceId:'db',...input};const a=s.application;
+ const wire={envCode:s.envCode,accountId:s.accountId,region:s.region,clusterId:a.clusterId,proxyCode:s.proxyCode,groupId:s.groupId,serverGroupId:s.serverGroupId,listenerId:s.listenerId,port:s.port,targetDbCode:s.targetDbCode,databaseResourceId:s.databaseResourceId,application:{envCode:a.envCode,appCode:a.appCode,clusterId:a.clusterId,namespace:a.namespace,name:a.name,uid:a.uid}};
+ return {...s,resolutionDigest:createHash('sha256').update(JSON.stringify(wire)).digest('hex')};
+}

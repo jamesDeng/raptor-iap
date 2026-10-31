@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -16,7 +17,7 @@ func TestReplacementAdmissionDefaultsDisabledAndBindsDedicatedScope(t *testing.T
 	if _, _, _, e = w.admit(in, b.AttemptID); e == nil {
 		t.Fatal("default admitted mutation")
 	}
-	scope := ReplacementScope{EnvCode: b.EnvCode, ProxyCode: b.ObjectCode, GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: b.EnvCode, AppCode: "client", ClusterID: b.ClusterID, Namespace: "test", Name: "client", UID: "uid"}}
+	scope := resourceTestScope(b)
 	w.ReplacementScope = &scope
 	if _, _, _, e = w.admit(in, b.AttemptID); e != nil {
 		t.Fatal(e)
@@ -70,13 +71,13 @@ func TestReplacementWorkerNeverStartsWithForeignAttemptAccess(t *testing.T) {
 func TestRecoveredReplacementRejectsForeignDedicatedScope(t *testing.T) {
 	w, x, driver, _ := workerFixture(t)
 	ctx := context.Background()
-	in := replacementInput(t)
+	in := resourceReplacementInput(t)
 	in.RequestID = x.RequestID
 	b, _, err := ParseLiveOperation(in, NewID())
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := ReplacementScope{EnvCode: b.EnvCode, ProxyCode: b.ObjectCode, GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: b.EnvCode, AppCode: "client", ClusterID: b.ClusterID, Namespace: "test", Name: "client", UID: "uid"}}
+	scope := resourceTestScope(b)
 	w.ReplacementScope = &scope
 	w.Access = &replacementAccessFixture{scope: scope}
 	w.Raptor = questionRaptor{in}
@@ -109,5 +110,140 @@ func TestRecoveredReplacementRejectsForeignDedicatedScope(t *testing.T) {
 	}
 	if driver.startCount != 1 {
 		t.Fatal("recovery replayed mutation")
+	}
+}
+
+func TestResourceWorkerPersistsIssuedProofWithoutStaticMapping(t *testing.T) {
+	w, x, driver, _ := workerFixture(t)
+	ctx := context.Background()
+	in := resourceReplacementInput(t)
+	in.RequestID = x.RequestID
+	b, _, _ := ParseLiveOperation(in, NewID())
+	scope := resourceTestScope(b)
+	w.ReplacementEnabled = true
+	w.Access = &replacementAccessFixture{scope: scope}
+	w.Raptor = questionRaptor{in}
+	if err := w.RunNext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if driver.startCount != 1 {
+		t.Fatal("resource proof did not reach runtime without static provider mapping")
+	}
+	active, _ := w.Store.Get(ctx, x.RequestID)
+	record, err := w.Store.RecoveryRecord(ctx, active.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(record)
+	var saved struct{ ReplacementScope *ReplacementScope }
+	json.Unmarshal(raw, &saved)
+	if saved.ReplacementScope == nil || *saved.ReplacementScope != scope {
+		t.Fatal("complete trusted proof absent from persisted recovery record")
+	}
+	fresh := *w
+	fresh.Owner = "new-owner"
+	foreign := scope
+	foreign.ListenerID = "foreign"
+	driver.result = &LiveResult{RequestID: record.Binding.RequestID, AttemptID: record.Binding.AttemptID, Replacement: &ReplacementConvergence{Scope: foreign}}
+	if err := fresh.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := w.Store.Get(ctx, x.RequestID)
+	if got.Status == "completed" || got.Result != nil {
+		t.Fatal("self-asserted recovered proof accepted")
+	}
+}
+
+func TestIssuedProofJournalIsImmutableAcrossQualificationAttempts(t *testing.T) {
+	w, x, driver, _ := workerFixture(t)
+	ctx := context.Background()
+	in := qualificationInput(t)
+	in.RequestID = x.RequestID
+	b, _, _ := ParseLiveOperation(in, NewID())
+	scope := resourceTestScope(b)
+	access := &replacementAccessFixture{scope: scope}
+	w.QualificationEnabled = true
+	w.Access = access
+	w.Raptor = questionRaptor{in}
+	if err := w.RunNext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := w.Store.Get(ctx, x.RequestID)
+	record, err := w.Store.RecoveryRecord(ctx, first.AttemptID)
+	if err != nil || record.ReplacementScope == nil {
+		t.Fatal("proof not persisted", err)
+	}
+	b = record.Binding
+	if err := w.Store.SaveIssuedScope(ctx, b.AttemptID, "stale", scope); err == nil {
+		t.Fatal("stale owner wrote proof")
+	}
+	if err := w.Store.SaveIssuedScope(ctx, b.AttemptID, w.Owner, scope); err != nil {
+		t.Fatal("identical retry refused", err)
+	}
+	if err := w.Store.SaveIssuedScope(ctx, b.AttemptID, w.Owner, resourceTestScope(b, "retargeted")); err == nil {
+		t.Fatal("valid conflicting proof overwrote first proof")
+	}
+	if err := w.Store.BindLive(ctx, b.AttemptID, w.Owner, b, b.DefinitionSHA256); err != nil {
+		t.Fatal("scalar rebind lost private member", err)
+	}
+	reloaded, err := w.Store.RecoveryRecord(ctx, b.AttemptID)
+	if err != nil || reloaded.ReplacementScope == nil || *reloaded.ReplacementScope != scope {
+		t.Fatal("rebind stripped proof", err)
+	}
+	retry := func() {
+		t.Helper()
+		active, _ := w.Store.Get(ctx, x.RequestID)
+		if err := w.Store.FinalizeLive(ctx, active.AttemptID, w.Owner, LiveOutcome{Status: "failed", FailureCode: "Interrupted", Checkpoint: verifiedCheckpoint(), SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(map[string]string{"attemptId": active.AttemptID})
+		if err := w.Store.DeliverSignal(ctx, Signal{ID: NewID(), RequestID: x.RequestID, Kind: "continue", Payload: raw}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	retry()
+	if err := w.RunNext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := w.Store.Get(ctx, x.RequestID)
+	if second.AttemptID == first.AttemptID || driver.startCount != 2 {
+		t.Fatal("new attempt not started with saved proof")
+	}
+	saved, err := w.Store.RecoveryRecord(ctx, second.AttemptID)
+	if err != nil || saved.ReplacementScope == nil || *saved.ReplacementScope != scope {
+		t.Fatal("new attempt proof changed", err)
+	}
+	retry()
+	access.scope = resourceTestScope(b, "retargeted")
+	if err := w.RunNext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if driver.startCount != 2 {
+		t.Fatal("retargeted proof reached runtime on a later attempt")
+	}
+}
+
+type migrationGateRuntime struct{ *liveDriver }
+
+func (r migrationGateRuntime) Start(context.Context, LiveStart) (RuntimeHandle, error) {
+	return RuntimeHandle{RequestID: r.binding.RequestID}, ErrResourceContractMigrationRequired
+}
+func TestResourceMigrationGatePreservesFailureAndRevokesIssuedAccess(t *testing.T) {
+	w, x, driver, _ := workerFixture(t)
+	in := resourceReplacementInput(t)
+	in.RequestID = x.RequestID
+	b, _, _ := ParseLiveOperation(in, NewID())
+	access := &replacementAccessFixture{scope: resourceTestScope(b)}
+	w.ReplacementEnabled = true
+	w.Access = access
+	w.Raptor = questionRaptor{in}
+	driver.binding = b
+	w.Runtime = migrationGateRuntime{driver}
+	if err := w.RunNext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Store.Get(context.Background(), x.RequestID)
+	if err != nil || got.Status != "failed" || got.FailureCode != "ResourceContractMigrationRequired" || got.RecoveryNeeded || !access.revoked {
+		t.Fatal("migration gate was masked or left issued access", got, err)
 	}
 }

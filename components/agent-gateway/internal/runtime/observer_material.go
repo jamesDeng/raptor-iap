@@ -28,6 +28,8 @@ func (m ObservationMaterial) Validate(b execution.AttemptBinding, s execution.Re
 		EnvCode          string    `json:"envCode"`
 		AccountID        string    `json:"accountId"`
 		Region           string    `json:"region"`
+		DBInstanceID     string    `json:"dbInstanceId"`
+		ListenerID       string    `json:"listenerId"`
 		GroupID          string    `json:"groupId"`
 		ServerGroupID    string    `json:"serverGroupId"`
 		ExpiresAt        time.Time `json:"expiresAt"`
@@ -40,6 +42,9 @@ func (m ObservationMaterial) Validate(b execution.AttemptBinding, s execution.Re
 		} `json:"private"`
 	}
 	if json.Unmarshal(m.Config, &c) != nil || c.Version != 1 || c.RequestID != b.RequestID || c.DefinitionSHA256 != b.DefinitionSHA256 || c.EnvCode != b.EnvCode || c.AccountID != "1360282071200743" || c.Region != "ap-southeast-1" || c.GroupID != s.GroupID || c.ServerGroupID != s.ServerGroupID || c.Application.ClusterID != b.ClusterID || c.Application.Namespace != s.Application.Namespace || c.Application.Name != s.Application.Name || c.Application.UID != s.Application.UID || c.Private.Kubeconfig != "/tmp/raptor-private/kubeconfig" || c.ExpiresAt.Before(time.Now().Add(120*time.Second)) || c.ExpiresAt.After(time.Now().Add(930*time.Second)) {
+		return ErrConfiguration
+	}
+	if s.ResolutionDigest != "" && (!s.ResourceValidFor(b) || c.AccountID != s.AccountID || c.Region != s.Region || c.DBInstanceID != s.DatabaseResourceID || c.ListenerID != s.ListenerID) {
 		return ErrConfiguration
 	}
 	return validateObserverKubeconfig(m.Kubeconfig, b, s, c.ExpiresAt)

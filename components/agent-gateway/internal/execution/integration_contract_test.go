@@ -160,3 +160,25 @@ func TestLiveResultRejectsBadUsageAndConfiguredCluster(t *testing.T) {
 		})
 	}
 }
+
+func TestCurrentResourceQuestionProducerResult(t *testing.T) {
+	var v struct{ Result LiveResult }
+	if e := json.Unmarshal(producerFixture(t, "gateway-resource-execution.json"), &v); e != nil {
+		t.Fatal(e)
+	}
+	var access struct {
+		Data struct{ Binding AttemptBinding }
+	}
+	json.Unmarshal(producerFixture(t, "raptor-access.json"), &access)
+	if e := ValidateLiveResult(v.Result, access.Data.Binding); e != nil {
+		t.Fatal("current source producer rejected", e)
+	}
+	if v.Result.EvidenceVersion != 2 {
+		t.Fatal("unversioned current evidence")
+	}
+	for _, row := range v.Result.Evidence {
+		if row.Tool == "cloud_identity_get" {
+			t.Fatal("invented removed cloud tool")
+		}
+	}
+}

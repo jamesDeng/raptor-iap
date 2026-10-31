@@ -10,6 +10,7 @@ import (
 )
 
 type PublicQualification struct {
+	TransportContract string                       `json:"transportContract,omitempty"`
 	Version           int                          `json:"version"`
 	Passed            bool                         `json:"passed"`
 	ReadOnly          bool                         `json:"readOnly"`
@@ -32,15 +33,22 @@ func validQualificationView(v PublicExecution, r domain.Request) bool {
 		return false
 	}
 	q := v.Result.Qualification
-	if q == nil || q.Version != 1 || !q.Passed || !q.ReadOnly || q.TrafficAcceptance != "not_assessed" || q.ObservedAt.IsZero() || v.Result.GeneratedAt == nil || v.Result.GeneratedAt.IsZero() || v.Result.SelectedModel != r.Definition.Model || v.Result.ActualModel != r.Definition.Model || v.Result.Answer != "Native read-only qualification completed; replacement and traffic acceptance were not executed." || len(q.InstanceIDs) != 2 || len(q.ConnectedNodeIDs) != 2 || q.InstanceIDs[0] == q.InstanceIDs[1] || q.ApprovalID == "" || q.ActionID == "" || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(q.BindingDigest) {
+	if q == nil || (q.Version != 1 && q.Version != 2) || !q.Passed || !q.ReadOnly || q.TrafficAcceptance != "not_assessed" || q.ObservedAt.IsZero() || v.Result.GeneratedAt == nil || v.Result.GeneratedAt.IsZero() || v.Result.SelectedModel != r.Definition.Model || v.Result.ActualModel != r.Definition.Model || v.Result.Answer != "Native read-only qualification completed; replacement and traffic acceptance were not executed." || len(q.InstanceIDs) != 2 || len(q.ConnectedNodeIDs) != 2 || q.InstanceIDs[0] == q.InstanceIDs[1] || q.ApprovalID == "" || q.ActionID == "" || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(q.BindingDigest) {
 		return false
 	}
 	b := agentaccess.Binding{Operation: "db-proxy.replace-nodes", ObjectKind: r.Definition.Object.Kind, ObjectCode: r.Definition.Object.Code, EnvCode: r.Definition.EnvCode, ClusterID: q.Scope.Application.ClusterID, ExecutionMode: "qualification"}
-	if !q.Scope.ValidFor(b) {
+	if !q.Scope.ValidFor(b) || (q.Version == 2 && (q.TransportContract != "raptor-resource-v1" || !q.Scope.ResourceValidFor(b))) {
 		return false
 	}
 	sorted := func(s []string) []string { c := append([]string{}, s...); sort.Strings(c); return c }
 	checks := []string{"mcp.raptor.request_get", "mcp.raptor.environment_get", "mcp.raptor.object_get", "mcp.infra.cloud_identity_get", "mcp.infra.deployments_list", "mcp.infra.deployment_status_get", "cloud.fleet", "cloud.backend", "cloud.capacity", "deployment.status", "metrics.trafficFailures", "metrics.connections", "metrics.pgcatClients"}
+	if q.Version == 2 {
+		for i, name := range checks {
+			if name == "mcp.infra.cloud_identity_get" {
+				checks[i] = "mcp.raptor.deployments_list"
+			}
+		}
+	}
 	if !reflect.DeepEqual(sorted(checks), sorted(q.Checks)) || !reflect.DeepEqual(sorted(q.InstanceIDs), sorted(q.ConnectedNodeIDs)) {
 		return false
 	}

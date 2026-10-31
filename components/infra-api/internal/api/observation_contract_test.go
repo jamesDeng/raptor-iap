@@ -55,3 +55,48 @@ func TestReadObservationEnvelope(t *testing.T) {
 		})
 	}
 }
+
+// Current resource wire fixtures are generated separately; legacy fixtures above
+// remain readable historical contracts and never authorize current execution.
+func TestResourceReadObservationContract(t *testing.T) {
+	f := &resourceFixture{rows: resourceRows()}
+	f.rows.Environment.ClusterID = "cluster"
+	w := &f.rows.ApplicationWorkloads[0]
+	w.ClusterID = "cluster"
+	w.Namespace = "ns"
+	w.Name = "gateway"
+	w.WorkloadKey = "opaque-key"
+	w.Target = domain.Target{EnvCode: "dev", AppCode: "app", ClusterID: "cluster", Namespace: "ns", Name: "gateway", UID: "uid"}
+	op := resourceOperations{reader: &resourceContractReader{}, resolver: f, principal: "user"}
+	for name, query := range map[string]string{"deployments": "envCode=dev&kind=application&code=app", "status": "envCode=dev&appCode=app&workloadKey=opaque-key"} {
+		args, _ := url.ParseQuery(query)
+		route := "/v1/deployments"
+		if name == "status" {
+			route = "/v1/deployment-status"
+		}
+		data, e := op.execute(context.Background(), route, args)
+		if e != nil {
+			t.Fatal(e)
+		}
+		raw, _ := json.Marshal(data)
+		var body map[string]any
+		json.Unmarshal(raw, &body)
+		if body["resource"].(map[string]any)["code"] != "app" {
+			t.Fatal("wrong resource root")
+		}
+		if name == "deployments" && body["observedAt"] != nil {
+			t.Fatal("discovery fabricated freshness")
+		}
+		if dir := os.Getenv("CONTRACT_FIXTURE_DIR"); dir != "" {
+			if e = os.WriteFile(filepath.Join(dir, "infra-resource-"+name+".json"), append(raw, '\n'), 0644); e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
+}
+
+type resourceContractReader struct{ observedReader }
+
+func (r *resourceContractReader) Status(_ context.Context, _ domain.Environment, t domain.Target) (domain.Status, error) {
+	return domain.Status{UID: t.UID, ObservedAt: time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC), EvidenceMode: "live", Generation: 1, ObservedGeneration: 1, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1}, nil
+}

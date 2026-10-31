@@ -113,3 +113,35 @@ func buildSkillsBundle(ctx context.Context, repository string, version execution
 	}
 	return json.Marshal(bundle)
 }
+
+// Validate only verified pinned blobs, before observers, credentials, sandboxes
+// or remote model work. Release names and dirty working copies are irrelevant.
+func resourceReplacementContract(raw []byte) error {
+	var bundle SkillsBundle
+	if json.Unmarshal(raw, &bundle) != nil {
+		return ErrConfiguration
+	}
+	markers := []string{}
+	total := 0
+	for _, file := range bundle.Files {
+		if file.Path != "pgcat-replacement/SKILL.md" && file.Path != "pgcat-replacement/references/contracts.md" && file.Path != "pgcat-replacement/references/recovery.md" {
+			continue
+		}
+		total += len(file.Data)
+		if len(file.Data) > 16384 || total > 16384 {
+			return ErrConfiguration
+		}
+		for _, line := range strings.Split(string(file.Data), "\n") {
+			if strings.HasPrefix(line, "replacement-contract:") {
+				markers = append(markers, line)
+			}
+		}
+	}
+	if len(markers) == 1 && markers[0] == "replacement-contract: direct-v2" {
+		return execution.ErrResourceContractMigrationRequired
+	}
+	if len(markers) != 1 || markers[0] != "replacement-contract: resource-v1" {
+		return ErrConfiguration
+	}
+	return nil
+}
