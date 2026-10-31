@@ -9,7 +9,7 @@ locals {
   proxy_statements = !var.enable_proxy_commands ? [] : [
     { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:${var.region}:${var.account_id}:scalinggroup/*"] },
     { Effect = "Allow", Action = ["ess:DescribeScalingInstances", "ess:ModifyScalingGroup", "ess:SetInstancesProtection"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:ess:${var.region}:${var.account_id}:scalinggroup/${p.group_id}"])) },
-    { Effect = "Allow", Action = ["nlb:ListServerGroups"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"])) },
+    { Effect = "Allow", Action = ["nlb:ListServerGroups"], Resource = sort(distinct(flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:serverGroup/${p.server_group_id}", "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"]]))) },
     { Effect = "Allow", Action = ["nlb:ListListeners"], Resource = ["acs:nlb:${var.region}:${var.account_id}:listener/*"] },
     { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = sort(distinct(flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:serverGroup/${p.server_group_id}", "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"]]))) },
     { Effect = "Allow", Action = ["nlb:RemoveServersFromServerGroup"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"])) },

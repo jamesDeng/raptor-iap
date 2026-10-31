@@ -104,9 +104,9 @@ run "proxy_resolver_read_scope" {
     condition = [for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:ListServerGroups")] == [{
       Effect   = "Allow"
       Action   = ["nlb:ListServerGroups"]
-      Resource = ["acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"]
+      Resource = ["acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-z", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"]
     }]
-    error_message = "Server-group discovery must be granted exactly once on the sorted, distinct configured server groups."
+    error_message = "Server-group discovery must be granted exactly once on the sorted, distinct case aliases of the configured server groups."
   }
   assert {
     condition = [for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:ListListeners")] == [{
