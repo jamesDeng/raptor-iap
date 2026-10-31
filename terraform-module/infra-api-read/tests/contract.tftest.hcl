@@ -24,6 +24,14 @@ run "read_only_contract" {
   }
 }
 
+run "read_policy_version_rotation" {
+  command = plan
+  assert {
+    condition     = alicloud_ram_policy.read.rotate_strategy == "DeleteOldestNonDefaultVersionWhenLimitExceeded"
+    error_message = "The read policy must use managed rotation of the oldest non-default version when the version limit is reached."
+  }
+}
+
 run "wrong_account" {
   command = plan
   variables { account_id = "9999999999999999" }

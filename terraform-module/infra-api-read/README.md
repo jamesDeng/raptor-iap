@@ -7,6 +7,8 @@ With `enable_proxy_commands = true`, the existing function role's policy include
 
 Both reads are omitted when proxy commands are disabled. Existing mutation actions, resources, role trust, attachments and Terraform resource addresses are unchanged.
 
+The existing read policy uses `rotate_strategy = "DeleteOldestNonDefaultVersionWhenLimitExceeded"`: managed rotation deletes only the oldest non-default policy version when the version limit is reached; it does not delete the active/default version. Parent inspection found versions v1–v5 with v5 active, so the next policy update needs this prerequisite. Apply is pending a private backup of v1 and owner authorization for deletion of that historical non-default version.
+
 The 2026-10-31 parent qualification verified that policy v5's server-group case aliases were applied and the actual function role's `ListServerGroups` read succeeded. The next `ListListeners` read returned `Forbidden.NoPermission` for the same configured NLB despite the existing listener wildcard. The exact-NLB aliases are a compatibility hypothesis; the listener denial's cause and the correction remain unproven until the actual role's read succeeds after the reviewed Terraform apply.
 
 This listener correction is unapplied and has no live PASS. Mock-provider contract tests verify generated policy only; they are not a remote Terraform plan or live authorization check. Review the concrete Terraform plan and its sanitized PR comment, then use the existing reviewed GitOps apply flow. Expect only the intended in-place policy update plus existing identity-refresh guard/data-source reads; investigate any unrelated change. No manual grant or borrowed operator role is part of this proposal.
