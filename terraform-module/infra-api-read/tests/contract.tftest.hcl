@@ -88,6 +88,64 @@ run "proxy_permissions_and_routes" {
     error_message = "Never grant direct node termination."
   }
 }
+run "proxy_resolver_read_scope" {
+  command = plan
+  variables {
+    ack_only              = true
+    cluster_id            = "cluster"
+    enable_proxy_commands = true
+    proxy_targets = {
+      first     = { group_id = "asg-z", server_group_id = "sgp-z", load_balancer_id = "nlb-z" }
+      second    = { group_id = "asg-a", server_group_id = "sgp-a", load_balancer_id = "nlb-a" }
+      duplicate = { group_id = "asg-z", server_group_id = "sgp-z", load_balancer_id = "nlb-z" }
+    }
+  }
+  assert {
+    condition = [for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:ListServerGroups")] == [{
+      Effect   = "Allow"
+      Action   = ["nlb:ListServerGroups"]
+      Resource = ["acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"]
+    }]
+    error_message = "Server-group discovery must be granted exactly once on the sorted, distinct configured server groups."
+  }
+  assert {
+    condition = [for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:ListListeners")] == [{
+      Effect   = "Allow"
+      Action   = ["nlb:ListListeners"]
+      Resource = ["acs:nlb:ap-southeast-1:1234567890123456:listener/*"]
+    }]
+    error_message = "Listener discovery must be granted exactly once on the selected account and region listener wildcard."
+  }
+  assert {
+    condition = [for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if !contains(s.Action, "nlb:ListServerGroups") && !contains(s.Action, "nlb:ListListeners")] == [
+      { Effect = "Allow", Action = ["sts:GetCallerIdentity"], Resource = ["*"] },
+      { Effect = "Allow", Action = ["cs:DescribeClusterUserKubeconfig"], Resource = ["acs:cs:ap-southeast-1:1234567890123456:cluster/cluster"] },
+      { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/*"] },
+      { Effect = "Allow", Action = ["ess:DescribeScalingInstances", "ess:ModifyScalingGroup", "ess:SetInstancesProtection"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-a", "acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-z"] },
+      { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-z", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
+      { Effect = "Allow", Action = ["nlb:RemoveServersFromServerGroup"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
+      { Effect = "Allow", Action = ["nlb:GetListenerAttribute", "nlb:GetListenerHealthStatus"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-a", "acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-z"] }
+    ]
+    error_message = "Only the two resolver reads may be added; all existing actions and resources, including mutation grants, must remain unchanged."
+  }
+}
+
+run "proxy_disabled_omits_resolver_reads" {
+  command = plan
+  variables {
+    ack_only              = true
+    cluster_id            = "cluster"
+    enable_proxy_commands = false
+    proxy_targets = {
+      proxy = { group_id = "asg-test", server_group_id = "sgp-test", load_balancer_id = "nlb-test" }
+    }
+  }
+  assert {
+    condition     = length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:ListServerGroups") || contains(s.Action, "nlb:ListListeners")]) == 0
+    error_message = "Configured targets must not grant resolver reads when proxy commands are disabled."
+  }
+}
+
 run "infra_gitops_permission_owner" {
   command = plan
   override_resource {
