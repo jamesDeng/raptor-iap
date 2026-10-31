@@ -18,6 +18,7 @@ func TestReplacementAdmissionDefaultsDisabledAndBindsDedicatedScope(t *testing.T
 		t.Fatal("default admitted mutation")
 	}
 	scope := resourceTestScope(b)
+	w.ReplacementEnabled = true
 	w.ReplacementScope = &scope
 	if _, _, _, e = w.admit(in, b.AttemptID); e != nil {
 		t.Fatal(e)
@@ -55,6 +56,7 @@ func TestReplacementWorkerNeverStartsWithForeignAttemptAccess(t *testing.T) {
 	scope := ReplacementScope{EnvCode: b.EnvCode, ProxyCode: b.ObjectCode, GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: b.EnvCode, AppCode: "client", ClusterID: b.ClusterID, Namespace: "test", Name: "client", UID: "uid"}}
 	access := &replacementAccessFixture{scope: scope, foreign: true}
 	w.Access = access
+	w.ReplacementEnabled = true
 	w.ReplacementScope = &scope
 	w.Raptor = questionRaptor{in}
 	if e = w.RunNext(context.Background()); e != nil {
@@ -78,6 +80,7 @@ func TestRecoveredReplacementRejectsForeignDedicatedScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := resourceTestScope(b)
+	w.ReplacementEnabled = true
 	w.ReplacementScope = &scope
 	w.Access = &replacementAccessFixture{scope: scope}
 	w.Raptor = questionRaptor{in}
@@ -245,5 +248,48 @@ func TestResourceMigrationGatePreservesFailureAndRevokesIssuedAccess(t *testing.
 	got, err := w.Store.Get(context.Background(), x.RequestID)
 	if err != nil || got.Status != "failed" || got.FailureCode != "ResourceContractMigrationRequired" || got.RecoveryNeeded || !access.revoked {
 		t.Fatal("migration gate was masked or left issued access", got, err)
+	}
+}
+
+func TestExplicitEnableFlagCannotBeBypassedByScopeFence(t *testing.T) {
+	for _, mode := range []string{"qualification", "replacement"} {
+		t.Run(mode, func(t *testing.T) {
+			in := resourceReplacementInput(t)
+			if mode == "qualification" {
+				in = qualificationInput(t)
+			}
+			b, _, err := ParseLiveOperation(in, NewID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			fence := ReplacementScope{EnvCode: b.EnvCode, ProxyCode: b.ObjectCode, GroupID: "group", ServerGroupID: "backend", TargetDBCode: "db", Application: ApplicationScope{EnvCode: b.EnvCode, AppCode: "client", ClusterID: b.ClusterID, Namespace: "test", Name: "client", UID: "uid"}}
+			if !fence.ValidFor(b) {
+				t.Fatal("fixture fence is invalid")
+			}
+			worker := LiveWorker{ReplacementScope: &fence, QualificationScope: &fence}
+			if _, _, _, err = worker.admit(in, b.AttemptID); err == nil {
+				t.Fatal("false enable flag bypassed by valid scope fence")
+			}
+			if mode == "qualification" {
+				worker.ReplacementEnabled = true
+			} else {
+				worker.QualificationEnabled = true
+			}
+			if _, _, _, err = worker.admit(in, b.AttemptID); err == nil {
+				t.Fatal("other mode's enable flag admitted request")
+			}
+			if mode == "qualification" {
+				worker.QualificationEnabled = true
+			} else {
+				worker.ReplacementEnabled = true
+			}
+			if _, _, _, err = worker.admit(in, b.AttemptID); err != nil {
+				t.Fatal("explicitly enabled matching fence refused", err)
+			}
+			fence.ProxyCode = "foreign"
+			if _, _, _, err = worker.admit(in, b.AttemptID); err == nil {
+				t.Fatal("enabled execution bypassed narrowing fence")
+			}
+		})
 	}
 }

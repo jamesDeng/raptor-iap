@@ -142,7 +142,7 @@ func (w *LiveWorker) admit(in ExecutionInput, attempt string) (AttemptBinding, s
 		}
 		return b, operation.Instruction, b.DefinitionSHA256, nil
 	}
-	if (b.ExecutionMode == "qualification" && !w.QualificationEnabled && w.QualificationScope == nil) || (b.ExecutionMode != "qualification" && !w.ReplacementEnabled && w.ReplacementScope == nil) {
+	if (b.ExecutionMode == "qualification" && !w.QualificationEnabled) || (b.ExecutionMode != "qualification" && !w.ReplacementEnabled) {
 		return AttemptBinding{}, "", "", ErrInvalid
 	}
 	if fence := w.scopeFor(b); fence != nil && !fence.ValidFor(b) {

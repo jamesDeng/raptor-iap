@@ -1,3 +1,4 @@
+import {operationToolSchema} from './operation-profile.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';
 const binding={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',operation:'application.question',objectKind:'application',objectCode:'app',envCode:'rdev.ali',skillsCommit:'0123456789012345678901234567890123456789',model:'gpt-5.6-luna'};
 test('qualification MCP tool calls finish serially and stop after a failed read',async()=>{
@@ -40,13 +41,13 @@ test('MCP diagnostics classify failed read boundaries without exporting remote t
  assert.deepEqual(diagnostics,[{server:'infra',tool:'deployments_list',category:'local-selector'},{server:'infra',tool:'deployments_list',category:'remote-tool-error'},{server:'infra',tool:'deployments_list',category:'remote-ScopeMismatch'},{server:'infra',tool:'deployments_list',category:'local-evidence'},{server:'infra',tool:'deployments_list',category:'transport-error'}]);
 });
 
-test('read-only runtime filters the known restart tool and blocks its use', async()=>{const {createGuardedFetch}=await import('./mcp-runtime.mjs');let calls=0;const guarded=createGuardedFetch({server:'infra',url:'https://infra.example/mcp',binding,fetch:async()=>{calls++;return new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools:['cloud_identity_get','deployments_list','deployment_status_get','deployment_restart'].map(name=>({name}))}}),{headers:{'Content-Type':'application/json'}})}});const r=await guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});assert.equal((await r.json()).result.tools.length,2);await assert.rejects(()=>guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'deployment_restart',arguments:{}}})}),/ScopeMismatch/);assert.equal(calls,1);});
+test('read-only runtime filters the known restart tool and blocks its use', async()=>{const {createGuardedFetch}=await import('./mcp-runtime.mjs');let calls=0;const guarded=createGuardedFetch({server:'infra',url:'https://infra.example/mcp',binding,fetch:async()=>{calls++;return new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools:['cloud_identity_get','deployments_list','deployment_status_get','deployment_restart'].map(name=>({name,...(['deployments_list','deployment_status_get'].includes(name)?{inputSchema:operationToolSchema('infra',name)}:{})}))}}),{headers:{'Content-Type':'application/json'}})}});const r=await guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});assert.equal((await r.json()).result.tools.length,2);await assert.rejects(()=>guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'deployment_restart',arguments:{}}})}),/ScopeMismatch/);assert.equal(calls,1);});
 
 
 test('catalog filters unrelated tools while retaining only question capabilities',async()=>{
  const {createGuardedFetch}=await import('./mcp-runtime.mjs');
  const names=['cloud_identity_get','deployments_list','deployment_status_get','db_proxy_scale','future_admin_tool'];
- const guarded=createGuardedFetch({server:'infra',url:'https://infra.example/mcp',binding,fetch:async()=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools:names.map(name=>({name}))}}),{headers:{'Content-Type':'application/json'}})});
+ const guarded=createGuardedFetch({server:'infra',url:'https://infra.example/mcp',binding,fetch:async()=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools:names.map(name=>({name,...(['deployments_list','deployment_status_get'].includes(name)?{inputSchema:operationToolSchema('infra',name)}:{})}))}}),{headers:{'Content-Type':'application/json'}})});
  const response=await guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});
  assert.deepEqual((await response.json()).result.tools.map(t=>t.name),['deployments_list','deployment_status_get']);
 });
@@ -132,4 +133,24 @@ test('logical application discovery retains opaque workload keys and refuses for
  await call('deployment_status_get',{envCode:binding.envCode,appCode:'app',workloadKey:w.workloadKey});assert.equal(evidence.at(-1).identity.uid,'uid');assert.ok(Date.parse(evidence.at(-1).observedAt)<Date.now()-500);
  damage='key';await assert.rejects(()=>call('deployment_status_get',{envCode:binding.envCode,appCode:'app',workloadKey:w.workloadKey}),/IdentityChanged/);
  damage='conflict';await assert.rejects(()=>call('deployments_list',{envCode:binding.envCode,kind:'application',code:'app'}),/InvalidEvidence/);
+});
+
+test('question catalog rejects legacy provider selectors and malformed current schemas before exposure',async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');const {operationToolSchema}=await import('./operation-profile.mjs');
+ const legacy={type:'object',properties:Object.fromEntries(['envCode','appCode','clusterId','namespace','name','uid'].map(key=>[key,{type:'string'}])),required:['envCode','appCode','clusterId','namespace','name','uid'],additionalProperties:false};
+ const current=operationToolSchema('infra','deployment_status_get');
+ for(const inputSchema of [legacy,undefined,{...current,required:['envCode','appCode','workloadKey']}]){
+  let exposed=0;const tools=[{name:'deployments_list',inputSchema:operationToolSchema('infra','deployments_list')},{name:'deployment_status_get',inputSchema}];
+  const guarded=createGuardedFetch({server:'infra',url:'https://infra.example/mcp',binding,onCatalog:()=>exposed++,fetch:async()=>Response.json({jsonrpc:'2.0',id:1,result:{tools}})});
+  await assert.rejects(()=>guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})}),/UnexpectedToolSchema/);assert.equal(exposed,0);
+ }
+});
+test('question and repository catalogs retain legitimate current schemas including optional workload key',async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');const {operationToolSchema,operationCapabilities}=await import('./operation-profile.mjs');
+ for(const b of [binding,{...binding,operation:'repository.change'}])for(const [server,names] of Object.entries(operationCapabilities(b))){
+  if(!names.length)continue;const tools=names.map(name=>({name,inputSchema:operationToolSchema(server,name)}));
+  const guarded=createGuardedFetch({server,url:`https://${server}.example/mcp`,binding:b,fetch:async()=>Response.json({jsonrpc:'2.0',id:1,result:{tools}})});
+  const response=await guarded(`https://${server}.example/mcp`,{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});const visible=(await response.json()).result.tools;
+  assert.deepEqual(visible,tools);const status=visible.find(tool=>tool.name==='deployment_status_get');if(status){assert.deepEqual(status.inputSchema.required,['envCode','appCode']);assert.equal(status.inputSchema.properties.workloadKey.type,'string');}
+ }
 });
