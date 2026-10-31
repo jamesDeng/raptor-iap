@@ -72,6 +72,10 @@ func scan(row pgx.Row) (domain.Approval, error) {
 func (s *Service) Get(ctx context.Context, id string) (domain.Approval, error) {
 	return scan(s.Pool.QueryRow(ctx, "SELECT id::text,request_id::text,action_id,binding,state,guidance FROM raptor.approvals WHERE id=$1", id))
 }
+func requestInactive(state, control string) bool {
+	return control != "" || state == "blocked" || state == "cancelled" || state == "completed"
+}
+
 func (s *Service) Request(ctx context.Context, in ApprovalInput) (domain.Approval, error) {
 	if in.Interface == "ess.scale-in" {
 		return domain.Approval{}, domain.ErrInvalid
@@ -79,6 +83,21 @@ func (s *Service) Request(ctx context.Context, in ApprovalInput) (domain.Approva
 	b, e := canonical(in)
 	if e != nil {
 		return domain.Approval{}, e
+	}
+	// QueryRow.Scan releases its pool connection before any external proof work.
+	var state, kind, env, control string
+	e = s.Pool.QueryRow(ctx, "SELECT status,coalesce(definition->>'type',''),coalesce(definition->>'envCode',''),control_state FROM raptor.requests WHERE id=$1", in.RequestID).Scan(&state, &kind, &env, &control)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return domain.Approval{}, domain.ErrNotFound
+	}
+	if e != nil {
+		return domain.Approval{}, domain.ErrUnavailable
+	}
+	if kind != "agent" || env != in.EnvCode {
+		return domain.Approval{}, domain.ErrInvalid
+	}
+	if requestInactive(state, control) {
+		return domain.Approval{}, domain.ErrConflict
 	}
 	var verify ResourceVerification
 	if in.Interface == "db-proxy.scale-in" || in.Interface == "runtime.qualification-resume" {
@@ -98,14 +117,14 @@ func (s *Service) Request(ctx context.Context, in ApprovalInput) (domain.Approva
 		return domain.Approval{}, domain.ErrUnavailable
 	}
 	defer tx.Rollback(ctx)
-	var state, kind, env string
-	if e = tx.QueryRow(ctx, "SELECT status,coalesce(definition->>'type',''),coalesce(definition->>'envCode','') FROM raptor.requests WHERE id=$1 FOR UPDATE", in.RequestID).Scan(&state, &kind, &env); e != nil {
+	// Recheck under the request lock; the nonlocking precheck grants no authority.
+	if e = tx.QueryRow(ctx, "SELECT status,coalesce(definition->>'type',''),coalesce(definition->>'envCode',''),control_state FROM raptor.requests WHERE id=$1 FOR UPDATE", in.RequestID).Scan(&state, &kind, &env, &control); e != nil {
 		return domain.Approval{}, domain.ErrNotFound
 	}
 	if kind != "agent" || env != in.EnvCode {
 		return domain.Approval{}, domain.ErrInvalid
 	}
-	if state == "cancelled" || state == "completed" {
+	if requestInactive(state, control) {
 		return domain.Approval{}, domain.ErrConflict
 	}
 	if verify != nil {
