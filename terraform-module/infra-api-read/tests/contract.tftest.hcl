@@ -24,6 +24,14 @@ run "read_only_contract" {
   }
 }
 
+run "read_policy_version_rotation" {
+  command = plan
+  assert {
+    condition     = alicloud_ram_policy.read.rotate_strategy == "DeleteOldestNonDefaultVersionWhenLimitExceeded"
+    error_message = "The read policy must use managed rotation of the oldest non-default version when the version limit is reached."
+  }
+}
+
 run "wrong_account" {
   command = plan
   variables { account_id = "9999999999999999" }
@@ -112,9 +120,9 @@ run "proxy_resolver_read_scope" {
     condition = [for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:ListListeners")] == [{
       Effect   = "Allow"
       Action   = ["nlb:ListListeners"]
-      Resource = ["acs:nlb:ap-southeast-1:1234567890123456:listener/*"]
+      Resource = ["acs:nlb:ap-southeast-1:1234567890123456:listener/*", "acs:nlb:ap-southeast-1:1234567890123456:loadBalancer/nlb-a", "acs:nlb:ap-southeast-1:1234567890123456:loadBalancer/nlb-z", "acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-a", "acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-z"]
     }]
-    error_message = "Listener discovery must be granted exactly once on the selected account and region listener wildcard."
+    error_message = "Listener discovery must preserve the selected account and region listener wildcard and add only sorted, distinct case aliases of the configured load balancers."
   }
   assert {
     condition = [for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if !contains(s.Action, "nlb:ListServerGroups") && !contains(s.Action, "nlb:ListListeners")] == [
