@@ -5,5 +5,5 @@ module "node" {
   admin_cidr          = var.admin_cidr
   gitops_state_bucket = "raptor-iap-tfstate-sg-200743"
   gitops_plan_role    = "raptor-iap-rdev-plan"
-  gitops_apply_role   = "raptor-iap-rdev-apply"
+  gitops_apply_role   = "raptor-ecs-ax-gitops-apply"
 }

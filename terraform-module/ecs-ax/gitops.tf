@@ -1,5 +1,5 @@
-# The shared OIDC roles are prerequisites. This component owns only their
-# exact AX state and instance permissions; no role is created in an environment root.
+# The shared OIDC provider and plan role are prerequisites. This component
+# owns its dedicated apply role and exact AX state and instance permissions.
 variable "gitops_state_bucket" {
   type    = string
   default = ""
@@ -26,10 +26,32 @@ resource "terraform_data" "gitops_guard" {
   count = length(local.gitops_roles) == 0 ? 0 : 1
   lifecycle {
     precondition {
-      condition     = var.gitops_state_bucket == "raptor-iap-tfstate-sg-200743" && var.gitops_plan_role == "raptor-iap-rdev-plan" && var.gitops_apply_role == "raptor-iap-rdev-apply"
-      error_message = "AX GitOps requires the existing reviewed POC roles and state bucket."
+      condition     = var.gitops_state_bucket == "raptor-iap-tfstate-sg-200743" && var.gitops_plan_role == "raptor-iap-rdev-plan" && var.gitops_apply_role == "raptor-ecs-ax-gitops-apply"
+      error_message = "AX GitOps requires the reviewed POC plan role, AX apply role and state bucket."
     }
   }
+}
+
+resource "alicloud_ram_role" "gitops_apply" {
+  count                = length(local.gitops_roles) == 0 ? 0 : 1
+  role_name            = "raptor-ecs-ax-gitops-apply"
+  force                = false
+  max_session_duration = 3600
+  assume_role_policy_document = jsonencode({
+    Version = "1"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Federated = ["acs:ram::1360282071200743:oidc-provider/raptor-iap-github"] }
+      Condition = { StringEquals = {
+        "oidc:iss" = "https://token.actions.githubusercontent.com"
+        "oidc:aud" = "sts.aliyuncs.com"
+        "oidc:sub" = "repo:jamesDeng@4443650/raptor-iap@1397422754:environment:rdev.ali-apply"
+      } }
+    }]
+  })
+  depends_on = [terraform_data.guard, terraform_data.gitops_guard]
+  lifecycle { prevent_destroy = true }
 }
 
 resource "alicloud_ram_policy" "gitops" {
@@ -53,7 +75,7 @@ resource "alicloud_ram_policy" "gitops" {
 
 resource "alicloud_ram_role_policy_attachment" "gitops" {
   for_each    = local.gitops_roles
-  role_name   = each.value
+  role_name   = each.key == "apply" ? alicloud_ram_role.gitops_apply[0].role_name : each.value
   policy_name = alicloud_ram_policy.gitops[each.key].policy_name
   policy_type = "Custom"
   lifecycle { prevent_destroy = true }

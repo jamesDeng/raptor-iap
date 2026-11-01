@@ -128,7 +128,7 @@ jobs:
         run: gh run download "$RUN_ID" --name encrypted-ax-plan --dir "$RUNNER_TEMP/saved-plan"
       - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
         with:
-          role-to-assume: ${{ vars.RDEV_APPLY_ROLE_ARN }}
+          role-to-assume: acs:ram::1360282071200743:role/raptor-ecs-ax-gitops-apply
           oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
           audience: sts.aliyuncs.com
           role-session-expiration: 3600
