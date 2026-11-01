@@ -65,6 +65,7 @@ resource "alicloud_ram_policy" "gitops" {
     { Effect = "Allow", Action = ["ram:GetPolicy", "ram:GetPolicyVersion", "ram:ListPolicyVersions", "ram:ListEntitiesForPolicy"], Resource = local.gitops_policy_arns },
     { Effect = "Allow", Action = ["ram:GetRole", "ram:ListPoliciesForRole"], Resource = local.gitops_role_arns }
     ], each.key == "apply" ? [
+    { Effect = "Allow", Action = ["ecs:Describe*", "vpc:Describe*", "sts:GetCallerIdentity"], Resource = ["*"] },
     { Effect = "Allow", Action = ["ecs:StopInstance", "ecs:StartInstance", "ecs:ModifyInstanceSpec"], Resource = ["acs:ecs:ap-southeast-1:1360282071200743:instance/i-t4nj9k37b82g5a64x424"] },
     { Effect = "Allow", Action = ["ram:CreatePolicyVersion", "ram:DeletePolicyVersion"], Resource = local.gitops_policy_arns },
     { Effect = "Allow", Action = ["ram:AttachPolicyToRole"], Resource = concat(local.gitops_policy_arns, local.gitops_role_arns) }
