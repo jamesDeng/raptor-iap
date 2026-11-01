@@ -44,7 +44,7 @@ resource "alicloud_instance" "node" {
   instance_name              = "raptor-ecs-ax"
   host_name                  = "raptor-ecs-ax"
   image_id                   = "ubuntu_24_04_x64_20G_alibase_20260916.vhd"
-  instance_type              = "ecs.g7.xlarge"
+  instance_type              = "ecs.u2i-c1m8.large"
   instance_charge_type       = "PostPaid"
   vswitch_id                 = "vsw-t4nop9qf6v46gw2sa8l7d"
   security_groups            = [alicloud_security_group.node.id]
@@ -56,4 +56,5 @@ resource "alicloud_instance" "node" {
   internet_max_bandwidth_out = 5
   deletion_protection        = true
   tags                       = local.tags
+  lifecycle { prevent_destroy = true }
 }

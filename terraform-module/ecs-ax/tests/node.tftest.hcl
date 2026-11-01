@@ -9,7 +9,7 @@ variables {
 run "single_persistent_node" {
   command = plan
   assert {
-    condition     = alicloud_instance.node.instance_type == "ecs.g7.xlarge" && alicloud_instance.node.system_disk_encrypted && alicloud_instance.node.system_disk_size == 120
+    condition     = alicloud_instance.node.instance_type == "ecs.u2i-c1m8.large" && alicloud_instance.node.system_disk_encrypted && alicloud_instance.node.system_disk_size == 120
     error_message = "POC requires one persistent encrypted node."
   }
   assert {
@@ -29,4 +29,23 @@ run "reject_wrong_account" {
     values = { id = "9999999999999999" }
   }
   expect_failures = [terraform_data.guard]
+}
+
+run "component_owned_gitops_permissions" {
+  command = plan
+  variables {
+    gitops_state_bucket = "raptor-iap-tfstate-sg-200743"
+    gitops_plan_role    = "raptor-iap-rdev-plan"
+    gitops_apply_role   = "raptor-ecs-ax-gitops-apply"
+  }
+  assert {
+    condition = (
+      length(alicloud_ram_policy.gitops) == 2 &&
+      alicloud_ram_role_policy_attachment.gitops["apply"].role_name == "raptor-ecs-ax-gitops-apply" &&
+      jsondecode(alicloud_ram_role.gitops_apply[0].assume_role_policy_document).Statement[0].Condition.StringEquals["oidc:sub"] == "repo:jamesDeng@4443650/raptor-iap@1397422754:environment:rdev.ali-apply" &&
+      contains(flatten([for statement in jsondecode(alicloud_ram_policy.gitops["apply"].policy_document).Statement : statement.Action]), "ecs:ModifyInstanceSpec") &&
+      !contains(flatten([for statement in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : statement.Action]), "ecs:ModifyInstanceSpec")
+    )
+    error_message = "AX component must own scoped GitOps access; the plan role remains read-only."
+  }
 }
