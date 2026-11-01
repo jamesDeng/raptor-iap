@@ -66,9 +66,18 @@ func (p *reader) ObserveProxy(ctx context.Context, env domain.Environment, targe
 	if kind == "fleet" {
 		return domain.ProxyObservation{Fleet: &domain.FleetObservation{GroupID: m.GroupID, Instances: members, ObservedAt: time.Now().UTC()}}, nil
 	}
-	nodes, err := p.proxy.observationBackends(ctx, env, m)
+	backend, err := p.observeBackend(ctx, env, m, members)
 	if err != nil {
 		return domain.ProxyObservation{}, err
+	}
+	return domain.ProxyObservation{Backend: &backend}, nil
+}
+
+// Both the legacy backend read and the complete bundle use these same checks.
+func (p *reader) observeBackend(ctx context.Context, env domain.Environment, m domain.ProxyMapping, members []domain.FleetNode) (domain.BackendObservation, error) {
+	nodes, err := p.proxy.observationBackends(ctx, env, m)
+	if err != nil {
+		return domain.BackendObservation{}, err
 	}
 	weights := map[string]bool{}
 	for _, n := range nodes {
@@ -76,7 +85,7 @@ func (p *reader) ObserveProxy(ctx context.Context, env domain.Environment, targe
 	}
 	bad, err := p.proxy.unhealthy(ctx, env, m, weights)
 	if err != nil {
-		return domain.ProxyObservation{}, err
+		return domain.BackendObservation{}, err
 	}
 	fleet := map[string]domain.FleetNode{}
 	for _, n := range members {
@@ -86,11 +95,11 @@ func (p *reader) ObserveProxy(ctx context.Context, env domain.Environment, targe
 		n := &nodes[i]
 		member, ok := fleet[n.InstanceID]
 		if !ok {
-			return domain.ProxyObservation{}, domain.ErrScope
+			return domain.BackendObservation{}, domain.ErrScope
 		}
 		n.Healthy = (member.LifecycleState == "Protected" || member.LifecycleState == "InService") && member.HealthStatus == "Healthy" && n.Status == "Available" && n.Registered && !bad[n.InstanceID]
 	}
-	return domain.ProxyObservation{Backend: &domain.BackendObservation{ServerGroupID: m.ServerGroupID, ListenerID: m.ListenerID, Nodes: nodes, ObservedAt: time.Now().UTC()}}, nil
+	return domain.BackendObservation{ServerGroupID: m.ServerGroupID, ListenerID: m.ListenerID, Nodes: nodes, ObservedAt: time.Now().UTC()}, nil
 }
 
 func observationLifecycle(state string) bool {
