@@ -174,6 +174,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except RuntimeError as error:
+        print(f"AX Terraform execution failed at {error}; private output withheld.", file=sys.stderr)
+        sys.exit(1)
     except Exception:
         print("AX Terraform execution failed; private output withheld.", file=sys.stderr)
         sys.exit(1)
