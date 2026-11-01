@@ -1,0 +1,148 @@
+name: Terraform ECS AX GitOps
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra-terraform/environments/rdev.ali/ecs-ax/**'
+      - 'terraform-module/ecs-ax/**'
+      - 'scripts/ecs_ax_terraform/**'
+      - '.github/workflows/terraform-ecs-ax-gitops.yml'
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: 'Exact reviewed main commit, after a fresh whole-account cost check'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ecs-ax-pr-{0}', github.event.pull_request.number) || 'ecs-ax-state' }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Verify AX Terraform and plan guard
+        run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          python3 -m unittest discover -s scripts/ecs_ax_terraform -v
+          terraform -chdir=terraform-module/ecs-ax fmt -check -recursive
+          terraform -chdir=terraform-module/ecs-ax init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform-module/ecs-ax test
+          terraform -chdir=infra-terraform/environments/rdev.ali/ecs-ax fmt -check
+          terraform -chdir=infra-terraform/environments/rdev.ali/ecs-ax init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infra-terraform/environments/rdev.ali/ecs-ax validate
+  plan:
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    environment: rdev.ali-plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      changed: ${{ steps.private_plan.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Verify manual source pin
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          ACTUAL_SHA: ${{ steps.source.outputs.sha }}
+          EXPECTED_SHA: ${{ inputs.expected_source_sha }}
+        run: test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.RDEV_PLAN_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-expiration: 1800
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Private plan and sanitized summary
+        id: private_plan
+        env:
+          TF_SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          TF_STACK_INPUTS: ${{ secrets.TF_ECS_AX_STACK_INPUTS }}
+          TF_SUMMARY_PATH: ${{ runner.temp }}/ax-summary.md
+          TF_PLAN_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.TF_PLAN_ENCRYPTION_KEY || '' }}
+          TF_ENCRYPTED_PLAN_PATH: ${{ github.event_name == 'workflow_dispatch' && format('{0}/ax-plan.enc', runner.temp) || '' }}
+        run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          python3 scripts/ecs_ax_terraform/runner.py plan
+          cat "$RUNNER_TEMP/ax-summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Post sanitized plan result to PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          if [ ! -f "$RUNNER_TEMP/ax-summary.md" ]; then
+            printf 'Terraform AX plan failed for `%s`. Private output withheld; inspect workflow checks.\n' "$SOURCE_SHA" > "$RUNNER_TEMP/ax-summary.md"
+          fi
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/ax-summary.md"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: github.event_name == 'workflow_dispatch' && steps.private_plan.outputs.changed == 'true'
+        with:
+          name: encrypted-ax-plan
+          path: ${{ runner.temp }}/ax-plan.enc
+          if-no-files-found: error
+          retention-days: 1
+  apply:
+    needs: [check, plan]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.plan.outputs.changed == 'true'
+    environment: rdev.ali-apply
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          persist-credentials: false
+      - name: Download this run's encrypted plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run download "$RUN_ID" --name encrypted-ax-plan --dir "$RUNNER_TEMP/saved-plan"
+      - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.RDEV_APPLY_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-expiration: 3600
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: Apply exact reviewed saved plan
+        env:
+          TF_SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+          TF_EXPECTED_SHA: ${{ inputs.expected_source_sha }}
+          TF_STACK_INPUTS: ${{ secrets.TF_ECS_AX_STACK_INPUTS }}
+          TF_PLAN_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+          TF_ENCRYPTED_PLAN_PATH: ${{ runner.temp }}/saved-plan/ax-plan.enc
+        run: |
+          python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+          python3 scripts/ecs_ax_terraform/runner.py apply
