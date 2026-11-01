@@ -59,9 +59,15 @@ export async function runGatewayObservation(input,{probe=invokeProbe,fetch=globa
    if(!envelope||Object.keys(envelope).join(',')!=='data'||!envelope.data||typeof envelope.data!=='object')throw invalid();
    return envelope.data;
   };
+  let metricBatch;
   const tools=createObservationTools({binding,config:input.config,replacementScope:scope,fetch,
    readCloud:async({kind})=>resourceObservation(await call('proxy_observation_get',{kind}),scope,kind),
-   readPgcatSeries:async series=>{if(!metricSeries.includes(series))throw invalid();const data=resourceObservation(await call('proxy_pgcat_metrics_get',{series}),scope,'metrics');if(data.series!==series||Object.keys(data).sort().join(',')!=='observedAt,rows,series'||!Number.isFinite(Date.parse(data.observedAt))||!Array.isArray(data.rows))throw invalid();return data.rows;},
+   readPgcatSeries:async series=>{
+    if(!metricSeries.includes(series))throw invalid();
+    // Fleet/backend reads initialize this session first; reuse raw rows only within this observation.
+    metricBatch??=Promise.all(metricSeries.map(async selected=>{const data=resourceObservation(await call('proxy_pgcat_metrics_get',{series:selected}),scope,'metrics');if(data.series!==selected||Object.keys(data).sort().join(',')!=='observedAt,rows,series'||!Number.isFinite(Date.parse(data.observedAt))||!Array.isArray(data.rows))throw invalid();return data.rows;}));
+    return (await metricBatch)[metricSeries.indexOf(series)];
+   },
    exec:(command,args,env)=>{check();if(command==='aliyun')throw invalid();return probe({command,args,env,kubeconfig:input.kubeconfig,config:input.config});}});
   const result=await within(tools[methods[input.tool]](input.arguments));check();safe(JSON.stringify(result));return result;
  }catch{throw invalid();}finally{if(client)await client.close().catch(()=>{});clearTimeout(timer);}
