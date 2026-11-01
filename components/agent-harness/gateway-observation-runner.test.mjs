@@ -15,7 +15,7 @@ function state(kind,{pending=false,registered=false}={}){
  return {serverGroupId:'backend',listenerId:'listener',observedAt,nodes:[{instanceId:'i-one',privateIp:'10.70.1.30',status:'Available',registered:true,healthy:true},...(pending&&registered?[{instanceId:'i-pending',privateIp:'10.70.1.31',status:'Adding',registered:true,healthy:false}]:[])]};
 }
 function rows(series){const now=Date.now()/1000;return [{metric:{job:'pgcat',env:'rdev.ali',db_proxy_code:'proxy',target_db_code:'db',ecs_instance_id:'i-one',pool:'test',user:'fixtureuser'},value:[now,series.endsWith('Timestamp')?String(now):series==='up'?'1':series==='active'?'1':'0']}];}
-function fixture({options={},damage=x=>x,respond}={}){
+function fixture({options={},damage=x=>x,respond,sessionId}={}){
  const calls=[];let initialized=0;
  const fetch=async(target,init)=>{
   assert.equal(String(target),url,'unexpected direct HTTP fallback');assert.equal(init.redirect,'error');assert.equal(new Headers(init.headers).get('X-Infra-Authorization'),'Basic '+Buffer.from('agent:'+credential).toString('base64'));
@@ -28,7 +28,7 @@ function fixture({options={},damage=x=>x,respond}={}){
    const selected=rpc.params.name==='proxy_observation_get'?state(a.kind,options):{series:a.series,observedAt:new Date().toISOString(),rows:rows(a.series)};
    const data={envCode:'rdev.ali',proxyCode:'proxy',observedAt:selected.observedAt,pgproxyWorkload:{type:'ess',code:'proxy',workloadKey:'opaque-do-not-decode',state:'Running',targetDbCode:'db',[a.kind??'metrics']:selected}};
    const envelope={data:damage(data,rpc)};result={structuredContent:envelope,content:[{type:'text',text:JSON.stringify(envelope)}]};}
-  return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
+  return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json',...(rpc.method==='initialize'&&sessionId?{'Mcp-Session-Id':sessionId}:{})}});
  };
  return {fetch,calls,get initialized(){return initialized;}};
 }
@@ -39,6 +39,52 @@ test('Gateway uses fixed MCP state tools and preserves provider timestamps',asyn
 test('PgCat metrics uses one MCP session for nested state and all eight fixed series',async()=>{
  const f=fixture({options:{pending:true}});const out=await runGatewayObservation(input('metrics_read',{kind:'pgcatClients'}),{fetch:f.fetch,probe:noProbe});assert.equal(f.initialized,1);assert.deepEqual(out.pendingInstanceIds,['i-pending']);assert.equal(out.nodes[0].connectedClients,1);assert.deepEqual(out.nodes[0].pools,[{instanceId:'i-one',pool:'test',user:'fixtureuser',active:1,idle:0,waiting:0}]);
  assert.deepEqual(f.calls.filter(r=>r.params?.name==='proxy_pgcat_metrics_get').map(r=>r.params.arguments.series),['up','upTimestamp','active','activeTimestamp','idle','idleTimestamp','waiting','waitingTimestamp']);for(const k of ['observedAt','responseAt','sourceAt','latestResponseAt','latestSourceAt'])assert.ok(Date.parse(out[k])>0);
+});
+test('PgCat metrics starts all eight RPCs on the initialized session before any returns within the deadline',async()=>{
+ let release,active=0,peak=0;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture({sessionId:'metrics-session',respond:async(rpc,init)=>{
+  if(rpc.params?.name!=='proxy_pgcat_metrics_get')return;
+  assert.equal(new Headers(init.headers).get('Mcp-Session-Id'),'metrics-session');
+  assert.deepEqual(f.calls.filter(r=>r.params?.name==='proxy_observation_get').map(r=>r.params.arguments.kind),['fleet','backend']);
+  active++;peak=Math.max(peak,active);if(active===8)release();
+  let abort;const cancelled=new Promise((_,reject)=>{abort=()=>reject(Error('aborted'));init.signal.addEventListener('abort',abort,{once:true});});
+  try{await Promise.race([gate,cancelled]);}finally{init.signal.removeEventListener('abort',abort);active--;}
+ }});
+ const out=await runGatewayObservation({...input('metrics_read',{kind:'pgcatClients'}),deadlineAt:new Date(Date.now()+1000).toISOString()},{fetch:f.fetch,probe:noProbe});
+ assert.equal(out.nodes[0].connectedClients,1);assert.equal(peak,8);assert.equal(active,0);assert.equal(f.initialized,1);
+ assert.equal(f.calls.filter(r=>r.params?.name==='proxy_pgcat_metrics_get').length,8);
+});
+for(const mode of ['wrong-series','foreign-row','missing-rows','stale-response','stale-source'])test(`one concurrent ${mode} member rejects the entire PgCat observation`,async()=>{
+ const f=fixture({damage:(data,rpc)=>{
+  if(rpc.params?.arguments?.series!=='waitingTimestamp')return data;
+  const metrics=data.pgproxyWorkload.metrics;
+  if(mode==='wrong-series')metrics.series='idleTimestamp';
+  if(mode==='foreign-row')metrics.rows[0].metric.db_proxy_code='foreign';
+  if(mode==='missing-rows')metrics.rows=[];
+  if(mode==='stale-response')metrics.rows[0].value[0]=0;
+  if(mode==='stale-source')metrics.rows[0].value[1]='0';
+  return data;
+ }});
+ await assert.rejects(runGatewayObservation(input('metrics_read',{kind:'pgcatClients'}),{fetch:f.fetch,probe:noProbe}),/InvalidObservation/);
+ assert.equal(f.calls.filter(r=>r.params?.name==='proxy_pgcat_metrics_get').length,8);
+});
+for(const reason of ['deadline','failed-member'])test(`concurrent PgCat ${reason} cancels every outstanding RPC without partial output`,async()=>{
+ let arrived=0,aborted=0,release;const gate=new Promise(resolve=>{release=resolve;});
+ const f=fixture({respond:async(rpc,init)=>{
+  if(rpc.params?.name!=='proxy_pgcat_metrics_get')return;
+  if(++arrived===8)release();await gate;
+  if(reason==='failed-member'&&rpc.params.arguments.series==='waitingTimestamp')return new Response(null,{status:503});
+  return new Promise((_,reject)=>{const stop=()=>{aborted++;reject(Error('aborted'));};if(init.signal.aborted)stop();else init.signal.addEventListener('abort',stop,{once:true});});
+ }});
+ await assert.rejects(runGatewayObservation({...input('metrics_read',{kind:'pgcatClients'}),deadlineAt:new Date(Date.now()+(reason==='deadline'?100:1000)).toISOString()},{fetch:f.fetch,probe:noProbe}),/InvalidObservation/);
+ assert.equal(arrived,8);assert.equal(aborted,reason==='deadline'?8:7);assert.equal(f.initialized,1);
+});
+test('separate PgCat observations acquire new series rather than reusing a previous batch',async()=>{
+ const f=fixture({damage:(data,rpc)=>{if(rpc.params?.arguments?.series==='active')data.pgproxyWorkload.metrics.rows[0].value[1]=String(f.initialized);return data;}});
+ const first=await runGatewayObservation(input('metrics_read',{kind:'pgcatClients'}),{fetch:f.fetch,probe:noProbe});
+ const second=await runGatewayObservation(input('metrics_read',{kind:'pgcatClients'}),{fetch:f.fetch,probe:noProbe});
+ assert.equal(first.nodes[0].connectedClients,1);assert.equal(second.nodes[0].connectedClients,2);assert.equal(f.initialized,2);
+ assert.equal(f.calls.filter(r=>r.params?.name==='proxy_pgcat_metrics_get').length,16);
 });
 test('registered Pending members still require metrics',async()=>{const f=fixture({options:{pending:true,registered:true}});await assert.rejects(runGatewayObservation(input('metrics_read',{kind:'pgcatClients'}),{fetch:f.fetch,probe:noProbe}),/InvalidObservation/);});
 test('SQL probes use nested MCP membership/address reads and pending skips SQL',async()=>{
