@@ -1,6 +1,6 @@
 # Raptor resource transport contract
 
-Source-only migration, 2026-10-31. Replacement remains disabled and full native
+Source-only migration, updated 2026-11-01. Replacement remains disabled and full native
 replacement/traffic acceptance remains NOT PASS. Existing completion/collector
 stubs are unchanged. No new skill release, cloud request, IAM change or deployment
 is established by these tests.
@@ -10,9 +10,14 @@ finite observation kind or metric series. Infra returns a resource-rooted
 pgproxyWorkload of type ess. One strict adapter validates the resource code,
 target database code, selected nested field and matching source time, then passes
 the existing private fleet/backend/capacity or raw metric object to guards. It
-never decodes an opaque workload key as an ESS group. The existing shared 20-second
-deadline covers initialization, nested state reads, eight metric series, body
-reads and SQL probes. No SDK/CLI/Prometheus fallback supplies proxy observations;
+never decodes an opaque workload key as an ESS group. For metrics_read kind=pgcatClients, one logical
+proxy_pgcat_metrics_get series=clients call returns the exact five-field metrics
+bundle (series, observedAt, fleet, backend, samples). Its exact eight samples
+arrays feed the unchanged raw metric validators; nested fleet/backend reads use
+the original bundled source objects. The invocation owns this bundle and never
+reuses it for a later observation. The existing shared 20-second deadline covers
+initialization, the complete bundle, body reads and SQL probes. Standalone cloud
+reads and the other observation tools retain their existing transport behavior. No SDK/CLI/Prometheus fallback supplies proxy observations;
 operator diagnostics remain explicitly separate. Existing traffic-client reads
 continue using the established private collector path.
 
@@ -67,6 +72,29 @@ skill/release requires separate review before live replacement can proceed.
 Existing deployed source/image/hash receipts remain historical. This migration
 requires fresh coherent image receipts after coordinated review, catalog and
 permission prerequisites, and explicit live read-only qualification. Source tests
-are not live qualification evidence. Actual call counts and latency for fresh
-proof/metadata reads plus eight sequential metric series must be recorded during
-that later qualification; no timeout or freshness bound was relaxed here.
+are not live qualification evidence. Actual call counts and latency for the
+complete agent-authorized bundle (including fresh initial/final resource proofs
+and all eight raw series) must be recorded during later qualification; no timeout
+or freshness bound was relaxed here.
+
+Each AX qualification Start, including a resumed session, performs one fixed
+metrics_read {kind:pgcatClients} preflight after registering private observation
+material and verifying the selected checkpoint, before leasing model access,
+creating an AX run, recording a sandbox intent or ensuring a guest. It uses the
+existing registered entry matched by full attempt binding and complete issued
+access; sanitized guest transport config is never treated as private material.
+The shared HTTP/preflight executor retains the busy gate, 20-second maximum,
+minimum source/access/attempt expiry, current entry checks, pre/post ownership
+and cancellation checks, bounded valid JSON and every registered secret check.
+Missing private proxy configuration fails closed. Only fixed started/succeeded/
+failed categories and duration are logged. Preflight bytes are discarded and do
+not become a trace, baseline, checkpoint or later model read. Failure cleanup
+uses the existing recovery record, proxy removal, issued access revocation and
+runtime slot release, without claiming a newly verified checkpoint. Loss of the
+worker context or lease defers that cleanup to the existing recovery owner.
+
+The actual Gateway executor remains the packaged Node subprocess under
+CommandContext and the original budget. Infra's inherited STS identity setup
+may not obey context cancellation; this change does not establish a hard return
+bound for that dependency. Late evidence is refused at Gateway, and a failed or
+canceled preflight cannot authorize model or guest work.

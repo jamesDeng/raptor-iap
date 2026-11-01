@@ -5,13 +5,13 @@ import {isDeepStrictEqual} from 'node:util';
 import {execFile} from 'node:child_process';
 const methods={cloud_read:'cloudRead',deployment_read:'deploymentRead',metrics_read:'metricsRead',db_connection_probe:'dbConnectionProbe'};
 const invalid=()=>Error('InvalidObservation');
+const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.slice().sort().join(',');
 const metricSeries=['up','upTimestamp','active','activeTimestamp','idle','idleTimestamp','waiting','waitingTimestamp'];
 
 
 // The only resource-to-private-observation boundary. Never infer provider IDs
 // from opaque workloadKey, stamp source observations or normalize metric rows.
 export function resourceObservation(data,scope,kind){
- const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.slice().sort().join(',');
  const w=data?.pgproxyWorkload;
  if(!['fleet','backend','capacity','metrics'].includes(kind)||!exact(data,['envCode','proxyCode','observedAt','pgproxyWorkload'])||data.envCode!==scope.envCode||data.proxyCode!==scope.proxyCode||!exact(w,['type','code','workloadKey','state','targetDbCode',kind])||w.type!=='ess'||w.code!==scope.proxyCode||w.targetDbCode!==scope.targetDbCode||typeof w.workloadKey!=='string'||!w.workloadKey||w.workloadKey.length>256||typeof w.state!=='string'||!Number.isFinite(Date.parse(data.observedAt))||w[kind]?.observedAt!==data.observedAt)throw invalid();
  return w[kind];
@@ -59,14 +59,20 @@ export async function runGatewayObservation(input,{probe=invokeProbe,fetch=globa
    if(!envelope||Object.keys(envelope).join(',')!=='data'||!envelope.data||typeof envelope.data!=='object')throw invalid();
    return envelope.data;
   };
-  let metricBatch;
+  // The complete bundle is private to this invocation, including its original
+  // fleet/backend times. Existing projections and raw validators remain authoritative.
+  const clients=input.tool==='metrics_read'&&input.arguments?.kind==='pgcatClients';
+  let bundle;
+  const clientsBundle=()=>bundle??=(async()=>{
+   const data=resourceObservation(await call('proxy_pgcat_metrics_get',{series:'clients'}),scope,'metrics');
+   if(!exact(data,['series','observedAt','fleet','backend','samples'])||data.series!=='clients'||!exact(data.samples,metricSeries)||metricSeries.some(series=>!Array.isArray(data.samples[series])))throw invalid();
+   return data;
+  })();
   const tools=createObservationTools({binding,config:input.config,replacementScope:scope,fetch,
-   readCloud:async({kind})=>resourceObservation(await call('proxy_observation_get',{kind}),scope,kind),
+   readCloud:async({kind})=>clients?(await clientsBundle())[kind]:resourceObservation(await call('proxy_observation_get',{kind}),scope,kind),
    readPgcatSeries:async series=>{
-    if(!metricSeries.includes(series))throw invalid();
-    // Fleet/backend reads initialize this session first; reuse raw rows only within this observation.
-    metricBatch??=Promise.all(metricSeries.map(async selected=>{const data=resourceObservation(await call('proxy_pgcat_metrics_get',{series:selected}),scope,'metrics');if(data.series!==selected||Object.keys(data).sort().join(',')!=='observedAt,rows,series'||!Number.isFinite(Date.parse(data.observedAt))||!Array.isArray(data.rows))throw invalid();return data.rows;}));
-    return (await metricBatch)[metricSeries.indexOf(series)];
+    if(!clients||!metricSeries.includes(series))throw invalid();
+    return (await clientsBundle()).samples[series];
    },
    exec:(command,args,env)=>{check();if(command==='aliyun')throw invalid();return probe({command,args,env,kubeconfig:input.kubeconfig,config:input.config});}});
   const result=await within(tools[methods[input.tool]](input.arguments));check();safe(JSON.stringify(result));return result;

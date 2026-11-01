@@ -10,6 +10,7 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,9 @@ func (p *ObservationProxy) Register(in execution.LiveStart, m ObservationMateria
 		return ObservationMaterial{}, ErrConfiguration
 	}
 	m.Secrets = append(append([]string{}, m.Secrets...), gatewayObservationSecrets(in.Access.Credential)...)
+	// Snapshot the issued scope; later mutation cannot change registered authority.
+	scope := *in.Access.ReplacementScope
+	in.Access.ReplacementScope = &scope
 	p.entries[sha256.Sum256([]byte(token))] = observationEntry{start: in, material: m, expires: expires, check: check}
 	return ObservationMaterial{Config: raw, Secrets: append(append([]string{}, m.Secrets...), token)}, nil
 }
@@ -132,37 +136,85 @@ func (p *ObservationProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	entry, ok := p.entries[hash]
 	p.mu.Unlock()
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
 	b := entry.start.Binding
-	if !ok || !entry.expires.After(time.Now()) || input.RequestID != b.RequestID || input.AttemptID != b.AttemptID || input.Hash != b.DefinitionSHA256 || entry.check(ctx) != nil {
+	if !ok || input.RequestID != b.RequestID || input.AttemptID != b.AttemptID || input.Hash != b.DefinitionSHA256 {
 		proxyReply(w, 401, map[string]string{"error": "Unauthorized"})
 		return
+	}
+	raw, status := p.guardedExecute(r.Context(), hash, entry, input.Tool, input.Arguments)
+	if status != 200 {
+		category := "InvalidObservation"
+		if status == 401 {
+			category = "Unauthorized"
+		}
+		if status == 429 {
+			category = "Busy"
+		}
+		proxyReply(w, status, map[string]string{"error": category})
+		return
+	}
+	proxyReply(w, 200, map[string]any{"data": json.RawMessage(raw)})
+}
+
+// qualificationPreflight uses only the registered private entry. Its output is
+// deliberately discarded; it is feasibility evidence, never the model baseline.
+func (p *ObservationProxy) qualificationPreflight(ctx context.Context, in execution.LiveStart) error {
+	if p == nil {
+		return ErrConfiguration
+	}
+	p.mu.Lock()
+	var hash [32]byte
+	var entry observationEntry
+	matches := 0
+	for k, candidate := range p.entries {
+		if candidate.start.Binding == in.Binding && reflect.DeepEqual(candidate.start.Access, in.Access) {
+			hash, entry = k, candidate
+			matches++
+		}
+	}
+	p.mu.Unlock()
+	if matches != 1 {
+		return ErrConfiguration
+	}
+	_, status := p.guardedExecute(ctx, hash, entry, "metrics_read", json.RawMessage(`{"kind":"pgcatClients"}`))
+	if status != 200 {
+		return ErrRuntimeUnavailable
+	}
+	return nil
+}
+
+// Both entry points share the timeout, busy gate, lease/cancellation and result
+// guards. The HTTP caller retains its own authentication and input validation.
+func (p *ObservationProxy) guardedExecute(parent context.Context, hash [32]byte, entry observationEntry, tool string, args json.RawMessage) (json.RawMessage, int) {
+	deadline := time.Now().Add(20 * time.Second)
+	if entry.expires.Before(deadline) {
+		deadline = entry.expires
+	}
+	ctx, cancel := context.WithDeadline(parent, deadline)
+	defer cancel()
+	active := func() bool { p.mu.Lock(); defer p.mu.Unlock(); _, ok := p.entries[hash]; return ok }
+	if ctx.Err() != nil || !active() || !entry.expires.After(time.Now()) || entry.check(ctx) != nil || ctx.Err() != nil || !active() {
+		return nil, 401
 	}
 	select {
 	case p.busy <- struct{}{}:
 		defer func() { <-p.busy }()
 	default:
-		proxyReply(w, 429, map[string]string{"error": "Busy"})
-		return
+		return nil, 429
 	}
-	raw, e := p.execute(ctx, entry.start, entry.material, input.Tool, input.Arguments)
-	// Recheck after the read: cancellation/cleanup cannot export a late result.
-	p.mu.Lock()
-	_, active := p.entries[hash]
-	p.mu.Unlock()
+	raw, err := p.execute(ctx, entry.start, entry.material, tool, args)
 	unsafe := false
 	for _, secret := range entry.material.Secrets {
 		if secret != "" && bytes.Contains(raw, []byte(secret)) {
 			unsafe = true
 		}
 	}
-	if e != nil || ctx.Err() != nil || !active || !entry.expires.After(time.Now()) || entry.check(ctx) != nil || len(raw) > 262144 || !json.Valid(raw) || unsafe {
-		proxyReply(w, 503, map[string]string{"error": "InvalidObservation"})
-		return
+	if err != nil || ctx.Err() != nil || !active() || !entry.expires.After(time.Now()) || entry.check(ctx) != nil || ctx.Err() != nil || !active() || len(raw) > 262144 || !json.Valid(raw) || unsafe {
+		return nil, 503
 	}
-	proxyReply(w, 200, map[string]any{"data": json.RawMessage(raw)})
+	return raw, 200
 }
+
 func validObservationInput(tool string, raw json.RawMessage) bool {
 	var args map[string]json.RawMessage
 	if json.Unmarshal(raw, &args) != nil || args == nil {

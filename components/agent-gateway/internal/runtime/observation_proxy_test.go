@@ -161,3 +161,235 @@ func resourceRuntimeScope(s execution.ReplacementScope) execution.ReplacementSco
 	s.ResolutionDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(raw)))
 	return s
 }
+
+func preflight(t *testing.T, p *ObservationProxy, ctx context.Context, in execution.LiveStart) error {
+	t.Helper()
+	runner, ok := any(p).(interface {
+		qualificationPreflight(context.Context, execution.LiveStart) error
+	})
+	if !ok {
+		t.Fatal("private registered-entry qualification preflight is missing")
+	}
+	return runner.qualificationPreflight(ctx, in)
+}
+
+func TestObservationPreflightUsesExactRegisteredPrivateAccess(t *testing.T) {
+	in := proxyStart()
+	in.Access.Credential = "issued-private-access"
+	calls := 0
+	p, _ := NewObservationProxy("https://api.rdev.raptor-iap.top"+observationRoute, func(ctx context.Context, actual execution.LiveStart, m ObservationMaterial, tool string, args json.RawMessage) (json.RawMessage, error) {
+		calls++
+		if actual.Access.Credential != in.Access.Credential || string(m.Config) != `{"private":"source"}` || tool != "metrics_read" || string(args) != `{"kind":"pgcatClients"}` {
+			t.Fatal("not fixed private observation")
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 20*time.Second {
+			t.Fatal("missing observation budget")
+		}
+		return json.RawMessage(`{"nodes":[]}`), nil
+	})
+	guest, err := p.Register(in, ObservationMaterial{Config: []byte(`{"private":"source"}`)}, func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(guest.Config), `"private":"source"`) {
+		t.Fatal("raw material exported")
+	}
+	if err = preflight(t, p, context.Background(), in); err != nil || calls != 1 {
+		t.Fatal("registered read failed", err, calls)
+	}
+	for _, field := range []string{"binding", "credential", "expiry", "infra", "raptor", "scope", "missing-scope"} {
+		t.Run(field, func(t *testing.T) {
+			foreign := in
+			scope := *in.Access.ReplacementScope
+			foreign.Access.ReplacementScope = &scope
+			switch field {
+			case "binding":
+				foreign.Binding.Model = "foreign"
+				foreign.Access.Binding = foreign.Binding
+			case "credential":
+				foreign.Access.Credential = "another"
+			case "expiry":
+				foreign.Access.ExpiresAt = foreign.Access.ExpiresAt.Add(time.Second)
+			case "infra":
+				foreign.Access.InfraMcpURL = "other"
+			case "raptor":
+				foreign.Access.RaptorMcpURL = "other"
+			case "scope":
+				scope.DatabaseResourceID = "other"
+			case "missing-scope":
+				foreign.Access.ReplacementScope = nil
+			}
+			if preflight(t, p, context.Background(), foreign) == nil {
+				t.Fatal("foreign access accepted")
+			}
+		})
+	}
+	if calls != 1 {
+		t.Fatal("foreign access executed", calls)
+	}
+	p.Remove(in.Binding.AttemptID)
+	if preflight(t, p, context.Background(), in) == nil {
+		t.Fatal("removed entry accepted")
+	}
+}
+
+func TestObservationPreflightSharesExecutionGuards(t *testing.T) {
+	for _, mode := range []string{"busy", "expired", "lease-before", "lease-after", "cancel-before", "cancel-after", "removed", "non-json", "oversize", "source-secret", "credential", "basic", "late", "late-check", "removed-by-check"} {
+		t.Run(mode, func(t *testing.T) {
+			in := proxyStart()
+			in.Access.Credential = "raptor_at_" + strings.Repeat("a", 43)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var p *ObservationProxy
+			calls, checks := 0, 0
+			p, _ = NewObservationProxy("https://api.rdev.raptor-iap.top"+observationRoute, func(ctx context.Context, _ execution.LiveStart, _ ObservationMaterial, _ string, _ json.RawMessage) (json.RawMessage, error) {
+				calls++
+				switch mode {
+				case "cancel-after":
+					cancel()
+				case "removed":
+					p.Remove(in.Binding.AttemptID)
+				case "non-json":
+					return []byte(`oops`), nil
+				case "oversize":
+					return json.Marshal(strings.Repeat("x", 262145))
+				case "source-secret":
+					return []byte(`{"leak":"private-source"}`), nil
+				case "credential":
+					return json.Marshal(in.Access.Credential)
+				case "basic":
+					return json.Marshal(gatewayObservationSecrets(in.Access.Credential)[3])
+				case "late":
+					<-ctx.Done()
+				}
+				return []byte(`{"nodes":[]}`), nil
+			})
+			_, err := p.Register(in, ObservationMaterial{Secrets: []string{"private-source"}}, func(ctx context.Context) error {
+				checks++
+				if mode == "lease-before" || mode == "lease-after" && checks > 1 {
+					return ErrRuntimeUnavailable
+				}
+				if mode == "removed-by-check" && checks > 1 {
+					p.Remove(in.Binding.AttemptID)
+				}
+				if mode == "late-check" && checks > 1 {
+					cancel()
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "busy":
+				p.busy <- struct{}{}
+				defer func() { <-p.busy }()
+			case "expired":
+				p.mu.Lock()
+				for k, e := range p.entries {
+					e.expires = time.Now().Add(-time.Second)
+					p.entries[k] = e
+				}
+				p.mu.Unlock()
+			case "cancel-before":
+				cancel()
+			case "late":
+				var stop context.CancelFunc
+				ctx, stop = context.WithTimeout(ctx, 10*time.Millisecond)
+				defer stop()
+			}
+			if preflight(t, p, ctx, in) == nil {
+				t.Fatal("guard bypassed")
+			}
+			if (mode == "busy" || mode == "expired" || mode == "lease-before" || mode == "cancel-before") && calls != 0 {
+				t.Fatal("executed before guards", calls)
+			}
+		})
+	}
+}
+
+func TestObservationPreflightSnapshotsScopeAndRejectsAmbiguousEntry(t *testing.T) {
+	in := proxyStart()
+	calls := 0
+	p, _ := NewObservationProxy("https://api.rdev.raptor-iap.top"+observationRoute, func(context.Context, execution.LiveStart, ObservationMaterial, string, json.RawMessage) (json.RawMessage, error) {
+		calls++
+		return []byte(`{}`), nil
+	})
+	if _, e := p.Register(in, ObservationMaterial{}, func(context.Context) error { return nil }); e != nil {
+		t.Fatal(e)
+	}
+	original := *in.Access.ReplacementScope
+	in.Access.ReplacementScope.DatabaseResourceID = "changed-after-registration"
+	if preflight(t, p, context.Background(), in) == nil || calls != 0 {
+		t.Fatal("registered authority changed through source pointer")
+	}
+	in.Access.ReplacementScope = &original
+	if e := preflight(t, p, context.Background(), in); e != nil {
+		t.Fatal(e)
+	}
+	p.mu.Lock()
+	for _, entry := range p.entries {
+		p.entries[sha256.Sum256([]byte("ambiguous"))] = entry
+		break
+	}
+	p.mu.Unlock()
+	if preflight(t, p, context.Background(), in) == nil || calls != 1 {
+		t.Fatal("ambiguous registered match accepted")
+	}
+}
+func TestObservationPreflightUsesMinimumExpiry(t *testing.T) {
+	for _, mode := range []string{"source", "access", "attempt", "context"} {
+		t.Run(mode, func(t *testing.T) {
+			in := proxyStart()
+			until := time.Now().Add(time.Second)
+			material := ObservationMaterial{}
+			ctx := context.Background()
+			if mode == "source" {
+				material.Config, _ = json.Marshal(map[string]any{"expiresAt": until})
+			}
+			if mode == "access" {
+				in.Access.ExpiresAt = until
+			}
+			if mode == "attempt" {
+				in.Deadline = until
+			}
+			if mode == "context" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, until)
+				defer cancel()
+			}
+			p, _ := NewObservationProxy("https://api.rdev.raptor-iap.top"+observationRoute, func(ctx context.Context, _ execution.LiveStart, _ ObservationMaterial, _ string, _ json.RawMessage) (json.RawMessage, error) {
+				deadline, ok := ctx.Deadline()
+				if !ok || !deadline.Equal(until) {
+					t.Fatal("expiry not propagated to executor", deadline, until)
+				}
+				return []byte(`{}`), nil
+			})
+			if _, e := p.Register(in, material, func(context.Context) error { return nil }); e != nil {
+				t.Fatal(e)
+			}
+			if e := preflight(t, p, ctx, in); e != nil {
+				t.Fatal(e)
+			}
+		})
+	}
+}
+func TestObservationPreflightRejectsEveryRegisteredSecret(t *testing.T) {
+	in := proxyStart()
+	in.Access.Credential = "raptor_at_" + strings.Repeat("a", 43)
+	secrets := append([]string{"private-one", "private-two", "private-three"}, gatewayObservationSecrets(in.Access.Credential)...)
+	for i, secret := range secrets {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			p, _ := NewObservationProxy("https://api.rdev.raptor-iap.top"+observationRoute, func(context.Context, execution.LiveStart, ObservationMaterial, string, json.RawMessage) (json.RawMessage, error) {
+				return json.Marshal(map[string]string{"leak": secret})
+			})
+			if _, e := p.Register(in, ObservationMaterial{Secrets: secrets[:3]}, func(context.Context) error { return nil }); e != nil {
+				t.Fatal(e)
+			}
+			if preflight(t, p, context.Background(), in) == nil {
+				t.Fatal("registered secret accepted")
+			}
+		})
+	}
+}
