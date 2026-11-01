@@ -86,7 +86,10 @@ func cloudPages(config func(string) *openapi.Config) func(context.Context, domai
 		if e != nil {
 			return page{}, e
 		}
-		tagsJSON, _ := json.Marshal(map[string]string{"env": env.Code, "db-code": code})
+		// RDS combines tag filters with OR, so env would also select unrelated
+		// databases in this environment. Discover by exact code, then retain the
+		// existing full env/code tag validation before returning a resource.
+		tagsJSON, _ := json.Marshal(map[string]string{"db-code": code})
 		runtime, e := rdsRuntime(ctx)
 		if e != nil {
 			return page{}, e
