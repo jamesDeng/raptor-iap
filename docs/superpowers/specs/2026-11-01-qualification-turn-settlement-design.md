@@ -1,0 +1,15 @@
+# Qualification turn settlement
+
+Continue the authorized read-only qualification without increasing the existing 10-turn/90-second/1024-output limits or changing replacement behavior. Live attempt63d02ac4 succeeded all reads, metrics and both SQL probes and requested the exact harmless approval. It made the initial three reads in separate rounds, consuming the tenth model turn at approval and failing before pause. Reproduce this exact ordering locally before a fix.
+
+Prefer qualification-only deterministic settlement at completed validated tool-round boundaries: retain exact approval identity, all evidence gates, real Raptor waiting state, persisted journal and cleanup; complete a resumed run only when unchanged QualificationTrace.complete validates every fresh read and both probes. Do not fabricate evidence or approve within harness. Compare a minimal correction to the batching instructions if deterministic settlement cannot preserve the existing pause protocol without additional APIs. Do not expand model limits or refactor replacement.
+
+Scope bounded to harness lifecycle and focused tests; no cloud resources, credentials, IAM, public API or controller. User opted out of routine design questions; this is a small correctness fix under ongoing test/review/continue authorization. Any broader redesign needs human review.
+
+## Implemented lifecycle correction
+
+Qualification settlement runs only after Pi has persisted the completed assistant/tool round and no model, read or sibling tool has failed. After a validated first-segment approval, the harness invokes the existing scoped `request_pause` through Pi's public nested-tool context, using the real approval tool call as parent. This preserves selector/schema checks, MCP transport, result hooks and public tool progress. Raptor must return `accepted: true`; a missing, malformed or failed acknowledgement cannot become a checkpointed pause. The session stores a bounded custom receipt containing the exact wait identity, actual nested tool call and validated acknowledgement. An explicit pause already completed in the approval round is retained without another call.
+
+On continuation, unchanged `QualificationTrace.complete()` is checked at successful completed-round boundaries and again before the final result. Only fresh complete reads, both exact baseline probes and the verified approval can finish without another inference. Limits, qualification freshness and replacement behavior are unchanged.
+
+The live AX path executes the harness baked in the AX guest image (`ax-runtime-bridge` inference command → `runner.mjs` → `live-runner.mjs` → `live-replacement.mjs`). Gateway's observation executor launches `gateway-observation-runner.mjs`; its relative import closure excludes the changed lifecycle module. Only the AX guest is an active execution consumer of this correction; Gateway packaging contains the file but its active observer path does not execute it. Release and actual cloud qualification remain separate work.
