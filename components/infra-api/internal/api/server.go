@@ -26,6 +26,12 @@ type ProxyObserver interface {
 	ObservePgcatSeries(context.Context, domain.Environment, domain.ProxyReadTarget, string) (domain.PgcatSeriesObservation, error)
 }
 
+// PgcatClientsObserver is additive: existing single-read providers need not
+// implement a complete observation.
+type PgcatClientsObserver interface {
+	ObservePgcatClients(context.Context, domain.Environment, domain.ProxyReadTarget) (domain.PgcatClientsObservation, error)
+}
+
 func New(reader Reader, envs map[string]domain.Environment, username, password, authHeader string) (http.Handler, error) {
 	return NewWithCommands(reader, envs, username, password, authHeader, nil, nil)
 }

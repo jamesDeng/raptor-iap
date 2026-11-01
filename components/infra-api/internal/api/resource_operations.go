@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/url"
 	"raptor-iap/infra-api/internal/domain"
+	"raptor-iap/infra-api/internal/resources"
+	"reflect"
 	"regexp"
 	"time"
 )
@@ -253,7 +255,8 @@ func validateApplicationWorkload(r domain.ResolvedResource, workload domain.Appl
 	return nil
 }
 func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map[string]string) (any, error) {
-	field, options := proxyReadOptions(tool)
+	field, options := resourceProxyReadOptions(tool)
+	clients := tool == "proxy_pgcat_metrics_get" && args["series"] == "clients"
 	q := url.Values{}
 	for k, v := range args {
 		q[k] = []string{v}
@@ -274,6 +277,12 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 	if e != nil {
 		return nil, e
 	}
+	if clients && i != nil {
+		// Keep the original authority stable even if an inspector reuses its
+		// returned pointers while performing the final introspection.
+		binding, scope, expiry := *i.Binding, *i.ReplacementScope, *i.ExpiresAt
+		i.Binding, i.ReplacementScope, i.ExpiresAt = &binding, &scope, &expiry
+	}
 	r, e := o.resolver.Resolve(ctx, args["envCode"], "db-proxy", args["proxyCode"])
 	if e != nil {
 		return nil, commandFailure(e)
@@ -286,15 +295,69 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 			return nil, e
 		}
 	}
+	var initialProof resources.Proof
+	if clients && i == nil {
+		initialProof, e = o.resolver.ResolveProof(ctx, args["envCode"], args["proxyCode"])
+		if e != nil {
+			return nil, commandFailure(e)
+		}
+		if e = validateClientsServiceProof(initialProof, r); e != nil {
+			return nil, e
+		}
+	}
+	if clients && ctx.Err() != nil {
+		return nil, commandFailure(ctx.Err())
+	}
 	// Reuse the finite branch dispatcher with already authorized exact internal targets.
 	internal := map[string]string{"requestId": args["requestId"], "envCode": r.Environment.Code, "proxyCode": r.Proxy.Code, "groupId": r.Proxy.GroupID, "serverGroupId": r.Proxy.ServerGroupID, field: args[field]}
-	data, e := (operations{reader: o.reader, scopes: map[string]domain.Environment{r.Environment.Code: r.Environment}}).proxyRead(ctx, tool, internal)
+	if _, err := proxySelectionSelectors(field, options, internal); err != nil {
+		return nil, &operationError{400, "InvalidInput"}
+	}
+	data, e := (operations{reader: o.reader, scopes: map[string]domain.Environment{r.Environment.Code: r.Environment}}).observeProxyRead(ctx, tool, internal)
 	if e != nil {
 		return nil, e
+	}
+	if clients {
+		if ctx.Err() != nil {
+			return nil, commandFailure(ctx.Err())
+		}
+		if i != nil {
+			current, err := o.authorize(ctx, tool, tool, selectors, args, false)
+			if err != nil {
+				return nil, err
+			}
+			if current == nil || !reflect.DeepEqual(current.Binding, i.Binding) || !reflect.DeepEqual(current.ReplacementScope, i.ReplacementScope) {
+				return nil, &operationError{409, "IdentityChanged"}
+			}
+			if e = o.matchProof(ctx, *i, r); e != nil {
+				return nil, e
+			}
+			// Both access expiries still constrain the final proof's latency.
+			if !i.permitsResource(tool, selectors) || !current.permitsResource(tool, selectors) {
+				return nil, &operationError{403, "ScopeMismatch"}
+			}
+		} else {
+			finalProof, err := o.resolver.ResolveProof(ctx, args["envCode"], args["proxyCode"])
+			if err != nil {
+				return nil, commandFailure(err)
+			}
+			if e = validateClientsServiceProof(finalProof, r); e != nil {
+				return nil, e
+			}
+			if finalProof != initialProof {
+				return nil, &operationError{409, "IdentityChanged"}
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, commandFailure(ctx.Err())
+		}
 	}
 	workload := map[string]any{"type": "ess", "code": r.PgproxyWorkload.Code, "workloadKey": r.PgproxyWorkload.WorkloadKey, "state": r.PgproxyWorkload.State, "targetDbCode": r.PgproxyWorkload.TargetDBCode}
 	var observed time.Time
 	switch v := data.(type) {
+	case domain.PgcatClientsObservation:
+		observed = v.ObservedAt
+		workload["metrics"] = v
 	case domain.PgcatSeriesObservation:
 		observed = v.ObservedAt
 		workload["metrics"] = v
@@ -309,4 +372,23 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 		workload["capacity"] = v
 	}
 	return map[string]any{"envCode": r.Context.EnvCode, "proxyCode": r.Context.Code, "observedAt": observed, "pgproxyWorkload": workload}, nil
+}
+
+func resourceProxyReadOptions(tool string) (string, []string) {
+	field, options := proxyReadOptions(tool)
+	if tool == "proxy_pgcat_metrics_get" {
+		options = append(options, "clients")
+	}
+	return field, options
+}
+
+// A service has no token-bound proof. Its first complete realization becomes
+// the baseline, after checking it against the requested resolved proxy.
+func validateClientsServiceProof(proof resources.Proof, r domain.ResolvedResource) error {
+	digest, err := resources.Digest(proof.Identity)
+	p, m := proof.Identity, r.Proxy
+	if err != nil || digest != proof.ResolutionDigest || m == nil || p.EnvCode != r.Context.EnvCode || p.ProxyCode != r.Context.Code || p.EnvCode != r.Environment.Code || p.AccountID != r.Environment.AccountID || p.Region != r.Environment.Region || p.ClusterID != r.Environment.ClusterID || p.ProxyCode != m.Code || p.GroupID != m.GroupID || p.ServerGroupID != m.ServerGroupID || p.ListenerID != m.ListenerID || p.Port != m.Port || p.TargetDBCode != m.TargetDBCode {
+		return &operationError{409, "IdentityChanged"}
+	}
+	return nil
 }

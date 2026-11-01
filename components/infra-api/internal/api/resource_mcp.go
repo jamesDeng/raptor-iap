@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 func resourceMCPResult(data any, e error) (*mcp.CallToolResult, error) {
@@ -29,7 +32,7 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 		for _, k := range append(append([]string{}, spec.fields...), spec.optional...) {
 			props[k] = map[string]any{"type": "string", "minLength": 1, "maxLength": 256}
 		}
-		field, options := proxyReadOptions(spec.name)
+		field, options := resourceProxyReadOptions(spec.name)
 		if field != "" {
 			props[field].(map[string]any)["enum"] = options
 		}
@@ -37,6 +40,19 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 			args, e := decodeSelectors(r.Params.Arguments)
 			if e != nil {
 				return mcpFailure("InvalidInput"), nil
+			}
+			if spec.name == "proxy_pgcat_metrics_get" && args["series"] == "clients" {
+				// The SDK detaches legacy-protocol handler deadlines. Preserve the
+				// original HTTP budget as well as explicit SDK cancellation.
+				parent, ok := ctx.Value(clientsHTTPContextKey{}).(context.Context)
+				if !ok || parent.Err() != nil || ctx.Err() != nil {
+					return mcpFailure("ProviderUnavailable"), nil
+				}
+				readContext, cancel := context.WithCancel(parent)
+				stop := context.AfterFunc(ctx, cancel)
+				defer stop()
+				defer cancel()
+				ctx = readContext
 			}
 			if spec.path == "" {
 				data, e := op.proxyRead(ctx, spec.name, args)
@@ -64,5 +80,89 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 			})
 		}
 	}
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	return boundClientsMCPResponse(handler)
+}
+
+const clientsMCPResponseLimit = 262144
+
+type clientsHTTPContextKey struct{}
+
+// Buffer only the additive complete read. Count the actual SDK-encoded reply,
+// including its RPC id, escaping and structured/text duplication, before any
+// header or result byte is exported. Other tools keep their existing transport.
+func boundClientsMCPResponse(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Body == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 16385))
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		var rpc struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Name      string `json:"name"`
+				Arguments struct {
+					Series string `json:"series"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err != nil || len(raw) > 16384 || json.Unmarshal(raw, &rpc) != nil || rpc.Method != "tools/call" || rpc.Params.Name != "proxy_pgcat_metrics_get" || rpc.Params.Arguments.Series != "clients" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		buffer := &clientsMCPResponse{header: w.Header().Clone()}
+		// Keep one overall budget even when the incoming server request has no
+		// deadline. A shorter caller deadline/cancellation always wins.
+		requestContext, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		r = r.WithContext(context.WithValue(requestContext, clientsHTTPContextKey{}, requestContext))
+		next.ServeHTTP(buffer, r)
+		if r.Context().Err() != nil {
+			return
+		}
+		body := buffer.body.Bytes()
+		if buffer.overflow {
+			body, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": mcpFailure("ProviderUnavailable")})
+			buffer.status = http.StatusOK
+		}
+		for key := range w.Header() {
+			w.Header().Del(key)
+		}
+		for key, values := range buffer.header {
+			w.Header()[key] = values
+		}
+		w.Header().Del("Content-Length")
+		if buffer.status != 0 {
+			w.WriteHeader(buffer.status)
+		}
+		_, _ = w.Write(body)
+	})
+}
+
+type clientsMCPResponse struct {
+	header   http.Header
+	status   int
+	body     bytes.Buffer
+	overflow bool
+}
+
+func (w *clientsMCPResponse) Header() http.Header { return w.header }
+func (w *clientsMCPResponse) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+func (w *clientsMCPResponse) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if !w.overflow && len(data) <= clientsMCPResponseLimit-w.body.Len() {
+		_, _ = w.body.Write(data)
+	} else {
+		w.overflow = true
+	}
+	return len(data), nil
 }

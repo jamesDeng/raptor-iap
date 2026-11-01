@@ -141,6 +141,10 @@ func proxyReadOptions(tool string) (string, []string) {
 // identity selectors sent to Raptor. Extra fields must not disappear here.
 func proxyReadSelectors(tool string, args map[string]string) (map[string]string, error) {
 	field, options := proxyReadOptions(tool)
+	return proxySelectionSelectors(field, options, args)
+}
+
+func proxySelectionSelectors(field string, options []string, args map[string]string) (map[string]string, error) {
 	if field == "" || len(args) != 6 {
 		return nil, domain.ErrScope
 	}
@@ -163,6 +167,12 @@ func (o operations) proxyRead(ctx context.Context, tool string, args map[string]
 	if _, err := proxyReadSelectors(tool, args); err != nil {
 		return nil, &operationError{400, "InvalidInput"}
 	}
+	return o.observeProxyRead(ctx, tool, args)
+}
+
+// Call only after the public boundary has validated its finite selection. The
+// resource boundary can select clients; legacy physical selectors cannot.
+func (o operations) observeProxyRead(ctx context.Context, tool string, args map[string]string) (any, error) {
 	env, ok := o.scopes[args["envCode"]]
 	if !ok || env.Code != args["envCode"] {
 		return nil, &operationError{403, "ScopeMismatch"}
@@ -193,16 +203,20 @@ func (o operations) proxyRead(ctx context.Context, tool string, args map[string]
 			return nil, &operationError{403, "ScopeMismatch"}
 		}
 	}
-	observer, ok := o.reader.(ProxyObserver)
-	if !ok {
-		return nil, &operationError{503, "NotConfigured"}
-	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	target := domain.ProxyReadTarget{RequestID: args["requestId"], EnvCode: env.Code, ProxyCode: mapping.Code, GroupID: mapping.GroupID, ServerGroupID: mapping.ServerGroupID}
 	var data any
 	var err error
-	if tool == "proxy_pgcat_metrics_get" {
+	if tool == "proxy_pgcat_metrics_get" && args["series"] == "clients" {
+		observer, ok := o.reader.(PgcatClientsObserver)
+		if !ok {
+			return nil, &operationError{503, "NotConfigured"}
+		}
+		data, err = observer.ObservePgcatClients(ctx, env, target)
+	} else if observer, ok := o.reader.(ProxyObserver); !ok {
+		return nil, &operationError{503, "NotConfigured"}
+	} else if tool == "proxy_pgcat_metrics_get" {
 		data, err = observer.ObservePgcatSeries(ctx, env, target, args["series"])
 	} else {
 		var observation domain.ProxyObservation

@@ -56,6 +56,27 @@ type PgcatSeriesObservation struct {
 	ObservedAt time.Time          `json:"observedAt"`
 	Rows       []PrometheusSample `json:"rows"`
 }
+
+// PgcatClientsObservation is one complete, uncached logical observation. Source
+// timestamps in Fleet, Backend and Samples retain their original meaning.
+type PgcatClientsObservation struct {
+	Series     string              `json:"series"`
+	ObservedAt time.Time           `json:"observedAt"`
+	Fleet      FleetObservation    `json:"fleet"`
+	Backend    BackendObservation  `json:"backend"`
+	Samples    PgcatClientsSamples `json:"samples"`
+}
+
+type PgcatClientsSamples struct {
+	Up               []PrometheusSample `json:"up"`
+	UpTimestamp      []PrometheusSample `json:"upTimestamp"`
+	Active           []PrometheusSample `json:"active"`
+	ActiveTimestamp  []PrometheusSample `json:"activeTimestamp"`
+	Idle             []PrometheusSample `json:"idle"`
+	IdleTimestamp    []PrometheusSample `json:"idleTimestamp"`
+	Waiting          []PrometheusSample `json:"waiting"`
+	WaitingTimestamp []PrometheusSample `json:"waitingTimestamp"`
+}
 type PrometheusSample struct {
 	Metric map[string]string `json:"metric"`
 	Value  []json.RawMessage `json:"value"`

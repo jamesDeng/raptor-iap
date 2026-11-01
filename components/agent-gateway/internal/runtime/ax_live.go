@@ -151,6 +151,18 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	if e != nil {
 		return h, e
 	}
+	// Qualification must prove the actual issued agent observation path before
+	// any model lease, in-memory run, runtime intent or AX guest provisioning.
+	// Every Start (including a resumed session) obtains fresh feasibility only.
+	if in.Binding.Operation == "db-proxy.replace-nodes" && in.Binding.ExecutionMode == "qualification" {
+		started := time.Now()
+		log.Printf("AX qualification preflight category=started duration_ms=0")
+		if e = a.Observations.qualificationPreflight(ctx, in); e != nil {
+			log.Printf("AX qualification preflight category=failed duration_ms=%d", time.Since(started).Milliseconds())
+			return h, e
+		}
+		log.Printf("AX qualification preflight category=succeeded duration_ms=%d", time.Since(started).Milliseconds())
+	}
 	var modelLease ModelLease
 	if in.Binding.ProviderID != "" {
 		if a.ModelCredentials == nil {
