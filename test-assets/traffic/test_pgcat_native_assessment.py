@@ -11,9 +11,10 @@ from segmented_capture import canonical,sha
 from test_pgcat_native_ingress import plan
 
 
-def resource_scope(p):
+def resource_scope(p,**updates):
     s=copy.deepcopy(p['controllerScope'])
     s.update(accountId=p['target']['accountId'],region=p['target']['regionId'],listenerId='listener',port=6432,databaseResourceId='database')
+    s.update(updates)
     keys=('envCode','accountId','region','clusterId','proxyCode','groupId','serverGroupId','listenerId','port','targetDbCode','databaseResourceId','application')
     from collections import OrderedDict
     import json
@@ -24,6 +25,52 @@ def resource_scope(p):
 
 
 class ResourceTests(unittest.TestCase):
+    def test_listener_key_preserves_bare_and_exact_composite_identity(self):
+        for listener in ('listener','lsn-fixture123@6432','lsn-a@6432','lsn-'+'a'*64+'@6432'):
+            with self.subTest(listener=listener):
+                p=plan();s=resource_scope(p,listenerId=listener)
+                result=ingress.resource_scope(s,p)
+                self.assertEqual(result,s)
+                self.assertEqual(result['listenerId'],listener)
+                s['listenerId']='changed'
+                self.assertEqual(result['listenerId'],listener)
+                p['controllerScope']=result
+                self.assertEqual(ingress.validate_plan(p)['controllerScope'],result)
+
+    def test_listener_key_rejects_malformed_composites_with_valid_digest(self):
+        invalid=('lsn-fixture123@5432','lsn-fixture123@6433','lsn-fixture123@@6432',
+                 'lsn-@6432','lsn-fixture!123@6432','lsn-fixture123@6432\n',
+                 'lsn-'+'a'*65+'@6432','lsn-Fixture123@6432','listener@6432',
+                 '',None,6432,True)
+        for listener in invalid:
+            with self.subTest(listener=listener):
+                p=plan();s=resource_scope(p,listenerId=listener)
+                with self.assertRaises(ValueError):ingress.resource_scope(s,p)
+        for port in (5432,6433,True):
+            with self.subTest(port=port):
+                p=plan();s=resource_scope(p,listenerId='lsn-fixture123@6432',port=port)
+                with self.assertRaises(ValueError):ingress.resource_scope(s,p)
+
+    def test_listener_key_does_not_relax_other_tokens_digest_or_scope(self):
+        p=plan()
+        for key in ('envCode','proxyCode','groupId','serverGroupId','targetDbCode',
+                    'accountId','region','databaseResourceId'):
+            with self.subTest(key=key):
+                s=resource_scope(p,**{key:'fixture@6432'})
+                self.assertFalse(ingress.token(s[key]))
+                with self.assertRaises(ValueError):ingress.resource_scope(s,p)
+        for key in p['controllerScope']['application']:
+            with self.subTest(application=key):
+                app=copy.deepcopy(p['controllerScope']['application']);app[key]='fixture@6432'
+                s=resource_scope(p,application=app)
+                with self.assertRaises(ValueError):ingress.resource_scope(s,p)
+        s=resource_scope(p,listenerId='lsn-fixture123@6432');s['resolutionDigest']='0'*64
+        with self.assertRaises(ValueError):ingress.resource_scope(s,p)
+        for updates in (dict(groupId='wrong'),dict(application=dict(p['controllerScope']['application'],uid='wrong'))):
+            with self.subTest(updates=updates):
+                s=resource_scope(p,listenerId='lsn-fixture123@6432',**updates)
+                with self.assertRaises(ValueError):ingress.resource_scope(s,p)
+
     def test_complete_scope_is_validated_without_dropping_proof(self):
         p=plan();s=resource_scope(p)
         self.assertTrue(callable(getattr(ingress,'resource_scope',None)))
