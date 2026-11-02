@@ -192,7 +192,11 @@ class LaneClient:
         if self.mode=='full-replacement-direct-v2':
             from pgcat_native_controller import validate_start_plan
             validate_start_plan(self.bindings,self.journal.native_plan())
-            if getattr(self,'feed_process',None) is not None:require(self.feed_process.poll() is None,'child')
+            child=getattr(self,'feed_process',None)
+            if child is not None and child.poll() is not None:
+                require(isinstance(child,subprocess.Popen),'child')
+                stopped=self.journal.native_stop()
+                require(stopped['feedBinding']==self.feed_binding and stopped['feedExit']==dict(runId=self.run_id,feedId=self.feed_binding['feedId'],pid=child.pid,exitCode=child.poll()) and child.poll()==0,'child')
 
     def _prepared_result_ready(self, action, request_id, result):
         if action != 'pending-status' or result['payload'].get('status') != 'PREPARED':
@@ -206,6 +210,8 @@ class LaneClient:
         # Proven stopped calls refuse before the uncertainty/owner-close path.
         with self.journal._connection() as db:
             stopped=db.execute('SELECT 1 FROM rehearsal_stop').fetchone() is not None
+            native_stopped=db.execute('SELECT 1 FROM native_stop').fetchone() is not None
+        if native_stopped:require(self.mode=='full-replacement-direct-v2' and action=='native-finish','incomplete')
         if stopped:
             self._active();raise Refused('incomplete')
         require(action != 'rehearsal-finish','configuration')
@@ -248,6 +254,14 @@ class LaneClient:
             category = error.category if isinstance(error, Refused) else 'receipt'
             self._cancel_and_close(category)
             raise Refused(category) from None
+
+    def native_finish_call(self):
+        from pgcat_lane_protocol import _release_admission,NATIVE_MODE
+        _release_admission(NATIVE_MODE,'native-finish')
+        self._active();require(self.mode==NATIVE_MODE,'configuration')
+        stopped=self.journal.native_stop(require_fresh=True)
+        # The exact frozen successful receipt is read; no provider tick is requested.
+        return self.call('native-finish',stopped['receipt'],float(monotonic()+5.),native_selector={})
 
     def post_stop_call(self):
         """One fixed journal-derived finish; never refresh a frozen publication."""

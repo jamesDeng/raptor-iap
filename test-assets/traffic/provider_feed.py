@@ -582,10 +582,11 @@ class Operator:
         if self.run_context is not None and getattr(args,'no_scale_target',None) is None:
             require(type(args.interval) is int and args.interval == 15 and
                     type(args.max_seconds) is int and 75 <= args.max_seconds <= 5400)
-            for name in (REHEARSAL_STOP_INTENT,REHEARSAL_STOP_ACK):
+            for name in (("native-stop.intent","native-stop.ack") if self.mode=='full-replacement-direct-v2' else (REHEARSAL_STOP_INTENT,REHEARSAL_STOP_ACK)):
                 require(self.status_file is not None and not os.path.lexists(self.status_file.parent/name))
         self.no_scale_target = None
         self.stop_ack = None
+        self.last_successful_receipt = None
         raw_target = getattr(args, 'no_scale_target', None)
         if raw_target is not None:
             try:
@@ -678,6 +679,47 @@ class Operator:
         except (Refused,OSError,ValueError,UnicodeError,TypeError,KeyError):
             self.stopped=True
             raise FeedStop('loop') from None
+
+    def stop_native(self):
+        if self.mode!='full-replacement-direct-v2' or self.run_context is None:return False
+        from pgcat_lane_protocol import native_stop_ack,NATIVE_STOP_INTENT,NATIVE_STOP_ACK
+        from pgcat_lane_supervisor import save_once
+        path=self.status_file.parent/NATIVE_STOP_INTENT
+        try:
+            if not os.path.lexists(path):
+                require(self.stop_ack is None and not os.path.lexists(path.parent/NATIVE_STOP_ACK));return False
+            # Outside a publication, authenticate local source/run directly. Do
+            # not clear or renew the preceding tick's expired deadline.
+            context_path=Path(self.args.run_context)
+            require(validate_run_context(context_path.parent,context_path,mode=self.mode)==self.run_context)
+            journal=Journal(context_path.parent);plan=journal.native_plan();reconcile=journal.native_reconcile()
+            require(journal.native_feed_owner()['pid']==os.getpid())
+            intent,raw=private_json(path);require(raw==encode(intent))
+            receipt,raw=private_json(self.status_file)
+            require(raw==encode(receipt) and receipt==self.last_successful_receipt and receipt['sequence']==self.sequence and receipt['feedSession']==self.feedSession)
+            require(journal.run_snapshot()['runId']==self.run_context['runId'])
+            ack=native_stop_ack(intent,receipt,reconcile,plan,now=time.time())
+            require(self.stop_ack is None)
+            save_once(path.parent,NATIVE_STOP_ACK,ack);self.stop_ack=ack
+            actual,raw=private_json(path.parent/NATIVE_STOP_ACK);require(actual==ack and raw==encode(ack))
+            self.stopped=True;return True
+        except (Refused,OSError,ValueError,UnicodeError,TypeError,KeyError):
+            self.stopped=True;raise FeedStop('loop') from None
+
+    def native_reconciled_targets(self,candidate):
+        if self.mode!='full-replacement-direct-v2' or self.run_context is None:return
+        journal=Journal(Path(self.args.run_context).parent)
+        require(journal.native_feed_owner()['pid']==os.getpid())
+        reconcile=journal.native_reconcile(required=False)
+        if reconcile is None:return
+        out=reconcile['outputs'];pair=out['pair']
+        require(candidate['feedSession']==out['feedSession'] and candidate['desired']==2 and candidate['members']==pair)
+        expected=tuple(sorted(candidate['privateAddresses'].items()))
+        require([n for n,_ in expected]==pair)
+        # Reconciliation already changed exact bytes via UID/RV CAS. Only adopt
+        # that actual matching state; never reintroduce the retained old targets.
+        require(self.existing_targets()==expected)
+        self.previous=self.retained_targets=expected
 
     def verify_run_context(self):
         if self.run_context is not None:
@@ -878,6 +920,7 @@ class Operator:
             mode_state.observe(candidate)
             worker_write = self.atomic_worker_write if self.run_context is None else (
                 lambda inventory:self.atomic_worker_write(inventory,candidate))
+            self.native_reconciled_targets(candidate)
             targets = publish(candidate,self.previous,worker_write,self.update_targets,
                               deadline=deadline,retain_targets=self.retained_targets)
             self.inventory_mode = mode_state
@@ -898,7 +941,9 @@ class Operator:
                            'mode':self.mode, 'desired':candidate['desired'],
                            'observedAt':candidate['observedAt'],
                            'rosterSha256':roster_sha(candidate)}
+                if self.mode=='full-replacement-direct-v2':receipt=json.loads(encode(receipt))
                 write_status_receipt(self.status_file, receipt, deadline=deadline)
+                self.last_successful_receipt=copy.deepcopy(receipt)
         except Exception:
             # Neither uncertain worker writes nor a later local failure may
             # replay publication through this operator.
@@ -967,7 +1012,8 @@ def main():
         run_loop(operator.read,operator.write,interval=args.interval,max_seconds=args.max_seconds,
                  **({'stop':operator.stop_no_scale} if operator.no_scale_target is not None else
                     {'stop':operator.stop_rehearsal} if operator.run_context is not None and
-                    operator.mode == 'disabled-rehearsal' else {}))
+                    operator.mode == 'disabled-rehearsal' else
+                    {'stop':operator.stop_native} if operator.run_context is not None and operator.mode=='full-replacement-direct-v2' else {}))
     except FeedStop as error:
         parser.exit(1,str(error)+'\n')
     except Exception:

@@ -559,3 +559,61 @@ def main():
 
 if __name__=='__main__':
     sys.exit(main())
+
+
+def native_boundary_completion(run,context,operation,terminal,inventory,progress,*,started,deadline):
+    """Authenticate B's actual v2 boundary and all four committed final refs."""
+    from pgcat_native_ingress import exact,require,number,_identity
+    from pgcat_native_evidence import _replay,read_terminal_clients
+    from segmented_capture import canonical,sha,decode_private,read_progress,read_frame,open_directory,read_private
+    from capture_window import seconds
+    boundary=Path(run)/'native-boundary';fd=open_directory(boundary);capture=open_directory(Path(run)/'native-capture')
+    try:
+        while True:
+            require(time.monotonic()<deadline)
+            try:completed_raw=read_private(fd,'boundary-completed.json');break
+            except FileNotFoundError:time.sleep(min(.01,max(0,deadline-time.monotonic())))
+        raws={name:read_private(fd,name+'.json') for name in ('request','ack','receipt','boundary-start')}
+        request,ack,receipt,start=[decode_private(raws[n]) for n in ('request','ack','receipt','boundary-start')]
+        completed=decode_private(completed_raw)
+        exact(request,{'requestId','roster'});require(request['roster']==terminal['roster'] and ack==request)
+        require(type(request['requestId']) is str and re.fullmatch('[0-9a-f]{32}',request['requestId']))
+        require(receipt==dict(requestId=request['requestId'],status='ACKNOWLEDGED',clients={r['uid']+'/'+r['processId']:{'status':'acknowledged'} for r in terminal['roster']}))
+        exact(start,{'schemaVersion','bindingSha256','requestSha256','requestId','originalRosterSha256','startedMonotonic','deadlineMonotonic','firstSettlingFrame'})
+        require(type(start['schemaVersion']) is int and start['schemaVersion']==1 and start['bindingSha256']==progress['bindingSha256'] and start['requestSha256']==sha(raws['request']) and start['requestId']==request['requestId'] and start['originalRosterSha256']==sha(canonical(terminal['roster'])))
+        require(all(number(start[k]) for k in ('startedMonotonic','deadlineMonotonic')) and started<=start['startedMonotonic'] and start['deadlineMonotonic']==start['startedMonotonic']+5)
+        exact(completed,{'schemaVersion','bindingSha256','requestSha256','requestId','startSha256','receiptSha256','finalDurableMonotonic','finals','lastFrame','terminalSha256','executionKind','predecessorFinals'})
+        require(type(completed['schemaVersion']) is int and completed['schemaVersion']==2 and completed['executionKind']==context['executionKind'] and completed['terminalSha256']==terminal['terminalSha256'])
+        require(completed['bindingSha256']==progress['bindingSha256'] and completed['requestSha256']==sha(raws['request']) and completed['requestId']==request['requestId'] and completed['startSha256']==sha(raws['boundary-start']) and completed['receiptSha256']==sha(raws['receipt']))
+        durable=completed['finalDurableMonotonic'];require(number(durable) and start['startedMonotonic']<=durable<=start['deadlineMonotonic'] and durable<=time.monotonic()<deadline)
+        first=read_frame(capture,start['firstSettlingFrame']);require(first['phase']=='settling' and seconds(first['at'])>=seconds(progress['latest']['at']))
+        sealed=decode_private(read_private(capture,'terminal-clients.json'))
+        require(completed['predecessorFinals']==sealed['predecessorFinals'])
+        finals=completed['finals'];require(type(finals) is list and len(finals)==2)
+        require(sorted((r['uid'],r['processId']) for r in finals)==sorted((r['uid'],r['processId']) for r in terminal['roster']))
+        all_finals=completed['predecessorFinals']+finals
+        require(len(all_finals)==4 and len({(r['uid'],r['processId']) for r in all_finals})==4)
+        final_samples={}
+        for row in all_finals:
+            exact(row,{'uid','processId','frame'});frame=read_frame(capture,row['frame'])
+            pods=[p for p in frame['pods'] if p['uid']==row['uid'] and p['snapshot']['sample']['processId']==row['processId']];require(len(pods)==1)
+            snap=pods[0]['snapshot'];sample=snap['sample']
+            require(snap['final'] is True and type(snap['connected']) is int and snap['connected']==0 and sample['Scheduled']==sample['Attempts']+sample['Skipped'] and sample['Skipped']==0)
+            if row in finals:
+                require(frame['phase']=='settling' and frame['inventory']==inventory and seconds(frame['at'])>=seconds(first['at']))
+                require(dict(name=pods[0]['name'],uid=pods[0]['uid'],containerId=pods[0]['containerId'],processId=sample['processId']) in terminal['roster'])
+                final_samples[row['uid']]=sample
+        after,_,tail=read_progress(Path(run)/'native-capture',context)
+        require(not any(after['flags'].values()) and after['latest']==completed['lastFrame'] and tail['phase']=='settling' and tail['inventory']==inventory)
+        require(type(tail['expectedReplicas']) is int and tail['expectedReplicas']==2 and len(tail['pods'])==2 and {p['uid'] for p in tail['pods']}==set(final_samples))
+        for pod in tail['pods']:
+            require(pod['snapshot']['final'] is True and type(pod['snapshot']['connected']) is int and pod['snapshot']['connected']==0 and pod['snapshot']['sample']==final_samples[pod['uid']])
+        snapshot,count,_=_replay(capture,context,after['latest']);require(snapshot==after['nativeCohort'] and count==after['committedFrames'] and not snapshot['startingPods'])
+        require(len(snapshot['cohort'])==4 and all(r['finalFrame'] is not None for r in snapshot['cohort']))
+        require({(r['identity']['uid'],r['identity']['processId'],sha(canonical(r['finalFrame']))) for r in snapshot['cohort']}=={(r['uid'],r['processId'],sha(canonical(r['frame']))) for r in all_finals})
+        read_frame(capture,completed['lastFrame'],tail=True)
+        require(read_terminal_clients(Path(run)/'native-capture',context,operation)==terminal)
+        for name,raw in raws.items():require(read_private(fd,name+'.json')==raw)
+        require(read_private(fd,'boundary-completed.json')==completed_raw)
+        return dict(boundaryRequestId=request['requestId'],receiptSha256=sha(raws['receipt']),boundaryCompletedSha256=sha(completed_raw))
+    finally:os.close(capture);os.close(fd)

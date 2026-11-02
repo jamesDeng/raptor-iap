@@ -79,6 +79,15 @@ def owned_process(child,probe):
     return dict(identity)
 
 
+
+def _owned_feed_exit(owner,child,*,deadline):
+    from pgcat_lane_protocol import monotonic
+    check(isinstance(child,subprocess.Popen) and child is owner.feed and monotonic()<deadline)
+    code=child.poll()
+    if code is None:code=child.wait(timeout=max(.001,deadline-monotonic()))
+    check(child is owner.feed and child.poll()==code and type(code) is int and code==0 and monotonic()<deadline)
+    return code
+
 def collect_baseline(run_id,expected,*,provider_read,kube_read,read_pod,read_metrics,now):
     """Derive the pre-feed baseline from bounded raw observations, no context."""
     import re
@@ -537,6 +546,9 @@ def validate_action(plan,envelope,selector):
     action=envelope['action'];validate_selector(plan,action,selector)
     keys={'schemaVersion','action','localRequestId','runId','executionKind','planSha256','baselineSha256','feedBinding','deadlineMonotonic','prepared'}
     if action in ('native-ingress','native-disabled-restart'):keys|={'readySha256','feedBindingSha256'}
+    if action in ('native-terminal-seal','native-reconcile','native-finish'):
+        keys|={'operation','supports'}
+        if action=='native-finish':keys|={'stopped'}
     exact(envelope,keys);check(type(envelope['schemaVersion']) is int and envelope['schemaVersion']==1)
     identifier(envelope['localRequestId']);check(envelope['runId']==plan['runId'] and envelope['executionKind']==plan['executionKind'])
     check(envelope['planSha256']==digest(plan) and envelope['baselineSha256']==plan['baselineSha256'] and number(envelope['deadlineMonotonic']))
@@ -544,6 +556,16 @@ def validate_action(plan,envelope,selector):
     feed=envelope['feedBinding'];exact(feed,{'runId','feedId','pid','bindingSha256','argvSha256'})
     identifier(feed['feedId']);check(feed['runId']==plan['runId'] and type(feed['pid']) is int and feed['pid']>0 and hashed(feed['bindingSha256']) and hashed(feed['argvSha256']))
     if 'readySha256' in envelope:check(hashed(envelope['readySha256']) and hashed(envelope['feedBindingSha256']))
+    if 'operation' in envelope:
+        exact(envelope['operation'],{'basename','identity'});check(envelope['operation']['basename']=='native-operation-binding.json');file_identity(envelope['operation']['identity'])
+        needed=set() if action=='native-terminal-seal' else {'native-terminal-seal'} if action=='native-reconcile' else {'native-terminal-seal','native-reconcile'}
+        exact(envelope['supports'],needed)
+        for name,artifact in envelope['supports'].items():
+            exact(artifact,{'basename','identity'});check(artifact['basename']==name+'.json');file_identity(artifact['identity'])
+        if action=='native-finish':
+            from pgcat_native_closure import validate_support
+            exact(envelope['stopped'],{'support','intent','ack','receipt','feedBinding','feedExit'})
+            validate_support(envelope['stopped']['support'],plan,'native-feed-stop')
 
 
 def stage_action(run,plan,envelope,selector):
@@ -630,6 +652,12 @@ def validate_action_result(value,plan,action,local_request):
         check(output['status']=='VERIFIED' and output['baselineSha256']==plan['baselineSha256']);file_identity(output['feedBindingFile'])
     elif action=='native-disabled-restart':
         exact(output,{'receipt','receiptFile'});file_identity(output['receiptFile']);check(output['receiptFile']['sha256']==digest(output['receipt']))
+    elif action in ('native-terminal-seal','native-reconcile','native-finish'):
+        from pgcat_native_closure import validate_support
+        exact(output,{'support','artifact'});support=validate_support(output['support'],plan,action)
+        check(support['requestId']==local_request);exact(output['artifact'],{'basename','identity'})
+        check(output['artifact']['basename']==action+'.json');file_identity(output['artifact']['identity'])
+        check(output['artifact']['identity']['sha256']==digest(support))
     else:raise ValueError('native action')
     return value
 
@@ -793,7 +821,12 @@ class NativeController:
             self.close();raise
 
     def close(self):
-        if self.client is not None:self.client.close()
+        child=getattr(self,'feed',None);client=getattr(self,'client',None)
+        if isinstance(child,subprocess.Popen) and client is not None and child is getattr(client,'feed_process',None) and child.poll() is None:
+            child.kill()
+            try:child.wait(timeout=2.)
+            except subprocess.TimeoutExpired:pass
+        if client is not None:client.close()
 
     def start_capture(self):
         _closed('native-collector-launch');_require_verified()
@@ -831,6 +864,60 @@ class NativeController:
         from pgcat_lane_protocol import native_action
         native_action('native-disabled-restart',self.prepared['plan']['executionKind'])
         return self._call('native-disabled-restart',{})
+
+
+    def seal_terminal(self):
+        _closed('native-terminal-seal');_require_verified()
+        return self._call('native-terminal-seal',{})
+
+    def reconcile(self):
+        _closed('native-reconcile');_require_verified()
+        return self._call('native-reconcile',{})
+
+    def wait_reconciled_publication(self):
+        _closed('native-feed-stop');_require_verified()
+        from pgcat_lane_protocol import roster_sha,original_roster
+        reconcile=self.client.journal.native_reconcile();out=reconcile['outputs']
+        receipt=self._receipt(out['sequence']+1)
+        check(receipt['feedSession']==out['feedSession'] and receipt['observedAt']>out['observedAt'] and receipt['desired']==2 and receipt['rosterSha256']==roster_sha(original_roster(out['pair'])))
+        return receipt
+
+    def stop_feed(self):
+        _closed('native-feed-stop');_require_verified()
+        try:return self._stop_feed()
+        except BaseException:self.close();raise
+
+    def _stop_feed(self):
+        _closed('native-feed-stop');_require_verified()
+        from pgcat_lane_protocol import digest,native_stop_ack,NATIVE_STOP_INTENT,NATIVE_STOP_ACK,private_json,monotonic,encode
+        from pgcat_lane_supervisor import save_once
+        check(isinstance(self.feed,subprocess.Popen) and self.feed is self.client.feed_process)
+        plan=self.client.journal.native_plan();reconcile=self.client.journal.native_reconcile()
+        deadline=monotonic()+5.;out=reconcile['outputs'];root=Path(self.bindings['captureRoot'])
+        self.client.journal.claim_native_stop(float(deadline))
+        # No synthetic refresh or inherited tick budget. Wait under this one budget.
+        while True:
+            check(monotonic()<deadline and self.feed.poll() is None);self.client._active()
+            receipt,_=private_json(Path(self.bindings['laneBindings']['receiptPath']))
+            if receipt['sequence']>out['sequence'] and receipt['observedAt']>out['observedAt']:break
+            time.sleep(.01)
+        intent=dict(schemaVersion=1,runId=plan['runId'],executionKind=plan['executionKind'],planSha256=digest(plan),feedSession=out['feedSession'],minimumSequence=receipt['sequence'],reconcileSha256=digest(reconcile))
+        native_stop_ack(intent,receipt,reconcile,plan,now=time.time())
+        save_once(root,NATIVE_STOP_INTENT,intent)
+        while not (root/NATIVE_STOP_ACK).exists():
+            check(monotonic()<deadline and self.feed.poll() is None);time.sleep(.01)
+        ack,raw=private_json(root/NATIVE_STOP_ACK)
+        final,_=private_json(Path(self.bindings['laneBindings']['receiptPath']))
+        check(raw==encode(ack) and ack==native_stop_ack(intent,final,reconcile,plan,now=time.time()))
+        _owned_feed_exit(self,self.feed,deadline=deadline)
+        self.client.confirm_feed_exit(self.feed)
+        self.receipt=final
+        return self.client.journal.record_native_stop()
+
+    def finish_terminal(self):
+        _closed('native-finish');_require_verified()
+        try:return self.client.native_finish_call()['payload']
+        except BaseException:self.close();raise
 
 
 def worker_entry(action,run_dir,envelope=None,selector=None):
@@ -894,6 +981,12 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
                 except FileNotFoundError:pass
             time.sleep(.01)
         output=dict(ready=ready,readyFile=_identity(run/'native-ready.json')[1])
+    elif action in ('native-terminal-seal','native-reconcile','native-finish'):
+        from pgcat_native_closure import FixedClosureAdapters,seal_terminal,reconcile,finish_terminal,support_artifact
+        adapter=FixedClosureAdapters(run,reads,prepared=prepared,action_id=request_id,operation=envelope['operation'],supports=envelope['supports'],stopped=envelope.get('stopped'))
+        perform={'native-terminal-seal':seal_terminal,'native-reconcile':reconcile,'native-finish':finish_terminal}[action]
+        support=perform(run,adapters=adapter,now=time.time)
+        output=dict(support=support,artifact=support_artifact(run,action,adapters=adapter))
     else:raise ValueError('native action')
     verify_prepared(run,plan,prepared)
     value=dict(schemaVersion=1,action=action,runId=plan['runId'],executionKind=plan['executionKind'],planSha256=sha(canonical(plan)),requestId=request_id,staged=staged,outputs=output)

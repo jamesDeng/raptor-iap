@@ -19,8 +19,8 @@ ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'scaleout-two-to-three', 'pre-drain-proof', 'deregister-new-node',
     'zero-proof', 'scaling-activity-check', 'scalein-three-to-two'))
 NATIVE_MODE = 'full-replacement-direct-v2'
-NATIVE_ACTIONS = frozenset(('native-baseline','native-collector-launch','native-collector-status','native-ingress','native-disabled-restart'))
-NATIVE_RESERVED = frozenset(('native-gateway-enable','native-gateway-disable','native-terminal-seal','native-reconcile','native-feed-stop','native-finish','native-verdict','native-restore','native-cleanup'))
+NATIVE_ACTIONS = frozenset(('native-baseline','native-collector-launch','native-collector-status','native-ingress','native-disabled-restart','native-terminal-seal','native-reconcile','native-finish'))
+NATIVE_RESERVED = frozenset(('native-gateway-enable','native-gateway-disable','native-feed-stop','native-verdict','native-restore','native-cleanup'))
 
 def native_action(action,kind):
     require(kind in ('native-replacement','disabled-proof') and action in NATIVE_ACTIONS)
@@ -565,6 +565,10 @@ class Journal:
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_admission (
                 request_id TEXT PRIMARY KEY, proof TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS native_stop_claim (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS native_stop (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_support (
                 request_id TEXT PRIMARY KEY, proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS feed_manifest (
@@ -698,6 +702,8 @@ class Journal:
             _release_admission(run['mode'], request['action'])
             if run['mode']==NATIVE_MODE:
                 plan=self._native_plan_in_tx(db);native_action(request['action'],plan['executionKind'])
+                stopped=db.execute('SELECT 1 FROM native_stop').fetchone() is not None
+                require(request['action']=='native-finish' if stopped else request['action']!='native-finish','incomplete')
             require(request['runId'] == run['run_id'])
             require(request['target'] == json.loads(run['target']), 'target')
             require(request['bundleSha256'] == json.loads(run['hashes'])['bundleSha256'], 'source')
@@ -896,11 +902,129 @@ class Journal:
                 if proof['action']=='native-collector-launch':ready=proof['outputs']
             require(ready is not None,'incomplete')
             envelope.update(readySha256=ready['readyFile']['sha256'],feedBindingSha256=ready['ready']['feedBindingSha256'])
+        elif action in ('native-terminal-seal','native-reconcile','native-finish'):
+            records=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support')]
+            bound=[r for r in records if r['action']=='native-ingress' and r['outputs'].get('status')=='BOUND']
+            require(bound,'incomplete');operation=bound[-1]['outputs']['operationFile']
+            needed=() if action=='native-terminal-seal' else ('native-terminal-seal',) if action=='native-reconcile' else ('native-terminal-seal','native-reconcile')
+            supports={}
+            for name in needed:
+                matches=[r for r in records if r['action']==name];require(len(matches)==1,'incomplete')
+                supports[name]=matches[0]['outputs']['artifact']
+            envelope.update(operation=operation,supports=supports)
+            if action=='native-finish':
+                stopped=self._native_stop_in_tx(db,require_fresh=True);envelope['stopped']=stopped
+                from pgcat_lane_supervisor import receipt_identity
+                from pgcat_workbench_lane import read_receipt
+                manifest=bytes(db.execute('SELECT raw FROM feed_manifest').fetchone()['raw']);outer=json.loads(manifest)
+                identity,receipt,_=read_receipt(outer['laneBindings']['receiptPath'],stopped['receipt']['feedSession'],stopped['receipt']['sequence'],expected_mode=NATIVE_MODE)
+                require(receipt==stopped['receipt'] and request['feedSession']==receipt['feedSession'] and request['minimumSequence']==receipt['sequence'] and request['receiptIdentity']==receipt_identity(identity),'receipt')
+            else:require(db.execute('SELECT 1 FROM native_stop').fetchone() is None,'incomplete')
         elif action=='native-collector-launch':
             require(any(json.loads(r['proof'])['action']=='native-baseline' for r in db.execute('SELECT proof FROM native_support')),'incomplete')
         validate_action(plan,envelope,selector)
         proof=dict(envelope=envelope,selector=selector,selectorFile=selector_file)
         db.execute('INSERT INTO native_admission VALUES (?,?,0)',(request['requestId'],encode(proof).decode()))
+
+    def _native_record_in_tx(self,db,action):
+        from pgcat_native_closure import validate_support
+        plan=self._native_plan_in_tx(db)
+        rows=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support')]
+        matches=[r for r in rows if r['action']==action];require(len(matches)==1,'incomplete')
+        result=matches[0];support=validate_support(result['outputs']['support'],plan,action)
+        require(support['requestId']==result['requestId'] and result['outputs']['artifact']['identity']['sha256']==digest(support),'source')
+        return support
+
+    def native_reconcile(self,*,required=True):
+        with self._connection() as db:
+            if not required and not any(json.loads(r['proof'])['action']=='native-reconcile' for r in db.execute('SELECT proof FROM native_support')):return None
+            return self._native_record_in_tx(db,'native-reconcile')
+
+    def _native_stop_in_tx(self,db,*,require_fresh=False):
+        from pgcat_native_ingress import _identity
+        row=db.execute('SELECT proof FROM native_stop').fetchone();require(row is not None,'incomplete')
+        proof=json.loads(row['proof']);context=proof['context'];plan=self._native_plan_in_tx(db)
+        reconcile=self._native_record_in_tx(db,'native-reconcile')
+        require(context['ack']==native_stop_ack(context['intent'],context['receipt'],reconcile,plan,now=time.time() if require_fresh else context['receipt']['observedAt']),'receipt')
+        root=self.root.parent
+        for name,identity in proof['files'].items():
+            raw,current=_identity(root/name);require(current==identity,'source')
+            expected={k:v for k,v in context['support'].items() if k!='outputs'} if name=='native-feed-stop.intent' else context['support'] if name=='native-feed-stop.json' else context['intent'] if name==NATIVE_STOP_INTENT else context['ack'] if name==NATIVE_STOP_ACK else context['receipt']
+            require(raw==encode(expected),'source')
+        binding=json.loads(db.execute('SELECT proof FROM feed_binding').fetchone()['proof'])
+        exited=json.loads(db.execute('SELECT proof FROM feed_exit_confirmation').fetchone()['proof'])
+        require(context['feedBinding']==binding and context['feedExit']==exited and type(exited['exitCode']) is int and exited['exitCode']==0,'child')
+        manifest=db.execute('SELECT raw FROM feed_manifest').fetchone();require(manifest is not None,'source')
+        run=db.execute('SELECT * FROM run').fetchone()
+        self._feed_manifest(bytes(manifest['raw']),binding,dict(target=json.loads(run['target']),hashes=json.loads(run['hashes'])))
+        claimed=db.execute('SELECT proof FROM native_stop_claim').fetchone();require(claimed is not None,'source');claimed=json.loads(claimed['proof'])
+        require(claimed['record']=={k:v for k,v in context['support'].items() if k!='outputs'} and claimed['identity']==proof['files']['native-feed-stop.intent'],'source')
+        from pgcat_native_closure import validate_support
+        validate_support(context['support'],plan,'native-feed-stop')
+        require(context['support']['inputs']==dict(reconcileSha256=digest(reconcile)) and context['support']['outputs']==dict(intentSha256=digest(context['intent']),ackSha256=digest(context['ack']),finalReceiptSha256=digest(context['receipt']),feedExit=exited),'source')
+        return context
+
+    def native_stop(self,*,require_fresh=False):
+        with self._connection() as db:return self._native_stop_in_tx(db,require_fresh=require_fresh)
+
+    def _native_feed_in_tx(self,db):
+        plan=self._native_plan_in_tx(db);run=db.execute('SELECT * FROM run').fetchone()
+        require(run is not None and run['mode']==NATIVE_MODE and run['state']=='active' and run['run_id']==plan['runId'],'incomplete')
+        require(db.execute('SELECT 1 FROM feed_exit_confirmation').fetchone() is None,'child')
+        row=db.execute('SELECT proof FROM feed_binding').fetchone();manifest=db.execute('SELECT raw FROM feed_manifest').fetchone()
+        require(row is not None and manifest is not None,'child');binding=json.loads(row['proof'])
+        self._feed_manifest(bytes(manifest['raw']),binding,dict(target=json.loads(run['target']),hashes=json.loads(run['hashes'])))
+        return binding
+
+    def native_feed_owner(self):
+        with self._connection() as db:return self._native_feed_in_tx(db)
+
+    def claim_native_stop(self,deadline):
+        _release_admission(NATIVE_MODE,'native-feed-stop')
+        from pgcat_native_controller import _write_bytes
+        with self._transaction() as db:
+            require(type(deadline) is float and math.isfinite(deadline) and 0<deadline-monotonic()<=5.,'timeout')
+            require(db.execute('SELECT 1 FROM native_stop_claim').fetchone() is None and db.execute('SELECT 1 FROM native_stop').fetchone() is None,'incomplete')
+            require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None,'incomplete')
+            run=db.execute('SELECT * FROM run').fetchone();require(run is not None and run['mode']==NATIVE_MODE and run['state']=='active','incomplete')
+            require(db.execute('SELECT 1 FROM feed_exit_confirmation').fetchone() is None,'child')
+            plan=self._native_plan_in_tx(db);reconcile=self._native_record_in_tx(db,'native-reconcile')
+            self._native_feed_in_tx(db)
+            record=dict(schemaVersion=1,action='native-feed-stop',runId=plan['runId'],executionKind=plan['executionKind'],planSha256=digest(plan),requestId=str(uuid.uuid4()),inputs=dict(reconcileSha256=digest(reconcile)))
+            identity=_write_bytes(self.root.parent/'native-feed-stop.intent',encode(record))
+            proof=dict(record=record,identity=identity,deadlineMonotonic=deadline)
+            db.execute('INSERT INTO native_stop_claim VALUES (1,?)',(encode(proof).decode(),));return record
+
+    def record_native_stop(self):
+        _release_admission(NATIVE_MODE,'native-feed-stop')
+        from pgcat_native_controller import _write_bytes
+        from pgcat_native_ingress import _identity
+        from pgcat_native_closure import validate_support
+        with self._transaction() as db:
+            require(db.execute('SELECT 1 FROM native_stop').fetchone() is None,'incomplete')
+            plan=self._native_plan_in_tx(db);reconcile=self._native_record_in_tx(db,'native-reconcile')
+            claimed=db.execute('SELECT proof FROM native_stop_claim').fetchone();require(claimed is not None,'incomplete');claimed=json.loads(claimed['proof'])
+            require(monotonic()<claimed['deadlineMonotonic'],'timeout')
+            raw,current=_identity(self.root.parent/'native-feed-stop.intent');require(current==claimed['identity'] and raw==encode(claimed['record']),'source')
+            binding=json.loads(db.execute('SELECT proof FROM feed_binding').fetchone()['proof'])
+            exitrow=db.execute('SELECT proof FROM feed_exit_confirmation').fetchone();require(exitrow is not None,'child');exited=json.loads(exitrow['proof'])
+            require(exited['exitCode']==0 and all(exited[k]==binding[k] for k in ('runId','feedId','pid')),'child')
+            manifest=db.execute('SELECT raw FROM feed_manifest').fetchone();require(manifest is not None,'source')
+            run=db.execute('SELECT * FROM run').fetchone();require(run['state']=='active' and run['mode']==NATIVE_MODE,'incomplete')
+            outer=self._feed_manifest(bytes(manifest['raw']),binding,dict(target=json.loads(run['target']),hashes=json.loads(run['hashes'])))
+            root=self.root.parent;receipt_name=Path(outer['laneBindings']['receiptPath']).name
+            files={};values={}
+            for name in (NATIVE_STOP_INTENT,NATIVE_STOP_ACK,receipt_name):
+                raw,identity=_identity(root/name);value=json.loads(raw);require(raw==encode(value),'source');files[name]=identity;values[name]=value
+            intent=values[NATIVE_STOP_INTENT];ack=values[NATIVE_STOP_ACK];receipt=values[receipt_name]
+            require(ack==native_stop_ack(intent,receipt,reconcile,plan,now=time.time()),'receipt')
+            support=dict(claimed['record'],outputs=dict(intentSha256=digest(intent),ackSha256=digest(ack),finalReceiptSha256=digest(receipt),feedExit=exited))
+            validate_support(support,plan,'native-feed-stop')
+            files['native-feed-stop.intent']=claimed['identity']
+            files['native-feed-stop.json']=_write_bytes(root/'native-feed-stop.json',encode(support))
+            context=dict(support=support,intent=intent,ack=ack,receipt=receipt,feedBinding=binding,feedExit=exited)
+            db.execute('INSERT INTO native_stop VALUES (1,?)',(encode(dict(context=context,files=files)).decode(),))
+            require(self._native_stop_in_tx(db,require_fresh=True)==context,'source');return context
 
     def native_admission(self,request_id,*,claim=False):
         _release_admission(NATIVE_MODE)
@@ -912,6 +1036,7 @@ class Journal:
             req=json.loads(request['request']);require(req['deadlineMonotonic']>monotonic(),'timeout')
             proof=json.loads(row['proof']);native_action(req['action'],plan['executionKind'])
             require(proof['envelope']['prepared']==self._native_prepared_in_tx(db,plan),'source')
+            if req['action']=='native-finish':require(proof['envelope']['stopped']==self._native_stop_in_tx(db,require_fresh=True),'source')
             if claim:
                 require(row['claimed']==0,'incomplete');db.execute('UPDATE native_admission SET claimed=1 WHERE request_id=?',(request_id,))
             bindings,_=private_json(self.root/'bindings.json')
@@ -1619,3 +1744,25 @@ class Journal:
                        (encode(feed_exit).decode(), encode(assessment).decode()))
             db.execute("UPDATE run SET state='finished', session=?", (feed_exit['feedSession'],))
         return self.run_snapshot()
+
+
+NATIVE_STOP_INTENT='native-stop.intent'
+NATIVE_STOP_ACK='native-stop.ack'
+
+
+def native_stop_ack(intent,receipt,reconcile,plan,*,now):
+    """Exact final successful receipt, strictly after reconciliation in both clocks."""
+    require(type(intent) is dict and set(intent)=={'schemaVersion','runId','executionKind','planSha256','feedSession','minimumSequence','reconcileSha256'},'receipt')
+    require(type(intent['schemaVersion']) is int and intent['schemaVersion']==1 and intent['runId']==plan['runId'] and
+        intent['executionKind']==plan['executionKind'] and intent['planSha256']==digest(plan),'source')
+    identifier(intent['feedSession']);require(type(intent['minimumSequence']) is int and intent['minimumSequence']>0,'receipt')
+    require(intent['reconcileSha256']==digest(reconcile) and reconcile['action']=='native-reconcile' and
+        all(reconcile[k]==intent[k] for k in ('runId','executionKind','planSha256')),'source')
+    out=reconcile['outputs'];require(intent['feedSession']==out['feedSession'] and intent['minimumSequence']>out['sequence'],'receipt')
+    require(type(receipt) is dict and set(receipt)=={'mode','feedSession','sequence','observedAt','desired','rosterSha256'},'receipt')
+    require(receipt['mode']==NATIVE_MODE and receipt['feedSession']==intent['feedSession'] and type(receipt['sequence']) is int and
+        intent['minimumSequence']<=receipt['sequence']<=intent['minimumSequence']+1 and type(receipt['desired']) is int and receipt['desired']==2,'receipt')
+    require(type(receipt['observedAt']) in (int,float) and math.isfinite(receipt['observedAt']) and type(now) in (int,float) and math.isfinite(now) and
+        0<=now-receipt['observedAt']<30 and receipt['observedAt']>out['observedAt'],'receipt')
+    require(receipt['rosterSha256']==roster_sha(original_roster(out['pair'])),'receipt')
+    return dict(intent,intentSha256=digest(intent),finalReceiptSha256=digest(receipt),sequence=receipt['sequence'])
