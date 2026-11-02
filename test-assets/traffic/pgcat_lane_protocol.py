@@ -580,6 +580,8 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS native_prepared (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_created_request (singleton INTEGER PRIMARY KEY CHECK(singleton=1),proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS native_create (singleton INTEGER PRIMARY KEY CHECK(singleton=1),state TEXT NOT NULL,proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS native_gateway (action TEXT PRIMARY KEY,request_id TEXT UNIQUE NOT NULL,state TEXT NOT NULL,claim TEXT NOT NULL,job TEXT);
                 CREATE TABLE IF NOT EXISTS native_restoration_provider (singleton INTEGER PRIMARY KEY CHECK(singleton=1),proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_admission (
                 request_id TEXT PRIMARY KEY, proof TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0);
@@ -906,15 +908,112 @@ class Journal:
             if request['action'] in ('deregister-new-node','scalein-three-to-two'):
                 db.execute('INSERT INTO mutation_keys VALUES (?,?)',(request['runId'],request['action']))
 
+    def begin_native_create(self):
+        """Durable dispatch boundary. The caller clicks normal Create afterward."""
+        with self._transaction() as db:
+            plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,'native-ingress',plan=plan)
+            row=db.execute('SELECT * FROM native_create').fetchone()
+            job=db.execute("SELECT state FROM native_gateway WHERE action='native-gateway-enable'").fetchone()
+            require(plan['executionKind']=='native-replacement' and row is not None and row['state']=='RESERVED' and job is not None and job['state']=='VERIFIED','incomplete')
+            require(db.execute('SELECT 1 FROM native_created_request').fetchone() is None,'incomplete')
+            require(db.execute("SELECT 1 FROM native_gateway WHERE action='native-gateway-disable'").fetchone() is None,'incomplete')
+            db.execute("UPDATE native_create SET state='DISPATCHING'")
+            return dict(json.loads(row['proof']),state='DISPATCHING')
+
+    def claim_native_gateway(self,action,owner):
+        from pgcat_native_controller import NativeController,_native_owners
+        require(type(owner) is NativeController and owner.client.journal is self,'source')
+        evidence=owner._gateway_owner(require_feed=action=='native-gateway-enable')
+        budget=owner._gateway_budget(enable=action=='native-gateway-enable')
+        with self._transaction() as db:
+            plan=self._native_plan_in_tx(db)
+            require(plan['executionKind']=='native-replacement' and action in ('native-gateway-enable','native-gateway-disable'),'configuration')
+            _release_admission(NATIVE_MODE,plan=plan)
+            require(db.execute('SELECT 1 FROM native_gateway WHERE action=?',(action,)).fetchone() is None,'incomplete')
+            require(db.execute("SELECT 1 FROM native_gateway WHERE state!='VERIFIED'").fetchone() is None,'incomplete')
+            require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None,'incomplete')
+            records=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support')]
+            ready=[r['outputs'] for r in records if r['action']=='native-collector-launch'];require(len(ready)==1,'incomplete')
+            if action=='native-gateway-enable':
+                require(db.execute("SELECT 1 FROM requests WHERE state!='complete'").fetchone() is None,'incomplete')
+                require(db.execute('SELECT 1 FROM native_create').fetchone() is None and db.execute('SELECT 1 FROM native_created_request').fetchone() is None,'incomplete')
+                reservation=dict(runId=plan['runId'],planSha256=digest(plan),reservationId=str(uuid.uuid4()))
+                db.execute('INSERT INTO native_create VALUES (1,?,?)',('RESERVED',encode(reservation).decode()))
+                qualification=owner._gateway_qualification();settlement=None
+            else:
+                row=db.execute('SELECT * FROM native_create').fetchone();require(row is not None,'incomplete')
+                reservation=json.loads(row['proof']);qualification=None
+                if row['state']=='BOUND':
+                    request=self._native_request_in_tx(db)
+                    require(request['context'] is not None,'incomplete')
+                    settlement=dict(kind='bound-request',raptorRequestId=request['handoff']['requestId'])
+                else:
+                    require(row['state']=='RESERVED' and _native_owners[owner].get('aborting') is True,'incomplete')
+                    require(db.execute('SELECT 1 FROM native_created_request').fetchone() is None,'incomplete')
+                    db.execute("UPDATE native_create SET state='ABORTING'")
+                    settlement=dict(kind='pre-create-reserved',runId=plan['runId'],planSha256=digest(plan),reservationSha256=digest(reservation),ownerSha256=digest(evidence),state='ABORTING')
+            claim=dict(schemaVersion=1,action=action,requestId=str(uuid.uuid4()),runId=plan['runId'],planSha256=digest(plan),
+                prepared=self._native_prepared_in_tx(db,plan),readyFile=ready[0]['readyFile'],qualification=qualification,settlement=settlement,owner=evidence,reservation=reservation,budget=budget)
+            require(owner._gateway_budget(enable=action=='native-gateway-enable')==budget,'timeout')
+            db.execute('INSERT INTO native_gateway VALUES (?,?,?,?,NULL)',(action,claim['requestId'],'CLAIMED',encode(claim).decode()))
+            return claim
+
+    def native_gateway(self,action):
+        require(action in ('native-gateway-enable','native-gateway-disable'))
+        with self._connection() as db:
+            row=db.execute('SELECT * FROM native_gateway WHERE action=?',(action,)).fetchone();require(row is not None,'incomplete')
+            return dict(state=row['state'],claim=json.loads(row['claim']),launch=None if row['job'] is None else json.loads(row['job']))
+
+    def record_native_gateway_started(self,action_id,original_job_anchor,owner):
+        from pgcat_native_controller import NativeController,_native_owners
+        require(type(owner) is NativeController and owner.client.journal is self,'source');owner._require_owner()
+        require(_native_owners[owner].get('gatewayLaunch')==original_job_anchor,'source')
+        with self._transaction() as db:
+            row=db.execute('SELECT * FROM native_gateway WHERE request_id=?',(action_id,)).fetchone()
+            require(row is not None and row['state']=='CLAIMED' and row['job'] is None,'incomplete')
+            claim=json.loads(row['claim']);require(original_job_anchor['record']['claimSha256']==digest(claim),'source')
+            require(original_job_anchor['file']['sha256']==digest(original_job_anchor['record']),'source')
+            db.execute("UPDATE native_gateway SET state='LAUNCHED',job=? WHERE request_id=?",(encode(original_job_anchor).decode(),action_id))
+
+    def trigger_native_gateway(self,action_id):
+        with self._transaction() as db:
+            row=db.execute('SELECT state FROM native_gateway WHERE request_id=?',(action_id,)).fetchone()
+            require(row is not None and row['state']=='LAUNCHED','incomplete')
+            db.execute("UPDATE native_gateway SET state='TRIGGERED' WHERE request_id=?",(action_id,))
+
+    def record_native_gateway_completed(self,action_id,result,owner):
+        from pgcat_native_controller import NativeController,_native_owners
+        from pgcat_native_closure import validate_support
+        require(type(owner) is NativeController and owner.client.journal is self,'source');owner._require_owner()
+        require(_native_owners[owner].get('gatewayResult')==result,'source')
+        with self._transaction() as db:
+            row=db.execute('SELECT * FROM native_gateway WHERE request_id=?',(action_id,)).fetchone()
+            require(row is not None and row['state']=='TRIGGERED','incomplete')
+            claim=json.loads(row['claim']);launch=json.loads(row['job']);plan=self._native_plan_in_tx(db)
+            require(result['claimSha256']==digest(claim) and result['process']==launch['record']['process'],'source')
+            require(result['status']=='VERIFIED','incomplete')
+            support=validate_support(result['support'],plan,row['action']);artifact=result['artifact']
+            require(support['requestId']==action_id and artifact['basename']==row['action']+'.json' and artifact['identity']['sha256']==digest(support),'source')
+            expected=dict(readySha256=claim['readyFile']['sha256'],qualificationSha256=digest(claim['qualification']['qualification'])) if row['action']=='native-gateway-enable' else (
+                dict(raptorRequestId=claim['settlement']['raptorRequestId']) if claim['settlement']['kind']=='bound-request' else dict(preCreateSettlement=claim['settlement']))
+            require(support['inputs']==expected,'source')
+            wrapper=dict(action=row['action'],requestId=action_id,outputs=dict(support=support,artifact=artifact))
+            db.execute('INSERT INTO native_support VALUES (?,?)',(action_id,encode(wrapper).decode()))
+            db.execute("UPDATE native_gateway SET state='VERIFIED' WHERE request_id=?",(action_id,))
+            return wrapper
+
     def claim_native_request(self):
         from pgcat_native_ingress import _identity
         with self._transaction() as db:
             plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,'native-ingress',plan=plan)
             require(plan['executionKind']=='native-replacement' and db.execute('SELECT 1 FROM native_created_request').fetchone() is None,'source')
+            creation=db.execute('SELECT state FROM native_create').fetchone()
+            require(creation is not None and creation['state']=='DISPATCHING','incomplete')
             raw,identity=_identity(self.root.parent/'native-created-request.json');value=json.loads(raw)
             require(set(value)=={'schemaVersion','runId','planSha256','requestId'} and raw==encode(value),'source')
             require(type(value['schemaVersion']) is int and value['schemaVersion']==1 and value['runId']==plan['runId'] and value['planSha256']==digest(plan),'source');identifier(value['requestId'])
             db.execute('INSERT INTO native_created_request VALUES (1,?)',(encode(dict(handoff=value,identity=identity,context=None,ingressFile=None)).decode(),))
+            db.execute("UPDATE native_create SET state='BOUND'")
             return value['requestId']
 
     def _native_request_in_tx(self,db):
@@ -949,6 +1048,16 @@ class Journal:
             require(db.execute("SELECT 1 FROM requests WHERE request_id!=? AND json_extract(request,'$.action')=?",(request['requestId'],action)).fetchone() is None,'incomplete')
         envelope=dict(schemaVersion=1,action=action,localRequestId=request['requestId'],runId=plan['runId'],executionKind=plan['executionKind'],
             planSha256=digest(plan),baselineSha256=plan['baselineSha256'],feedBinding=feed,deadlineMonotonic=request['deadlineMonotonic'],prepared=self._native_prepared_in_tx(db,plan))
+        if plan['executionKind']=='native-replacement' and action not in ('native-baseline','native-collector-launch','native-collector-status'):
+            enabled=self._native_record_in_tx(db,'native-gateway-enable')
+            job=db.execute("SELECT * FROM native_gateway WHERE action='native-gateway-enable'").fetchone()
+            require(job is not None and job['state']=='VERIFIED' and enabled['requestId']==job['request_id'],'incomplete')
+            claim=json.loads(job['claim']);require(enabled['inputs']['qualificationSha256']==digest(claim['qualification']['qualification']),'source')
+            rows=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support')]
+            envelope['qualifiedEnable']=next(r['outputs']['artifact'] for r in rows if r['action']=='native-gateway-enable')
+        if action=='native-ingress':
+            prior=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support ORDER BY rowid') if json.loads(r['proof'])['action']=='native-ingress']
+            envelope['priorIngress']=prior[-1]['outputs']['ingressFile'] if prior else None
         if action in ('native-ingress','native-disabled-restart'):
             ready=None
             for row in db.execute('SELECT proof FROM native_support'):
@@ -977,6 +1086,9 @@ class Journal:
                     finishes=[r for r in records if r['action']=='native-finish'];require(len(finishes)==1,'incomplete')
                     envelope.update(stopArtifact=finishes[0]['outputs']['stopArtifact'],holdArtifact=finishes[0]['outputs']['holdArtifact'],ingresses=[r['outputs']['ingressFile'] for r in records if r['action']=='native-ingress'])
                 if action=='native-restore':envelope['restorationProvider']=self._native_restoration_provider_in_tx(db)['workerArtifact']
+                if action=='native-restore' and plan['executionKind']=='native-replacement':
+                    bound_request=self._native_request_in_tx(db);require(bound_request['context'] is not None,'source')
+                    envelope['raptorRequestId']=bound_request['handoff']['requestId']
                 require(receipt==stopped['receipt'] and request['feedSession']==receipt['feedSession'] and request['minimumSequence']==receipt['sequence'] and request['receiptIdentity']==receipt_identity(identity),'receipt')
             else:require(db.execute('SELECT 1 FROM native_stop').fetchone() is None,'incomplete')
         elif action=='native-collector-launch':
@@ -1860,6 +1972,10 @@ class Journal:
             validate_finish_receipts(feed_exit, assessment, run['mode'])
             require(run['session'] in (None, feed_exit['feedSession']))
             if run['mode']==NATIVE_MODE:
+                plan=self._native_plan_in_tx(db)
+                if plan['executionKind']=='native-replacement':
+                    require({r['action']:r['state'] for r in db.execute('SELECT action,state FROM native_gateway')}==dict.fromkeys(('native-gateway-enable','native-gateway-disable'),'VERIFIED'),'incomplete')
+                    creation=db.execute('SELECT state FROM native_create').fetchone();require(creation is not None and creation['state']=='BOUND','incomplete')
                 stopped=self._native_stop_in_tx(db);cleanup=self._native_cleanup_in_tx(db)
                 verdict=self._native_record_in_tx(db,'native-verdict');restored=self._native_record_in_tx(db,'native-restore')
                 require(cleanup['inputs']==dict(assessmentSha256=verdict['outputs']['assessmentSha256'],restoreSha256=digest(restored)),'source')

@@ -46,7 +46,7 @@ class NativeStartupTests(unittest.TestCase):
         self.root=Path(os.path.realpath(self.tmp.name));self.root.chmod(0o700)
 
     def test_exact_native_closure_and_subset(self):
-        self.assertEqual(len(bootstrap.source_names('full-replacement-direct-v2')),25)
+        self.assertEqual(len(bootstrap.source_names('full-replacement-direct-v2')),27)
         self.assertEqual(len(bootstrap.source_names('no-scale')),20)
         self.assertEqual(set(native.collector_sources()),set(__import__('pgcat_collector_control').SOURCES)|{'nativeEvidence'})
         with self.assertRaises(ValueError):bootstrap.source_names('direct-v2')
@@ -207,7 +207,9 @@ class NativeStartupTests(unittest.TestCase):
             return copy.deepcopy(dep)
         restart_disabled(f.run,gate=f,kube_read=f.kube,kube_patch=restart,now=lambda:f.now)
         frame=rolling(1);frame['inventory']=copy.deepcopy(f.frame['inventory']);f.append(2,frame);f.live=kubernetes(1)
-        def collect():return native.collect_ingress(f.run,{},gate=f,kube_read=f.kube,http_get=f.http,now=lambda:f.now)
+        def collect():
+            from test_pgcat_causal_integration import causal_fixture
+            with causal_fixture(f):return native.collect_ingress(f.run,{},gate=f,kube_read=f.kube,http_get=f.http,now=lambda:f.now)
         self.assertEqual(collect()['status'],'OBSERVED')
         self.assertFalse((f.run/'native-operation-binding.json').exists())
         for n in (3,4,5):
@@ -463,10 +465,12 @@ class NativeProfileTests(unittest.TestCase):
     def test_capture_cap_reserves_hold_and_closure_and_refuses_after_cutoff(self):
         self.assertTrue(hasattr(native,'capture_budget'),'native closure budget missing')
         from test_pgcat_native_ingress import plan
-        value=plan();value['deadline']['captureMaxSeconds']=5400
+        value=plan();value['deadline']['captureMaxSeconds']=900
         import datetime
         at=datetime.datetime(2026,10,29,13,29,tzinfo=datetime.timezone.utc).timestamp()
-        self.assertEqual(native.capture_budget(value,at),3360)
+        self.assertEqual(native.capture_budget(value,at),900)
+        value['deadline']['closureDeadline']='2026-10-29T13:45:00Z'
+        self.assertEqual(native.capture_budget(value,at),660)
         with self.assertRaises(ValueError):native.capture_budget(value,at+60)
         value['deadline']['captureMaxSeconds']=75
         self.assertEqual(native.capture_budget(value,at),75)
@@ -523,7 +527,8 @@ class NativeDispatchTests(unittest.TestCase):
             root=Path(os.path.realpath(d));root.chmod(0o700);f=Fixture(root)
             envelope=dict(schemaVersion=1,action='native-ingress',localRequestId=f.admitted['localRequestId'],runId=f.plan['runId'],
                 executionKind=f.plan['executionKind'],planSha256=f.admitted['planSha256'],baselineSha256=f.plan['baselineSha256'],
-                feedBinding=f.feed,prepared=f.prepared,deadlineMonotonic=1.0,readySha256=f.admitted['readySha256'],feedBindingSha256=f.ready['feedBindingSha256'])
+                feedBinding=f.feed,prepared=f.prepared,priorIngress=None,deadlineMonotonic=1.0,readySha256=f.admitted['readySha256'],feedBindingSha256=f.ready['feedBindingSha256'],
+                qualifiedEnable=dict(basename='native-gateway-enable.json',identity=file_record(f.run/'native-ready.json')))
             selector=dict(requestId=REQUEST,approvalIds=[])
             result=native.stage_action(f.run,f.plan,envelope,selector)
             self.assertEqual(result['admission']['sha256'],hashlib.sha256((f.run/('native-admission-'+f.admitted['localRequestId']+'.json')).read_bytes()).hexdigest())
@@ -536,10 +541,10 @@ class NativePreflightTests(unittest.TestCase):
         self.assertTrue(hasattr(native,'validate_preflight'),'native preparation constraints missing')
         from test_pgcat_native_ingress import plan,START
         value=dict(schemaVersion=1,bindingSha256='a'*64,checkedAt=START,expiresAt=START+300,
-            singleOperator=True,producersQuiesced=True,cost=dict(day='2026-10-29',net=100,reserve=100,allowance=100,ceiling=1800))
+            singleOperator=True,producersQuiesced=True,cost=dict(day='2026-10-29',net=100,reserve=100,allowance=100,ceiling=3000))
         native.validate_preflight(value,'a'*64,plan(),START+1)
         for change in ({'singleOperator':False},{'producersQuiesced':False},{'bindingSha256':'b'*64},{'expiresAt':START+301},
-            {'cost':dict(value['cost'],net=1700)},{'cost':dict(value['cost'],day='2026-10-28')}):
+            {'cost':dict(value['cost'],net=2900)},{'cost':dict(value['cost'],day='2026-10-28')}):
             with self.assertRaises(ValueError):native.validate_preflight(dict(value,**change),'a'*64,plan(),START+1)
         with self.assertRaises(ValueError):native.validate_preflight(value,'a'*64,plan(),START+300)
 
@@ -558,3 +563,65 @@ class NativePythonCompatibilityTests(unittest.TestCase):
         with self.assertRaises(ValueError):reads.gateway_disabled()
         with patch('subprocess.run',side_effect=AssertionError('runtime action')):
             with self.assertRaises(Refused):reads.restart_patch('raptor-test','rdev-test-client-client',{})
+
+class NativeCausalTransportTests(unittest.TestCase):
+    def test_metrics_discovery_uses_only_fixed_metrics_selector_and_config_name(self):
+        self.assertTrue(hasattr(native.FixedWorkerReads,'_metrics_kubernetes'),'fixed metrics transport missing')
+        from types import SimpleNamespace
+        calls=[]
+        reader=object.__new__(native.FixedWorkerReads);reader.credential={'path':'/tmp/fixture'};reader.deadline=time.monotonic()+10
+        def run(args,**kwargs):
+            calls.append(args);return SimpleNamespace(returncode=0,stdout=b'{"items":[]}')
+        with patch.object(native,'verify_credential'),patch('subprocess.run',side_effect=run):reader._metrics_kubernetes()
+        self.assertEqual(len(calls),4)
+        for args in calls:
+            self.assertEqual(args[3:6],['-n','raptor-test','get'])
+            self.assertNotIn('app.kubernetes.io/name=rdev-test-client-client',args)
+            if args[6] in ('pod','replicaset'):
+                self.assertEqual(args[7:9],['-l','app.kubernetes.io/name=rdev-test-metrics-metrics'])
+            else:self.assertEqual(args[7],'rdev-test-metrics-metrics')
+    def test_fixed_prometheus_transport_rejects_redirect_proxy_path_and_origin_escape(self):
+        self.assertTrue(hasattr(native.FixedWorkerReads,'prometheus_get'),'fixed metrics transport missing')
+        import socket,threading
+        reader=object.__new__(native.FixedWorkerReads);reader.deadline=time.monotonic()+10;reader._metrics_origin='http://10.1.2.3:9090'
+        mode=[200];seen=[]
+        def connect(connection):
+            self.assertEqual((connection.host,connection.port),('10.1.2.3',9090))
+            client,server=socket.socketpair();client.settimeout(connection.timeout)
+            def serve():
+                with server:
+                    data=b''
+                    while b'\r\n\r\n' not in data:data+=server.recv(4096)
+                    seen.append(data)
+                    body=b'{"status":"success","data":{}}' if mode[0]==200 else b'private error'
+                    server.sendall(('HTTP/1.1 %d Test\r\nContent-Length: %d\r\nLocation: http://evil/\r\n\r\n'%(mode[0],len(body))).encode()+body)
+            threading.Thread(target=serve,daemon=True).start();connection.sock=client
+        with patch.dict(os.environ,{'HTTP_PROXY':'http://evil/','HTTPS_PROXY':'http://evil/'}),patch('http.client.HTTPConnection.connect',new=connect):
+            self.assertEqual(reader.prometheus_get('/api/v1/status/tsdb')['status'],'success')
+            self.assertEqual(reader.prometheus_get('/api/v1/rules')['status'],'success')
+            for status in (302,401,500):
+                mode[0]=status
+                with self.assertRaises(ValueError) as caught:reader.prometheus_get('/api/v1/status/tsdb')
+                self.assertNotIn('private',str(caught.exception));self.assertIsNone(caught.exception.__context__)
+        self.assertEqual(len(seen),5)
+        self.assertNotIn(b'Authorization:',seen[0])
+        for path in ('http://evil/api/v1/status/tsdb','//evil','/api/v1/query?query=up','/api/v1/status/tsdb?x=1','/api/v1/admin/tsdb/delete_series','/api/v1/rules?type=record'):
+            with self.assertRaises(ValueError):reader.prometheus_get(path)
+        for origin in ('http://127.0.0.1:9090','http://evil:9090','http://10.1.2.3:9090@evil','https://10.1.2.3:9090'):
+            reader._metrics_origin=origin
+            with self.assertRaises(ValueError):reader.prometheus_get('/api/v1/status/tsdb')
+    def test_metrics_http_header_drip_respects_total_deadline(self):
+        self.assertTrue(hasattr(native.FixedWorkerReads,'prometheus_get'),'fixed metrics transport missing')
+        import socket,threading
+        reader=object.__new__(native.FixedWorkerReads);reader.deadline=time.monotonic()+.2;reader._metrics_origin='http://10.1.2.3:9090'
+        client,server=socket.socketpair();self.addCleanup(client.close)
+        def serve():
+            with server:
+                server.recv(4096)
+                for byte in b'HTTP/1.1 200 OK\r\n':
+                    try:server.send(bytes([byte]));time.sleep(.1)
+                    except OSError:break
+        threading.Thread(target=serve,daemon=True).start();started=time.monotonic()
+        with patch('http.client.HTTPConnection.connect',new=lambda conn:setattr(conn,'sock',client)):
+            with self.assertRaises(ValueError):reader.prometheus_get('/api/v1/status/tsdb')
+        self.assertLess(time.monotonic()-started,1.)

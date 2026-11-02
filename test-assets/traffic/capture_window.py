@@ -1,5 +1,6 @@
 """Retained, conservative evidence assessment. No provider mutations or credentials."""
 import datetime, json, os, math, re, uuid
+from functools import lru_cache
 from pathlib import Path
 
 COUNTERS=('Scheduled','Attempts','Success','Failure','Timeout','Ambiguous','Skipped')
@@ -8,6 +9,9 @@ def seconds(value):
     if isinstance(value,(int,float)) and not isinstance(value,bool):
         if not math.isfinite(value):raise ValueError("nonfinite timestamp")
         return float(value)
+    return _cached_timestamp(value) if type(value) is str and len(value)<=64 else _parse_timestamp(value)
+
+def _parse_timestamp(value):
     v=re.sub(r'(\.\d{6})\d+',r'\1',value).replace('Z','+0000')
     v=re.sub(r'([+-]\d{2}):(\d{2})$',r'\1\2',v)
     d=None
@@ -17,6 +21,8 @@ def seconds(value):
     if d is None:raise ValueError('invalid timestamp')
     if d.tzinfo is None:raise ValueError('UTC offset required')
     return d.timestamp()
+
+_cached_timestamp = lru_cache(maxsize=4096)(_parse_timestamp)
 INVENTORY_FIELDS=('observedAt','desired','members','healthyRegistered')
 TRANSITION_FIELDS=('schemaVersion','feedSession','sequence')+INVENTORY_FIELDS+('memberStates','backendStates')
 MEMBER_FIELDS=('id','lifecycle','health','addressKnown')

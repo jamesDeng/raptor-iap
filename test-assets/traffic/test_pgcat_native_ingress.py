@@ -16,9 +16,9 @@ def plan(kind='native-replacement'):
         runId=context()['runId'], target=dict(accountId='1360282071200743', regionId='ap-southeast-1',
         workerId='i-t4nj1bitmcz7cuoch82h', scalingGroupId='asg-t4necb4dfmu6o3z2rn0g',
         nlbServerGroupId='sgp-xs5s42tihtl6ja2a67', originalInstanceIds=['a','b']),
-        application=context()['deployment'], sourceHashes={k:'c'*64 for k in SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure','nativeAssessment'}},
+        application=context()['deployment'], sourceHashes={k:'c'*64 for k in SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure','nativeAssessment','causalScrape','workerControl'}},
         baselineSha256='d'*64, plannedOperation='db-proxy.replace-nodes' if kind=='native-replacement' else 'disabled-client-restart',
-        deadline=dict(mutationCutoff='2026-10-29T13:30:00Z',closureDeadline='2026-10-29T14:30:00Z',captureMaxSeconds=5400),
+        deadline=dict(mutationCutoff='2026-10-29T13:30:00Z',closureDeadline='2026-10-29T14:30:00Z',captureMaxSeconds=900),
         serviceBindings=dict(namespace='raptor-system'))
     for name, port, ip in [('gateway',8874,'10.0.0.10'),('openapi',8872,'10.0.0.11')]:
         value['serviceBindings'][name]=dict(deploymentName=name,deploymentUid=name+'-uid',containerName=name,
@@ -55,7 +55,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(result['plannedInput']['model'],'gpt-6-luna')
 
     def test_capture_cap_and_scope_are_exact(self):
-        for cap,valid in [(74,False),(75,True),(5400,True),(5401,False),(True,False)]:
+        for cap,valid in [(74,False),(75,True),(900,True),(901,False),(5400,False),(5401,False),(True,False)]:
             source=plan();source['deadline']['captureMaxSeconds']=cap
             if valid:self.assertEqual(ingress.validate_plan(source),source)
             else:
@@ -219,12 +219,16 @@ class Fixture:
         elif path=='/v1/requests/'+REQUEST:value=dict(data=self.execution)
         else:raise AssertionError('unsupported route')
         return canonical(value)
-    def read(self):return ingress.read_ingress(self.run,dict(requestId=REQUEST,approvalIds=[]) if self.plan['executionKind']=='native-replacement' else {},
-        gate=self,kube_read=self.kube,http_get=self.http,now=lambda:self.now)
+    def read(self):
+        from test_pgcat_causal_integration import causal_fixture
+        with causal_fixture(self):return ingress.read_ingress(self.run,dict(requestId=REQUEST,approvalIds=[]) if self.plan['executionKind']=='native-replacement' else {},
+            gate=self,kube_read=self.kube,http_get=self.http,now=lambda:self.now)
 
 
 class IngressTests(unittest.TestCase):
     def setUp(self):
+        from test_pgcat_causal_integration import bind_fixture_policy
+        bind_fixture_policy(self)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name).resolve();self.root.chmod(0o700)
         self.f=Fixture(self.root)
@@ -405,7 +409,7 @@ class BindingTests(unittest.TestCase):
 class AdditionalBoundaryTests(unittest.TestCase):
     setUp=IngressTests.setUp
     def test_full_source_closure_and_baseline_nested_shape(self):
-        self.assertEqual(len(self.f.plan['sourceHashes']),25)
+        self.assertEqual(len(self.f.plan['sourceHashes']),27)
         self.assertEqual(len(self.f.context['sourceHashes']),12)
         for key,value in [('feedSession',context()['feedSession']),('planSha256','f'*64),('sequence',1)]:
             baseline=copy.deepcopy(self.f.baseline);baseline[key]=value

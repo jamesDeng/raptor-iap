@@ -15,6 +15,8 @@ from test_pgcat_native_ingress import Fixture, complete_native, write, START
 
 class CoverageTests(unittest.TestCase):
     def fixture(self, mutate=None, kind='native-replacement'):
+        from test_pgcat_causal_integration import bind_fixture_policy
+        bind_fixture_policy(self)
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
         root=Path(tmp.name).resolve();root.chmod(0o700)
         f=Fixture(root,kind)

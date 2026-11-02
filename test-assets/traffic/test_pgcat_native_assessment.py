@@ -142,8 +142,10 @@ class CausalWitnessTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.f.read()
 
 
-def native_complete_fixture(test):
+def native_complete_fixture(test,guest_skew=0):
     """Real frames, two issued causal wait artifacts and full final boundary."""
+    from test_pgcat_causal_integration import bind_fixture_policy,causal_fixture
+    bind_fixture_policy(test)
     from test_pgcat_native_ingress import Fixture,START,timestamp,REQUEST,APPROVAL,write,file_record
     from test_pgcat_native_evidence import rolling,kubernetes
     from test_pgcat_native_final import FinalActionTests
@@ -159,7 +161,7 @@ def native_complete_fixture(test):
         original(n,value)
     f.append=append;append(2)
     def event(n,tool,kind,status,at,attempt='attempt-1'):
-        return dict(eventId='e'+str(n),requestId=REQUEST,attemptId=attempt,sequence=n,occurredAt=datetime.datetime.fromtimestamp(START+at,datetime.timezone.utc).isoformat().replace('+00:00','Z'),kind=kind,summary='safe',details=dict(tool=tool,status=status,runtimeSequence=n),evidenceMode='live')
+        return dict(eventId='e'+str(n),requestId=REQUEST,attemptId=attempt,sequence=n,occurredAt=datetime.datetime.fromtimestamp(START+at+guest_skew,datetime.timezone.utc).isoformat().replace('+00:00','Z'),kind=kind,summary='safe',details=dict(tool=tool,status=status,runtimeSequence=n),evidenceMode='live')
     f.events=[event(1,'mcp__infra__db_proxy_scale','tool_start','started',1.5),event(2,'mcp__infra__db_proxy_nodes_deregister','tool_start','started',1.6),event(3,'mcp__infra__db_proxy_nodes_deregister','tool_result','succeeded',1.7),event(4,'resource_wait','tool_start','started',1.8),event(5,'resource_wait','tool_result','succeeded',1.9)]
     f.execution.update(status='waiting_resource',stage='waiting_resource',cleanupStatus=dict(sandboxAbsent=True,keyAbsent=True,accessRevoked=True))
     ingress.seal_ingress(f.run,f.read())
@@ -171,11 +173,11 @@ def native_complete_fixture(test):
     approval=dict(approvalId=APPROVAL,requestId=REQUEST,actionId='shrink',state='pending',guidance=None,binding=dict(requestId=REQUEST,actionId='shrink',interface='db-proxy.scale-in',envCode='rdev.ali',target=dict(proxyCode='DP00001'),parameters=dict(desiredCapacity=2)))
     f.http=lambda origin,path,auth:canonical(dict(data=approval)) if path=='/v1/approvals/'+APPROVAL else http(origin,path,auth)
     f.read=lambda:ingress.read_ingress(f.run,dict(requestId=REQUEST,approvalIds=[APPROVAL]),gate=f,kube_read=f.kube,http_get=f.http,now=lambda:f.now)
-    ingress.seal_ingress(f.run,f.read())
+    with causal_fixture(f):ingress.seal_ingress(f.run,f.read())
     value=rolling(4);value['inventory'].update(desired=2,members=['c','d'],healthyRegistered=['c','d'],memberStates=[dict(id=node,lifecycle='Protected',health='Healthy',addressKnown=True) for node in ('c','d')],backendStates=[dict(id=node,status='Available',weight=100,listenerHealth='Normal') for node in ('c','d')]);append(5,value)
-    replacement=dict(version=2,converged=True,acceptance='pending',scope=copy.deepcopy(f.plan['controllerScope']),oldInstanceIds=['a','b'],newInstanceIds=['c','d'],desiredCapacity=2,restartGeneration=2,actions=[dict(actionId='expand',previousDesiredCapacity=2,desiredCapacity=4,outcome='submitted'),dict(actionId='shrink',previousDesiredCapacity=4,desiredCapacity=2,outcome='unknown')],observedAt=timestamp(f.now))
+    replacement=dict(version=2,converged=True,acceptance='pending',scope=copy.deepcopy(f.plan['controllerScope']),oldInstanceIds=['a','b'],newInstanceIds=['c','d'],desiredCapacity=2,restartGeneration=2,actions=[dict(actionId='expand',previousDesiredCapacity=2,desiredCapacity=4,outcome='submitted'),dict(actionId='shrink',previousDesiredCapacity=4,desiredCapacity=2,outcome='unknown')],observedAt=timestamp(f.now+guest_skew))
     f.events += [event(9,'mcp__infra__db_proxy_scale','tool_start','started',4.5,'attempt-3')];approval['state']='approved'
-    f.execution.update(status='completed',stage='finished',attemptId='attempt-3',cleanup='confirmed',result=dict(requestId=REQUEST,attemptId='attempt-3',selectedModel='gpt-6-luna',actualModel='gpt-6-luna',selectedProvider='codex',actualProvider='openai-codex',answer='Replacement converged; retained traffic and approval assessment is pending.',evidence=[],usage=[],generatedAt=timestamp(f.now),replacement=replacement))
+    f.execution.update(status='completed',stage='finished',attemptId='attempt-3',cleanup='confirmed',result=dict(requestId=REQUEST,attemptId='attempt-3',selectedModel='gpt-6-luna',actualModel='gpt-6-luna',selectedProvider='codex',actualProvider='openai-codex',answer='Replacement converged; retained traffic and approval assessment is pending.',evidence=[],usage=[],generatedAt=timestamp(f.now+guest_skew),replacement=replacement))
     helper=FinalActionTests();test.addCleanup(helper.doCleanups);helper.fixture=lambda:f;bound=helper.bound;captured=[]
     def keep():
         actual=ingress.seal_operation_binding
@@ -197,11 +199,9 @@ class AssessmentTests(unittest.TestCase):
     def test_full_native_and_guardian_absence_are_independent(self):
         from pgcat_native_assessment import assess_native
         f,a=native_complete_fixture(self)
-        with patch('pgcat_collector_control.process_identity',return_value=None):unsupported=assess_native(f.run)
-        self.assertEqual(unsupported['status'],'INCONCLUSIVE');self.assertIn('unverified request/capture/source clock agreement',unsupported['reasons'])
-        with patch('pgcat_collector_control.process_identity',return_value=None),patch('pgcat_native_assessment._timing_agreement'):result=assess_native(f.run)
+        with patch('pgcat_collector_control.process_identity',return_value=None):result=assess_native(f.run)
         self.assertEqual(result['status'],'PASS',result)
-        with patch('pgcat_collector_control.process_identity',side_effect=lambda pid:f.guardian if pid==f.guardian['pid'] else None),patch('pgcat_native_assessment._timing_agreement'):bad=assess_native(f.run)
+        with patch('pgcat_collector_control.process_identity',side_effect=lambda pid:f.guardian if pid==f.guardian['pid'] else None):bad=assess_native(f.run)
         self.assertEqual(bad['status'],'INCONCLUSIVE');self.assertFalse(bad['guardianAbsent'])
     def test_missing_approval_or_causal_witness_never_upgrades(self):
         from pgcat_native_assessment import assess_native
@@ -212,6 +212,8 @@ class AssessmentTests(unittest.TestCase):
 
 
 def diagnostic_complete_fixture(test):
+    from test_pgcat_causal_integration import bind_fixture_policy
+    bind_fixture_policy(test)
     from test_pgcat_native_ingress import Fixture,DiagnosticTests as DisabledRestartTests,START,write,file_record
     from test_pgcat_native_evidence import rolling,kubernetes
     from test_pgcat_native_final import FinalActionTests

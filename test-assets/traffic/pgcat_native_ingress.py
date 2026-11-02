@@ -12,6 +12,10 @@ import uuid
 
 MODE = 'full-replacement-direct-v2'
 KINDS = ('native-replacement', 'disabled-proof')
+# Private POC only: source-owned provider tick starts are at least 15 seconds
+# apart, and each ingress consumes one publication once. A 900-second
+# capture admits at most 60 ingresses, within the 100-original history bound.
+MAX_CAPTURE_SECONDS = 900
 PLAN_KEYS = {'schemaVersion','mode','executionKind','runId','target','application',
     'sourceHashes','baselineSha256','plannedOperation','serviceBindings','deadline'}
 DEPLOYMENT_KEYS = {'name','namespace','uid','generation','initialReplicaSetUid','initialTemplateHash','imageDigest'}
@@ -66,10 +70,10 @@ def validate_plan(value):
     try:target_valid(value['target'])
     except Exception:raise ValueError('invalid native ingress') from None
     require(value['target']['originalInstanceIds']==sorted(value['target']['originalInstanceIds']))
-    exact(value['sourceHashes'],SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure','nativeAssessment'})
+    exact(value['sourceHashes'],SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure','nativeAssessment','causalScrape','workerControl'})
     require(all(hashed(v) for v in value['sourceHashes'].values()) and hashed(value['baselineSha256']))
     limits=value['deadline'];exact(limits,{'mutationCutoff','closureDeadline','captureMaxSeconds'})
-    require(integer(limits['captureMaxSeconds'],75) and limits['captureMaxSeconds']<=5400)
+    require(integer(limits['captureMaxSeconds'],75) and limits['captureMaxSeconds']<=MAX_CAPTURE_SECONDS)
     cutoff=instant(limits['mutationCutoff']);closure=instant(limits['closureDeadline'])
     require(cutoff<closure and limits['mutationCutoff'][11:19]<='13:30:00' and limits['closureDeadline'][11:19]<='14:30:00')
     services=value['serviceBindings'];exact(services,{'namespace','gateway','openapi'})
@@ -103,7 +107,7 @@ READY_KEYS={'schemaVersion','mode','executionKind','runId','planSha256','baselin
     'progressBindingSha256','feedBindingSha256','feedSession','collectorIdentity','guardianIdentity','frames','readyAt','sources'}
 BASELINE_KEYS={'schemaVersion','mode','executionKind','runId','observedAt','targetSha256','originals','configMap',
     'roster','metricGroups','deployment','fleet','gateway'}
-RECORD_KEYS={'schemaVersion','executionKind','runId','planSha256','readySha256','readAt','serviceBindings','context','execution','events','approvals','diagnostic','withdrawalWitness','retirementWitness'}
+RECORD_KEYS={'schemaVersion','executionKind','runId','planSha256','readySha256','readAt','serviceBindings','context','execution','events','approvals','diagnostic','withdrawalWitness','retirementWitness','causalRead','priorIngress'}
 MAX_RESPONSE=2*1024*1024
 
 
@@ -558,10 +562,19 @@ def _collect_ingress(chain,selector,*,gate,kube_read,http_get,now):
     calls=_Calls();native=chain.plan['executionKind']=='native-replacement'
     state=_action_gate(chain,gate,calls,kube_read,now,'native-ingress')
     capture_prefix=_capture_prefix(chain,state['progress']['latest'])
-    record=dict(schemaVersion=1,executionKind=chain.plan['executionKind'],runId=chain.plan['runId'],planSha256=chain.context['planSha256'],
-        readySha256=chain.ready_sha,readAt=state['at'],serviceBindings=None,context=None,execution=None,events=None,approvals=None,diagnostic=None,withdrawalWitness=None,retirementWitness=None)
+    record=dict(schemaVersion=2,executionKind=chain.plan['executionKind'],runId=chain.plan['runId'],planSha256=chain.context['planSha256'],
+        readySha256=chain.ready_sha,readAt=state['at'],serviceBindings=None,context=None,execution=None,events=None,approvals=None,diagnostic=None,withdrawalWitness=None,retirementWitness=None,causalRead=None,priorIngress=gate.prior_ingress() if hasattr(gate,'prior_ingress') else None)
     if not native:
         exact(selector,set());record['diagnostic']=_diagnostic(chain,state)
+        from segmented_capture import open_directory,read_frame
+        fd=open_directory(chain.run/'native-capture')
+        try:candidate=read_frame(fd,state['progress']['latest'])
+        finally:os.close(fd)
+        try:_rollout_state(chain,candidate)
+        except ValueError:pass
+        else:
+            binding=_causal_binding(chain,record,candidate)
+            record['causalRead']=_causal_pass(chain,gate,binding,state['progress']['latest'],now)
     else:
         exact(selector,{'requestId','approvalIds'});request_id=selector['requestId'];identifier(request_id)
         ids=selector['approvalIds'];require(type(ids) is list and len(ids)<=100 and len(set(ids))==len(ids))
@@ -616,30 +629,39 @@ def _collect_ingress(chain,selector,*,gate,kube_read,http_get,now):
                 except ValueError:pass
                 else:wait_frame=detached(state['progress']['latest'])
             finally:os.close(frame_fd)
+        approvals=[]
+        for approval_id in ids:
+            response=get('openapi','/v1/approvals/'+approval_id);exact(response,{'data'})
+            if wait_before is not None and wait_before['status']=='waiting_approval':approvals.append(_pending_scale_approval(response['data'],approval_id,chain.plan,request_id))
+            else:approvals.append(_approval(response['data'],approval_id,chain.plan,request_id,first.get('result')))
+        if wait_before is not None and wait_before['status']=='waiting_approval' and wait_frame is not None:
+            require(len(approvals)==1 and approvals[0]['state']=='pending')
+            record.update(context=ctx,events=events,approvals=approvals,execution=first)
+            binding=_causal_binding(chain,record,candidate,wait=wait_before)
+            record['causalRead']=_causal_pass(chain,gate,binding,wait_frame,now)
+            response=get('openapi','/v1/approvals/'+approvals[0]['approvalId']);exact(response,{'data'})
+            require(_pending_scale_approval(response['data'],approvals[0]['approvalId'],chain.plan,request_id)==approvals[0])
         response=get('gateway',prefix);exact(response,{'data'});last=_execution(response['data'],chain.plan,ctx)
         require((first['attemptId'],first.get('result'))==(last['attemptId'],last.get('result')))
         exhaust();response=get('gateway',prefix);exact(response,{'data'});require(_execution(response['data'],chain.plan,ctx)==last)
         if wait_before is not None:
             wait_after=released_wait(response['data'],status=wait_before['status']);require(wait_after==wait_before and canonical(events)==wait_prefix)
+            if record['causalRead'] is not None:record['causalRead']['waitAfter']=detached(wait_after)
             if wait_frame is not None and wait_before['status']=='waiting_resource':
                 record['withdrawalWitness']=dict(schemaVersion=1,kind='released-wait-withdrawal',attemptId=wait_before['attemptId'],before=wait_before,after=wait_after,frame=wait_frame,eventCursor=cursor,eventsSha256=__import__('hashlib').sha256(canonical(events)).hexdigest())
-        approvals=[]
-        for approval_id in ids:
-            response=get('openapi','/v1/approvals/'+approval_id);exact(response,{'data'})
-            if wait_before is not None and wait_before['status']=='waiting_approval':approvals.append(_pending_scale_approval(response['data'],approval_id,chain.plan,request_id))
-            else:approvals.append(_approval(response['data'],approval_id,chain.plan,request_id,last.get('result')))
         for label in ('gateway','openapi'):
             current,current_binding=_credentials(chain,label,calls,kube_read);require(current==auth[label] and current_binding==bindings[label])
         require(_gateway_config(chain,calls,kube_read)==state['config'])
         record.update(serviceBindings=dict(namespace='raptor-system',gateway=bindings['gateway'],openapi=bindings['openapi'],gatewayConfiguration=state['config']),
             context=ctx,execution=last,events=events,approvals=approvals)
         if record['withdrawalWitness'] is not None:validate_withdrawal_witness(record,chain)
-        if wait_before is not None and wait_before['status']=='waiting_approval' and wait_frame is not None:
+        if wait_before is not None and wait_before['status']=='waiting_approval' and wait_frame is not None and record['causalRead']['status']=='VERIFIED':
             require(len(approvals)==1)
-            record['retirementWitness']=dict(schemaVersion=1,kind='released-approval-retiring',attemptId=wait_before['attemptId'],before=wait_before,after=wait_after,frame=wait_frame,eventCursor=cursor,eventsSha256=__import__('hashlib').sha256(canonical(events)).hexdigest(),approvalId=approvals[0]['approvalId'],actionId=approvals[0]['actionId'])
+            record['retirementWitness']=dict(schemaVersion=2,kind='released-approval-retiring',attemptId=wait_before['attemptId'],before=wait_before,after=wait_after,frame=wait_frame,eventCursor=cursor,eventsSha256=__import__('hashlib').sha256(canonical(events)).hexdigest(),approvalId=approvals[0]['approvalId'],actionId=approvals[0]['actionId'])
             validate_retirement_witness(record,chain)
         encoded=canonical(record).decode('ascii')
         require(all(json.dumps(secret)[1:-1] not in encoded for secret in secrets))
+    if record['causalRead'] is not None:validate_causal_read(record,chain)
     final_state=_action_gate(chain,gate,calls,kube_read,now,'native-ingress')
     require(final_state['admission']==state['admission'])
     chain.unchanged()
@@ -871,6 +893,7 @@ def _bind_operation(run,path,sealed_identity,original_chain,admission,guard):
         require(all(record[k] is None for k in ('context','execution','events','approvals')))
         diagnostic=_diagnostic(chain,dict(config=record['diagnostic']['gatewayConfiguration'],inventory=record['diagnostic']['inventory']))
         require(diagnostic==record['diagnostic'])
+        causal=validate_causal_read(record,chain);require(causal['status']=='VERIFIED')
         for frame in _history(chain,progress['latest']):_fleet({k:frame['inventory'][k] for k in chain.baseline['fleet']},chain.plan['target']['originalInstanceIds'])
         binding['restartReceiptSha256']=diagnostic['restartReceiptSha256']
     validate_operation_binding(binding,chain.context);original_chain.unchanged();guard.check(path)
@@ -998,26 +1021,28 @@ def _pending_scale_approval(value,approval_id,plan,request_id):
     return {k:detached(value[k]) for k in ('approvalId','requestId','actionId','binding','state')}
 
 
-def _retirement_state(chain,frame):
-    from pgcat_pending_proof_worker import complete_metrics
-    from capture_window import seconds
-    pair=_withdrawal_state(chain,frame);d=frame['deployment']
-    require(d==dict(uid=chain.plan['application']['uid'],generation=chain.plan['application']['generation']+1,observedGeneration=chain.plan['application']['generation']+1,desired=2,ready=2))
+def _rollout_state(chain,frame):
+    from capture_window import clean
+    from pgcat_native_evidence import pod_identity
+    require(clean(frame)==frame);d=frame['deployment']
+    generation=chain.plan['application']['generation']+1
+    require(d==dict(uid=chain.plan['application']['uid'],generation=generation,observedGeneration=generation,desired=2,ready=2))
     require(len(frame['pods'])==2 and not frame.get('startingPods',[]))
     initial={r['uid'] for r in chain.context['initialRoster']}
     for pod in frame['pods']:
         require(pod['uid'] not in initial and pod['ready'] is True and pod['snapshot']['final'] is False and pod['ownership']['terminating'] is False)
         require(pod['ownership']['deploymentUid']==chain.plan['application']['uid'] and pod['ownership']['imageDigest']==chain.plan['application']['imageDigest'])
-    metrics=frame['metrics'];ids=chain.plan['target']['originalInstanceIds'];require(set(ids)<=set(metrics['nodes']))
-    complete_metrics(frame,metrics['nodes'],seconds(frame['at']))
-    require(sum(row['value'] for row in metrics['raw'] if row['node'] in ids)<=1)
-    return pair
+    return sorted([pod_identity(p) for p in frame['pods']],key=lambda p:p['uid'])
+
+
+def _retirement_state(chain,frame):
+    pair=_withdrawal_state(chain,frame);_rollout_state(chain,frame);return pair
 
 
 def validate_retirement_witness(record,chain):
     from segmented_capture import sha,canonical,open_directory,read_frame
     w=record['retirementWitness'];exact(w,{'schemaVersion','kind','attemptId','before','frame','after','eventCursor','eventsSha256','approvalId','actionId'})
-    require(type(w['schemaVersion']) is int and w['schemaVersion']==1 and w['kind']=='released-approval-retiring')
+    require(type(w['schemaVersion']) is int and w['schemaVersion']==2 and w['kind']=='released-approval-retiring')
     before=released_wait(w['before'],status='waiting_approval');after=released_wait(w['after'],status='waiting_approval');require(before==after)
     require(before['requestId']==record['context']['requestId'] and before['attemptId']==w['attemptId'])
     events=record['events'];require(events and integer(w['eventCursor'],1) and w['eventCursor']==events[-1]['sequence'] and w['eventsSha256']==sha(canonical(events)))
@@ -1029,4 +1054,134 @@ def validate_retirement_witness(record,chain):
     fd=open_directory(chain.run/'native-capture')
     try:frame=read_frame(fd,w['frame'])
     finally:os.close(fd)
+    causal=validate_causal_read(record,chain);require(causal['status']=='VERIFIED')
+    require(causal['binding']==_causal_binding(chain,record,frame,wait=before))
     return detached(w),_retirement_state(chain,frame)
+
+
+def _worker_boot():
+    value=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    require(bool(re.fullmatch(r'[0-9a-f-]{36}',value)));return value
+
+
+def _causal_owner(gate,chain):
+    from pgcat_native_controller import WorkerGate,FixedWorkerReads
+    from pgcat_source_bootstrap import require_verified
+    require_verified(__name__);require_verified('pgcat_native_controller')
+    require(type(gate) is WorkerGate and type(gate.reads) is FixedWorkerReads)
+    require(gate.run==chain.run and gate.plan==chain.plan==gate.reads.plan and gate.envelope['action']=='native-ingress')
+    require(gate.reads.prepared==gate.envelope['prepared'] and gate.reads.run_id==chain.plan['runId'])
+    import time
+    require(0<gate.deadline-time.monotonic()<=5 and gate.reads.deadline<=gate.deadline)
+    raw,_=_identity(chain.run/('native-admission-'+gate.envelope['localRequestId']+'.json'))
+    from segmented_capture import canonical
+    require(raw==canonical(gate.envelope))
+    return gate.reads
+
+
+def _causal_binding(chain,record,frame,wait=None):
+    from segmented_capture import sha,canonical
+    native=chain.plan['executionKind']=='native-replacement'
+    successors=_rollout_state(chain,frame)
+    if native:_retirement_state(chain,frame)
+    else:_fleet({k:frame['inventory'][k] for k in chain.baseline['fleet']},chain.plan['target']['originalInstanceIds'])
+    return dict(kind=chain.plan['executionKind'],runId=chain.plan['runId'],planSha256=chain.context['planSha256'],readySha256=chain.ready_sha,
+        nodes=detached(chain.baseline['originals']),metricGroups=detached(chain.baseline['metricGroups']),generation=frame['deployment']['generation'],successors=successors,
+        wait=detached(wait),eventsSha256=sha(canonical(record['events'])) if native else None,
+        approval=detached(record['approvals'][0]) if native else None,restartReceiptSha256=None if native else record['diagnostic']['restartReceiptSha256'])
+
+
+def _ingress_history(chain,artifact):
+    """Follow only original Journal-linked immutable ingress artifacts."""
+    from segmented_capture import decode_private,canonical
+    from pgcat_native_controller import file_identity
+    seen=set();result=[]
+    while artifact is not None:
+        require(len(result)<100);exact(artifact,{'basename','identity'});file_identity(artifact['identity'])
+        name=artifact['basename'];require(type(name) is str and re.fullmatch(r'native-ingress-[0-9]{4}\.json',name) and name not in seen)
+        if result:require(name<result[-1][0]['basename'])
+        raw,identity=_identity(chain.run/name,32*1024*1024);require(identity==artifact['identity'])
+        record=decode_private(raw);require(raw==canonical(record));exact(record,RECORD_KEYS)
+        require(type(record['schemaVersion']) is int and record['schemaVersion']==2)
+        require(record['runId']==chain.plan['runId'] and record['executionKind']==chain.plan['executionKind'] and record['planSha256']==chain.context['planSha256'] and record['readySha256']==chain.ready_sha)
+        result.append((detached(artifact),record));seen.add(name);artifact=record['priorIngress']
+    return list(reversed(result))
+
+
+def _validate_causal_record(record,chain,previous):
+    from segmented_capture import open_directory,read_frame
+    from pgcat_causal_scrape import validate_read_evidence
+    value=record['causalRead'];exact(value,{'schemaVersion','status','binding','rolloutFrame','bootId','evidence','waitAfter'})
+    require(type(value['schemaVersion']) is int and value['schemaVersion']==1 and value['status'] in ('PENDING','VERIFIED'))
+    require(type(value['bootId']) is str and re.fullmatch(r'[0-9a-f-]{36}',value['bootId']))
+    evidence=validate_read_evidence(value['evidence']);require((evidence['samples'] is not None)==(value['status']=='VERIFIED'))
+    fd=open_directory(chain.run/'native-capture')
+    try:frame=read_frame(fd,value['rolloutFrame'])
+    finally:os.close(fd)
+    binding=value['binding'];native=chain.plan['executionKind']=='native-replacement'
+    if native:
+        wait=released_wait(binding['wait'],status='waiting_approval');require(released_wait(value['waitAfter'],status='waiting_approval')==wait)
+        require(wait==released_wait(dict(record['execution'],cleanupStatus=wait['cleanupStatus']),status='waiting_approval'))
+        require(len(record['approvals'])==1 and record['approvals'][0]['state']=='pending')
+        _pending_scale_approval(dict(record['approvals'][0],guidance=None),record['approvals'][0]['approvalId'],chain.plan,record['context']['requestId'])
+        events=record['events'];require(events and all(e['evidenceMode']=='live' for e in events))
+        starts=[e for e in events if e['kind']=='tool_start'];scales=[e for e in starts if e['details'].get('tool')=='mcp__infra__db_proxy_scale'];restarts=[e for e in starts if e['details'].get('tool')=='mcp__infra__deployment_restart']
+        require(len(scales)==len(restarts)==1 and scales[0]['sequence']<restarts[0]['sequence'])
+    else:
+        wait=None;require(value['waitAfter'] is None)
+        diagnostic=record['diagnostic']
+        require(_diagnostic(chain,dict(config=diagnostic['gatewayConfiguration'],inventory=diagnostic['inventory']))==diagnostic)
+    require(binding==_causal_binding(chain,record,frame,wait=wait))
+    require(evidence['nodes']==binding['nodes'] and evidence['maxCombined']==(1 if native else None))
+    baseline={(g['node'],g['pool'],g['user']) for g in binding['metricGroups']};groups={(g['node'],g['pool'],g['user']) for g in evidence['metricGroups']}
+    require(baseline<=groups)
+    if previous is None:require(evidence['passes']==1)
+    else:
+        prior=previous['evidence'];require(value['binding']==previous['binding'] and value['rolloutFrame']==previous['rolloutFrame'] and value['bootId']==previous['bootId'])
+        require(all(evidence[k]==prior[k] for k in ('source','watermarkMs','nodes','maxCombined','startedMonotonic','deadlineMonotonic')))
+        require(evidence['passes']==prior['passes']+1 and prior['completedMonotonic']<=evidence['completedMonotonic'])
+        require({(g['node'],g['pool'],g['user']) for g in prior['metricGroups']}<=groups)
+    return value
+
+
+@sanitized
+def validate_causal_read(record,chain):
+    """Validate the whole original seed/read chain; this cannot issue authority."""
+    exact(record,RECORD_KEYS);require(type(record['schemaVersion']) is int and record['schemaVersion']==2)
+    require(record['runId']==chain.plan['runId'] and record['executionKind']==chain.plan['executionKind'] and record['planSha256']==chain.context['planSha256'] and record['readySha256']==chain.ready_sha)
+    history=_ingress_history(chain,record['priorIngress']);previous=None
+    for artifact,prior in history:
+        if prior['causalRead'] is not None:previous=_validate_causal_record(prior,chain,previous)
+    require(record['causalRead'] is not None)
+    return detached(_validate_causal_record(record,chain,previous))
+
+
+@sanitized
+def _causal_continuation(gate,run,binding):
+    chain=_Chain(run)
+    try:
+        _causal_owner(gate,chain);history=_ingress_history(chain,gate.prior_ingress());previous=None
+        for artifact,record in history:
+            if record['causalRead'] is not None:previous=_validate_causal_record(record,chain,previous)
+        if previous is not None:require(previous['binding']==binding and previous['bootId']==_worker_boot())
+        chain.unchanged();return previous
+    finally:chain.close()
+
+
+def _causal_pass(chain,gate,binding,frame,now):
+    import time
+    from pgcat_causal_scrape import collect_causal_scrapes,restore_ingress_pending,pending_evidence,issued_evidence
+    reads=_causal_owner(gate,chain)
+    previous=_causal_continuation(gate,chain.run,binding)
+    pending=restore_ingress_pending(gate=gate,run=chain.run,binding=binding) if previous is not None else None
+    deadline=previous['evidence']['deadlineMonotonic'] if previous is not None else time.monotonic()+30.
+    result=collect_causal_scrapes(source_read=reads.metrics_source,prometheus_get=reads.prometheus_get,nodes=binding['nodes'],metric_groups=binding['metricGroups'],
+        max_combined=1 if binding['kind']=='native-replacement' else None,now=now,deadline=deadline,pending=pending)
+    evidence=issued_evidence(result['receipt']) if result['status']=='VERIFIED' else pending_evidence(result['pending'])
+    if result['status']=='VERIFIED':
+        groups={(r['node'],r['pool'],r['user']) for r in evidence['samples']['metricGroups']}
+        discovered=set();originals=set(chain.plan['target']['originalInstanceIds'])
+        for observed in _history(chain,frame):discovered.update((r['node'],r['pool'],r['user']) for r in observed['metrics']['raw'] if r['node'] in originals)
+        require(discovered<=groups)
+    return dict(schemaVersion=1,status=result['status'],binding=detached(binding),rolloutFrame=detached(previous['rolloutFrame'] if previous else frame),
+        bootId=previous['bootId'] if previous else _worker_boot(),evidence=evidence,waitAfter=None)
