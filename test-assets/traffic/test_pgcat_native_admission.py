@@ -45,7 +45,11 @@ class AdmissionTests(unittest.TestCase):
             file=root/'native-runtime-assets.json';write(file,assets)
             value,identity=closure.read_runtime_assets(root,p)
             self.assertEqual(value,assets)
-            file.unlink();write(file,assets)
+            replacement=file.with_name(file.name+'.replacement');write(replacement,assets)
+            original_stat=file.stat();replacement_stat=replacement.stat()
+            self.assertEqual(original_stat.st_dev,replacement_stat.st_dev)
+            self.assertNotEqual(original_stat.st_ino,replacement_stat.st_ino)
+            replacement.replace(file)
             with self.assertRaises(ValueError):closure.read_runtime_assets(root,p,original=identity)
 
     def test_native_blocker_precedes_any_effect_even_with_valid_assets(self):
@@ -376,5 +380,9 @@ print('DIAGNOSTIC-ONLY')
             bad=copy.deepcopy(output);bad['requestContext']['definitionSha256']='0'*64
             with self.assertRaises(protocol.Refused),j._transaction() as db:j._associate_native_context_in_tx(db,f.plan,bad)
             with self.assertRaises(protocol.Refused):j.claim_native_request()
-            path=root/'native-created-request.json';path.unlink();write(path,handoff)
+            path=root/'native-created-request.json';replacement=path.with_name(path.name+'.replacement');write(replacement,handoff)
+            original_stat=path.stat();replacement_stat=replacement.stat()
+            self.assertEqual(original_stat.st_dev,replacement_stat.st_dev)
+            self.assertNotEqual(original_stat.st_ino,replacement_stat.st_ino)
+            replacement.replace(path)
             with self.assertRaises((ValueError,protocol.Refused)):j.native_request()
