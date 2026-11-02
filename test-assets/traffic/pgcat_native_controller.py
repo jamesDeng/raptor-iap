@@ -1310,10 +1310,11 @@ class NativeController:
         save_once(root,NATIVE_STOP_INTENT,intent)
         while not (root/NATIVE_STOP_ACK).exists():
             check(monotonic()<deadline and self.feed.poll() is None);time.sleep(.01)
+        # The owned writer may still be publishing; require its clean exit before reading.
+        _owned_feed_exit(self,self.feed,deadline=deadline)
         ack,raw=private_json(root/NATIVE_STOP_ACK)
         final,_=private_json(Path(self.bindings['laneBindings']['receiptPath']))
         check(raw==encode(ack) and ack==native_stop_ack(intent,final,reconcile,plan,now=time.time()))
-        _owned_feed_exit(self,self.feed,deadline=deadline)
         self.client.confirm_feed_exit(self.feed)
         self.receipt=final
         return self.client.journal.record_native_stop()
