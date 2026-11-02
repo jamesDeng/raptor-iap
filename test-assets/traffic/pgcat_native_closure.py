@@ -535,7 +535,7 @@ class FixedClosureAdapters:
     C4 obtains operation/support artifacts from claimed Journal admission. No
     caller pair, target list, command, credential value or finish executor exists.
     """
-    def __init__(self,run_dir,reads,*,prepared,action_id,operation,supports,stopped=None,stop_artifact=None,hold_artifact=None,ingresses=None,gateway=None):
+    def __init__(self,run_dir,reads,*,prepared,action_id,operation,supports,stopped=None,stop_artifact=None,hold_artifact=None,ingresses=None,gateway=None,restoration_provider=None):
         from pgcat_native_controller import FixedWorkerReads,verify_prepared
         from pgcat_native_ingress import _Chain
         require(type(reads) is FixedWorkerReads)
@@ -546,6 +546,7 @@ class FixedClosureAdapters:
         self.credential=decode_private(canonical(reads.credential));self.deadline=reads.deadline
         self.action_id=action_id;identifier(action_id)
         self.stopped=None;self.stop_mirror=None;self.gateway=gateway;self.hold_artifact=hold_artifact;self.ingresses=[] if ingresses is None else decode_private(canonical(ingresses))
+        self.restoration_provider=restoration_provider
         self.operation=decode_private(canonical(operation));self.supports=decode_private(canonical(supports))
         exact(self.operation,{'basename','identity'});require(self.operation['basename']=='native-operation-binding.json')
         self.sources=_source(self.plan,self.run);self.chain=_Chain(self.run)
@@ -617,7 +618,7 @@ def _closure_support(record,plan,action):
         'native-finish':({'terminalSha256','operationBindingSha256','stopSha256'},{'boundaryRequestId','receiptSha256','boundaryCompletedSha256'}),
         'native-cleanup':({'assessmentSha256','restoreSha256'},{'workerAbsent','localAbsent','workerCleanupSha256','localCleanupSha256'}),
         'native-verdict':({'stopSha256','finishSha256'},{'assessmentSha256','status'}),
-        'native-restore':({'assessmentSha256','finishSha256','gatewayProofSha256'},{'roster','framesSha256','restoredAt'})}
+        'native-restore':({'assessmentSha256','finishSha256','gatewayProofSha256','providerSha256'},{'roster','framesSha256','restoredAt'})}
     ik,ok=fields[action];exact(inputs,ik);exact(out,ok);require(all(hashed(v) for v in inputs.values()))
     for key,value in out.items():
         if key.endswith('Sha256'):require(hashed(value))
@@ -822,6 +823,67 @@ def hold_ready(hold,run_id,boot,at):
     return at>=hold['notBeforeMonotonic']
 
 
+def validate_restoration_provider(record,plan,stopped,reconcile,finished):
+    """Historical structure; live callers separately enforce current age."""
+    from pgcat_native_ingress import _fleet,private_ip
+    exact(record,{'schemaVersion','runId','executionKind','planSha256','scope','pair','stopSha256','reconcileSha256','finishSha256','feedBindingSha256',
+        'observedAt','completedAt','startedMonotonic','completedMonotonic','holdNotBeforeMonotonic','capacity','inventory'})
+    require(type(record['schemaVersion']) is int and record['schemaVersion']==1)
+    require(record['runId']==plan['runId'] and record['executionKind']==plan['executionKind'] and record['planSha256']==sha_bytes(canonical(plan)))
+    require(record['scope']==plan['target'] and record['pair']==reconcile['outputs']['pair'])
+    require(record['stopSha256']==sha_bytes(canonical(stopped['support'])) and record['feedBindingSha256']==sha_bytes(canonical(stopped['feedBinding'])))
+    require(record['reconcileSha256']==sha_bytes(canonical(reconcile)) and record['finishSha256']==sha_bytes(canonical(finished)))
+    require(all(number(record[k]) for k in ('observedAt','completedAt','startedMonotonic','completedMonotonic','holdNotBeforeMonotonic')))
+    require(record['holdNotBeforeMonotonic']<=record['startedMonotonic']<=record['completedMonotonic'] and record['completedMonotonic']-record['startedMonotonic']<15)
+    require(record['observedAt']<=record['completedAt'] and record['completedAt']-record['observedAt']<15)
+    capacity=record['capacity'];exact(capacity,{'desiredCapacity','minSize','maxSize'})
+    require(all(type(capacity[k]) is int and capacity[k]==v for k,v in (('desiredCapacity',2),('minSize',2),('maxSize',4))))
+    inventory=record['inventory'];exact(inventory,{'schemaVersion','observedAt','desired','members','memberStates','backendStates','healthyRegistered','privateAddresses'})
+    require(type(inventory['schemaVersion']) is int and inventory['schemaVersion']==2 and number(inventory['observedAt']))
+    require(record['observedAt']<=inventory['observedAt']<=record['completedAt'] and inventory['desired']==capacity['desiredCapacity'])
+    _fleet({k:inventory[k] for k in ('desired','members','memberStates','backendStates','healthyRegistered')},record['pair'])
+    require(type(inventory['privateAddresses']) is dict and set(inventory['privateAddresses'])==set(record['pair']))
+    for address in inventory['privateAddresses'].values():private_ip(address)
+    require(len(set(inventory['privateAddresses'].values()))==2)
+    return record
+
+
+def stage_restoration_provider(run,payload):
+    """Fixed owned-control receipt; the worker pins its own canonical copy."""
+    from pgcat_native_controller import verify_prepared,verify_source_inventory,_write_bytes
+    from pgcat_native_assessment import _original
+    from pgcat_source_bootstrap import require_verified,current_hashes
+    require_verified(__name__);run=Path(run)
+    exact(payload,{'plan','prepared','record','stopped','reconcileArtifact','finishArtifact','stopArtifact','holdArtifact'})
+    plan=payload['plan'];runtime_admission(plan);require(plan['sourceHashes']==current_hashes())
+    verify_source_inventory(run,plan['sourceHashes']);verify_prepared(run,plan,payload['prepared'])
+    reconcile=read_support(run,'native-reconcile',plan=plan,original=payload['reconcileArtifact'])
+    finished=read_support(run,'native-finish',plan=plan,original=payload['finishArtifact'])
+    stop,_=_original(run,payload['stopArtifact']);hold,_=_original(run,payload['holdArtifact'])
+    require(payload['stopArtifact']['basename']=='native-feed-stop.json' and payload['holdArtifact']['basename']=='native-finish-hold.json')
+    require(stop==payload['stopped']['support'] and sha_bytes(canonical(stop))==finished['inputs']['stopSha256'])
+    require(decode_private(_identity(run/'native-feed-binding.json')[0])==payload['stopped']['feedBinding'])
+    require(hold_ready(hold,plan['runId'],_worker_boot(),time.monotonic()))
+    record=validate_restoration_provider(payload['record'],plan,payload['stopped'],reconcile,finished)
+    at=time.time();require(record['completedAt']<=at<record['observedAt']+30)
+    artifact=dict(basename='native-restoration-provider.json',identity=_write_bytes(run/'native-restoration-provider.json',canonical(record)))
+    return artifact
+
+
+def _current_restoration_provider(adapters,now):
+    from pgcat_native_assessment import _original
+    artifact=adapters.restoration_provider
+    require(type(artifact) is dict and artifact.get('basename')=='native-restoration-provider.json')
+    record,digest=_original(adapters.run,artifact)
+    reconcile=adapters._support('native-reconcile');finished=adapters._support('native-finish')
+    validate_restoration_provider(record,adapters.plan,adapters.stopped,reconcile,finished)
+    at=now();require(record['completedAt']<=at<record['observedAt']+30)
+    # _stopped_provider separately rereads the current ConfigMap at both
+    # restoration gates. Bind fresh addresses to those same exact targets.
+    require(sha_bytes(_targets(record['inventory']['privateAddresses']))==reconcile['outputs']['targetsSha256'])
+    return record,digest
+
+
 @sanitized
 def verdict(run_dir,*,adapters,now):
     require(type(adapters) is FixedClosureAdapters)
@@ -868,6 +930,7 @@ def restore(run_dir,*,adapters,now):
     hold,_=_original(adapters.run,adapters.hold_artifact)
     boot=_worker_boot()
     require(hold_ready(hold,adapters.run_id,boot,time.monotonic()))
+    provider,provider_sha=_current_restoration_provider(adapters,now)
     finished=adapters._support('native-finish');assessment=adapters._support('native-verdict')
     g=adapters.gateway;require(g.plan==adapters.plan and g.prepared==adapters.prepared and g.credential==adapters.credential and g.action_id==adapters.action_id);g._idle()
     if adapters.plan['executionKind']=='disabled-proof':runtime=gateway_false_idle(run_dir,adapters=g,now=now)
@@ -876,7 +939,7 @@ def restore(run_dir,*,adapters,now):
         runtime=_observe(g,False,now)
         expected=disabled['outputs']['runtime'];require(all(runtime[k]==expected[k] for k in ('secretUid','secretResourceVersion','deploymentUid','podUid','generation','imageDigest','verification')))
     g._idle();proof_identity=_write_bytes(adapters.run/'native-restore-gateway.json',canonical(runtime))
-    record=_action(adapters,run_dir,'native-restore',dict(assessmentSha256=assessment['outputs']['assessmentSha256'],finishSha256=sha_bytes(canonical(finished)),gatewayProofSha256=proof_identity['sha256']))
+    record=_action(adapters,run_dir,'native-restore',dict(assessmentSha256=assessment['outputs']['assessmentSha256'],finishSha256=sha_bytes(canonical(finished)),gatewayProofSha256=proof_identity['sha256'],providerSha256=provider_sha))
     _stopped_provider(adapters,now,require_fresh=False)
     first=_restoration_frame(adapters,now)
     while True:
@@ -887,6 +950,7 @@ def restore(run_dir,*,adapters,now):
         if all(two[k]['sequence']>one[k]['sequence'] and two[k]['Success']>one[k]['Success'] and two[k]['Attempts']>one[k]['Attempts'] for k in one):break
         time.sleep(min(.02,max(0,adapters.deadline-time.monotonic())))
     _stopped_provider(adapters,now,require_fresh=False);g._idle()
+    require(_current_restoration_provider(adapters,now)==(provider,provider_sha))
     frames=_write_bytes(adapters.run/'native-restoration-frames.json',canonical([first,second]))
     return _seal_action(adapters,record,dict(roster=second['roster'],framesSha256=frames['sha256'],restoredAt=second['observedAt']))
 
@@ -1036,7 +1100,7 @@ def diagnostic_worker_proof(run,payload):
     from pgcat_native_assessment import assess_native,complete_restored_history,_original
     from pgcat_source_bootstrap import require_verified,current_hashes
     require_verified(__name__);run=Path(run)
-    exact(payload,{'plan','prepared','supports','workerCleanupSha256','stopped','stopArtifact','holdArtifact','operation','ingresses'})
+    exact(payload,{'plan','prepared','supports','workerCleanupSha256','stopped','stopArtifact','holdArtifact','operation','ingresses','restorationProvider'})
     plan=payload['plan'];runtime_admission(plan)
     require(plan['sourceHashes']==current_hashes());verify_source_inventory(run,plan['sourceHashes'])
     prepared=verify_prepared_files(run,plan,payload['prepared'])
@@ -1058,6 +1122,10 @@ def diagnostic_worker_proof(run,payload):
     require(assessment['status']==assessment['ordinaryStatus']==assessment['operationStatus']=='PASS' and assessment['collectorAbsent'] is True and assessment['guardianAbsent'] is True)
     raw,_=_identity(run/'native-restoration-frames.json');frames=decode_private(raw)
     restored=supports['native-restore'];require(sha_bytes(raw)==restored['outputs']['framesSha256'] and type(frames) is list and len(frames)==2)
+    provider,provider_sha=_original(run,payload['restorationProvider'])
+    require(payload['restorationProvider']['basename']=='native-restoration-provider.json' and provider_sha==restored['inputs']['providerSha256'])
+    validate_restoration_provider(provider,plan,stopped,supports['native-reconcile'],supports['native-finish'])
+    require(provider['completedAt']<=restored['outputs']['restoredAt']<provider['observedAt']+30)
     require(_identity(run/'native-restore-gateway.json')[1]['sha256']==restored['inputs']['gatewayProofSha256'])
     require(frames[0]['roster']==frames[1]['roster']==restored['outputs']['roster'] and frames[1]['observedAt']==restored['outputs']['restoredAt'])
     for frame in frames:
@@ -1097,6 +1165,8 @@ def _retained_diagnostic(root,assets):
         finish=next(r['outputs'] for r in rows if r['action']=='native-finish')
         ingresses=[r['outputs']['ingressFile'] for r in rows if r['action']=='native-ingress']
         operation=next(r['outputs']['operationFile'] for r in reversed(rows) if r['action']=='native-ingress' and r['outputs'].get('status')=='BOUND')
+        provider=journal._native_restoration_provider_in_tx(db)
+        require(provider['workerArtifact']==next(r['outputs']['providerArtifact'] for r in rows if r['action']=='native-restore'))
     stopped=journal.native_stop();b=outer['laneBindings']
     anchors=validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential')})
     require(journal.native_prepared()==anchors and anchors['runtimeAssetsFile']['sha256']==sha_bytes(canonical(assets)))
@@ -1110,7 +1180,7 @@ def _retained_diagnostic(root,assets):
     require(records['native-verdict']['outputs']['status']=='PASS' and cleanup['outputs']['workerAbsent'] is True and cleanup['outputs']['localAbsent'] is True)
     require_verified(__name__);require(current_hashes()==plan['sourceHashes']);verify_source_inventory(Path(__file__).absolute().parent,plan['sourceHashes'])
     payload=dict(plan=plan,prepared=anchors,supports=artifacts,workerCleanupSha256=cleanup['outputs']['workerCleanupSha256'],
-        stopped=stopped,stopArtifact=finish['stopArtifact'],holdArtifact=finish['holdArtifact'],operation=operation,ingresses=ingresses)
+        stopped=stopped,stopArtifact=finish['stopArtifact'],holdArtifact=finish['holdArtifact'],operation=operation,ingresses=ingresses,restorationProvider=provider['workerArtifact'])
     run=b['remoteRun'];parts=['python3','-I','-S','-c',ROOT,str(Path(run)/'pgcat_source_bootstrap.py'),b['sourceHashes']['sourceBootstrap'],
         'nativeController',canonical(b['sourceHashes']).decode(),'owned-control','diagnostic-proof',run,canonical(payload).decode()]
     result=subprocess.run([b['workbenchCli'],'exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',' '.join(shlex.quote(p) for p in parts)],

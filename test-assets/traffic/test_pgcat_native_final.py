@@ -202,21 +202,26 @@ class FinalActionTests(unittest.TestCase):
                 self.assertGreater(deadline,time.monotonic());self.assertEqual(kubeconfig,a.credential['path'])
                 request=dict(requestId='d'*32,roster=expected_roster)
                 actual=dict(requestId=request['requestId'],status='ACKNOWLEDGED',clients={r['uid']+'/'+r['processId']:{'status':'acknowledged'} for r in expected_roster})
-                for name,body in [('request',request),('ack',request),('receipt',actual)]:write(boundary/(name+'.json'),body)
                 value=rolling(6);value['at']=START+8;value['phase']='settling';value['inventory']=inventory
                 value['metrics']=copy.deepcopy(read_progress(f.run/'native-capture',f.context)[2]['metrics']);value['metrics'].update(observedAt=START+8,sourceAt=START+8)
                 for row in value['metrics']['raw']:row['sourceAt']=START+8
                 for pod in value['pods']:
                     pod['snapshot']['final']=True;pod['snapshot']['connected']=0;pod['snapshot']['sample']['at']=START+8
                     for event in pod['snapshot']['events']:event['at']+=START
-                f.writer.append(value)
-                progress,_,_=read_progress(f.run/'native-capture',f.context)
-                start=dict(schemaVersion=1,bindingSha256=progress['bindingSha256'],requestSha256=sha(canonical(request)),requestId=request['requestId'],originalRosterSha256=sha(canonical(expected_roster)),startedMonotonic=time.monotonic(),deadlineMonotonic=0,firstSettlingFrame=progress['latest'])
-                start['deadlineMonotonic']=start['startedMonotonic']+5;write(boundary/'boundary-start.json',start)
-                sealed=__import__('json').loads((f.run/'native-capture'/'terminal-clients.json').read_text())
-                finals=[dict(uid=r['identity']['uid'],processId=r['identity']['processId'],frame=r['finalFrame']) for r in progress['nativeCohort']['cohort'] if r['identity']['uid'].startswith('new-')]
-                done=dict(schemaVersion=2,bindingSha256=progress['bindingSha256'],requestSha256=sha(canonical(request)),requestId=request['requestId'],startSha256=sha(canonical(start)),receiptSha256=sha(canonical(actual)),finalDurableMonotonic=time.monotonic(),finals=finals,lastFrame=progress['latest'],terminalSha256=terminal['outputs']['terminalSha256'],executionKind=f.plan['executionKind'],predecessorFinals=sealed['predecessorFinals'])
-                write(boundary/'boundary-completed.json',done);return actual
+                # Use the real collector producer for BOTH boundary records.
+                # Its already-running writer owns the preceding rolling frames.
+                # Defer only outer collector finalization to the caller fixture.
+                import worker_capture
+                def capture(*args,**kwargs):
+                    write(boundary/'request.json',request);write(boundary/'receipt.json',actual)
+                    return copy.deepcopy(value)
+                with patch.object(worker_capture,'SegmentedCapture',return_value=f.writer),patch.object(worker_capture,'capture_frame',side_effect=capture),patch.object(f.writer,'finish',side_effect=lambda **kw:kw):
+                    finished=worker_capture.run_capture(f.run/'native-capture',f.run/'provider-inventory.json',5400,boundary,progress_context=f.context)
+                self.assertEqual(finished,dict(completed=True,cancelled=False,errors=[]))
+                start=__import__('json').loads((boundary/'boundary-start.json').read_text())
+                self.assertEqual(set(start),{'schemaVersion','bindingSha256','requestSha256','requestId','terminalSha256','executionKind','startedMonotonic','deadlineMonotonic','firstSettlingFrame'})
+                self.assertEqual(start['schemaVersion'],2);self.assertEqual(start['executionKind'],f.plan['executionKind'])
+                return actual
             with patch.object(a.reads,'read',side_effect=lambda *args:copy.deepcopy(cm)),patch('finish_clients.finish',side_effect=finish) as mutation,patch.object(closure,'_worker_boot',return_value='boot'):
                 result=closure.finish_terminal(f.run,adapters=a,now=lambda:f.now)
                 self.assertEqual(result['outputs']['boundaryRequestId'],'d'*32);self.assertEqual(mutation.call_count,1)

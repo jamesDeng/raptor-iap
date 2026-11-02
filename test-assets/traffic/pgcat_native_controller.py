@@ -596,6 +596,7 @@ def validate_action(plan,envelope,selector):
         keys|={'operation','supports'}
         if action in ('native-finish','native-verdict','native-restore'):keys|={'stopped'}
         if action in ('native-verdict','native-restore'):keys|={'stopArtifact','holdArtifact','ingresses'}
+        if action=='native-restore':keys|={'restorationProvider'}
     exact(envelope,keys);check(type(envelope['schemaVersion']) is int and envelope['schemaVersion']==1)
     identifier(envelope['localRequestId']);check(envelope['runId']==plan['runId'] and envelope['executionKind']==plan['executionKind'])
     check(envelope['planSha256']==digest(plan) and envelope['baselineSha256']==plan['baselineSha256'] and number(envelope['deadlineMonotonic']))
@@ -618,6 +619,9 @@ def validate_action(plan,envelope,selector):
             for key in ('stopArtifact','holdArtifact'):
                 exact(envelope[key],{'basename','identity'});file_identity(envelope[key]['identity'])
             check(envelope['stopArtifact']['basename']=='native-feed-stop.json' and envelope['holdArtifact']['basename']=='native-finish-hold.json')
+            if action=='native-restore':
+                exact(envelope['restorationProvider'],{'basename','identity'});file_identity(envelope['restorationProvider']['identity'])
+                check(envelope['restorationProvider']['basename']=='native-restoration-provider.json')
             check(type(envelope['ingresses']) is list and 1<=len(envelope['ingresses'])<=100)
             for artifact in envelope['ingresses']:
                 exact(artifact,{'basename','identity'});file_identity(artifact['identity'])
@@ -721,13 +725,16 @@ def validate_action_result(value,plan,action,local_request):
         exact(output,{'receipt','receiptFile'});file_identity(output['receiptFile']);check(output['receiptFile']['sha256']==digest(output['receipt']))
     elif action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
         from pgcat_native_closure import validate_support
-        exact(output,{'support','artifact'}|({'stopArtifact','holdArtifact'} if action=='native-finish' else set()));support=validate_support(output['support'],plan,action)
+        exact(output,{'support','artifact'}|({'stopArtifact','holdArtifact'} if action=='native-finish' else {'providerArtifact'} if action=='native-restore' else set()));support=validate_support(output['support'],plan,action)
         check(support['requestId']==local_request);exact(output['artifact'],{'basename','identity'})
         check(output['artifact']['basename']==action+'.json');file_identity(output['artifact']['identity'])
         check(output['artifact']['identity']['sha256']==digest(support))
         if action=='native-finish':
             for key,name in [('stopArtifact','native-feed-stop.json'),('holdArtifact','native-finish-hold.json')]:
                 exact(output[key],{'basename','identity'});check(output[key]['basename']==name);file_identity(output[key]['identity'])
+        if action=='native-restore':
+            exact(output['providerArtifact'],{'basename','identity'});check(output['providerArtifact']['basename']=='native-restoration-provider.json');file_identity(output['providerArtifact']['identity'])
+            check(output['providerArtifact']['identity']['sha256']==support['inputs']['providerSha256'])
     else:raise ValueError('native action')
     return value
 
@@ -1185,7 +1192,63 @@ class NativeController:
 
     def restore(self):
         _closed('native-restore');self._require_owner()
+        self.read_restoration_provider()
         return self.client.native_terminal_call('native-restore')['payload']
+
+    def read_restoration_provider(self):
+        """One post-hold READ stage, outside the frozen feed and restore action."""
+        from types import SimpleNamespace
+        from pgcat_lane_protocol import digest
+        from pgcat_native_ingress import instant
+        from pgcat_native_closure import validate_restoration_provider
+        from segmented_capture import canonical
+        import provider_feed as provider
+        self._require_owner();_closed('native-restore',self.prepared['plan']);self.client._active()
+        original=self._abort_originals();check(self.feed is original['feed'] and self.feed is self.client.feed_process and type(self.feed) is subprocess.Popen and self.feed.poll()==0)
+        check(hasattr(self,'finish_received'));not_before=self.finish_received+120.;started=time.monotonic();check(started>=not_before)
+        plan=self.prepared['plan'];closure_at=instant(plan['deadline']['closureDeadline']);observed=time.time()
+        check(observed<closure_at);until=min(started+15.,started+closure_at-observed)
+        b=original['bindings']['laneBindings'];target=plan['target']
+        check((target['regionId'],target['scalingGroupId'],target['nlbServerGroupId'],target['workerId'])==(provider.REGION,provider.GROUP_ID,provider.SERVER_GROUP_ID,provider.WORKER_ID))
+        stopped=self.client.journal.native_stop();check(stopped['feedBinding']==self.client.feed_binding and stopped['feedExit']['pid']==self.feed.pid and stopped['feedExit']['exitCode']==0)
+        with self.client.journal._connection() as db:
+            reconcile=self.client.journal._native_record_in_tx(db,'native-reconcile');finished=self.client.journal._native_record_in_tx(db,'native-finish')
+            rows=[__import__('json').loads(r['proof']) for r in db.execute('SELECT proof FROM native_support')]
+        def output(name):
+            matches=[r['outputs'] for r in rows if r['action']==name];check(len(matches)==1);return matches[0]
+        finish_output=output('native-finish')
+        operator=provider.Operator(SimpleNamespace(mode=MODE,status_file=None,listener_id=provider.LISTENER_ID));capacity={}
+        def command(argv):
+            self._require_owner();check(self.feed is original['feed'] and self.feed is self.client.feed_process and self.feed.poll()==0 and time.time()<closure_at and time.monotonic()<until)
+            check(argv[0]=='aliyun' and tuple(argv[1:3]) in provider.RETRYABLE_READS|{('sts','GetCallerIdentity')})
+            result=subprocess.run([b['aliyunCli']]+argv[1:],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                timeout=min(10.,until-time.monotonic()),env={'PATH':os.defpath,'HOME':os.path.expanduser('~'),'LANG':'C'},close_fds=True)
+            check(result.returncode==0 and len(result.stdout)<=2*1024*1024 and time.monotonic()<until and time.time()<closure_at)
+            return result.stdout.decode('ascii')
+        operator.command=command;fetch_group=operator.fetch_group
+        def group():
+            actual=fetch_group()
+            capacity.update(desiredCapacity=actual['DesiredCapacity'],minSize=actual['MinSize'],maxSize=actual['MaxSize'])
+            return actual
+        operator.fetch_group=group
+        check(operator.aliyun('sts','GetCallerIdentity')['AccountId']==target['accountId'])
+        inventory=operator.read(deadline=provider.Deadline(until));ended=time.monotonic();completed=time.time()
+        record=dict(schemaVersion=1,runId=plan['runId'],executionKind=plan['executionKind'],planSha256=digest(plan),scope=target,pair=reconcile['outputs']['pair'],
+            stopSha256=digest(stopped['support']),reconcileSha256=digest(reconcile),finishSha256=digest(finished),feedBindingSha256=digest(stopped['feedBinding']),
+            observedAt=observed,completedAt=completed,startedMonotonic=started,completedMonotonic=ended,holdNotBeforeMonotonic=not_before,capacity=capacity,inventory=inventory)
+        validate_restoration_provider(record,plan,stopped,reconcile,finished)
+        self._require_owner();check(self.feed is original['feed'] and self.feed is self.client.feed_process and self.client.journal.native_stop()==stopped and time.monotonic()<until and completed<closure_at)
+        mac=_write_bytes(Path(self.bindings['captureRoot'])/'native-restoration-provider.json',canonical(record))
+        anchors={k:self.prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential')}
+        payload=dict(plan=plan,prepared=anchors,record=record,stopped=stopped,reconcileArtifact=output('native-reconcile')['artifact'],finishArtifact=finish_output['artifact'],stopArtifact=finish_output['stopArtifact'],holdArtifact=finish_output['holdArtifact'])
+        # The existing owned-control transport is bounded4s; reserve that whole
+        # interval within this original15s READ opportunity, never renew it.
+        check(until-time.monotonic()>4.)
+        worker=self._owned_worker('restoration-provider-stage',payload)
+        check(time.monotonic()<until and time.time()<closure_at)
+        proof=self.client.journal.record_native_restoration_provider(mac,worker)
+        check(time.monotonic()<until and time.time()<closure_at)
+        return proof
 
     def cleanup(self):
         _closed('native-cleanup');self._require_owner()
@@ -1299,12 +1362,13 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
         output=dict(ready=ready,readyFile=_identity(run/'native-ready.json')[1])
     elif action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
         from pgcat_native_closure import FixedClosureAdapters,seal_terminal,reconcile,finish_terminal,verdict,restore,support_artifact
-        adapter=FixedClosureAdapters(run,reads,prepared=prepared,action_id=request_id,operation=envelope['operation'],supports=envelope['supports'],stopped=envelope.get('stopped'),stop_artifact=envelope.get('stopArtifact'),hold_artifact=envelope.get('holdArtifact'),ingresses=envelope.get('ingresses'))
+        adapter=FixedClosureAdapters(run,reads,prepared=prepared,action_id=request_id,operation=envelope['operation'],supports=envelope['supports'],stopped=envelope.get('stopped'),stop_artifact=envelope.get('stopArtifact'),hold_artifact=envelope.get('holdArtifact'),ingresses=envelope.get('ingresses'),restoration_provider=envelope.get('restorationProvider'))
         perform={'native-terminal-seal':seal_terminal,'native-reconcile':reconcile,'native-finish':finish_terminal,'native-verdict':verdict,'native-restore':restore}[action]
         if action=='native-restore':adapter.gateway=_gateway_context(run,reads,prepared,request_id,envelope)
         support=perform(run,adapters=adapter,now=time.time)
         output=dict(support=support,artifact=support_artifact(run,action,adapters=adapter))
         if action=='native-finish':output.update(stopArtifact=dict(basename='native-feed-stop.json',identity=adapter.stop_mirror),holdArtifact=adapter.hold_artifact)
+        if action=='native-restore':output['providerArtifact']=adapter.restoration_provider
     else:raise ValueError('native action')
     verify_prepared(run,plan,prepared)
     value=dict(schemaVersion=1,action=action,runId=plan['runId'],executionKind=plan['executionKind'],planSha256=sha(canonical(plan)),requestId=request_id,staged=staged,outputs=output)
@@ -1326,6 +1390,9 @@ def _owned_worker_control(verb,run,payload):
     if verb=='diagnostic-proof':
         from pgcat_native_closure import diagnostic_worker_proof
         return diagnostic_worker_proof(run,payload)
+    if verb=='restoration-provider-stage':
+        from pgcat_native_closure import stage_restoration_provider
+        return stage_restoration_provider(run,payload)
     if verb=='gateway-false-idle':
         check(set(payload)=={'plan','prepared'});plan=payload['plan'];_closed('native-restore',plan)
         prepared=verify_prepared(run,plan,payload['prepared'])

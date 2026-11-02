@@ -580,6 +580,7 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS native_prepared (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_created_request (singleton INTEGER PRIMARY KEY CHECK(singleton=1),proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS native_restoration_provider (singleton INTEGER PRIMARY KEY CHECK(singleton=1),proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_admission (
                 request_id TEXT PRIMARY KEY, proof TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS native_stop_claim (
@@ -975,6 +976,7 @@ class Journal:
                 if action in ('native-verdict','native-restore'):
                     finishes=[r for r in records if r['action']=='native-finish'];require(len(finishes)==1,'incomplete')
                     envelope.update(stopArtifact=finishes[0]['outputs']['stopArtifact'],holdArtifact=finishes[0]['outputs']['holdArtifact'],ingresses=[r['outputs']['ingressFile'] for r in records if r['action']=='native-ingress'])
+                if action=='native-restore':envelope['restorationProvider']=self._native_restoration_provider_in_tx(db)['workerArtifact']
                 require(receipt==stopped['receipt'] and request['feedSession']==receipt['feedSession'] and request['minimumSequence']==receipt['sequence'] and request['receiptIdentity']==receipt_identity(identity),'receipt')
             else:require(db.execute('SELECT 1 FROM native_stop').fetchone() is None,'incomplete')
         elif action=='native-collector-launch':
@@ -1034,6 +1036,28 @@ class Journal:
         with self._connection() as db:
             if not required and not any(json.loads(r['proof'])['action']=='native-reconcile' for r in db.execute('SELECT proof FROM native_support')):return None
             return self._native_record_in_tx(db,'native-reconcile')
+
+    def _native_restoration_provider_in_tx(self,db):
+        from pgcat_native_ingress import _identity
+        from pgcat_native_controller import file_identity
+        from pgcat_native_closure import validate_restoration_provider
+        row=db.execute('SELECT proof FROM native_restoration_provider').fetchone();require(row is not None,'source')
+        proof=json.loads(row['proof']);require(set(proof)=={'macIdentity','workerArtifact'},'source')
+        artifact=proof['workerArtifact'];require(set(artifact)=={'basename','identity'} and artifact['basename']=='native-restoration-provider.json','source');file_identity(artifact['identity'])
+        raw,identity=_identity(self.root.parent/'native-restoration-provider.json')
+        require(identity==proof['macIdentity'] and identity['sha256']==artifact['identity']['sha256'],'source')
+        value=json.loads(raw);require(raw==encode(value),'source')
+        validate_restoration_provider(value,self._native_plan_in_tx(db),self._native_stop_in_tx(db),self._native_record_in_tx(db,'native-reconcile'),self._native_record_in_tx(db,'native-finish'))
+        return proof
+
+    def record_native_restoration_provider(self,mac_identity,worker_artifact):
+        with self._transaction() as db:
+            plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,'native-restore',plan=plan,prepared=self._native_prepared_in_tx(db,plan))
+            require(db.execute('SELECT state FROM run').fetchone()['state']=='active','incomplete')
+            require(db.execute('SELECT 1 FROM native_restoration_provider').fetchone() is None,'incomplete')
+            proof=dict(macIdentity=mac_identity,workerArtifact=worker_artifact)
+            db.execute('INSERT INTO native_restoration_provider VALUES (1,?)',(encode(proof).decode(),))
+            return self._native_restoration_provider_in_tx(db)
 
     def _native_stop_in_tx(self,db,*,require_fresh=False):
         from pgcat_native_ingress import _identity
@@ -1164,6 +1188,7 @@ class Journal:
             proof=json.loads(admission['proof']);require(result['state']=='complete' and result['category']=='ok','source')
             payload=validate_action_result(result['payload'],plan,request['action'],request_id)
             prepared=self._native_prepared_in_tx(db,plan);require(proof['envelope']['prepared']==prepared,'source')
+            if request['action']=='native-restore':require(payload['outputs']['providerArtifact']==proof['envelope']['restorationProvider'],'source')
             if request['action']=='native-collector-launch':
                 require(all(payload['outputs']['ready']['sources'][k]==prepared[v] for k,v in (('plan','planFile'),('baseline','baselineFile'),('gatewayRuntime','gatewayRuntimeFile'))),'source')
             require(payload['staged']['admission']['sha256']==digest(proof['envelope']) and payload['staged']['selector']['sha256']==digest(proof['selector']),'source')

@@ -236,6 +236,42 @@ def diagnostic_complete_fixture(test):
     return f,a
 
 
+class NativeBoundaryProducerReaderTests(unittest.TestCase):
+    def test_actual_collector_v2_boundary_reaches_reader_for_both_execution_kinds(self):
+        import json
+        for kind,fixture in [('native-replacement',native_complete_fixture),('disabled-proof',diagnostic_complete_fixture)]:
+            with self.subTest(kind=kind):
+                f,a=fixture(self)
+                start=json.loads((f.run/'native-boundary'/'boundary-start.json').read_text())
+                completed=json.loads((f.run/'native-boundary'/'boundary-completed.json').read_text())
+                self.assertEqual(start['schemaVersion'],2);self.assertEqual(start['executionKind'],kind)
+                self.assertNotIn('originalRosterSha256',start)
+                self.assertEqual(start['terminalSha256'],completed['terminalSha256'])
+                self.assertTrue((f.run/'native-finish.json').exists())
+                from pgcat_collector_control import native_boundary_completion
+                from pgcat_native_evidence import read_terminal_clients
+                from segmented_capture import read_progress
+                from test_pgcat_native_ingress import write
+                import time
+                operation=json.loads((f.run/'native-operation-binding.json').read_text())
+                terminal=read_terminal_clients(f.run/'native-capture',f.context,operation)
+                progress,_,_=read_progress(f.run/'native-capture',f.context)
+                inventory=json.loads((f.run/'provider-inventory.json').read_text())
+                def consume():return native_boundary_completion(f.run,f.context,operation,terminal,inventory,progress,started=0,deadline=time.monotonic()+5)
+                consume()
+                for case in ('legacy-v1','wrong-kind','wrong-terminal','hybrid'):
+                    bad=copy.deepcopy(start)
+                    if case=='legacy-v1':
+                        bad['schemaVersion']=1;del bad['terminalSha256'];del bad['executionKind'];bad['originalRosterSha256']=sha(canonical(terminal['roster']))
+                    if case=='wrong-kind':bad['executionKind']='disabled-proof' if kind=='native-replacement' else 'native-replacement'
+                    if case=='wrong-terminal':bad['terminalSha256']='0'*64
+                    if case=='hybrid':bad['originalRosterSha256']=sha(canonical(terminal['roster']))
+                    write(f.run/'native-boundary'/'boundary-start.json',bad)
+                    write(f.run/'native-boundary'/'boundary-completed.json',dict(completed,startSha256=sha(canonical(bad))))
+                    with self.subTest(case=case),self.assertRaises(ValueError):consume()
+                write(f.run/'native-boundary'/'boundary-start.json',start);write(f.run/'native-boundary'/'boundary-completed.json',completed)
+
+
 class DiagnosticAssessmentTests(unittest.TestCase):
     def test_constant_two_actual_restart_proof_can_assess_diagnostic_only(self):
         from pgcat_native_assessment import assess_native
@@ -348,8 +384,19 @@ class CredentialSubstitutionTests(unittest.TestCase):
             with self.subTest(mode=mode),self.assertRaises(ValueError):closure.cleanup_bound_credential(path,original)
 
 
+def restoration_provider_record(f,a,clock):
+    from segmented_capture import sha,canonical
+    reconcile=__import__('json').loads((f.run/'native-reconcile.json').read_text())
+    finished=__import__('json').loads((f.run/'native-finish.json').read_text())
+    inventory=dict(copy.deepcopy(f.baseline['fleet']),schemaVersion=2,observedAt=f.now,privateAddresses={r['id']:r['address'] for r in f.baseline['originals']})
+    return dict(schemaVersion=1,runId=f.plan['runId'],executionKind=f.plan['executionKind'],planSha256=sha(canonical(f.plan)),scope=f.plan['target'],pair=reconcile['outputs']['pair'],
+        stopSha256=sha(canonical(a.stopped['support'])),reconcileSha256=sha(canonical(reconcile)),finishSha256=sha(canonical(finished)),feedBindingSha256=sha(canonical(a.stopped['feedBinding'])),
+        observedAt=f.now,completedAt=f.now,startedMonotonic=clock,completedMonotonic=clock,holdNotBeforeMonotonic=clock-.1,
+        capacity=dict(desiredCapacity=2,minSize=2,maxSize=4),inventory=inventory)
+
+
 class RestoreKernelTests(unittest.TestCase):
-    def test_actual_diagnostic_false_idle_and_posthold_two_advancing_reads(self):
+    def test_actual_diagnostic_false_idle_and_posthold_two_advancing_reads(self,provider_case=None):
         import json
         from test_pgcat_native_ingress import file_record,START
         f,a=diagnostic_complete_fixture(self)
@@ -371,10 +418,43 @@ class RestoreKernelTests(unittest.TestCase):
         def pod(p,*args,**kwargs):
             n=2+reads[0]//2;reads[0]+=1;_,current=restored_observations(f,n=n)
             return copy.deepcopy(next(r for r in current if r['uid']==p['metadata']['uid']))
-        with patch.object(closure,'_source',return_value={}),patch.object(closure,'_worker_boot',return_value='boot'),patch.object(closure.time,'monotonic',return_value=clock),patch.object(g,'_metadata',return_value=meta),patch.object(g,'_command',side_effect=command),patch.object(g,'_check'),patch.object(a.reads,'read',return_value=cm),patch.object(a.reads,'live_clients',return_value=live),patch('worker_capture.read_pod',side_effect=pod):
-            result=closure.restore(f.run,adapters=a,now=lambda:f.now)
-        self.assertEqual(result['outputs']['roster'],live['roster']);self.assertEqual(reads[0],4)
-        self.assertTrue((f.run/'native-restoration-frames.json').exists());self.assertTrue(all('set' not in c and 'rollout' not in c for c in calls))
+        def perform(provider_stage=None):
+            from test_pgcat_native_ingress import write
+            if provider_stage is None and provider_case!='missing':
+                record=restoration_provider_record(f,a,clock)
+                if provider_case=='protection':record['inventory']['memberStates'][0]['lifecycle']='InService'
+                if provider_case=='health':record['inventory']['memberStates'][0]['health']='Unhealthy'
+                if provider_case=='backend':record['inventory']['healthyRegistered'].pop()
+                if provider_case=='membership':record['inventory']['members'][0]='foreign'
+                if provider_case in ('desiredCapacity','minSize','maxSize'):record['capacity'][provider_case]=3
+                if provider_case=='address':record['inventory']['privateAddresses']['a']='10.9.9.9'
+                if provider_case=='scope':record['scope']=dict(record['scope'],accountId='foreign')
+                if provider_case=='future':record['completedAt']+=1
+                if provider_case=='stale':
+                    record['observedAt']-=31;record['completedAt']-=31;record['inventory']['observedAt']-=31
+                write(f.run/'native-restoration-provider.json',record)
+                a.restoration_provider=dict(basename='native-restoration-provider.json',identity=file_record(f.run/'native-restoration-provider.json'))
+                if provider_case=='substituted':
+                    path=f.run/'native-restoration-provider.json';path.rename(f.run/'old-provider.json');write(path,record)
+            with patch.object(closure,'_source',return_value={}),patch.object(closure,'_worker_boot',return_value='boot'),patch.object(closure.time,'monotonic',return_value=clock),patch.object(closure.time,'time',return_value=f.now),patch.object(g,'_metadata',return_value=meta),patch.object(g,'_command',side_effect=command),patch.object(g,'_check'),patch.object(a.reads,'read',return_value=cm),patch.object(a.reads,'live_clients',return_value=live),patch('worker_capture.read_pod',side_effect=pod):
+                if provider_stage is not None:a.restoration_provider=provider_stage()['workerArtifact']
+                result=closure.restore(f.run,adapters=a,now=lambda:f.now)
+            self.assertEqual(result['outputs']['roster'],live['roster']);self.assertEqual(reads[0],4)
+            self.assertTrue((f.run/'native-restoration-frames.json').exists());self.assertTrue(all('set' not in c and 'rollout' not in c for c in calls))
+            return result
+        if provider_case=='defer':return perform
+        perform()
+
+
+class FreshRestorationProviderTests(unittest.TestCase):
+    def test_drift_stale_foreign_or_substituted_provider_cannot_restore(self):
+        for case in ('protection','health','backend','membership','desiredCapacity','minSize','maxSize','address','scope','stale','future','substituted'):
+            helper=RestoreKernelTests();self.addCleanup(helper.doCleanups)
+            with self.subTest(case=case),self.assertRaises(ValueError):helper.test_actual_diagnostic_false_idle_and_posthold_two_advancing_reads(provider_case=case)
+
+    def test_missing_posthold_provider_read_cannot_restore(self):
+        helper=RestoreKernelTests();self.addCleanup(helper.doCleanups)
+        with self.assertRaises(ValueError):helper.test_actual_diagnostic_false_idle_and_posthold_two_advancing_reads(provider_case='missing')
 
 
 class RetirementWitnessInterfaceTests(unittest.TestCase):

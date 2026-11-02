@@ -127,7 +127,7 @@ print('DIAGNOSTIC-ONLY')
         f,a=kept[0]
         supports={k:dict(basename=k+'.json',identity=file_record(f.run/(k+'.json'))) for k in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore')}
         cleaned=closure.cleanup_bound_credential(a.credential['path'],a.credential)
-        payload=dict(plan=f.plan,prepared=a.prepared,supports=supports,workerCleanupSha256=cleaned['receiptSha256'],stopped=a.stopped,stopArtifact=dict(basename='native-feed-stop.json',identity=a.stop_mirror),holdArtifact=a.hold_artifact,operation=a.operation,ingresses=a.ingresses)
+        payload=dict(plan=f.plan,prepared=a.prepared,supports=supports,workerCleanupSha256=cleaned['receiptSha256'],stopped=a.stopped,stopArtifact=dict(basename='native-feed-stop.json',identity=a.stop_mirror),holdArtifact=a.hold_artifact,operation=a.operation,ingresses=a.ingresses,restorationProvider=a.restoration_provider)
         with patch.object(bootstrap,'require_verified'),patch.object(bootstrap,'current_hashes',return_value=f.plan['sourceHashes']),patch('pgcat_collector_control.process_identity',return_value=None):
             result=closure.diagnostic_worker_proof(f.run,payload)
             self.assertEqual(result['assessmentSha256'],__import__('json').loads((f.run/'native-verdict.json').read_text())['outputs']['assessmentSha256'])
@@ -216,7 +216,7 @@ print('DIAGNOSTIC-ONLY')
             result=original_fixture(test);captured.append(result);return result
         helper=assessment_tests.RestoreKernelTests();self.addCleanup(helper.doCleanups)
         with patch('test_pgcat_native_ingress.Fixture',side_effect=Fixture),patch.object(ingress_tests,'write',side_effect=bind_original_feed),patch.object(assessment_tests,'diagnostic_complete_fixture',side_effect=keep):
-            helper.test_actual_diagnostic_false_idle_and_posthold_two_advancing_reads()
+            perform_restore=helper.test_actual_diagnostic_false_idle_and_posthold_two_advancing_reads(provider_case='defer')
         f,a=captured[0];outer=outer_holder[0];root=Path(outer['captureRoot']);b=outer['laneBindings'];lane=Path(outer['laneRoot']);lane.mkdir(mode=0o700)
         j=protocol.Journal(lane);write(lane/'bindings.json',b);write(lane/'native-plan.json',f.plan)
         with j._transaction() as db:
@@ -225,7 +225,7 @@ print('DIAGNOSTIC-ONLY')
             db.execute('INSERT INTO native_prepared VALUES (1,?)',(canonical(a.prepared).decode(),))
         with patch.object(protocol,'_release_admission'):j.bind_feed(f.feed,manifest_raw=canonical(outer))
         with j._transaction() as db:
-            for name in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
+            for name in ('native-terminal-seal','native-reconcile','native-finish','native-verdict'):
                 support=json.loads((f.run/(name+'.json')).read_text());output=dict(support=support,artifact=dict(basename=name+'.json',identity=file_record(f.run/(name+'.json'))))
                 if name=='native-finish':output.update(stopArtifact=dict(basename='native-feed-stop.json',identity=a.stop_mirror),holdArtifact=a.hold_artifact)
                 proof=dict(action=name,requestId=support['requestId'],outputs=output)
@@ -263,13 +263,38 @@ print('DIAGNOSTIC-ONLY')
         global_root=f.root/'global';global_root.mkdir(mode=0o700);(global_root/'owner.lock').write_bytes(b'');(global_root/'owner.lock').chmod(0o600)
         write(global_root/'active-run',dict(runId=owner.run_id,supervisorId=client.supervisor_id,laneRoot=str(lane)))
         def worker(verb,payload):
+            if verb=='restoration-provider-stage':return controller.NativeController._owned_worker(owner,verb,payload)
             if verb=='credential-cleanup':return closure.cleanup_bound_credential(a.credential['path'],payload)
             if verb=='credential-absent':return dict(absent=not Path(a.credential['path']).exists())
             raise AssertionError('unexpected worker effect')
+        import provider_feed as provider
+        import datetime
+        raw_calls=[];cloud_case=[None]
+        class ProviderClock(datetime.datetime):
+            @classmethod
+            def now(cls,tz=None):return datetime.datetime.fromtimestamp(f.now,tz)
         def transport(argv,**kw):
-            self.assertEqual(kw['timeout'],4);parts=shlex.split(argv[-1]);self.assertEqual(parts[-3:-1],['diagnostic-proof',str(f.run)])
-            result=controller._owned_worker_control('diagnostic-proof',f.run,json.loads(parts[-1]))
-            return SimpleNamespace(returncode=0,stdout=canonical(result))
+            if argv[1]=='exec':
+                self.assertEqual(kw['timeout'],4);parts=shlex.split(argv[-1]);verb=parts[-3]
+                self.assertIn(verb,('diagnostic-proof','restoration-provider-stage'));self.assertEqual(parts[-2],str(f.run))
+                result=controller._owned_worker_control(verb,f.run,json.loads(parts[-1]))
+                return SimpleNamespace(returncode=0,stdout=canonical(result))
+            self.assertLessEqual(kw['timeout'],10);self.assertEqual(argv[3:7],['--profile',provider.PROFILE,'--region',provider.REGION])
+            operation=tuple(argv[1:3]);raw_calls.append(operation)
+            if cloud_case[0]=='unavailable':return SimpleNamespace(returncode=1,stdout=b'')
+            if cloud_case[0]=='slow':clock_now[0]+=16
+            group=dict(ScalingGroupId=provider.GROUP_ID,VpcId=provider.VPC_ID,DesiredCapacity=2,MinSize=2,MaxSize=4)
+            if cloud_case[0] in ('MinSize','MaxSize','DesiredCapacity'):group[cloud_case[0]]=3
+            members=[dict(InstanceId=r['id'],ScalingGroupId=provider.GROUP_ID,LifecycleState='Protected',HealthStatus='Healthy') for r in f.baseline['originals']]
+            if cloud_case[0]=='protection':members[0]['LifecycleState']='InService'
+            values={('sts','GetCallerIdentity'):dict(AccountId=f.plan['target']['accountId']),
+                ('ess','DescribeScalingGroups'):dict(PageNumber=1,TotalCount=1,ScalingGroups=dict(ScalingGroup=[group])),
+                ('ess','DescribeScalingInstances'):dict(PageNumber=1,TotalCount=2,ScalingInstances=dict(ScalingInstance=members)),
+                ('ecs','DescribeInstances'):dict(PageNumber=1,TotalCount=2,Instances=dict(Instance=[dict(InstanceId=r['id'],VpcAttributes=dict(VpcId=provider.VPC_ID,PrivateIpAddress=dict(IpAddress=[r['address']]))) for r in f.baseline['originals']])),
+                ('nlb','ListServerGroupServers'):dict(TotalCount=2,Servers=[dict(ServerId=r['id'],ServerGroupId=provider.SERVER_GROUP_ID,ServerType='Ecs',Port=6432,Status='Available',Weight=100) for r in f.baseline['originals']]),
+                ('nlb','GetListenerAttribute'):dict(ListenerId=provider.LISTENER_ID,ServerGroupId=provider.SERVER_GROUP_ID,ListenerPort=6432,ListenerStatus='Running'),
+                ('nlb','GetListenerHealthStatus'):dict(ListenerHealthStatus=[dict(ListenerId=provider.LISTENER_ID,ListenerPort=6432,ServerGroupInfos=[dict(ServerGroupId=provider.SERVER_GROUP_ID,HeathCheckEnabled=True,NonNormalServers=[])])])}
+            return SimpleNamespace(returncode=0,stdout=canonical(values[operation]))
         errors=[]
         def finish_journal():
             try:
@@ -280,6 +305,31 @@ print('DIAGNOSTIC-ONLY')
                 j.finish();exit_marker.write_bytes(b'exit')
             except BaseException as error:errors.append(error)
         with patch.object(controller,'_require_verified'),patch.object(bootstrap,'require_verified'),patch.object(bootstrap,'current_hashes',return_value=f.plan['sourceHashes']),patch.object(protocol,'_release_admission'),patch.object(closure,'release_assets',return_value=(assets,owner.runtime_assets_identity)),patch.object(closure,'__file__',str(f.run/'pgcat_native_closure.py')),patch.object(controller,'__file__',str(f.run/'pgcat_native_controller.py')),patch.object(owner,'_owned_worker',side_effect=worker),patch.object(supervisor,'GLOBAL_ROOT',global_root),patch('pgcat_collector_control.process_identity',return_value=None):
+            hold=json.loads((f.run/'native-finish-hold.json').read_text());clock=hold['notBeforeMonotonic']+.1
+            owner.finish_received=clock-119.;clock_now=[clock]
+            frozen_paths=[root/'status.json',root/'native-stop.intent',root/'native-stop.ack',f.run/'provider-inventory.json']+list((f.run/'native-capture').iterdir())
+            frozen={str(path):path.read_bytes() for path in frozen_paths if path.is_file()}
+            with patch.object(closure.subprocess,'run',side_effect=transport),patch.object(provider,'datetime',ProviderClock),patch.object(closure,'_worker_boot',return_value='boot'),patch.object(closure.time,'time',return_value=f.now),patch.object(closure.time,'monotonic',side_effect=lambda:clock_now[0]),patch.object(provider.Operator,'write',side_effect=AssertionError('feed publication')),patch.object(provider.Operator,'refresh',side_effect=AssertionError('feed refresh'),create=True):
+                with self.assertRaises(ValueError):owner.read_restoration_provider()
+                self.assertEqual(raw_calls,[]);self.assertFalse((root/'native-restoration-provider.json').exists())
+                owner.finish_received=clock-120.1
+                for case in ('unavailable','MinSize','MaxSize','DesiredCapacity','protection','slow'):
+                    cloud_case[0]=case;clock_now[0]=clock
+                    with self.subTest(case=case),self.assertRaises(ValueError):owner.read_restoration_provider()
+                    self.assertFalse((root/'native-restoration-provider.json').exists())
+                    self.assertFalse((f.run/'native-restoration-provider.json').exists())
+                cloud_case[0]=None;clock_now[0]=clock
+                with patch.object(closure.time,'time',return_value=__import__('pgcat_native_ingress').instant(f.plan['deadline']['closureDeadline'])):
+                    before=len(raw_calls)
+                    with self.assertRaises(ValueError):owner.read_restoration_provider()
+                    self.assertEqual(len(raw_calls),before)
+                restored=perform_restore(owner.read_restoration_provider)
+                self.assertEqual(json.loads((root/'native-restoration-provider.json').read_text())['capacity'],dict(desiredCapacity=2,minSize=2,maxSize=4))
+                self.assertEqual((root/'native-restoration-provider.json').read_bytes(),(f.run/'native-restoration-provider.json').read_bytes())
+            self.assertEqual({path:Path(path).read_bytes() for path in frozen},frozen)
+            output=dict(support=restored,artifact=dict(basename='native-restore.json',identity=file_record(f.run/'native-restore.json')),providerArtifact=a.restoration_provider)
+            proof=dict(action='native-restore',requestId=restored['requestId'],outputs=output)
+            with j._transaction() as db:db.execute('INSERT INTO native_support VALUES (?,?)',(restored['requestId'],canonical(proof).decode()))
             owner.cleanup();self.assertFalse(mac.exists());self.assertFalse(Path(a.credential['path']).exists())
             # No post-cleanup path may reopen either original credential.
             with patch.object(controller,'credential_identity',side_effect=AssertionError('credential reopened')):
@@ -290,6 +340,11 @@ print('DIAGNOSTIC-ONLY')
                 with patch.object(closure.subprocess,'run',side_effect=transport):
                     qualified=closure.seal_native_qualification(owner)
                     self.assertEqual(closure.validate_native_qualification(root,assets),qualified)
+                    for original in (root/'native-restoration-provider.json',f.run/'native-restoration-provider.json'):
+                        raw=original.read_bytes();held=original.with_name('held-provider.json');original.rename(held)
+                        original.write_bytes(raw);original.chmod(0o600)
+                        with self.subTest(original=str(original)),self.assertRaises((ValueError,protocol.Refused)):closure.validate_native_qualification(root,assets)
+                        original.unlink();held.rename(original)
                     for changed in ('scope','application','sourceBundleSha256','clientImage'):
                         bad=copy.deepcopy(assets)
                         if changed=='scope':bad[changed]['proxyCode']='foreign'
