@@ -30,7 +30,7 @@ class LaneClient:
     @classmethod
     def start(cls, bindings: dict, mode: str, root: Path, *, native_plan=None,native_prepared=None):
         from pgcat_lane_protocol import _release_admission
-        _release_admission(mode)
+        _release_admission(mode,plan=native_plan,prepared=native_prepared)
         _require_verified()
         bindings = copy.deepcopy(bindings)
         validate_bindings(bindings,mode)
@@ -93,6 +93,8 @@ class LaneClient:
         require(self.mode in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and getattr(self,'feed_process',None) is None,'child')
         from pgcat_lane_protocol import _release_admission
         _release_admission(self.mode)
+        if self.mode=='full-replacement-direct-v2':
+            _release_admission(self.mode,plan=self.journal.native_plan(),prepared=self.journal.native_prepared())
         outer,raw=private_json(Path(outer_binding_path))
         b=self.bindings
         require(outer['laneBindings']==b and Path(outer['laneRoot'])==self.root,'source')
@@ -219,6 +221,9 @@ class LaneClient:
         return row is not None
 
     def call(self, action: str, receipt: dict, deadline: float, *, native_selector=None) -> dict:
+        if self.mode=='full-replacement-direct-v2':
+            from pgcat_lane_protocol import _release_admission
+            _release_admission(self.mode,action,plan=self.journal.native_plan(),prepared=self.journal.native_prepared())
         # Proven stopped calls refuse before the uncertainty/owner-close path.
         with self.journal._connection() as db:
             stopped=db.execute('SELECT 1 FROM rehearsal_stop').fetchone() is not None

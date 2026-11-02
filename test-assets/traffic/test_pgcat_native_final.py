@@ -130,7 +130,9 @@ class FinalActionTests(unittest.TestCase):
         ingress.seal_operation_binding(f.run,f.run/'native-ingress-0001.json')
         controller.mirror_operation_binding(f.run)
         credential=f.root/'kubeconfig';credential.write_bytes(b'offline-only');credential.chmod(0o600)
-        prepared={k:file_record(f.run/name) for k,name in [('planFile','native-plan.json'),('baselineFile','native-baseline.json'),('gatewayRuntimeFile','native-gateway-runtime.json')]}
+        from test_pgcat_native_admission import assets_for
+        write(f.run/'native-runtime-assets.json',assets_for(f.plan))
+        prepared={k:file_record(f.run/name) for k,name in [('runtimeAssetsFile','native-runtime-assets.json'),('planFile','native-plan.json'),('baselineFile','native-baseline.json'),('gatewayRuntimeFile','native-gateway-runtime.json')]}
         prepared['workerCredential']=controller.credential_identity(credential)
         self.assertTrue(callable(getattr(closure,'FixedClosureAdapters',None)), 'fixed closure adapter missing')
         with patch.object(closure,'_source',return_value={}):
@@ -371,14 +373,14 @@ class OwnedStopTests(unittest.TestCase):
 
 
 class JournalClosureTests(unittest.TestCase):
-    def journal(self):
+    def journal(self,kind='native-replacement'):
         import time
         import pgcat_lane_protocol as protocol
         from test_pgcat_native_controller import Fixture as StartupFixture
         from test_pgcat_native_ingress import file_record
         from pgcat_lane_actions import BINDING_KEYS
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=Path(tmp.name).resolve();root.chmod(0o700)
-        f=StartupFixture(root);lane=root/'lane';lane.mkdir(mode=0o700);j=protocol.Journal(lane)
+        f=StartupFixture(root,kind);lane=root/'lane';lane.mkdir(mode=0o700);j=protocol.Journal(lane)
         cli=root/'offline-cli';cli.write_bytes(b'exit 1');cli.chmod(0o700)
         b={k:str(root/k) for k in BINDING_KEYS-{'sourceHashes','target'}}
         b.update(mode=f.plan['mode'],executionKind=f.plan['executionKind'],workbenchCli=str(cli),aliyunCli=str(cli),remoteRun=str(f.run),contractDir=str(root/'contract'),workerKubeconfig=str(root/'kubeconfig'),sourceHashes=f.plan['sourceHashes'],target=f.plan['target'])

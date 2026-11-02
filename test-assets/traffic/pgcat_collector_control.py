@@ -275,7 +275,7 @@ def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,*,pro
         if profile==NATIVE_MODE:
             from pgcat_native_controller import capture_budget,verify_prepared
             from pgcat_native_ingress import _identity
-            plan=decode(_identity(run/'native-plan.json')[0]);started['prepared']=verify_prepared(run,plan,prepared)
+            plan=decode(_identity(run/'native-plan.json')[0]);_release_admission(profile,'native-collector-launch',plan=plan,prepared=prepared);started['prepared']=verify_prepared(run,plan,prepared)
             check(prepared['workerCredential']['path']==kubeconfig)
             started['captureMaxSeconds']=capture_budget(plan,time.time())
         write(fd,'intent.json',started)
@@ -354,6 +354,8 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
         kubeconfig=kube_binding(contract,kubeconfig);started=intent(fd,run_id,profile=profile)
         if profile==NATIVE_MODE:
             native_prepared(run,started,prepared_sha)
+            from pgcat_native_ingress import _identity
+            _release_admission(profile,'native-collector-launch',plan=decode(_identity(run/'native-plan.json')[0]),prepared=started['prepared'])
             _,_,wait_seconds,_=profile_values(profile,started['captureMaxSeconds'])
         write(fd,'claim.json',dict(runId=run_id))
         args=entry_command(run/'pgcat_collector_control.py',expected['collectorControl'],
@@ -501,7 +503,7 @@ def main():
                         check(time.monotonic()<until);time.sleep(.01)
                 finally:os.close(job)
                 check(args[6:]==capture_arguments(run,profile=NATIVE_MODE))
-                plan=decode(_identity(run/'native-plan.json')[0]);reads=FixedWorkerReads(plan,kubeconfig,credential=prepared['workerCredential'])
+                plan=decode(_identity(run/'native-plan.json')[0]);_release_admission(NATIVE_MODE,'native-collector-launch',plan=plan,prepared=prepared);reads=FixedWorkerReads(plan,kubeconfig,credential=prepared['workerCredential'])
                 progress=seal_capture_context(run,expected,prepared=prepared,probe_process=process_identity,live_clients=reads.live_clients,now=time.time)
                 import worker_capture
                 sys.argv=['worker_capture.py']+args[6:];worker_capture.main(progress_context=progress);return 0

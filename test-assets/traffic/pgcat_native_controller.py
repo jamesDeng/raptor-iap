@@ -34,9 +34,9 @@ def _require_verified():
     except (ValueError,KeyError):raise Refused('source') from None
 
 
-def _closed(action=None):
+def _closed(action=None,plan=None):
     from pgcat_lane_protocol import _release_admission
-    _release_admission(MODE,action)
+    _release_admission(MODE,action,plan=plan)
 
 
 def credential_identity(path):
@@ -357,6 +357,42 @@ def mirror_operation_binding(run_dir):
     return mirror
 
 
+
+def _diagnostic_terminal_ready(run):
+    """Readiness from the retained cohort; pending rollout grants no binding."""
+    from pgcat_native_ingress import _Chain
+    from pgcat_native_evidence import _replay,_verify_refs,_terminal_roster
+    from segmented_capture import read_progress,open_directory
+    chain=_Chain(run)
+    try:
+        progress,_,_=read_progress(chain.run/'native-capture',chain.context)
+        check(not any(progress['flags'].values()) and progress['maxGapSeconds']<=3)
+        fd=open_directory(chain.run/'native-capture')
+        try:
+            snapshot,count,_=_replay(fd,chain.context,progress['latest'])
+            check(snapshot==progress['nativeCohort'] and count==progress['committedFrames'])
+            from segmented_capture import read_frame
+            from capture_window import seconds
+            check(not any(snapshot['flags'].values()))
+            originals={r['uid'] for r in chain.context['initialRoster']};generation=chain.plan['application']['generation']+1
+            old=[r for r in snapshot['cohort'] if r['identity']['uid'] in originals]
+            check(len(old)==2)
+            pending=(len(snapshot['cohort'])<4 or bool(snapshot['startingPods']) or snapshot['observedGeneration']!=generation or
+                any(r['finalFrame'] is None or seconds(r['finalFrame']['at'])>=seconds(progress['previous']['at']) for r in old))
+            for ref in (progress['previous'],progress['latest']):
+                frame=read_frame(fd,ref);dep=frame['deployment']
+                pending=pending or dep['generation']!=generation or dep['observedGeneration']!=generation or dep['ready']!=2 or len(frame['pods'])!=2 or any(p['uid'] in originals or p['ready'] is not True for p in frame['pods'])
+            ready=False
+            if not pending:
+                previous,latest,_=_verify_refs(fd,chain.context,snapshot,progress['previous'],progress['latest'])
+                operation=dict(restartGeneration=generation)
+                ready=_terminal_roster(previous,chain.context,operation,snapshot)==_terminal_roster(latest,chain.context,operation,snapshot)
+                check(ready)
+        finally:os.close(fd)
+        chain.unchanged();return ready
+    finally:chain.close()
+
+
 def collect_ingress(run_dir,selector,*,gate,kube_read,http_get,now):
     """A1 process-private collection → seal → conditional final binding."""
     from pgcat_native_ingress import read_ingress,seal_ingress,seal_operation_binding,_identity
@@ -365,7 +401,8 @@ def collect_ingress(run_dir,selector,*,gate,kube_read,http_get,now):
     sealed=seal_ingress(run,projection)
     record=sealed['record'];execution=record['execution']
     result=dict(status='OBSERVED',ingressSha256=sealed['ingressSha256'],ingressFile=sealed['ingressFile'])
-    final=(record['executionKind']=='disabled-proof' or
+    if record['executionKind']=='native-replacement':result['requestContext']=record['context']
+    final=((record['executionKind']=='disabled-proof' and _diagnostic_terminal_ready(run)) or
         (execution is not None and execution['status']=='completed' and execution.get('result') is not None and execution['recoveryNeeded'] is False))
     if final:
         binding=seal_operation_binding(run,run/sealed['ingressFile']['basename'])
@@ -444,7 +481,7 @@ class FixedHTTP:
 
 class FixedWorkerReads:
     """Fixed worker-only Kubernetes/read adapters; Secret bytes stay in memory."""
-    def __init__(self,plan,kubeconfig,*,run_id=None,credential=None):
+    def __init__(self,plan,kubeconfig,*,run_id=None,credential=None,prepared=None):
         from pgcat_native_ingress import validate_plan,identifier
         self.run_id=plan.get('runId') if run_id is None else run_id
         identifier(self.run_id);check('runId' not in plan or plan['runId']==self.run_id)
@@ -454,6 +491,7 @@ class FixedWorkerReads:
             verify_credential(credential);self.credential=dict(credential)
         else:
             check(credential is None);self.credential=credential_identity(kubeconfig)
+        self.prepared=None if prepared is None else validate_prepared(self.plan,prepared)
         self.deadline=time.monotonic()+30.;self.secret_names={'gateway-live-config'}
 
     def read(self,kind,namespace,name=None):
@@ -527,9 +565,14 @@ class FixedWorkerReads:
         check(result.returncode==0 and len(result.stdout)<=2*1024*1024);return decode_private(result.stdout)
 
     def gateway_disabled(self):
-        # C must qualify a real retained guarded receipt or source-pinned inspect.
-        # A Secret value, caller boolean or invented transition time is no proof.
-        raise ValueError('native runtime proof unavailable')
+        from pgcat_native_closure import read_runtime_assets,FixedGatewayAdapters,gateway_false_idle,runtime_proof
+        check(hasattr(self,'credential') and hasattr(self,'prepared'))
+        run=Path(self.credential['path']).parent/'run'
+        prepared=self.prepared
+        if 'runId' in self.plan:verify_prepared(run,self.plan,prepared)
+        assets,_=read_runtime_assets(run,self.plan,original=None if prepared is None else prepared['runtimeAssetsFile'])
+        adapter=FixedGatewayAdapters(run,self,runtime_assets=assets,prepared=prepared)
+        return (gateway_false_idle if prepared is None else runtime_proof)(run,adapters=adapter,now=time.time)
 
 
 def validate_selector(plan,action,selector):
@@ -600,8 +643,8 @@ def validate_prepared(plan,prepared):
     """Exact original preparation anchors, separate from source/content hashes."""
     from pgcat_native_ingress import exact,integer,hashed,detached
     from segmented_capture import canonical,sha
-    exact(prepared,{'planFile','baselineFile','gatewayRuntimeFile','workerCredential'})
-    for key in ('planFile','baselineFile','gatewayRuntimeFile'):file_identity(prepared[key])
+    exact(prepared,{'planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential'})
+    for key in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile'):file_identity(prepared[key])
     check(prepared['planFile']['sha256']==sha(canonical(plan)) and prepared['baselineFile']['sha256']==plan['baselineSha256'])
     credential=prepared['workerCredential'];exact(credential,{'path','device','inode','uid','mode','size','sha256'})
     check(type(credential['path']) is str and Path(credential['path']).is_absolute() and '..' not in Path(credential['path']).parts and Path(credential['path']).name=='kubeconfig')
@@ -609,12 +652,19 @@ def validate_prepared(plan,prepared):
     return detached(prepared)
 
 
-def verify_prepared(run,plan,prepared):
+def verify_prepared_files(run,plan,prepared):
     from pgcat_native_ingress import _identity
     run=Path(run);prepared=validate_prepared(plan,prepared)
-    for key,name in (('planFile','native-plan.json'),('baselineFile','native-baseline.json'),('gatewayRuntimeFile','native-gateway-runtime.json')):
+    for key,name in (('planFile','native-plan.json'),('baselineFile','native-baseline.json'),('gatewayRuntimeFile','native-gateway-runtime.json'),('runtimeAssetsFile','native-runtime-assets.json')):
         check(_identity(run/name)[1]==prepared[key])
+    from pgcat_native_closure import read_runtime_assets
+    read_runtime_assets(run,plan,original=prepared['runtimeAssetsFile'])
     check(prepared['workerCredential']['path']==str(run.parent/'kubeconfig'))
+    return prepared
+
+
+def verify_prepared(run,plan,prepared):
+    prepared=verify_prepared_files(run,plan,prepared)
     verify_credential(prepared['workerCredential'])
     return prepared
 
@@ -627,7 +677,7 @@ def prepared_source_prefix(run,plan,prepared):
     run=Path(run);check(run.is_absolute() and run.name=='run' and '..' not in run.parts)
     plan=validate_plan(plan);prepared=validate_prepared(plan,prepared)
     check(prepared['workerCredential']['path']==str(run.parent/'kubeconfig'))
-    setup="import json\n_native_plan=json.loads(%r)\n_native_prepared=json.loads(%r)\nm.install(_native_plan['sourceHashes'])\nfrom pgcat_native_controller import verify_prepared as _verify_native_prepared\n_verify_native_prepared(%r,_native_plan,_native_prepared)\n"%(canonical(plan).decode('ascii'),canonical(prepared).decode('ascii'),str(run))
+    setup="import json\n_native_plan=json.loads(%r)\n_native_prepared=json.loads(%r)\nm.install(_native_plan['sourceHashes'])\nfrom pgcat_lane_protocol import _release_admission\n_release_admission(_native_plan['mode'],plan=_native_plan,prepared=_native_prepared)\nfrom pgcat_native_controller import verify_prepared as _verify_native_prepared\n_verify_native_prepared(%r,_native_plan,_native_prepared)\n"%(canonical(plan).decode('ascii'),canonical(prepared).decode('ascii'),str(run))
     return ROOT.replace('p,h=sys.argv[1:3]', 'p,h='+repr((str(run/'pgcat_source_bootstrap.py'),plan['sourceHashes']['sourceBootstrap']))).replace('sys.argv=[p]+sys.argv[3:]\nsys.exit(m.main())\n',setup)
 
 
@@ -642,6 +692,10 @@ def validate_action_result(value,plan,action,local_request):
     if action=='native-ingress':
         check(output.get('status') in ('OBSERVED','BOUND'))
         expected={'status','ingressSha256','ingressFile'}
+        if plan['executionKind']=='native-replacement':
+            from pgcat_native_ingress import _context
+            expected.add('requestContext');context=output['requestContext']
+            check(_context(dict(context,environment={}),plan,context['requestId'])==context)
         if output['status']=='BOUND':expected|={'operationBinding','operationFile','operationMirror'}
         exact(output,expected);file_identity(output['ingressFile']['identity'])
         check(output['ingressSha256']==output['ingressFile']['identity']['sha256'])
@@ -680,7 +734,7 @@ def validate_action_result(value,plan,action,local_request):
 
 class WorkerGate:
     def __init__(self,run,plan,envelope,reads):
-        _closed(envelope['action']);_require_verified()
+        _closed(envelope['action'],plan);_require_verified()
         self.run=run;self.plan=plan;self.envelope=envelope;self.reads=reads
         self.deadline=time.monotonic()+5.;self.reads.deadline=self.deadline
     def admission(self,action):
@@ -736,7 +790,9 @@ def prepare_worker(run,run_id,template,provider):
     from pgcat_source_bootstrap import current_hashes
     from worker_capture import read_pod,query_metrics,utc
     run=Path(run);check(run==Path(__file__).absolute().parent and run.name=='run')
-    template=validate_template(template);check(template['sourceHashes']==current_hashes());verify_source_inventory(run,template['sourceHashes'])
+    template=validate_template(template);_closed('native-baseline',template);check(template['sourceHashes']==current_hashes());verify_source_inventory(run,template['sourceHashes'])
+    from pgcat_native_closure import read_runtime_assets
+    assets,asset_identity=read_runtime_assets(run,template)
     reads=FixedWorkerReads(template,run.parent/'kubeconfig',run_id=run_id)
     runtime=reads.gateway_disabled()  # unavailable until C's reviewed runtime verifier
     _runtime(runtime,dict(template,runId=run_id),time.time())
@@ -745,7 +801,9 @@ def prepare_worker(run,run_id,template,provider):
     runtime_file=_write_bytes(run/'native-gateway-runtime.json',canonical(runtime))
     (run/'native-boundary').mkdir(mode=0o700)
     verify_credential(reads.credential)
-    return dict(prepared,gatewayRuntimeFile=runtime_file,workerCredential=reads.credential)
+    read_runtime_assets(run,template,original=asset_identity)
+    result=dict(prepared,gatewayRuntimeFile=runtime_file,runtimeAssetsFile=asset_identity,workerCredential=reads.credential)
+    return result
 
 
 class NativeController:
@@ -757,6 +815,8 @@ class NativeController:
         self.binding_path=Path(binding_path);self.bindings,raw=private_json(self.binding_path)
         check(set(self.bindings)=={'laneBindings','laneRoot','captureRoot','workerInventory','workerKubeconfig','localKubeconfig','sourceHashes'})
         b=self.bindings['laneBindings'];validate_bindings(b,MODE);check(b['sourceHashes']==current_hashes())
+        from pgcat_native_closure import runtime_admission,release_assets
+        runtime_admission(b);self.runtime_assets,self.runtime_assets_identity=release_assets()
         capture=Path(self.bindings['captureRoot']);private(capture.parent,True)
         check(capture.is_absolute() and not os.path.lexists(capture) and Path(self.bindings['laneRoot']).parent==capture)
         local=[Path(self.bindings['laneRoot'])]+[Path(b[key]) for key in ('receiptPath','laneLockPath','laneIntentDir','scaleoutIntentPath','scaleinIntentPath','nlbIntentPath','preScaleProofPath')]
@@ -764,6 +824,7 @@ class NativeController:
         check(self.bindings['sourceHashes']=={k:b['sourceHashes'][k] for k in ('nativeController','client','runner')})
         check(self.bindings['workerInventory']==str(Path(b['remoteRun'])/'provider-inventory.json') and self.bindings['workerKubeconfig']==b['workerKubeconfig']==str(Path(b['remoteRun']).parent/'kubeconfig'))
         self.binding_sha=hashlib.sha256(raw).hexdigest();self.client=None;self.feed=None;self.prepared=None;self.receipt=None
+        check(Path(self.bindings['localKubeconfig']).name=='kubeconfig')
         self.owner_pid=os.getpid();self.mac_credential=credential_identity(self.bindings['localKubeconfig']);self.worker_credential=None
         self.worker_processes={};self.collector_attempted=False;self.phase='startup';self.run_id=str(__import__('uuid').uuid4())
         from segmented_capture import canonical,decode_private
@@ -795,9 +856,10 @@ class NativeController:
         from pgcat_native_ingress import validate_plan
         from pgcat_lane_actions import PROFILE,REGION,WORKER
         check(self.prepared is None and self.client is None and self.feed is None)
-        template,_=private_json(Path(plan_path));template=validate_template(template)
+        template,_=private_json(Path(plan_path));template=validate_template(template);_closed('native-baseline',template)
         b=self.bindings['laneBindings'];check(template['target']==b['target'] and template['sourceHashes']==b['sourceHashes'] and template['executionKind']==b['executionKind'])
         preflight,_=private_json(Path(preflight_path));validate_preflight(preflight,self.binding_sha,template,time.time())
+        check(self.worker_credential is not None)
         local_credential=self.mac_credential;self._require_abort_owner();check(local_credential==_native_owners[self]['mac']);verify_credential(local_credential);run_id=self.run_id;provider=self._provider_snapshot()
         parts=['python3','-I','-S','-c',ROOT,str(Path(b['remoteRun'])/'pgcat_source_bootstrap.py'),b['sourceHashes']['sourceBootstrap'],
             'nativeController',encode(b['sourceHashes']).decode(),'prepare',b['remoteRun'],run_id,encode(template).decode(),encode(provider).decode()]
@@ -806,17 +868,21 @@ class NativeController:
             env={'PATH':os.defpath,'HOME':os.path.expanduser('~'),'LANG':'C'})
         check(result.returncode==0 and len(result.stdout)<=65536)
         from segmented_capture import decode_private,canonical,sha
-        prepared=decode_private(result.stdout);check(set(prepared)=={'plan','baseline','planFile','baselineFile','gatewayRuntimeFile','workerCredential'})
+        prepared=decode_private(result.stdout);check(set(prepared)=={'plan','baseline','planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential'})
         plan=validate_plan(prepared['plan']);check(plan['runId']==run_id and {k:v for k,v in plan.items() if k not in ('runId','baselineSha256')}==template)
-        validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','workerCredential')})
+        validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential')})
         check(prepared['workerCredential']['path']==b['workerKubeconfig'])
-        for key in ('planFile','baselineFile','gatewayRuntimeFile'):file_identity(prepared[key])
+        for key in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile'):file_identity(prepared[key])
         check(prepared['planFile']['sha256']==sha(canonical(plan)) and prepared['baselineFile']['sha256']==plan['baselineSha256']==sha(canonical(prepared['baseline'])))
         verify_credential(local_credential);validate_preflight(preflight,self.binding_sha,template,time.time())
         _native_owners[self]['prepared']=canonical(prepared)
         capture=Path(self.bindings['captureRoot']);capture.mkdir(mode=0o700)
         Path(b['laneIntentDir']).mkdir(mode=0o700)
         check(_native_owners[self]['worker'] is None or _native_owners[self]['worker']==prepared['workerCredential'])
+        check(prepared['runtimeAssetsFile']['sha256']==self.runtime_assets_identity['sha256'])
+        from pgcat_native_closure import release_assets
+        check(release_assets()==(self.runtime_assets,self.runtime_assets_identity))
+        prepared['macRuntimeAssetsFile']=_write_bytes(capture/'native-runtime-assets.json',canonical(self.runtime_assets))
         prepared['macCredential']=local_credential;self.worker_credential=prepared['workerCredential'];_native_owners[self]['worker']=decode_private(canonical(self.worker_credential))
         self.prepared_identity=_write_bytes(capture/'native-prepared.json',canonical(prepared));self.local_plan_identity=_write_bytes(capture/'native-plan.json',canonical(plan))
         self.prepared=prepared;_native_owners[self]['prepared']=canonical(prepared);return prepared
@@ -860,10 +926,10 @@ class NativeController:
         prepared,_=private_json(Path(self.bindings['captureRoot'])/'native-prepared.json');check(prepared==self.prepared)
         plan=prepared['plan'];verify_credential(prepared['macCredential']);b=self.bindings['laneBindings']
         try:
-            anchors=validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','workerCredential')})
+            anchors=validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential')})
             self.client=LaneClient.start(b,MODE,Path(self.bindings['laneRoot']),native_plan=plan,native_prepared=anchors);_native_owners[self]['client']=self.client
             _write_bytes(self.client.root/'native-prepared.json',encode(prepared))
-            cap=capture_budget(plan,time.time())
+            cap=capture_budget(plan,time.time());self.capture_until=time.time()+cap
             argv=[sys.executable,'-u',b['providerFeedPath'],'--mode',MODE,'--interval','15','--max-seconds',str(cap),
                 '--workbench',b['laneWrapper'],'--worker-inventory',self.bindings['workerInventory'],'--kubeconfig',b['workerKubeconfig'],
                 '--status-file',b['receiptPath'],'--run-context',str(self.client.root/'run-context.json'),'--contract-dir',b['contractDir']]
@@ -885,6 +951,77 @@ class NativeController:
             check(request_id is None and not approval_ids);selector={}
         else:selector=dict(requestId=request_id,approvalIds=list(approval_ids))
         return self._call('native-ingress',selector)
+
+    def claim_created_request(self):
+        self._require_owner();check(self.prepared['plan']['executionKind']=='native-replacement')
+        return self.client.journal.claim_native_request()
+
+    def poll_ingress(self,request_id=None,approval_ids=()):
+        """Observe an unused current tick; an old/consumed tick is not admission."""
+        _closed('native-ingress');self._require_owner()
+        from pgcat_lane_protocol import monotonic
+        import pgcat_workbench_lane as lane
+        self.client._active();check(self.feed is self.client.feed_process and self.feed.poll() is None)
+        from pgcat_native_ingress import _read_identity,number,hashed
+        from segmented_capture import decode_private
+        path=Path(self.bindings['laneBindings']['receiptPath'])
+        raw,_,fingerprint=_read_identity(path,4096);candidate=decode_private(raw)
+        check(set(candidate)==lane.RECEIPT_FIELDS and candidate['mode']==MODE and self.receipt is not None)
+        check(candidate['feedSession']==self.receipt['feedSession'] and type(candidate['sequence']) is int and candidate['sequence']>=self.receipt['sequence'])
+        check(type(candidate['desired']) is int and candidate['desired'] in (2,3,4) and hashed(candidate['rosterSha256']) and number(candidate['observedAt']))
+        at=time.time();check(at>=candidate['observedAt'] and at>=fingerprint[3]/1e9)
+        # Only an otherwise coherent but old tick is a polling opportunity miss.
+        # Missing, substituted, malformed or foreign authority is always fatal.
+        if at-candidate['observedAt']>=7 or at-fingerprint[3]/1e9>=1:return None
+        _,receipt,_=lane.read_receipt(str(path),candidate['feedSession'],self.receipt['sequence'],expected_mode=MODE)
+        check(receipt==candidate)
+        # Workbench reserves every non-frozen operation's publication once.
+        # A synchronous prior operation may have consumed this otherwise fresh
+        # tick. Do not publish a doomed request or cancel the owned lifecycle.
+        # The next poll retains the original capture bound and all freshness
+        # checks; it never renews or mints a publication/effect deadline.
+        intents=Path(self.bindings['laneBindings']['laneIntentDir'])
+        lane.private_directory(str(intents))
+        try:consumed,_,_=_read_identity(intents/(receipt['feedSession']+'.'+str(receipt['sequence'])+'.intent'),64)
+        except FileNotFoundError:pass
+        else:
+            check(consumed==b'consumed\n')
+            return None
+        selector={} if self.prepared['plan']['executionKind']=='disabled-proof' else dict(requestId=request_id,approvalIds=list(approval_ids))
+        if not selector:check(request_id is None and not approval_ids)
+        else:check(request_id==self.client.journal.native_request()['handoff']['requestId'])
+        self.receipt=receipt
+        return self.client.call('native-ingress',receipt,float(monotonic()+5.),native_selector=selector)['payload']
+
+    def run_disabled_proof(self,template_path,preflight_path):
+        """One owned lifecycle, with the actual Popen retained through audit."""
+        self._require_owner()
+        from pgcat_lane_protocol import private_json
+        template,_=private_json(Path(template_path));template=validate_template(template)
+        check(template['executionKind']==self.bindings['laneBindings']['executionKind']=='disabled-proof')
+        _closed('native-baseline',template)
+        preflight,_=private_json(Path(preflight_path));validate_preflight(preflight,self.binding_sha,template,time.time())
+        try:
+            self.bind_worker_credential();self.prepare(template_path,preflight_path);self.start_capture();self.restart_disabled()
+            until=min(self.capture_until-30.,__import__('pgcat_native_ingress').instant(template['deadline']['mutationCutoff']))
+            while True:
+                check(time.time()<until)
+                result=self.poll_ingress()
+                if result is not None and result.get('status')=='BOUND':break
+                time.sleep(.1)
+            self.seal_terminal();self.reconcile();self.wait_reconciled_publication();self.stop_feed();self.finish_terminal()
+            self.assess();self.wait_restoration_hold();self.restore();self.cleanup()
+            closed=self.complete()
+            from pgcat_native_closure import seal_native_qualification
+            seal_native_qualification(self)
+            return closed
+        except BaseException:
+            self.abort();raise
+        finally:self.close()
+
+    def run_native(self,template_path,preflight_path):
+        from pgcat_native_closure import runtime_admission
+        runtime_admission({'executionKind':'native-replacement'})
 
     def restart_disabled(self):
         _closed('native-disabled-restart');_require_verified()
@@ -978,6 +1115,9 @@ class NativeController:
             root=Path(self.bindings['captureRoot'])
             check(_identity(root/'native-prepared.json')==(canonical(self.prepared),self.prepared_identity))
             check(_identity(root/'native-plan.json')==(canonical(self.prepared['plan']),self.local_plan_identity))
+            from pgcat_native_closure import read_runtime_assets,release_assets
+            read_runtime_assets(root,self.prepared['plan'],original=self.prepared['macRuntimeAssetsFile'])
+            check(release_assets()==(self.runtime_assets,self.runtime_assets_identity))
 
     def _owned_worker(self,verb,payload):
         self._require_abort_owner()
@@ -1026,8 +1166,10 @@ class NativeController:
     def _worker_ordinary_status(self):return self._owned_worker('ordinary-status',{})['status']
 
     def _abort_gateway_false(self):
-        # C4 supplies actual runtime manifest/authority; missing context is unknown.
-        raise ValueError('native abort Gateway context integration unavailable')
+        original=self._abort_originals();prepared=original['prepared'];check(prepared is not None)
+        check(prepared['plan']['executionKind']=='disabled-proof')
+        anchors={k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential')}
+        return self._owned_worker('gateway-false-idle',dict(plan=prepared['plan'],prepared=anchors))
 
     def assess(self):
         _closed('native-verdict');self._require_owner()
@@ -1090,9 +1232,9 @@ class NativeController:
         return abort_owned(Path(self._abort_originals()['bindings']['captureRoot']),adapters=self,now=time.time)
 
 def _gateway_context(run,reads,prepared,action_id,envelope):
-    # C4 wires this fixed hook from its actual verified immutable runtime assets.
-    # Caller context/boolean/receipt shapes cannot mint a Gateway adapter.
-    raise ValueError('native runtime manifest integration unavailable')
+    from pgcat_native_closure import read_runtime_assets,FixedGatewayAdapters
+    assets,_=read_runtime_assets(run,reads.plan,original=prepared['runtimeAssetsFile'])
+    return FixedGatewayAdapters(run,reads,runtime_assets=assets,prepared=prepared,action_id=action_id)
 
 
 def worker_entry(action,run_dir,envelope=None,selector=None):
@@ -1101,14 +1243,14 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
     from segmented_capture import decode_private,canonical,sha
     from pgcat_source_bootstrap import current_hashes
     run=Path(run_dir);plan=validate_plan(decode_private(_identity(run/'native-plan.json')[0]))
-    check(plan['sourceHashes']==current_hashes());verify_source_inventory(run,plan['sourceHashes'])
+    _closed(action,plan);check(plan['sourceHashes']==current_hashes());verify_source_inventory(run,plan['sourceHashes'])
     prepared=verify_prepared(run,plan,envelope['prepared'])
     check(envelope['action']==action);staged=stage_action(run,plan,envelope,selector)
     request_id=envelope['localRequestId']
     for name,expected in [('admission',envelope),('selector',selector)]:
         raw,identity=_identity(run/('native-'+name+'-'+request_id+'.json'))
         check(raw==canonical(expected) and identity==staged[name])
-    reads=FixedWorkerReads(plan,run.parent/'kubeconfig',credential=prepared['workerCredential'])
+    reads=FixedWorkerReads(plan,run.parent/'kubeconfig',credential=prepared['workerCredential'],prepared=prepared)
     gate=WorkerGate(run,plan,envelope,reads)
     if action=='native-baseline':
         raw=canonical(envelope['feedBinding']);feed_path=run/'native-feed-binding.json'
@@ -1125,8 +1267,7 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
         http=FixedHTTP(plan);http.deadline=gate.deadline
         output=collect_ingress(run,selector,gate=gate,kube_read=reads.read,http_get=http,now=time.time)
     elif action=='native-disabled-restart':
-        # C must supply its qualified runtime proof before this can reach a patch.
-        reads.gateway_disabled()
+        # The restart kernel verifies current false proof at its action gates.
         receipt=restart_disabled(run,gate=gate,kube_read=reads.read,kube_patch=reads.restart_patch,now=time.time)
         output=dict(receipt=receipt,receiptFile=_identity(run/'native-restart-receipt.json')[1])
     elif action=='native-collector-status':
@@ -1182,6 +1323,16 @@ def _owned_worker_control(verb,run,payload):
     if verb=='credential-absent':check(payload=={});return dict(absent=not os.path.lexists(credential))
     if verb=='process-stop':return dict(state=stop_bound_process(payload,deadline=time.monotonic()+2.))
     if verb=='ordinary-status':check(payload=={});return dict(status=assess_manifest(run/'native-capture')['status'])
+    if verb=='diagnostic-proof':
+        from pgcat_native_closure import diagnostic_worker_proof
+        return diagnostic_worker_proof(run,payload)
+    if verb=='gateway-false-idle':
+        check(set(payload)=={'plan','prepared'});plan=payload['plan'];_closed('native-restore',plan)
+        prepared=verify_prepared(run,plan,payload['prepared'])
+        reads=FixedWorkerReads(plan,credential,credential=prepared['workerCredential'],prepared=prepared);reads.deadline=time.monotonic()+3.5
+        from pgcat_native_closure import gateway_false_idle
+        adapter=_gateway_context(run,reads,prepared,None,{})
+        return gateway_false_idle(run,adapters=adapter,now=time.time)
     raise ValueError('owned worker operation')
 
 
@@ -1192,6 +1343,15 @@ def main():
             value=_owned_worker_control(sys.argv[2],sys.argv[3],decode_private(sys.argv[4].encode('ascii')))
             print(canonical(value).decode('ascii'));return 0
         _closed();_require_verified()
+        if len(sys.argv)==5 and sys.argv[1] in ('run-disabled-proof','run-native'):
+            entry,binding,template,preflight=sys.argv[1:]
+            if entry=='run-native':
+                from pgcat_native_closure import runtime_admission
+                runtime_admission({'executionKind':'native-replacement'})
+            controller=NativeController(binding)
+            value=controller.run_disabled_proof(template,preflight)
+            from segmented_capture import canonical
+            print(canonical(value).decode('ascii'));return 0
         from segmented_capture import decode_private,canonical,sha
         if len(sys.argv)==6 and sys.argv[1]=='prepare':
             _,_,run,run_id,template,provider=sys.argv

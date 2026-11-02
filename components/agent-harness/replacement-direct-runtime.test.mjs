@@ -8,37 +8,41 @@ import {operationCapabilities,operationToolSchema} from './operation-profile.mjs
 import {runLiveReplacement} from './live-replacement.mjs';
 import {scope,old,added,observations} from './replacement-sequence-fixtures.mjs';
 
-test('real pinned Pi executes direct sequence through surge wait and exact approval resume',async()=>{
+test('real pinned Pi settles ten-turn expansion and approval with durable withdrawal and rollout waits',async(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'direct-native-')));
  try{
   const state=path.join(root,'state'),skillsPath=path.join(root,'skills');fs.mkdirSync(state);fs.mkdirSync(skillsPath);
   fs.mkdirSync(path.join(skillsPath,'pgcat-replacement','references'),{recursive:true});for(const [name,text] of [['SKILL.md','---\nname: pgcat-replacement\ndescription: Synthetic resource contract fixture.\n---\nreplacement-contract: resource-v1\n'],['references/contracts.md','Use logical codes and opaque workloadKey only.'],['references/recovery.md','Preserve baseline; never replay submitted operations.']])fs.writeFileSync(path.join(skillsPath,'pgcat-replacement',name),text);
-  fs.writeFileSync(path.join(state,'auth.json'),JSON.stringify({openai:{type:'oauth',access:'synthetic',refresh:'synthetic',expires:Date.now()+999999}}));
-  const b={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',definitionSha256:'a'.repeat(64),skillsCommit:'b'.repeat(40),operation:'db-proxy.replace-nodes',executionMode:'replacement',objectKind:'db-proxy',objectCode:'proxy',envCode:scope.envCode,clusterId:'cluster',model:'gpt-5.6-luna'};
+  fs.writeFileSync(path.join(state,'auth.json'),JSON.stringify({'openai-codex':{type:'oauth',access:'synthetic',refresh:'synthetic',expires:Date.now()+999999}}));
+  const b={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',definitionSha256:'a'.repeat(64),skillsCommit:'b'.repeat(40),operation:'db-proxy.replace-nodes',executionMode:'replacement',objectKind:'db-proxy',objectCode:'proxy',envCode:scope.envCode,clusterId:'cluster',model:'gpt-6-luna',providerId:'codex',connectionVersion:3};
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
-  const {runtime}=await loadPiRuntime({stateRoot:state});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
+  const {runtime}=await loadPiRuntime({stateRoot:state,provider:'openai-codex'});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
   let desired=2,expanded=false,newProtected=false,withdrawn=false,restarted=false,oldUnprotected=false,surge=false,round=0,phase=0;
-  const writes=[],trafficDuringSurge=[];
+  const writes=[],trafficDuringSurge=[],progress=[];
   const call=(name,args)=>({name,arguments:args}),target={requestId:b.requestId,envCode:b.envCode,proxyCode:'proxy'};
   const cloud=kind=>call('cloud_read',{kind}),metric=kind=>call('metrics_read',{kind}),deployment=call('deployment_read',{});
   const control=[call('mcp__raptor__request_get',{requestId:b.requestId}),call('mcp__raptor__environment_get',{requestId:b.requestId,envCode:b.envCode}),call('mcp__raptor__object_get',{requestId:b.requestId,kind:'db-proxy',code:'proxy'}),call('mcp__raptor__deployments_list',{requestId:b.requestId,envCode:b.envCode,kind:'application',code:'client'}),call('mcp__infra__deployments_list',{envCode:b.envCode,kind:'db-proxy',code:'proxy'}),call('mcp__infra__deployment_status_get',{envCode:b.envCode,appCode:'client',workloadKey:'opaque-app'})];
   const reads=ids=>[cloud('fleet'),cloud('backend'),cloud('capacity'),deployment,metric('pgcatClients'),...ids.map(instanceId=>call('db_connection_probe',{instanceId}))];
   const approval={requestId:b.requestId,actionId:'shrink',interface:'db-proxy.scale-in',envCode:b.envCode,target:{proxyCode:'proxy'},parameters:{desiredCapacity:2}};
   const scripts=[
-   [[...control,...reads(old),metric('trafficFailures'),metric('connections')],
-    [call('mcp__infra__db_proxy_scale',{...target,actionId:'expand',desiredCapacity:4})],
-    reads(added),
+   [[control[0]],[control[1]],[control[2]],[control[3],control[4]],[control[5]],
+    [cloud('fleet')],[cloud('backend'),cloud('capacity')],
+    [deployment,metric('pgcatClients'),metric('trafficFailures'),metric('connections')],
+    old.map(instanceId=>call('db_connection_probe',{instanceId})),
+    [call('mcp__infra__db_proxy_scale',{...target,actionId:'expand',desiredCapacity:4})]],
+   [reads(added),
     [call('mcp__infra__db_proxy_node_protection_set',{...target,nodeIds:added,protected:true})],
     [cloud('fleet')],
     [call('mcp__infra__db_proxy_nodes_deregister',{...target,nodeIds:old})],
-    reads(added),
+    reads(added),[call('resource_wait',{seconds:60})]],
+   [[control[3],control[4],control[5]],reads(added),
     [call('mcp__infra__deployment_restart',{requestId:b.requestId,envCode:b.envCode,appCode:'client',workloadKey:'opaque-app'})],
     [deployment,call('resource_wait',{seconds:60})]],
-   [reads(added),
+   [[control[3],control[4]],[control[5]],[cloud('fleet')],[cloud('backend'),cloud('capacity')],
+    [deployment,metric('pgcatClients')],added.map(instanceId=>call('db_connection_probe',{instanceId})),
     [call('mcp__infra__db_proxy_node_protection_set',{...target,nodeIds:old,protected:false})],
-    reads(added),
-    [call('mcp__raptor__approval_request',approval)],
-    [call('mcp__raptor__request_pause',{requestId:b.requestId,reason:'waiting_approval'})]],
+    [cloud('fleet')],reads(added),[call('mcp__raptor__approval_request',approval)]],
    [[call('mcp__raptor__approval_get',{requestId:b.requestId,approvalId:'33333333-3333-4333-8333-333333333333'}),...reads(added)],
     [call('mcp__infra__db_proxy_scale',{...target,actionId:'shrink',desiredCapacity:2})],[]]
   ];
@@ -70,14 +74,26 @@ test('real pinned Pi executes direct sequence through surge wait and exact appro
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
-  const options={stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,skills:{tag:'skills-v99.0.0',commitSHA:b.skillsCommit,path:skillsPath},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher};
-  const first=await runLiveReplacement(options);assert.equal(first.paused?.kind,'resource',JSON.stringify(first));assert.equal(round,9);assert.deepEqual(trafficDuringSurge,[]);
-  phase=1;round=0;surge=false;
-  const second=await runLiveReplacement({...options,binding:{...b,attemptId:'44444444-4444-4444-8444-444444444444'},sessionReference:first.sessionReference,decisionContext:{decision:'resume'}});
-  assert.equal(second.paused?.kind,'approval',JSON.stringify(second));assert.equal(second.paused.actionId,'shrink');assert.equal(round,5);
-  phase=2;round=0;
-  const third=await runLiveReplacement({...options,binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:second.sessionReference,decisionContext:{decision:'resume',approvalId:second.paused.approvalId,actionId:'shrink'}});
-  assert.equal(third.passed,true,JSON.stringify(third));assert.equal(third.result.replacement.version,2);assert.equal(third.result.replacement.restartGeneration,6);assert.deepEqual(third.result.replacement.newInstanceIds,added);assert.equal(third.result.replacement.acceptance,'pending');
+  const options={stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,skills:{tag:'skills-v99.0.0',commitSHA:b.skillsCommit,path:skillsPath},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,onProgress:event=>progress.push(event)};
+  let previous;
+  const counts=[10,6,4,10,3];
+  for(phase=0;phase<scripts.length;phase++){
+   round=0;if(phase===3)surge=false;
+   const continuation=previous?.paused?{decision:'resume',approvalId:previous.paused.approvalId,actionId:previous.paused.actionId,bindingDigest:previous.paused.bindingDigest}:undefined;
+   if(previous?.paused)t.mock.timers.tick(60000);
+   const out=await runLiveReplacement({...options,binding:{...b,attemptId:`${phase+2}2222222-2222-4222-8222-222222222222`},sessionReference:previous?.sessionReference,decisionContext:continuation});
+   assert.equal(round,counts[phase],JSON.stringify(out));assert.equal(out.usage.length,counts[phase]);
+   if(phase<4){assert.equal(out.paused?.kind,phase===3?'approval':'resource',JSON.stringify(out));assert.ok(out.sessionReference);}
+   else{assert.equal(out.passed,true,JSON.stringify(out));assert.equal(out.result.replacement.version,2);assert.equal(out.result.replacement.restartGeneration,6);assert.deepEqual(out.result.replacement.newInstanceIds,added);assert.equal(out.result.replacement.acceptance,'pending');}
+   previous=out;
+  }
+  assert.deepEqual(trafficDuringSurge,[]);
+  const entries=fs.readFileSync(path.join(state,'sessions',previous.sessionReference.file),'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(entries.filter(e=>e.customType==='raptor-replacement-withdrawal-wait-v1').map(e=>e.data.kind),['requested','completed']);
+  assert.equal(progress.filter(e=>e.kind==='tool_start'&&e.tool==='resource_wait').length,3);
+  assert.equal(progress.filter(e=>e.kind==='tool_result'&&e.tool==='resource_wait'&&e.outcome==='succeeded').length,3);
+  assert.equal(progress.filter(e=>e.kind==='tool_start'&&e.tool==='mcp__raptor__request_pause').length,1);
+  assert.ok(!entries.some(e=>e.message?.role==='assistant'&&e.message.stopReason==='aborted'));
   assert.deepEqual(writes.filter(w=>w[0]==='db_proxy_scale'),[['db_proxy_scale',4],['db_proxy_scale',2]]);
   assert.equal(writes.filter(w=>w[0]==='deployment_restart').length,1);assert.equal(writes.filter(w=>w[0]==='approval_request').length,1);
  }finally{fs.rmSync(root,{recursive:true,force:true});}

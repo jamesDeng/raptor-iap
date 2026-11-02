@@ -29,6 +29,67 @@ _sealed=weakref.WeakKeyDictionary()
 _closure_contexts=weakref.WeakKeyDictionary()
 
 
+
+_RUNTIME_SCOPE={'accountId','regionId','envCode','proxyCode','scalingGroupId','nlbServerGroupId','targetDbCode','clusterId'}
+_RUNTIME_APP={'namespace','name','uid','imageDigest'}
+_manifest_anchors={}
+
+
+def runtime_admission(plan):
+    """Known native proof gap is refused before starting capture or enabling."""
+    require(type(plan) is dict and plan.get('executionKind') in ('disabled-proof','native-replacement'))
+    if plan['executionKind']=='native-replacement':raise ValueError('ClockAgreementUnavailable')
+
+
+def validate_runtime_assets(value,plan=None,source_hashes=None):
+    """Immutable release pins; mutable rollout and process facts stay per run."""
+    from pgcat_source_bootstrap import NATIVE_SOURCES
+    exact(value,ASSET_KEYS);require(type(value['schemaVersion']) is int and value['schemaVersion']==1)
+    require(hashed(value['sourceBundleSha256']) and hashed(value['gateBinarySha256']))
+    require(type(value['infraApiRevision']) is str and re.fullmatch(r'[a-f0-9]{40}',value['infraApiRevision']))
+    require(type(value['gatewayImage']) is str and re.fullmatch(_GATE_IMAGE,value['gatewayImage']))
+    for key in ('axImage','clientImage'):
+        require(type(value[key]) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[a-f0-9]{64}',value[key]))
+    require(type(value['skillsTag']) is str and re.fullmatch(r'skills-v[0-9]+\.[0-9]+\.[0-9]+',value['skillsTag']) and value['skillsTag']!='skills-v0.4.0')
+    require(type(value['skillsCommit']) is str and re.fullmatch(r'[a-f0-9]{40}',value['skillsCommit']))
+    exact(value['scope'],_RUNTIME_SCOPE);require(all(token(v) for v in value['scope'].values()))
+    exact(value['application'],_RUNTIME_APP)
+    require(all(token(value['application'][k]) for k in ('namespace','name','uid')) and re.fullmatch(r'sha256:[a-f0-9]{64}',value['application']['imageDigest']))
+    require(value['clientImage'].split('@')[1]==value['application']['imageDigest'])
+    if plan is not None:
+        source_hashes=plan['sourceHashes'];target=plan['target'];scope=value['scope']
+        require(all(scope[k]==target[k] for k in ('accountId','regionId','scalingGroupId','nlbServerGroupId')))
+        require(value['application']=={k:plan['application'][k] for k in _RUNTIME_APP})
+        if plan['executionKind']=='native-replacement':
+            original=plan['controllerScope']
+            require(scope==dict(accountId=original['accountId'],regionId=original['region'],envCode=original['envCode'],proxyCode=original['proxyCode'],
+                scalingGroupId=original['groupId'],nlbServerGroupId=original['serverGroupId'],targetDbCode=original['targetDbCode'],clusterId=original['application']['clusterId']))
+            require(value['skillsTag']==plan['plannedInput']['skills']['tag'] and value['skillsCommit']==plan['plannedInput']['skills']['commitSha'])
+    if source_hashes is not None:
+        exact(source_hashes,set(NATIVE_SOURCES));require(all(hashed(v) for v in source_hashes.values()))
+        require(value['sourceBundleSha256']==hashlib.sha256(canonical(source_hashes)).hexdigest())
+    return decode_private(canonical(value))
+
+
+def read_runtime_assets(root,plan=None,*,original=None,source_hashes=None):
+    root=Path(root);require(root.is_absolute() and '..' not in root.parts)
+    raw,identity=_identity(root/'native-runtime-assets.json',32768)
+    require(original is None or identity==original)
+    value=decode_private(raw);require(raw==canonical(value))
+    return validate_runtime_assets(value,plan,source_hashes),identity
+
+
+def release_assets():
+    """Fixed source staging root only; every process retains its own first inode."""
+    from pgcat_source_bootstrap import require_verified,current_hashes
+    require_verified(__name__)
+    root=Path(__file__).absolute().parent;key=(os.getpid(),str(root))
+    require(key in _manifest_anchors or len(_manifest_anchors)<128)
+    value,identity=read_runtime_assets(root,original=_manifest_anchors.get(key),source_hashes=current_hashes())
+    _manifest_anchors[key]=identity
+    return value,identity
+
+
 def _asset(path):
     fd=open_directory(path.parent)
     try:
@@ -72,7 +133,9 @@ class FixedGatewayAdapters:
         self.reads=reads;self.plan=decode_private(canonical(reads.plan));self.run_id=reads.run_id;identifier(self.run_id)
         self.credential=decode_private(canonical(reads.credential))
         require(reads.credential['path']==str(self.run.parent/'kubeconfig'))
-        exact(runtime_assets,ASSET_KEYS)
+        validate_runtime_assets(runtime_assets,self.plan)
+        actual,self.runtime_asset_identity=read_runtime_assets(self.run,self.plan,original=None if prepared is None else prepared['runtimeAssetsFile'])
+        require(actual==runtime_assets)
         require(type(runtime_assets['schemaVersion']) is int and runtime_assets['schemaVersion']==1 and hashed(runtime_assets['gateBinarySha256']))
         require(type(runtime_assets['gatewayImage']) is str and re.fullmatch(_GATE_IMAGE,runtime_assets['gatewayImage']))
         # C4 checks every manifest field and its immutable provenance. These are
@@ -95,6 +158,7 @@ class FixedGatewayAdapters:
     def _check(self):
         from pgcat_native_controller import verify_credential,verify_prepared
         require(_asset(self.gate)==self.asset and _source(self.plan,self.run)==self.sources)
+        read_runtime_assets(self.run,self.plan,original=self.runtime_asset_identity)
         require(self.reads.plan==self.plan and self.reads.run_id==self.run_id and self.reads.credential==self.credential)
         verify_credential(self.credential)
         if 'runId' in self.plan:verify_prepared(self.run,self.plan,self.prepared)
@@ -953,3 +1017,123 @@ def audit_global_completion(controller):
             return audit,identity
         finally:os.close(lock)
     finally:os.close(root)
+
+
+
+def verify_credential_absence(identity):
+    """After cleanup, original claim/receipt plus absence replace live opening."""
+    path=Path(identity['path']);require(not os.path.lexists(path))
+    raw,claim_identity=_identity(path.parent/(path.name+'.cleanup.claim'))
+    require(decode_private(raw)==dict(schemaVersion=1,credential=identity))
+    raw,receipt_identity=_identity(path.parent/(path.name+'.cleanup.json'))
+    require(decode_private(raw)==dict(schemaVersion=1,state='deleted',credentialSha256=identity['sha256'],claimSha256=claim_identity['sha256'],absent=True))
+    require(not os.path.lexists(path));return receipt_identity['sha256']
+
+
+def diagnostic_worker_proof(run,payload):
+    """Re-read originals on their issuing host after credential removal."""
+    from pgcat_native_controller import verify_prepared_files,verify_source_inventory
+    from pgcat_native_assessment import assess_native,complete_restored_history,_original
+    from pgcat_source_bootstrap import require_verified,current_hashes
+    require_verified(__name__);run=Path(run)
+    exact(payload,{'plan','prepared','supports','workerCleanupSha256','stopped','stopArtifact','holdArtifact','operation','ingresses'})
+    plan=payload['plan'];runtime_admission(plan)
+    require(plan['sourceHashes']==current_hashes());verify_source_inventory(run,plan['sourceHashes'])
+    prepared=verify_prepared_files(run,plan,payload['prepared'])
+    require(verify_credential_absence(prepared['workerCredential'])==payload['workerCleanupSha256'])
+    exact(payload['supports'],{'native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'})
+    supports={k:read_support(run,k,plan=plan,original=a) for k,a in payload['supports'].items()}
+    stopped=payload['stopped'];stop,stop_sha=_original(run,payload['stopArtifact'])
+    require(stop==stopped['support'] and stop_sha==supports['native-finish']['inputs']['stopSha256']==supports['native-verdict']['inputs']['stopSha256'])
+    require(decode_private(_identity(run/'native-feed-binding.json')[0])==stopped['feedBinding'])
+    hold,_=_original(run,payload['holdArtifact'])
+    require(payload['stopArtifact']['basename']=='native-feed-stop.json' and payload['holdArtifact']['basename']=='native-finish-hold.json')
+    require(hold_ready(hold,plan['runId'],hold['bootId'],hold['notBeforeMonotonic']))
+    boundary=decode_private(_identity(run/'native-boundary'/'boundary-completed.json')[0])
+    require(hold['finalDurableMonotonic']==boundary['finalDurableMonotonic'] and sha_bytes(canonical(boundary))==supports['native-finish']['outputs']['boundaryCompletedSha256'])
+    expected=dict(operation=payload['operation'],ingresses=payload['ingresses'],supports={k:payload['supports'][k] for k in ('native-terminal-seal','native-reconcile','native-finish')})
+    require(decode_private(_identity(run/'native-assessment-input.json')[0])==expected)
+    raw,_=_identity(run/'native-assessment.json');assessment=decode_private(raw)
+    require(sha_bytes(raw)==supports['native-verdict']['outputs']['assessmentSha256'] and assessment==assess_native(run))
+    require(assessment['status']==assessment['ordinaryStatus']==assessment['operationStatus']=='PASS' and assessment['collectorAbsent'] is True and assessment['guardianAbsent'] is True)
+    raw,_=_identity(run/'native-restoration-frames.json');frames=decode_private(raw)
+    restored=supports['native-restore'];require(sha_bytes(raw)==restored['outputs']['framesSha256'] and type(frames) is list and len(frames)==2)
+    require(_identity(run/'native-restore-gateway.json')[1]['sha256']==restored['inputs']['gatewayProofSha256'])
+    require(frames[0]['roster']==frames[1]['roster']==restored['outputs']['roster'] and frames[1]['observedAt']==restored['outputs']['restoredAt'])
+    for frame in frames:
+        require(frame['deployment']['uid']==plan['application']['uid'] and frame['deployment']['imageDigest']==plan['application']['imageDigest'])
+        for reading in frame['readings']:complete_restored_history(reading['snapshot'])
+    first={r['uid']:r['snapshot']['sample'] for r in frames[0]['readings']};second={r['uid']:r['snapshot']['sample'] for r in frames[1]['readings']}
+    require(set(first)==set(second) and len(first)==2 and all(second[k]['sequence']>first[k]['sequence'] and second[k]['Success']>first[k]['Success'] and second[k]['Attempts']>first[k]['Attempts'] for k in first))
+    verify_prepared_files(run,plan,prepared);verify_credential_absence(prepared['workerCredential'])
+    return dict(schemaVersion=1,runId=plan['runId'],planSha256=sha_bytes(canonical(plan)),runtimeAssetsSha256=prepared['runtimeAssetsFile']['sha256'],
+        assessmentSha256=supports['native-verdict']['outputs']['assessmentSha256'],restoreSha256=sha_bytes(canonical(restored)),workerCleanupSha256=payload['workerCleanupSha256'])
+
+
+def _retained_diagnostic(root,assets):
+    """Mac originals and source-bound worker originals form one closed proof."""
+    from pgcat_lane_protocol import Journal,private_json,digest
+    from pgcat_native_controller import validate_prepared,verify_source_inventory
+    from pgcat_source_bootstrap import require_verified,current_hashes,ROOT
+    from pgcat_lane_actions import PROFILE,REGION,WORKER
+    import shlex
+    root=Path(root);require(root.is_absolute() and '..' not in root.parts)
+    require(not any(os.path.lexists(root/name) for name in ('native-abort.json','native-abort-faults.json')))
+    prepared,_=private_json(root/'native-prepared.json');plan=prepared['plan'];runtime_admission(plan)
+    validate_runtime_assets(assets,plan);actual,_=read_runtime_assets(root,plan,original=prepared['macRuntimeAssetsFile']);require(actual==assets)
+    lanes=[p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and (p/'journal.sqlite3').exists()]
+    require(len(lanes)==1);journal=Journal.read_only(lanes[0])
+    _,journal_identity=_identity(journal.path,32*1024*1024)
+    state=journal.run_snapshot();require(state['runState']=='finished' and state['runId']==plan['runId'])
+    require(journal.native_plan()==plan)
+    with journal._connection() as db:
+        outer=decode_private(bytes(db.execute('SELECT raw FROM feed_manifest').fetchone()['raw']))
+        require(outer['captureRoot']==str(root) and outer['laneRoot']==str(journal.root))
+        require(all(r['state']=='complete' for r in db.execute('SELECT state FROM requests')))
+        cleanup=journal._native_cleanup_in_tx(db)
+        records={name:journal._native_record_in_tx(db,name) for name in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore')}
+        rows=[decode_private(r['proof'].encode()) for r in db.execute('SELECT proof FROM native_support')]
+        artifacts={name:next(r['outputs']['artifact'] for r in rows if r['action']==name) for name in records}
+        finish=next(r['outputs'] for r in rows if r['action']=='native-finish')
+        ingresses=[r['outputs']['ingressFile'] for r in rows if r['action']=='native-ingress']
+        operation=next(r['outputs']['operationFile'] for r in reversed(rows) if r['action']=='native-ingress' and r['outputs'].get('status')=='BOUND')
+    stopped=journal.native_stop();b=outer['laneBindings']
+    anchors=validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential')})
+    require(journal.native_prepared()==anchors and anchors['runtimeAssetsFile']['sha256']==sha_bytes(canonical(assets)))
+    require(verify_credential_absence(prepared['macCredential'])==cleanup['outputs']['localCleanupSha256'])
+    raw,close_identity=_identity(root/'native-close.json');close=decode_private(raw)
+    raw,audit_identity=_identity(root/'native-global-audit.json');audit=decode_private(raw)
+    exact(audit,{'schemaVersion','runId','executionKind','planSha256','journalState','feedExitSha256','supervisorAbsent','reservationAbsent'})
+    require(audit==dict(schemaVersion=1,runId=plan['runId'],executionKind='disabled-proof',planSha256=digest(plan),journalState='finished',feedExitSha256=digest(stopped['feedExit']),supervisorAbsent=True,reservationAbsent=True))
+    require(close==dict(schemaVersion=1,runId=plan['runId'],executionKind='disabled-proof',planSha256=digest(plan),assessmentSha256=records['native-verdict']['outputs']['assessmentSha256'],
+        restoreSha256=digest(records['native-restore']),cleanupSha256=digest(cleanup),globalAuditSha256=audit_identity['sha256'],status='PASS',closed=True))
+    require(records['native-verdict']['outputs']['status']=='PASS' and cleanup['outputs']['workerAbsent'] is True and cleanup['outputs']['localAbsent'] is True)
+    require_verified(__name__);require(current_hashes()==plan['sourceHashes']);verify_source_inventory(Path(__file__).absolute().parent,plan['sourceHashes'])
+    payload=dict(plan=plan,prepared=anchors,supports=artifacts,workerCleanupSha256=cleanup['outputs']['workerCleanupSha256'],
+        stopped=stopped,stopArtifact=finish['stopArtifact'],holdArtifact=finish['holdArtifact'],operation=operation,ingresses=ingresses)
+    run=b['remoteRun'];parts=['python3','-I','-S','-c',ROOT,str(Path(run)/'pgcat_source_bootstrap.py'),b['sourceHashes']['sourceBootstrap'],
+        'nativeController',canonical(b['sourceHashes']).decode(),'owned-control','diagnostic-proof',run,canonical(payload).decode()]
+    result=subprocess.run([b['workbenchCli'],'exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',' '.join(shlex.quote(p) for p in parts)],
+        stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=4,close_fds=True,env={'PATH':os.defpath,'HOME':os.path.expanduser('~'),'LANG':'C'})
+    require(result.returncode==0 and len(result.stdout)<=32768)
+    require(decode_private(result.stdout)==dict(schemaVersion=1,runId=plan['runId'],planSha256=digest(plan),runtimeAssetsSha256=sha_bytes(canonical(assets)),assessmentSha256=close['assessmentSha256'],restoreSha256=close['restoreSha256'],workerCleanupSha256=cleanup['outputs']['workerCleanupSha256']))
+    require(_identity(root/'native-close.json')[1]==close_identity and _identity(journal.path,32*1024*1024)[1]==journal_identity)
+    return dict(proofRunId=plan['runId'],closeSha256=close_identity['sha256'],sourceBundleSha256=assets['sourceBundleSha256'],runtimeAssetsSha256=sha_bytes(canonical(assets)))
+
+
+def validate_native_qualification(root,assets):
+    raw,identity=_identity(Path(root)/'native-qualification.json');value=decode_private(raw)
+    require(raw==canonical(value))
+    exact(value,{'schemaVersion','proofRunId','closeSha256','sourceBundleSha256','runtimeAssetsSha256','qualifiedAt'})
+    require(type(value['schemaVersion']) is int and value['schemaVersion']==1 and number(value['qualifiedAt']) and value['qualifiedAt']<=time.time())
+    require({k:value[k] for k in ('proofRunId','closeSha256','sourceBundleSha256','runtimeAssetsSha256')}==_retained_diagnostic(root,assets))
+    require(_identity(Path(root)/'native-qualification.json')==(raw,identity));return value
+
+
+def seal_native_qualification(controller):
+    from pgcat_native_controller import NativeController,_write_bytes
+    require(type(controller) is NativeController);controller._require_owner()
+    root=Path(controller.bindings['captureRoot'])
+    proof=_retained_diagnostic(root,controller.runtime_assets)
+    value=dict(schemaVersion=1,qualifiedAt=time.time(),**proof)
+    _write_bytes(root/'native-qualification.json',canonical(value));return value

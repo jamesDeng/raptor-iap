@@ -90,7 +90,15 @@ async function runScenario(failureKind,baselineCase,expansionCase){
   }if(args?.kind==='fleet')return {groupId:scope.groupId,observedAt:new Date().toISOString(),instances:(baselineCase==='valid'?['i-one','i-two']:['i-one']).map(instanceId=>({instanceId,protectedFromScaleIn:true,lifecycleState:'Protected',healthStatus:'Healthy'}))};return {observedAt:new Date().toISOString()};};
   const observer={cloudRead:read,metricsRead:read,deploymentRead:read,dbConnectionProbe:read};
   const options={stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:skills},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,observer};
-  const out=await runLiveReplacement(options);
+  let out=await runLiveReplacement(options);
+  if(['accepted','unknown','ready','ready-unknown','ready-batch'].includes(expansionCase)){
+   assert.equal(out.paused?.kind,'resource',JSON.stringify(out));
+   assert.equal(round,2,'completed expansion round must settle before another model turn');
+   assert.deepEqual(writes,['db_proxy_scale']);
+   // Continue the existing readiness/read-batch checks in the next actual SDK
+   // session, after the expansion settlement introduced by C4.
+   out=await runLiveReplacement({...options,sessionReference:out.sessionReference,decisionContext:{decision:'resume'}});
+  }
   if(postWrites[expansionCase]||['ready-batch','ready-scale-batch'].includes(expansionCase)){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(expansionCase==='ready-scale-batch')assert.ok(writes.length<=1&&writes.every(name=>name==='db_proxy_scale'),'reordered reads may block expansion; no subsequent write may reach MCP');else assert.deepEqual(writes,['db_proxy_scale'],'early post-expansion writes must never reach MCP');}
   else if(failureKind){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(failureKind==='observer'){assert.equal(observerCalls,1,'an observation failure must stop queued observations');assert.ok(serviceCalls<=1,'an observation failure must stop queued service calls');}else assert.equal(serviceCalls,1,'a failed MCP read must stop queued service calls');}
   else assert.equal(out.paused?.kind,'resource',JSON.stringify(out));

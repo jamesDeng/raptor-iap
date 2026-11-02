@@ -62,10 +62,20 @@ def require(value, category='configuration'):
         raise Refused(category)
 
 
-def _release_admission(mode, action=None):
-    """This release has only the completed no-scale runtime capability."""
-    require(mode == 'no-scale', 'configuration')
-    require(action is None or action in NO_SCALE_ACTIONS, 'configuration')
+def _release_admission(mode, action=None, *, plan=None, kind=None, prepared=None):
+    """One fixed manifest admission. Native timing authority is still unavailable."""
+    if mode=='no-scale':
+        require(action is None or action in NO_SCALE_ACTIONS,'configuration');return
+    require(mode==NATIVE_MODE and (action is None or action in NATIVE_ACTIONS|{'native-feed-stop','native-cleanup'}),'configuration')
+    try:
+        from pgcat_native_closure import release_assets,validate_runtime_assets,runtime_admission
+        assets,_=release_assets()
+        if prepared is not None:require(digest(assets)==prepared['runtimeAssetsFile']['sha256'],'source')
+        if kind is not None:runtime_admission(dict(executionKind=kind))
+        if plan is not None:
+            require(kind is None or plan['executionKind']==kind)
+            runtime_admission(plan);validate_runtime_assets(assets,plan)
+    except (OSError,ValueError,KeyError,TypeError):raise Refused('configuration') from None
 
 
 def _collector_actions(profile):
@@ -532,6 +542,12 @@ def read_finish(root):
 
 
 class Journal:
+    @classmethod
+    def read_only(cls,root):
+        value=cls.__new__(cls);value.root=Path(root);private(value.root,True)
+        value.path=value.root/'journal.sqlite3';private(value.path);value._retained_read_only=True
+        return value
+
     def __init__(self, root: Path):
         self.root = Path(root)
         private(self.root, True)
@@ -563,6 +579,7 @@ class Journal:
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), raw BLOB NOT NULL, identity TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_prepared (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS native_created_request (singleton INTEGER PRIMARY KEY CHECK(singleton=1),proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_admission (
                 request_id TEXT PRIMARY KEY, proof TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS native_stop_claim (
@@ -624,11 +641,14 @@ class Journal:
     @contextmanager
     def _connection(self):
         private(self.path)
-        db = sqlite3.connect(str(self.path), isolation_level=None, timeout=1)
+        retained=getattr(self,'_retained_read_only',False)
+        db = sqlite3.connect(self.path.as_uri()+'?mode=ro' if retained else str(self.path),uri=retained,isolation_level=None,timeout=1)
         db.row_factory = sqlite3.Row
         try:
-            db.execute('PRAGMA journal_mode=DELETE')
-            db.execute('PRAGMA synchronous=FULL')
+            if retained:db.execute('PRAGMA query_only=ON')
+            else:
+                db.execute('PRAGMA journal_mode=DELETE')
+                db.execute('PRAGMA synchronous=FULL')
             yield db
         except sqlite3.Error:
             raise Refused('storage') from None
@@ -649,7 +669,7 @@ class Journal:
                 raise
 
     def create_run(self, run_id: str, mode: str, target: dict, hashes: dict, *, native_plan=None,native_prepared=None) -> None:
-        _release_admission(mode)
+        _release_admission(mode,plan=native_plan,prepared=native_prepared)
         identifier(run_id)
         require(mode in ('no-scale', 'disabled-rehearsal',NATIVE_MODE))
         target_valid(target)
@@ -885,14 +905,45 @@ class Journal:
             if request['action'] in ('deregister-new-node','scalein-three-to-two'):
                 db.execute('INSERT INTO mutation_keys VALUES (?,?)',(request['runId'],request['action']))
 
+    def claim_native_request(self):
+        from pgcat_native_ingress import _identity
+        with self._transaction() as db:
+            plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,'native-ingress',plan=plan)
+            require(plan['executionKind']=='native-replacement' and db.execute('SELECT 1 FROM native_created_request').fetchone() is None,'source')
+            raw,identity=_identity(self.root.parent/'native-created-request.json');value=json.loads(raw)
+            require(set(value)=={'schemaVersion','runId','planSha256','requestId'} and raw==encode(value),'source')
+            require(type(value['schemaVersion']) is int and value['schemaVersion']==1 and value['runId']==plan['runId'] and value['planSha256']==digest(plan),'source');identifier(value['requestId'])
+            db.execute('INSERT INTO native_created_request VALUES (1,?)',(encode(dict(handoff=value,identity=identity,context=None,ingressFile=None)).decode(),))
+            return value['requestId']
+
+    def _native_request_in_tx(self,db):
+        from pgcat_native_ingress import _identity
+        row=db.execute('SELECT proof FROM native_created_request').fetchone();require(row is not None,'source')
+        proof=json.loads(row['proof']);raw,identity=_identity(self.root.parent/'native-created-request.json')
+        require(identity==proof['identity'] and raw==encode(proof['handoff']),'source')
+        return proof
+
+    def native_request(self):
+        with self._connection() as db:return self._native_request_in_tx(db)
+
+    def _associate_native_context_in_tx(self,db,plan,output):
+        from pgcat_native_ingress import _context
+        original=self._native_request_in_tx(db);context=output['requestContext']
+        require(_context(dict(context,environment={}),plan,original['handoff']['requestId'])==context,'source')
+        if original['context'] is None:
+            original.update(context=context,ingressFile=output['ingressFile'])
+            db.execute('UPDATE native_created_request SET proof=? WHERE singleton=1',(encode(original).decode(),))
+        else:require(original['context']==context,'source')
+
     def _native_admit_in_tx(self,db,request):
         from pgcat_native_controller import validate_action
         from pgcat_native_ingress import _identity
-        plan=self._native_plan_in_tx(db);action=request['action'];native_action(action,plan['executionKind'])
+        plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,request['action'],plan=plan,prepared=self._native_prepared_in_tx(db,plan));action=request['action'];native_action(action,plan['executionKind'])
         feed=db.execute('SELECT proof FROM feed_binding').fetchone();require(feed is not None,'child')
         feed=json.loads(feed['proof'])
         selector_raw,selector_file=_identity(self.root/('native-selector-'+request['requestId']+'.json'))
         selector=json.loads(selector_raw);require(selector_raw==encode(selector),'source')
+        if action=='native-ingress' and plan['executionKind']=='native-replacement':require(selector['requestId']==self._native_request_in_tx(db)['handoff']['requestId'],'source')
         if action!='native-ingress':
             require(db.execute("SELECT 1 FROM requests WHERE request_id!=? AND json_extract(request,'$.action')=?",(request['requestId'],action)).fetchone() is None,'incomplete')
         envelope=dict(schemaVersion=1,action=action,localRequestId=request['requestId'],runId=plan['runId'],executionKind=plan['executionKind'],
@@ -945,7 +996,7 @@ class Journal:
         _release_admission(NATIVE_MODE,'native-cleanup')
         from pgcat_native_controller import _write_bytes
         with self._transaction() as db:
-            plan=self._native_plan_in_tx(db)
+            plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,'native-cleanup',plan=plan,prepared=self._native_prepared_in_tx(db,plan))
             require(db.execute('SELECT state FROM run').fetchone()['state']=='active','incomplete')
             assessment=self._native_record_in_tx(db,'native-verdict');restored=self._native_record_in_tx(db,'native-restore')
             self._native_stop_in_tx(db)
@@ -1046,7 +1097,7 @@ class Journal:
             require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None,'incomplete')
             run=db.execute('SELECT * FROM run').fetchone();require(run is not None and run['mode']==NATIVE_MODE and run['state']=='active','incomplete')
             require(db.execute('SELECT 1 FROM feed_exit_confirmation').fetchone() is None,'child')
-            plan=self._native_plan_in_tx(db);reconcile=self._native_record_in_tx(db,'native-reconcile')
+            plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,'native-feed-stop',plan=plan,prepared=self._native_prepared_in_tx(db,plan));reconcile=self._native_record_in_tx(db,'native-reconcile')
             self._native_feed_in_tx(db)
             record=dict(schemaVersion=1,action='native-feed-stop',runId=plan['runId'],executionKind=plan['executionKind'],planSha256=digest(plan),requestId=str(uuid.uuid4()),inputs=dict(reconcileSha256=digest(reconcile)))
             identity=_write_bytes(self.root.parent/'native-feed-stop.intent',encode(record))
@@ -1060,7 +1111,7 @@ class Journal:
         from pgcat_native_closure import validate_support
         with self._transaction() as db:
             require(db.execute('SELECT 1 FROM native_stop').fetchone() is None,'incomplete')
-            plan=self._native_plan_in_tx(db);reconcile=self._native_record_in_tx(db,'native-reconcile')
+            plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,'native-feed-stop',plan=plan,prepared=self._native_prepared_in_tx(db,plan));reconcile=self._native_record_in_tx(db,'native-reconcile')
             claimed=db.execute('SELECT proof FROM native_stop_claim').fetchone();require(claimed is not None,'incomplete');claimed=json.loads(claimed['proof'])
             require(monotonic()<claimed['deadlineMonotonic'],'timeout')
             raw,current=_identity(self.root.parent/'native-feed-stop.intent');require(current==claimed['identity'] and raw==encode(claimed['record']),'source')
@@ -1087,7 +1138,7 @@ class Journal:
     def native_admission(self,request_id,*,claim=False):
         _release_admission(NATIVE_MODE)
         with self._transaction() as db:
-            plan=self._native_plan_in_tx(db)
+            plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,plan=plan,prepared=self._native_prepared_in_tx(db,plan))
             request=db.execute('SELECT * FROM requests WHERE request_id=?',(request_id,)).fetchone()
             row=db.execute('SELECT * FROM native_admission WHERE request_id=?',(request_id,)).fetchone()
             require(request is not None and request['state']=='dispatching' and row is not None,'incomplete')
@@ -1106,6 +1157,7 @@ class Journal:
         with self._transaction() as db:
             plan=self._native_plan_in_tx(db)
             row=db.execute('SELECT * FROM requests WHERE request_id=?',(request_id,)).fetchone()
+            _release_admission(NATIVE_MODE,plan=plan,prepared=self._native_prepared_in_tx(db,plan))
             admission=db.execute('SELECT * FROM native_admission WHERE request_id=?',(request_id,)).fetchone()
             require(row is not None and row['state']=='dispatching' and admission is not None and admission['claimed']==1,'incomplete')
             request=json.loads(row['request']);require(request['deadlineMonotonic']>monotonic(),'timeout')
@@ -1116,6 +1168,7 @@ class Journal:
                 require(all(payload['outputs']['ready']['sources'][k]==prepared[v] for k,v in (('plan','planFile'),('baseline','baselineFile'),('gatewayRuntime','gatewayRuntimeFile'))),'source')
             require(payload['staged']['admission']['sha256']==digest(proof['envelope']) and payload['staged']['selector']['sha256']==digest(proof['selector']),'source')
             require(db.execute('SELECT state FROM run').fetchone()['state']=='active','incomplete')
+            if request['action']=='native-ingress' and plan['executionKind']=='native-replacement':self._associate_native_context_in_tx(db,plan,payload['outputs'])
             db.execute('INSERT INTO native_support VALUES (?,?)',(request_id,encode(payload).decode()))
             db.execute("UPDATE requests SET state='complete',result=? WHERE request_id=?",(encode(result).decode(),request_id))
 
@@ -1499,7 +1552,10 @@ class Journal:
 
 
     def run_snapshot(self):
-        with self._transaction() as db:
+        with self._connection() as db:
+            # A consistent read snapshot must also work for the retained,
+            # query-only proof reader after the owner has finished.
+            db.execute('BEGIN')
             run = db.execute('SELECT * FROM run').fetchone()
             require(run is not None)
             finish = db.execute('SELECT * FROM finish_receipts').fetchone()
@@ -1552,7 +1608,8 @@ class Journal:
                     run['run_id']==binding['runId'],'child')
             _release_admission(run['mode'])
             if run['mode'] in ('disabled-rehearsal',NATIVE_MODE):
-                if run['mode']==NATIVE_MODE:self._native_plan_in_tx(db)
+                if run['mode']==NATIVE_MODE:
+                    plan=self._native_plan_in_tx(db);_release_admission(NATIVE_MODE,plan=plan,prepared=self._native_prepared_in_tx(db,plan))
                 try:
                     self._feed_manifest(manifest_raw,binding,dict(target=json.loads(run['target']),hashes=json.loads(run['hashes'])))
                 except (OSError,ValueError,UnicodeError,KeyError,TypeError):raise Refused('source') from None

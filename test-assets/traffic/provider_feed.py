@@ -343,7 +343,9 @@ def validate_run_context(root, path, *, no_scale=False, mode='disabled-rehearsal
             journal['mode'] in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and
             (journal['mode']=='no-scale')==no_scale and
             (journal['mode']=='full-replacement-direct-v2')==(mode=='full-replacement-direct-v2'))
-    if mode=='full-replacement-direct-v2':Journal(root).native_plan()
+    if mode=='full-replacement-direct-v2':
+        owned=Journal(root)
+        _release_admission(mode,plan=owned.native_plan(),prepared=owned.native_prepared())
     target = journal['target']
     require(target['scalingGroupId'] == GROUP_ID and target['nlbServerGroupId'] == SERVER_GROUP_ID
             and target['workerId'] == WORKER_ID and target['regionId'] == REGION)

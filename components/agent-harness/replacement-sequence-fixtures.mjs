@@ -2,14 +2,15 @@ import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {ReplacementTrace} from './replacement-trace.mjs';
 import {ReplacementReadiness} from './replacement-readiness.mjs';
+import {ApprovalPause} from './approval-pause.mjs';
 import {ReplacementSequence} from './replacement-sequence.mjs';
 const binding={requestId:'request',definitionSha256:'a'.repeat(64),skillsCommit:'b'.repeat(40),model:'gpt-5.6-luna'};
 const scope=withResourceProof({envCode:'rdev.ali',proxyCode:'proxy',groupId:'group',serverGroupId:'backend',targetDbCode:'db',application:{envCode:'rdev.ali',appCode:'client',clusterId:'cluster',namespace:'test',name:'client',uid:'uid'}});
 const old=['old-a','old-b'],added=['new-a','new-b'];
 const stamp=()=>new Date().toISOString();
-function setup(session={entries:[],getEntries(){return this.entries;},appendCustomEntry(customType,data){this.entries.push({type:'custom',customType,data:structuredClone(data)});}}){
+function setup(session={entries:[],getEntries(){return this.entries;},appendCustomEntry(customType,data){this.entries.push({type:'custom',customType,data:structuredClone(data)});}},decision){
  const trace=new ReplacementTrace(session,binding,scope),readiness=new ReplacementReadiness(session,trace);
- return {session,trace,readiness,gate:new ReplacementSequence(session,trace,readiness,'resource-v1')};
+ return {session,trace,readiness,gate:new ReplacementSequence(session,trace,readiness,'resource-v1',decision)};
 }
 function observations(ids=old,{withdrawn=[],unprotected=[],zero=false,generation=5}={}){
  const at=stamp();return {
@@ -31,10 +32,18 @@ const argsFor=(tool,extra={})=>({...tool==='deployment_restart'?{requestId:'requ
 function mutate(x,tool,extra,receipt){const args=argsFor(tool,extra);x.gate.beforeMutation(tool,args);x.trace.beforeMutation(tool,args);x.trace.mutation(tool,args,receipt);x.gate.onMutationResult(tool,args,receipt);}
 function expanded(){const x=setup();observe(x);mutate(x,'db_proxy_scale',{actionId:'expand',desiredCapacity:4},{previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'});observe(x,observations([...old,...added]));assert.equal(x.readiness.ready(),true);return x;}
 function withdrawn(){const x=expanded();mutate(x,'db_proxy_nodes_deregister',{nodeIds:old},{instanceIds:old,outcome:'submitted'});observe(x,observations([...old,...added],{withdrawn:old}));return x;}
-function restarted(){const x=withdrawn();mutate(x,'deployment_restart',{}, {accepted:true,generation:6});observe(x,observations([...old,...added],{withdrawn:old,zero:true,generation:6}));return x;}
+function requestWithdrawalWait(x){const pause=new ApprovalPause(binding);pause.resourceWait({seconds:60});const wait=pause.endRound();x.gate.recordResourceWait(wait);return {decision:'resume',approvalId:'',actionId:wait.actionId,bindingDigest:wait.bindingDigest};}
+function waited(){
+ // Construct the real requested milestone a minute earlier, then reopen at the
+ // current test clock. This fixture never manufactures a completed milestone.
+ const OriginalDate=globalThis.Date,then=Date.now()-60000;let x,decision;
+ try{globalThis.Date=class extends OriginalDate{constructor(...args){super(...(args.length?args:[then]));}static now(){return then;}};x=withdrawn();decision=requestWithdrawalWait(x);}finally{globalThis.Date=OriginalDate;}
+ const y=setup(x.session,decision);observe(y,observations([...old,...added],{withdrawn:old}));return y;
+}
+function restarted(){const x=waited();mutate(x,'deployment_restart',{}, {accepted:true,generation:6});observe(x,observations([...old,...added],{withdrawn:old,zero:true,generation:6}));return x;}
 const protect=(ids,value=true)=>argsFor('db_proxy_node_protection_set',{nodeIds:ids,protected:value});
 
-export {binding,scope,old,added,setup,observations,observe,argsFor,mutate,expanded,withdrawn,restarted,protect};
+export {binding,scope,old,added,setup,observations,observe,argsFor,mutate,expanded,withdrawn,waited,requestWithdrawalWait,restarted,protect};
 
 // Synthetic private proof fixture, independent of the production validator.
 export function withResourceProof(input){
