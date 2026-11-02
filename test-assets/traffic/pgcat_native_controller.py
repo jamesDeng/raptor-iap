@@ -1315,6 +1315,7 @@ class NativeController:
         ack,raw=private_json(root/NATIVE_STOP_ACK)
         final,_=private_json(Path(self.bindings['laneBindings']['receiptPath']))
         check(raw==encode(ack) and ack==native_stop_ack(intent,final,reconcile,plan,now=time.time()))
+        check(monotonic()<deadline)
         self.client.confirm_feed_exit(self.feed)
         self.receipt=final
         return self.client.journal.record_native_stop()

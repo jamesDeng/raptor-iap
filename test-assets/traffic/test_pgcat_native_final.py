@@ -340,6 +340,24 @@ class OwnedStopTests(unittest.TestCase):
         self.assertEqual(len(claims),1);self.assertEqual(result['feedExit']['pid'],child.pid);self.assertEqual(child.returncode,0)
 
     def test_controller_stop_waits_for_owned_writer_to_complete_partial_ack(self):
+        self._stop_with_partial_ack_writer()
+
+    def test_stop_validation_must_finish_before_original_deadline(self):
+        import pgcat_lane_protocol as protocol
+        actual=protocol.native_stop_ack
+        for completed,valid in [(104.999,True),(105.,False),(105.001,False)]:
+            clock=[100.];validations=[]
+            def validate(*args,**kwargs):
+                result=actual(*args,**kwargs);validations.append(result)
+                if len(validations)==2:clock[0]=completed
+                return result
+            with self.subTest(completed=completed),patch.object(protocol,'monotonic',side_effect=lambda:clock[0]),patch.object(protocol,'native_stop_ack',side_effect=validate):
+                if valid:self._stop_with_partial_ack_writer()
+                else:
+                    with self.assertRaises(ValueError):self._stop_with_partial_ack_writer()
+                self.assertEqual(len(validations),2)
+
+    def _stop_with_partial_ack_writer(self):
         import subprocess,sys,time
         from types import SimpleNamespace
         import pgcat_native_controller as controller
