@@ -950,11 +950,13 @@ class NativeController:
             check(self.feed is None and argv[0]=='aliyun' and time.monotonic()<deadline)
             result=subprocess.run([b['aliyunCli']]+argv[1:],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                 timeout=min(10.,deadline-time.monotonic()),env={'PATH':os.defpath,'HOME':os.path.expanduser('~'),'LANG':'C'},close_fds=True)
-            check(result.returncode==0 and len(result.stdout)<=2*1024*1024);return result.stdout.decode('ascii')
+            check(result.returncode==0 and len(result.stdout)<=2*1024*1024);return result.stdout.decode('utf-8')
         operator.command=command
         check(operator.aliyun('sts','GetCallerIdentity')['AccountId']==b['target']['accountId'])
         activity=operator.aliyun('ess','DescribeScalingActivities',ScalingGroupId=b['target']['scalingGroupId'],StatusCode='InProgress',PageNumber=1,PageSize=50)
-        check(type(activity['TotalCount']) is int and activity['TotalCount']==0 and activity['ScalingActivities']['ScalingActivity']==[])
+        check(type(activity.get('TotalCount')) is int and activity['TotalCount']==0)
+        if 'ScalingActivities' in activity:
+            check(type(activity['ScalingActivities']) is dict and activity['ScalingActivities'].get('ScalingActivity')==[])
         group=operator.fetch_group();check(all(type(group[k]) is int and group[k]==v for k,v in [('DesiredCapacity',2),('MinSize',2),('MaxSize',4)]))
         return operator.read()
 
