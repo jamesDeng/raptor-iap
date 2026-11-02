@@ -308,6 +308,7 @@ class OwnedStopTests(unittest.TestCase):
     def test_controller_stop_waits_for_same_real_child_after_ack_delay(self):
         import subprocess,sys,time,threading
         from types import SimpleNamespace
+        from pgcat_lane_supervisor import save_once
         import pgcat_native_controller as controller
         import pgcat_lane_protocol as protocol
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=Path(tmp.name).resolve();root.chmod(0o700)
@@ -330,7 +331,7 @@ class OwnedStopTests(unittest.TestCase):
             while not (root/'native-stop.intent').exists():time.sleep(.01)
             intent=__import__('json').loads((root/'native-stop.intent').read_text())
             time.sleep(3.1)
-            write(root/'native-stop.ack',protocol.native_stop_ack(intent,receipt,reconcile,plan,now=time.time()))
+            save_once(root,'native-stop.ack',protocol.native_stop_ack(intent,receipt,reconcile,plan,now=time.time()),atomic=True)
             (root/'exit').touch()
         thread=threading.Thread(target=producer,daemon=True);thread.start()
         with patch.object(controller,'_closed'),patch.object(controller,'_require_verified'):
