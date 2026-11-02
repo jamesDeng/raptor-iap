@@ -1,6 +1,6 @@
 appCode: A00003
 environment: rdev.ali
-image: ghcr.io/jamesdeng/raptor-iap-test-client@sha256:c4ead1a23ced74893b10a3cab753c3828cab88512dea176ba4e5ae83cbdb178a
+image: ghcr.io/jamesdeng/raptor-iap-test-client@sha256:cbfd05e4173ea791e29fb0828c0f9c1ae5bb267e9f22caa5eb26ff95c010cb24
 dsnSecretName: traffic-db-dsn
 allowPlaintextPOC: true
 headless: true

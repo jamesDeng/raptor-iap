@@ -3,7 +3,7 @@ images:
   raptor: ghcr.io/jamesdeng/raptor-iap-raptor@sha256:b215a68fd95b0ae9fd25a6cbed588fec683c470a0e4530e593848befeec13adf
   gateway: ghcr.io/jamesdeng/raptor-iap-gateway@sha256:fc93889c227e04e71499a79e2667007da73a06b3ee736d7c093b4679ad6431ae
 repository:
-  revision: aa53574d266f301f44f00ed833f8a4e455599402
+  revision: 6fc64f4554d5262e298a2dfd27011e04489226a0
 appCodes:
   raptor-admin: A00006
   agent-gateway: A00005
