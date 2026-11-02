@@ -768,7 +768,7 @@ class NativeController:
         self.worker_processes={};self.collector_attempted=False;self.phase='startup';self.run_id=str(__import__('uuid').uuid4())
         from segmented_capture import canonical,decode_private
         check(len(_native_owners)<128)
-        _native_owners[self]=dict(pid=os.getpid(),bindings=canonical(self.bindings),runId=self.run_id,mac=decode_private(canonical(self.mac_credential)),worker=None,prepared=None,feed=None,feedIdentity=None,client=None,workerProcesses={})
+        _native_owners[self]=dict(pid=os.getpid(),bindings=canonical(self.bindings),runId=self.run_id,mac=decode_private(canonical(self.mac_credential)),worker=None,prepared=None,feed=None,feedIdentity=None,feedAttempted=False,client=None,workerProcesses={})
 
     def _provider_snapshot(self):
         from types import SimpleNamespace
@@ -869,6 +869,7 @@ class NativeController:
                 '--status-file',b['receiptPath'],'--run-context',str(self.client.root/'run-context.json'),'--contract-dir',b['contractDir']]
             env={'PATH':_feed_path(b),'HOME':os.path.expanduser('~'),'LANG':'C','LC_ALL':'C','PGCAT_LANE_ROLE':'provider',
                 'PGCAT_LANE_REAL_CLI':b['workbenchCli'],'PGCAT_LANE_LOCK':b['laneLockPath']}
+            _native_owners[self]['feedAttempted']=True
             self.feed=self.client.start_feed(argv,env,self.binding_path);self.feed_identity=dict(self.client.feed_binding);_native_owners[self].update(feed=self.feed,feedIdentity=dict(self.feed_identity))
             self._call('native-baseline');self.collector_attempted=True
             result=self._call('native-collector-launch');ready=result['outputs']['ready'] if 'outputs' in result else result['ready']
@@ -955,9 +956,16 @@ class NativeController:
         self._require_abort_owner()
         from segmented_capture import decode_private,canonical
         row=_native_owners[self]
+        child=row['feed']
+        if child is None:
+            from pgcat_lane_client import LaneClient
+            from pgcat_lane_protocol import Refused
+            if type(row['client']) is LaneClient:
+                try:child=row['client']._abort_feed_child()
+                except (OSError,ValueError,Refused):pass
         return dict(bindings=decode_private(row['bindings']),runId=row['runId'],mac=decode_private(canonical(row['mac'])),
             worker=None if row['worker'] is None else decode_private(canonical(row['worker'])),prepared=None if row['prepared'] is None else decode_private(row['prepared']),
-            feed=row['feed'],feedIdentity=row['feedIdentity'],client=row['client'],workerProcesses=decode_private(canonical(row['workerProcesses'])))
+            feed=child,feedIdentity=row['feedIdentity'],feedAttempted=row.get('feedAttempted',False),client=row['client'],workerProcesses=decode_private(canonical(row['workerProcesses'])))
 
     def _require_owner(self):
         self._require_abort_owner();check(getattr(self,'owner_pid',None)==os.getpid())
@@ -994,17 +1002,16 @@ class NativeController:
         _native_owners[self]['worker']=decode_private(canonical(identity))
         return identity
 
-    def _recover_worker_processes(self):
-        prepared=self._abort_originals()['prepared'];check(prepared is not None)
-        anchors={k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','workerCredential')}
-        rows=self._owned_worker('process-identities',anchors)
-        from pgcat_collector_control import valid_identity
-        for role,identity in rows.items():
-            check(role in ('collector','guardian'));valid_identity(identity)
-            old=_native_owners[self]['workerProcesses'].get(role);check(old is None or old==identity)
-        from segmented_capture import canonical,decode_private
-        _native_owners[self]['workerProcesses'].update(decode_private(canonical(rows)))
-        return rows
+    def _retained_ordinary_status(self):
+        from pgcat_lane_client import LaneClient
+        from pgcat_lane_protocol import Journal
+        original=self._abort_originals();client=original['client'];prepared=original['prepared']
+        check(type(client) is LaneClient and type(client.journal) is Journal and prepared is not None)
+        check(client.journal.root==Path(original['bindings']['laneRoot']))
+        with client.journal._connection() as db:
+            plan=client.journal._native_plan_in_tx(db)
+            check(plan==prepared['plan'] and plan['runId']==original['runId'])
+            return client.journal._native_record_in_tx(db,'native-verdict')['outputs']['status']
 
     def _cleanup_worker(self):
         original=self._abort_originals();identity=original['worker']
@@ -1173,18 +1180,6 @@ def _owned_worker_control(verb,run,payload):
     if verb=='credential-identity':check(payload=={});return credential_identity(credential)
     if verb=='credential-cleanup':return cleanup_bound_credential(credential,payload)
     if verb=='credential-absent':check(payload=={});return dict(absent=not os.path.lexists(credential))
-    if verb=='process-identities':
-        from pgcat_native_ingress import _identity
-        from segmented_capture import decode_private
-        from pgcat_collector_control import valid_identity
-        plan=decode_private(_identity(run/'native-plan.json')[0]);verify_prepared(run,plan,payload)
-        started=decode_private(_identity(run/'collector-job'/'intent.json')[0]);check(started['runId']==plan['runId'] and started['prepared']==payload)
-        rows={}
-        for role,name in [('collector','identity.json'),('guardian','guardian.json')]:
-            try:row=decode_private(_identity(run/'collector-job'/name)[0])
-            except FileNotFoundError:continue
-            valid_identity(row);rows[role]=row
-        verify_prepared(run,plan,payload);return rows
     if verb=='process-stop':return dict(state=stop_bound_process(payload,deadline=time.monotonic()+2.))
     if verb=='ordinary-status':check(payload=={});return dict(status=assess_manifest(run/'native-capture')['status'])
     raise ValueError('owned worker operation')

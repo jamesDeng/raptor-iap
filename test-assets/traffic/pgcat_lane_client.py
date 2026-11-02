@@ -9,12 +9,15 @@ import subprocess
 import sys
 import time
 import uuid
+import weakref
 
 from pgcat_lane_actions import validate_bindings
 from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
     monotonic, identifier, digest, private_json, publish_request, publish_finish, read_finish, validate_finish_receipts)
 from pgcat_lane_supervisor import read_json, save_once, receipt_identity
 import pgcat_workbench_lane as lane
+
+_feed_children=weakref.WeakKeyDictionary()
 
 def _require_verified():
     from pgcat_source_bootstrap import require_verified
@@ -123,6 +126,7 @@ class LaneClient:
                 require(now < now.replace(hour=21,minute=30,second=0,microsecond=0) and
                         int(cap) <= int((now.replace(hour=22,minute=30,second=0,microsecond=0)-now).total_seconds())-120,'timeout')
         check_cap()
+        require(self in _feed_children or len(_feed_children)<128,'child')
         reader,writer=os.pipe()
         # The isolated bootstrap imports only stdlib and exec preserves this PID.
         # EOF and timeout exit without importing or executing provider code.
@@ -135,6 +139,7 @@ class LaneClient:
             self.feed_process=subprocess.Popen([sys.executable,'-I','-S','-c',gate,str(reader)]+verified_argv,
                 stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                 start_new_session=True,close_fds=True,pass_fds=(reader,),env=env)
+            _feed_children[self]=(os.getpid(),self.feed_process)
             os.close(reader);reader=None
             require(self.feed_process.poll() is None,'child')
             _,current=private_json(Path(outer_binding_path));require(current==raw,'source')
@@ -149,6 +154,13 @@ class LaneClient:
         finally:
             if reader is not None:os.close(reader)
             os.close(writer)
+
+    def _abort_feed_child(self):
+        """Original issuance only; this does not grant feed/finish authority."""
+        _require_verified();require(type(self) is LaneClient,'child')
+        origin=_feed_children.get(self)
+        require(origin is not None and origin[0]==os.getpid() and type(origin[1]) is subprocess.Popen,'child')
+        return origin[1]
 
     def confirm_feed_exit(self, feed_process):
         require(self.mode in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and feed_process is getattr(self,'feed_process',None) and

@@ -445,4 +445,163 @@ class AbortOriginTests(unittest.TestCase):
             transport.assert_not_called()
 
 
+class AbortReviewTests(unittest.TestCase):
+    def owner(self,root,*,client=None,prepared=None):
+        import uuid
+        import pgcat_native_controller as controller
+        paths=[]
+        for name in ('abort-mac','abort-worker'):
+            path=root/name;path.mkdir(mode=0o700);path=path/'kubeconfig'
+            path.write_bytes(b'offline-owned-material');path.chmod(0o600);paths.append(path)
+        owner=object.__new__(controller.NativeController)
+        owner.run_id=str(uuid.uuid4()) if prepared is None else prepared['plan']['runId']
+        owner.phase='partial-start';owner.collector_attempted=False;owner.prepared=prepared
+        owner.mac_credential=controller.credential_identity(paths[0]);owner.worker_credential=controller.credential_identity(paths[1])
+        owner.bindings=dict(captureRoot=str(root),workerKubeconfig=str(paths[1]),laneRoot=str(root/'lane'),laneBindings=dict(executionKind='native-replacement'))
+        owner.client=client;owner.feed=None;owner.worker_processes={}
+        controller._native_owners[owner]=dict(pid=os.getpid(),bindings=canonical(owner.bindings),runId=owner.run_id,
+            mac=copy.deepcopy(owner.mac_credential),worker=copy.deepcopy(owner.worker_credential),prepared=None if prepared is None else canonical(prepared),
+            feed=None,feedIdentity=None,client=client,workerProcesses={})
+        return owner,paths
+
+    def remote(self,paths,calls,*,recovered=None):
+        def perform(verb,payload):
+            calls.append((verb,payload))
+            if verb=='ordinary-status':raise TimeoutError('offline worker timeout')
+            if verb=='process-identities':return recovered
+            if verb=='process-stop':return dict(state='stopped')
+            if verb=='credential-cleanup':return closure.cleanup_bound_credential(paths[1],payload)
+            if verb=='credential-absent':return dict(absent=not paths[1].exists())
+            raise ValueError('unavailable')
+        return perform
+
+    def test_unbound_foreign_sidecar_never_grants_stop_authority(self):
+        import pgcat_native_controller as controller
+        from pgcat_collector_control import valid_identity
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=Path(tmp.name).resolve();root.chmod(0o700)
+        owner,paths=self.owner(root,prepared=dict(plan=dict(runId='owned-run'),planFile={},baselineFile={},gatewayRuntimeFile={},workerCredential={}))
+        owner.collector_attempted=True
+        foreign=dict(pid=12345,bootId='foreign-boot',startTicks=456,commandSha256='a'*64);valid_identity(foreign)
+        calls=[]
+        with patch.object(controller,'_require_verified'),patch.object(owner,'_owned_worker',side_effect=self.remote(paths,calls,recovered=dict(guardian=foreign))):
+            result=closure.abort_owned(root,adapters=owner,now=lambda:0)
+        self.assertFalse(any(verb=='process-stop' for verb,_ in calls))
+        self.assertEqual([r for r in result['ownedProcesses'] if r['role']=='guardian'],[dict(role='guardian',identity=None,state='unknown')])
+        self.assertEqual(controller._native_owners[owner]['workerProcesses'],{})
+
+    def test_retained_authenticated_fail_survives_worker_timeout_and_both_cleanup(self):
+        from test_pgcat_native_final import JournalClosureTests
+        from test_pgcat_native_ingress import file_record,write
+        from pgcat_lane_client import LaneClient
+        import pgcat_native_controller as controller
+        root,f,j,_,_=JournalClosureTests.journal(self)
+        support=dict(schemaVersion=1,action='native-verdict',runId=f.plan['runId'],executionKind=f.plan['executionKind'],planSha256=sha(canonical(f.plan)),
+            requestId='33333333-3333-4333-8333-333333333333',inputs=dict(stopSha256='a'*64,finishSha256='b'*64),outputs=dict(assessmentSha256='c'*64,status='FAIL'))
+        write(f.run/'native-verdict.json',support)
+        proof=dict(action='native-verdict',requestId=support['requestId'],outputs=dict(support=support,artifact=dict(basename='native-verdict.json',identity=file_record(f.run/'native-verdict.json'))))
+        with j._transaction() as db:db.execute('INSERT INTO native_support VALUES (?,?)',(support['requestId'],canonical(proof).decode()))
+        client=LaneClient();client.journal=j;client.root=j.root;client.liveness_fd=None;client.process=None
+        owner,paths=self.owner(root,client=client,prepared=dict(f.prepared,plan=f.plan));calls=[]
+        with patch.object(controller,'_require_verified'),patch.object(owner,'_owned_worker',side_effect=self.remote(paths,calls)):
+            result=closure.abort_owned(root,adapters=owner,now=lambda:0)
+        self.assertEqual(result['status'],'FAIL')
+        self.assertEqual([verb for verb,_ in calls].count('credential-cleanup'),1)
+        self.assertTrue(all(not path.exists() for path in paths))
+
+    def test_unanchored_fail_and_changed_original_artifact_cannot_supply_verdict(self):
+        from test_pgcat_native_final import JournalClosureTests
+        from test_pgcat_native_ingress import file_record,write
+        from pgcat_lane_client import LaneClient
+        import pgcat_native_controller as controller
+        import sqlite3
+        for case in ('unanchored','changed-artifact','foreign-original-plan','journal-read-failure'):
+            with self.subTest(case=case):
+                root,f,j,_,_=JournalClosureTests.journal(self)
+                support=dict(schemaVersion=1,action='native-verdict',runId=f.plan['runId'],executionKind=f.plan['executionKind'],planSha256=sha(canonical(f.plan)),
+                    requestId='33333333-3333-4333-8333-333333333333',inputs=dict(stopSha256='a'*64,finishSha256='b'*64),outputs=dict(assessmentSha256='c'*64,status='FAIL'))
+                write(f.run/'native-verdict.json',support);write(root/'native-assessment.json',dict(status='FAIL'))
+                artifact=dict(basename='native-verdict.json',identity=file_record(f.run/'native-verdict.json'))
+                if case=='changed-artifact':artifact['identity']['sha256']='d'*64
+                if case!='unanchored':
+                    proof=dict(action='native-verdict',requestId=support['requestId'],outputs=dict(support=support,artifact=artifact))
+                    with j._transaction() as db:db.execute('INSERT INTO native_support VALUES (?,?)',(support['requestId'],canonical(proof).decode()))
+                original_plan=copy.deepcopy(f.plan)
+                if case=='foreign-original-plan':original_plan['runId']='44444444-4444-4444-8444-444444444444'
+                client=LaneClient();client.journal=j;client.root=j.root;client.liveness_fd=None;client.process=None
+                owner,paths=self.owner(root,client=client,prepared=dict(f.prepared,plan=original_plan));calls=[]
+                read=sqlite3.DatabaseError('offline journal read failure') if case=='journal-read-failure' else j._native_record_in_tx
+                with patch.object(controller,'_require_verified'),patch.object(j,'_native_record_in_tx',side_effect=read),patch.object(owner,'_owned_worker',side_effect=self.remote(paths,calls)):
+                    result=closure.abort_owned(root,adapters=owner,now=lambda:0)
+                self.assertEqual(result['status'],'INCONCLUSIVE');self.assertTrue(all(not path.exists() for path in paths))
+
+    def test_partial_feed_bind_failure_reaps_actual_child_with_unknown_identity(self):
+        from test_pgcat_feed_binding import FeedBindingTests
+        from pgcat_lane_protocol import Refused
+        import pgcat_native_controller as controller
+        fixture=FeedBindingTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        client=fixture.client;client.liveness_fd=None;client.process=None
+        owner,paths=self.owner(fixture.base,client=client);calls=[]
+        with patch.object(client.journal,'bind_feed',side_effect=Refused('storage')),self.assertRaises(Refused):
+            client.start_feed(fixture.argv,{'PATH':os.defpath},fixture.manifest)
+        child=client.feed_process
+        self.assertIsNone(child.returncode)
+        import pgcat_lane_client as lane_client
+        from types import SimpleNamespace
+        import subprocess,sys
+        origin=lane_client._feed_children[client]
+        lane_client._feed_children[client]=(os.getpid()+1,child)
+        with self.assertRaises(Refused):client._abort_feed_child()
+        lane_client._feed_children[client]=origin
+        imitation=SimpleNamespace(feed_process=child)
+        with self.assertRaises(Refused):lane_client.LaneClient._abort_feed_child(imitation)
+        foreign=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)'])
+        def reap_foreign():
+            if foreign.poll() is None:foreign.kill()
+            foreign.wait(timeout=2);client.feed_process=child
+        self.addCleanup(reap_foreign)
+        client.feed_process=foreign
+        self.assertIs(client._abort_feed_child(),child)
+        with patch.object(controller,'_require_verified'),patch.object(owner,'_owned_worker',side_effect=self.remote(paths,calls)):
+            result=closure.abort_owned(fixture.base,adapters=owner,now=lambda:0)
+        self.assertIsNotNone(child.returncode)
+        self.assertIsNone(foreign.poll())
+        self.assertEqual([r for r in result['ownedProcesses'] if r['role']=='feed'],[dict(role='feed',identity=None,state='unknown')])
+        self.assertFalse(fixture.marker.exists());self.assertTrue(all(not path.exists() for path in paths))
+
+    def test_feed_origin_precedes_first_post_spawn_close_failure(self):
+        from test_pgcat_feed_binding import FeedBindingTests
+        import pgcat_lane_client as lane_client
+        import pgcat_native_controller as controller
+        fixture=FeedBindingTests();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        client=fixture.client;client.liveness_fd=None;client.process=None
+        owner,paths=self.owner(fixture.base,client=client);calls=[];issued=[];failed=[]
+        real_spawn=lane_client.subprocess.Popen;real_close=os.close
+        def spawn(*args,**kwargs):
+            child=real_spawn(*args,**kwargs);issued.append(child);return child
+        def close(fd):
+            if issued and not failed:
+                self.assertIs(lane_client._feed_children[client][1],issued[0]);failed.append(True)
+                raise OSError('offline failure immediately after spawn')
+            return real_close(fd)
+        with patch.object(lane_client.subprocess,'Popen',side_effect=spawn),patch.object(lane_client.os,'close',side_effect=close),self.assertRaises(OSError):
+            client.start_feed(fixture.argv,{'PATH':os.defpath},fixture.manifest)
+        self.assertTrue(failed)
+        with patch.object(controller,'_require_verified'),patch.object(owner,'_owned_worker',side_effect=self.remote(paths,calls)):
+            result=closure.abort_owned(fixture.base,adapters=owner,now=lambda:0)
+        self.assertIsNotNone(issued[0].returncode)
+        self.assertEqual([r for r in result['ownedProcesses'] if r['role']=='feed'],[dict(role='feed',identity=None,state='unknown')])
+        self.assertTrue(all(not path.exists() for path in paths));self.assertFalse(fixture.marker.exists())
+
+    def test_already_bound_original_worker_tuple_is_still_stopped(self):
+        import pgcat_native_controller as controller
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=Path(tmp.name).resolve();root.chmod(0o700)
+        owner,paths=self.owner(root);owner.collector_attempted=True
+        identity=dict(pid=12345,bootId='original-boot',startTicks=456,commandSha256='a'*64)
+        controller._native_owners[owner]['workerProcesses']=dict(guardian=identity);calls=[]
+        with patch.object(controller,'_require_verified'),patch.object(owner,'_owned_worker',side_effect=self.remote(paths,calls)):
+            result=closure.abort_owned(root,adapters=owner,now=lambda:0)
+        self.assertEqual([payload for verb,payload in calls if verb=='process-stop'],[identity])
+        self.assertEqual([r for r in result['ownedProcesses'] if r['role']=='guardian'],[dict(role='guardian',identity=identity,state='stopped')])
+
+
 if __name__=='__main__':unittest.main()

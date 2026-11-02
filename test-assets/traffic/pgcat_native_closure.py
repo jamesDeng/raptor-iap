@@ -851,38 +851,40 @@ def stop_bound_process(identity,*,deadline):
 def abort_owned(run_dir,*,adapters,now):
     """Fixed Mac owner abort: independent cleanup attempts even before finish."""
     from pgcat_native_controller import NativeController,_write_bytes
-    from segmented_capture import assess_manifest
+    from pgcat_lane_protocol import Refused
+    import sqlite3
     require(type(adapters) is NativeController)
     original=adapters._abort_originals();require(Path(run_dir)==Path(original['bindings']['captureRoot']))
     run=Path(run_dir);run.mkdir(mode=0o700,exist_ok=True)
     prepared=original['prepared'];plan=None if prepared is None else prepared['plan']
     status='INCONCLUSIVE'
     try:
+        if adapters._retained_ordinary_status()=='FAIL':status='FAIL'
+    except (OSError,ValueError,KeyError,TypeError,AttributeError,sqlite3.Error,TimeoutError,subprocess.SubprocessError,Refused):pass
+    try:
         if adapters._worker_ordinary_status()=='FAIL':status='FAIL'
-    except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError):pass
+    except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError,Refused):pass
     processes=[];faults=[]
-    if getattr(adapters,'collector_attempted',False):
-        try:
-            recovered=adapters._recover_worker_processes()
-            for role,identity in recovered.items():
-                require(role in ('collector','guardian'))
-                previous=original['workerProcesses'].get(role);require(previous is None or previous==identity)
-            original=adapters._abort_originals()
-        except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError):faults.append(dict(phase='collector-launch',operation='recover-worker-identities',state='unavailable'))
+    if getattr(adapters,'collector_attempted',False) and any(role not in original['workerProcesses'] for role in ('collector','guardian')):
+        faults.append(dict(phase='collector-launch',operation='original-worker-identities',state='unavailable'))
     child=original['feed']
-    if child is None:processes.append(dict(role='feed',identity=None,state='never-started'))
+    if child is None:processes.append(dict(role='feed',identity=None,state='unknown' if original['feedAttempted'] else 'never-started'))
     else:
         identity=original['feedIdentity']
         # A retained Popen is necessary; a dict or a PID cannot grant kill authority.
-        if not isinstance(child,subprocess.Popen):processes.append(dict(role='feed',identity=identity,state='unknown'))
+        if type(child) is not subprocess.Popen:processes.append(dict(role='feed',identity=identity,state='unknown'))
         else:
             state='absent' if child.poll() is not None else 'unknown'
-            if child.poll() is None:
-                try:child.terminate();child.wait(timeout=1);state='stopped'
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    try:child.wait(timeout=1);state='stopped'
-                    except subprocess.TimeoutExpired:pass
+            try:
+                if child.poll() is None:
+                    try:child.terminate();child.wait(timeout=1);state='stopped'
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        try:child.wait(timeout=1);state='stopped'
+                        except subprocess.TimeoutExpired:pass
+            except OSError:state='unknown'
+            if identity is None:
+                state='unknown';faults.append(dict(phase='feed-start',operation='original-feed-binding',state='unavailable'))
             processes.append(dict(role='feed',identity=identity,state=state))
     for role in ('collector','guardian'):
         identity=original['workerProcesses'].get(role)
