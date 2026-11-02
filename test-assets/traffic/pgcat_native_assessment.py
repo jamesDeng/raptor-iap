@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import time
 from segmented_capture import canonical,sha,decode_private,open_directory,read_progress,read_frame
-from pgcat_native_ingress import require,exact,_identity,_Chain,validate_withdrawal_witness,validate_retirement_witness,instant,_result,_approval
+from pgcat_native_ingress import require,exact,_identity,_Chain,validate_withdrawal_witness,validate_retirement_witness,instant,_result,_approval,validate_causal_read
 
 
 def _original(run,artifact):
@@ -19,9 +19,11 @@ def _operation_assessment(chain,operation,ingresses):
     from capture_window import seconds
     progress,_,_=read_progress(chain.run/'native-capture',chain.context)
     pair,_=_coverage_prefix(chain,progress)
-    if chain.plan['executionKind']=='disabled-proof':return
     records=[_original(chain.run,a) for a in ingresses]
     final=[r for r,d in records if d==operation['ingressSha256']];require(len(final)==1);final=final[0]
+    if chain.plan['executionKind']=='disabled-proof':
+        causal=validate_causal_read(final,chain);require(causal['status']=='VERIFIED')
+        _causal_coverage(chain,progress,[causal]);return
     require(all(r['context']==final['context'] for r,d in records))
     execution=final['execution'];result=_result(execution['result'],chain.plan,operation['requestId'],execution['attemptId'])
     require(sha(canonical(result))==operation['resultSha256'] and pair==sorted(result['replacement']['newInstanceIds']))
@@ -45,27 +47,23 @@ def _operation_assessment(chain,operation,ingresses):
         require([e for e in events if e['sequence']<=witness['eventCursor']]==record['events'] and derived==pair)
         require(scales[1]['sequence']>witness['eventCursor'] and scales[1]['attemptId']!=witness['attemptId'] and witness['actionId']==result['replacement']['actions'][1]['actionId'])
         require(any(a['approvalId']==witness['approvalId'] and a['actionId']==witness['actionId'] and a['state']=='approved' for a in final['approvals']))
-        retiring.append(witness['frame'])
+        retiring.append(validate_causal_read(record,chain))
     require(retiring)
     require(any(_approval(dict(a,guidance=None),a['approvalId'],chain.plan,operation['requestId'],result)==a for a in final['approvals']))
-    # Complete baseline/discovered groups; pre-reduction sources are after restart.
-    groups={(r['node'],r['pool'],r['user']) for r in chain.baseline['metricGroups']};candidates=[]
-    originals=set(chain.plan['target']['originalInstanceIds']);after=instant(restart['occurredAt']);before=instant(scales[1]['occurredAt'])
+    _causal_coverage(chain,progress,retiring)
+
+
+def _causal_coverage(chain,progress,receipts):
+    """Every later discovered pool/user must also exist in the original read."""
     from pgcat_native_evidence import _replay
+    groups={(r['node'],r['pool'],r['user']) for r in chain.baseline['metricGroups']}
+    originals=set(chain.plan['target']['originalInstanceIds'])
     def visit(frame,ref):
-        metrics=frame['metrics'];raw=metrics['raw'];observed={(r['node'],r['pool'],r['user']) for r in raw if r['node'] in originals}
-        groups.update(observed)
-        if not metrics['available'] or not originals.issubset(metrics['nodes']) or not groups.issubset(observed):return
-        rows=[r for r in raw if r['node'] in originals]
-        from pgcat_pending_proof_worker import complete_metrics
-        complete_metrics(frame,metrics['nodes'],seconds(frame['at']))
-        # metrics.observedAt is an actual completion bound; frame.at is start.
-        if ref in retiring and after<seconds(metrics['observedAt'])<before and all(after<seconds(r['sourceAt'])<=seconds(metrics['observedAt']) for r in rows) and sum(r['value'] for r in rows)<=1:candidates.append(observed)
+        groups.update((r['node'],r['pool'],r['user']) for r in frame['metrics']['raw'] if r['node'] in originals)
     fd=open_directory(chain.run/'native-capture')
     try:_replay(fd,chain.context,progress['latest'],visit=visit)
     finally:os.close(fd)
-    require(any(groups<=candidate for candidate in candidates))
-    _timing_agreement(chain)
+    require(any(groups<={(r['node'],r['pool'],r['user']) for r in receipt['evidence']['samples']['metricGroups']} for receipt in receipts))
 
 
 def assess_native(run_dir):

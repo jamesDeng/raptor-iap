@@ -549,3 +549,63 @@ class NativeOwnershipCleaning(unittest.TestCase):
         self.assertNotIn('ownership',clean(value)['pods'][0])
         value=rolling(1);value['pods'][0]['ownership']['deploymentUid']={'secret':'never-retain'}
         self.assertIsNone(clean(value)['pods'][0]['ownership']['deploymentUid'])
+
+class TimestampCacheTests(unittest.TestCase):
+    def test_repeated_builtin_strings_use_bounded_success_cache(self):
+        import capture_window as module
+        self.assertTrue(hasattr(module,'_cached_timestamp'),'successful timestamp cache is missing')
+        module._cached_timestamp.cache_clear()
+        self.assertEqual(module.seconds('1970-01-01T00:00:00.123456789Z'),0.123456)
+        self.assertEqual(module.seconds('1970-01-01T00:00:00.123456789Z'),0.123456)
+        info=module._cached_timestamp.cache_info()
+        self.assertEqual((info.hits,info.misses),(1,1))
+        import datetime
+        origin=datetime.datetime(2000,1,1)
+        for i in range(4100):
+            module.seconds((origin+datetime.timedelta(seconds=i)).strftime('%Y-%m-%dT%H:%M:%S+0000'))
+        self.assertLessEqual(module._cached_timestamp.cache_info().currsize,4096)
+        module._cached_timestamp.cache_clear()
+
+    def test_parser_contract_and_non_builtin_values_remain_uncached(self):
+        import capture_window as module
+        class Timestamp(str): pass
+        module._cached_timestamp.cache_clear()
+        self.assertEqual(module.seconds('1970-01-01T01:00:00+01:00'),0.0)
+        self.assertEqual(module.seconds('1970-01-01T00:00:00.123456789Z'),0.123456)
+        for value in (2,2.5,True,float('inf'),float('nan'),Timestamp('1970-01-01T00:00:00Z')):
+            before=module._cached_timestamp.cache_info().hits, module._cached_timestamp.cache_info().misses
+            if value is True:
+                with self.assertRaises(TypeError) as raised:module.seconds(value)
+                self.assertIs(type(raised.exception),TypeError)
+            elif isinstance(value,float) and not value==value or value==float('inf'):
+                with self.assertRaises(ValueError):module.seconds(value)
+            else:
+                expected=0.0 if isinstance(value,Timestamp) else (2.0 if type(value) is int else 2.5)
+                result=module.seconds(value)
+                self.assertIs(type(result),float)
+                self.assertEqual(result,expected)
+            after=module._cached_timestamp.cache_info().hits, module._cached_timestamp.cache_info().misses
+            self.assertEqual(after,before)
+        with self.assertRaises(ValueError):module.seconds('not a timestamp')
+        cache_size=module._cached_timestamp.cache_info().currsize
+        long_fraction='1970-01-01T00:00:00.'+('1'*100)+'Z'
+        self.assertEqual(module.seconds(long_fraction),0.111111)
+        self.assertEqual(module._cached_timestamp.cache_info().currsize,cache_size)
+        misses=module._cached_timestamp.cache_info().misses
+        with self.assertRaises(ValueError):module.seconds('not a timestamp')
+        with self.assertRaises(ValueError):module.seconds('not a timestamp')
+        self.assertEqual(module._cached_timestamp.cache_info().misses,misses+2)
+        module._cached_timestamp.cache_clear()
+
+    def test_cached_timestamp_does_not_make_later_capture_fresh(self):
+        import capture_window as module
+        timestamp='1970-01-01T00:00:00Z'
+        module._cached_timestamp.cache_clear()
+        self.assertEqual(module.seconds(timestamp),0)
+        frames=[frame(0,0),frame(40,1)]
+        for item in frames:
+            item['inventory']['observedAt']=timestamp
+        result=assess(frames)
+        self.assertEqual(result['status'],'INCONCLUSIVE')
+        self.assertIn('stale provider inventory',result['reasons'])
+        module._cached_timestamp.cache_clear()

@@ -36,9 +36,16 @@ _manifest_anchors={}
 
 
 def runtime_admission(plan):
-    """Known native proof gap is refused before starting capture or enabling."""
+    """Source capability only; the owned run and flag gates require real qualification."""
     require(type(plan) is dict and plan.get('executionKind') in ('disabled-proof','native-replacement'))
-    if plan['executionKind']=='native-replacement':raise ValueError('ClockAgreementUnavailable')
+    if plan['executionKind']=='native-replacement':
+        from pgcat_source_bootstrap import require_verified,current_hashes
+        require_verified(__name__)
+        hashes=current_hashes();require('workerControl' in hashes)
+        assets,_=release_assets();validate_runtime_assets(assets,source_hashes=hashes)
+    if 'sourceHashes' in plan:
+        from pgcat_source_bootstrap import NATIVE_SOURCES
+        exact(plan['sourceHashes'],set(NATIVE_SOURCES));require(all(hashed(v) for v in plan['sourceHashes'].values()))
 
 
 def validate_runtime_assets(value,plan=None,source_hashes=None):
@@ -225,10 +232,13 @@ class FixedGatewayAdapters:
             'deployment/agent-gateway','-c','agent-gateway','--','/usr/local/bin/gateway','--idle-check'])==b'idle=true\n')
 
     def _enable_evidence(self):
-        # C4 must replace this with its actual retained qualification + current
-        # ready/source identity + quiesced owned-producer reads. No dict/boolean
-        # or historical receipt by shape can grant this authority.
-        raise ValueError('native enable qualification unavailable')
+        from worker_control import issued_gateway_job
+        job=issued_gateway_job(self)
+        require(job['action']=='native-gateway-enable')
+        verify_worker_qualification(job['qualification'],self.runtime_assets)
+        gateway_ready(self,job['readyFile'],now=time.time,initial=True)
+        self._idle()
+        return dict(readySha256=job['readyFile']['sha256'],qualificationSha256=sha_bytes(canonical(job['qualification']['qualification'])))
 
 
 def _observe(adapters,want,now,*,set_receipt=None):
@@ -285,6 +295,9 @@ def _set_receipt(value,want,at):
 
 def _transition(adapters,want,now):
     """The caller has durably fenced this action before the one set attempt."""
+    if hasattr(adapters,'job_deadline'):
+        from worker_control import native_transition
+        return native_transition(adapters,want,now)
     before=adapters._metadata();require(before['replacementEnabled'] is not want)
     receipt=decode_private(adapters._command([str(adapters.gate),'set','--expected',str(not want).lower(),'--set',str(want).lower()]))
     _set_receipt(receipt,want,now());require(receipt['resourceVersion']!=before['secretResourceVersion'])
@@ -300,9 +313,30 @@ def _transition(adapters,want,now):
     return receipt,runtime
 
 
+def validate_settlement(value,*,request_id):
+    """Typed settlement projection; validation alone grants no authority."""
+    require(type(value) is dict)
+    if value.get('kind')=='pre-create-reserved':
+        exact(value,{'kind','runId','planSha256','reservationSha256','ownerSha256','state'})
+        require(request_id is None and value['state']=='ABORTING');identifier(value['runId'])
+        require(all(hashed(value[k]) for k in ('planSha256','reservationSha256','ownerSha256')))
+    else:
+        exact(value,{'kind','raptorRequestId','attemptId','status','cleanup','recoveryNeeded','controlState'})
+        require(value['kind']=='bound-request' and request_id is not None and value['raptorRequestId']==request_id)
+        identifier(request_id);require(token(value['attemptId']) and value['status'] in ('completed','failed','cancelled') and
+            value['cleanup']=='confirmed' and value['recoveryNeeded'] is False and value['controlState']=='')
+    return decode_private(canonical(value))
+
+
 def _settlement(adapters):
     from pgcat_native_controller import FixedHTTP
-    require(adapters.plan['executionKind']=='native-replacement' and adapters.raptor_request_id is not None)
+    require(adapters.plan['executionKind']=='native-replacement')
+    if adapters.raptor_request_id is None:
+        from worker_control import issued_gateway_job
+        job=issued_gateway_job(adapters);settled=job['settlement']
+        validate_settlement(settled,request_id=None)
+        require(job['action']=='native-gateway-disable' and settled['runId']==adapters.run_id and settled['planSha256']==sha_bytes(canonical(adapters.plan)))
+        return settled
     request=adapters.raptor_request_id;identifier(request);chain=SimpleNamespace(plan=adapters.plan);calls=_Calls()
     http=FixedHTTP(adapters.plan);http.deadline=adapters.deadline
     auth={};bindings={}
@@ -318,7 +352,7 @@ def _settlement(adapters):
         require(execution['runtimeMode']=='live' and execution['stage']=='finished' and execution['status'] in ('completed','failed','cancelled') and
             execution['cleanup']=='confirmed' and execution['recoveryNeeded'] is False)
         require(control==dict(requestId=request,status=execution['status'],controlState=''))
-        return dict(raptorRequestId=request,attemptId=execution['attemptId'],status=execution['status'],cleanup='confirmed',recoveryNeeded=False,controlState='')
+        return dict(kind='bound-request',raptorRequestId=request,attemptId=execution['attemptId'],status=execution['status'],cleanup='confirmed',recoveryNeeded=False,controlState='')
     result=state();require(state()==result)
     for label in ('gateway','openapi'):
         current,binding=_credentials(chain,label,calls,adapters.reads.read);require(current==auth[label] and binding==bindings[label])
@@ -357,7 +391,8 @@ def gateway_disable(run_dir,*,adapters,now):
     require(type(adapters) is FixedGatewayAdapters)
     settled=_settlement(adapters);adapters._idle()
     before=adapters._metadata()
-    record=_action(adapters,run_dir,'native-gateway-disable',dict(raptorRequestId=adapters.raptor_request_id))
+    inputs=dict(raptorRequestId=adapters.raptor_request_id) if adapters.raptor_request_id is not None else dict(preCreateSettlement=settled)
+    record=_action(adapters,run_dir,'native-gateway-disable',inputs)
     if before['replacementEnabled']:
         receipt,runtime=_transition(adapters,False,now)
     else:
@@ -376,6 +411,7 @@ def gateway_enable(run_dir,*,adapters,now):
     require(all(hashed(v) for v in evidence.values()))
     record=_action(adapters,run_dir,'native-gateway-enable',evidence)
     receipt,runtime=_transition(adapters,True,now)
+    adapters._idle()
     return _seal_action(adapters,record,dict(status='VERIFIED',observedAt=runtime['observedAt'],setReceipt=receipt,runtime=_current(runtime)))
 
 
@@ -397,7 +433,10 @@ def validate_support(record,plan,action):
     if action=='native-gateway-enable':
         exact(inputs,{'readySha256','qualificationSha256'});require(all(hashed(v) for v in inputs.values()))
     else:
-        exact(inputs,{'raptorRequestId'});identifier(inputs['raptorRequestId'])
+        if 'raptorRequestId' in inputs:exact(inputs,{'raptorRequestId'});identifier(inputs['raptorRequestId'])
+        else:
+            exact(inputs,{'preCreateSettlement'});validate_settlement(inputs['preCreateSettlement'],request_id=None)
+            require(inputs['preCreateSettlement']['runId']==plan['runId'] and inputs['preCreateSettlement']['planSha256']==record['planSha256'])
     exact(out,{'status','observedAt','setReceipt','runtime'}|({'settlement'} if action=='native-gateway-disable' else set()))
     require(out['status']=='VERIFIED' and number(out['observedAt']))
     runtime=out['runtime'];exact(runtime,RUNTIME_KEYS)
@@ -416,10 +455,8 @@ def validate_support(record,plan,action):
     else:
         require(not want and proof==dict(kind='read-only-inspect'))
     if not want:
-        settled=out['settlement'];exact(settled,{'raptorRequestId','attemptId','status','cleanup','recoveryNeeded','controlState'})
-        require(settled['raptorRequestId']==inputs['raptorRequestId'] and token(settled['attemptId']) and
-            settled['status'] in ('completed','failed','cancelled') and settled['cleanup']=='confirmed' and
-            settled['recoveryNeeded'] is False and settled['controlState']=='')
+        settled=validate_settlement(out['settlement'],request_id=inputs.get('raptorRequestId'))
+        if 'preCreateSettlement' in inputs:require(settled==inputs['preCreateSettlement'])
     return decode_private(canonical(record))
 
 
@@ -1024,7 +1061,7 @@ def abort_owned(run_dir,*,adapters,now):
     try:
         proof=adapters._abort_gateway_false()
         if proof is not None:gateway='verified-disabled'
-    except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError):pass
+    except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError,Refused):pass
     unknown=dict(state='unknown',claimSha256=None,receiptSha256=None)
     worker=dict(unknown);local=dict(unknown)
     try:worker=adapters._cleanup_worker()
@@ -1138,7 +1175,7 @@ def diagnostic_worker_proof(run,payload):
         assessmentSha256=supports['native-verdict']['outputs']['assessmentSha256'],restoreSha256=sha_bytes(canonical(restored)),workerCleanupSha256=payload['workerCleanupSha256'])
 
 
-def _retained_diagnostic(root,assets):
+def _retained_diagnostic(root,assets,*,with_worker=False):
     """Mac originals and source-bound worker originals form one closed proof."""
     from pgcat_lane_protocol import Journal,private_json,digest
     from pgcat_native_controller import validate_prepared,verify_source_inventory
@@ -1188,16 +1225,58 @@ def _retained_diagnostic(root,assets):
     require(result.returncode==0 and len(result.stdout)<=32768)
     require(decode_private(result.stdout)==dict(schemaVersion=1,runId=plan['runId'],planSha256=digest(plan),runtimeAssetsSha256=sha_bytes(canonical(assets)),assessmentSha256=close['assessmentSha256'],restoreSha256=close['restoreSha256'],workerCleanupSha256=cleanup['outputs']['workerCleanupSha256']))
     require(_identity(root/'native-close.json')[1]==close_identity and _identity(journal.path,32*1024*1024)[1]==journal_identity)
-    return dict(proofRunId=plan['runId'],closeSha256=close_identity['sha256'],sourceBundleSha256=assets['sourceBundleSha256'],runtimeAssetsSha256=sha_bytes(canonical(assets)))
+    proof=dict(proofRunId=plan['runId'],closeSha256=close_identity['sha256'],sourceBundleSha256=assets['sourceBundleSha256'],runtimeAssetsSha256=sha_bytes(canonical(assets)))
+    return (proof,dict(workerRun=run,workerProof=payload)) if with_worker else proof
 
 
-def validate_native_qualification(root,assets):
+def validate_native_qualification(root,assets,*,with_worker=False):
     raw,identity=_identity(Path(root)/'native-qualification.json');value=decode_private(raw)
     require(raw==canonical(value))
     exact(value,{'schemaVersion','proofRunId','closeSha256','sourceBundleSha256','runtimeAssetsSha256','qualifiedAt'})
     require(type(value['schemaVersion']) is int and value['schemaVersion']==1 and number(value['qualifiedAt']) and value['qualifiedAt']<=time.time())
-    require({k:value[k] for k in ('proofRunId','closeSha256','sourceBundleSha256','runtimeAssetsSha256')}==_retained_diagnostic(root,assets))
-    require(_identity(Path(root)/'native-qualification.json')==(raw,identity));return value
+    retained=_retained_diagnostic(root,assets,with_worker=with_worker)
+    require({k:value[k] for k in ('proofRunId','closeSha256','sourceBundleSha256','runtimeAssetsSha256')}==(retained[0] if with_worker else retained))
+    require(_identity(Path(root)/'native-qualification.json')==(raw,identity))
+    return dict(retained[1],qualification=value,qualificationFile=identity) if with_worker else value
+
+
+def verify_worker_qualification(bundle,assets):
+    exact(bundle,{'workerRun','workerProof','qualification','qualificationFile'})
+    from pgcat_native_controller import file_identity
+    file_identity(bundle['qualificationFile']);q=bundle['qualification']
+    require(sha_bytes(canonical(q))==bundle['qualificationFile']['sha256'])
+    exact(q,{'schemaVersion','proofRunId','closeSha256','sourceBundleSha256','runtimeAssetsSha256','qualifiedAt'})
+    require(q['schemaVersion']==1 and q['sourceBundleSha256']==assets['sourceBundleSha256'] and q['runtimeAssetsSha256']==sha_bytes(canonical(assets)))
+    # qualifiedAt is retained Mac metadata, not a worker-clock freshness gate.
+    require(hashed(q['closeSha256']) and number(q['qualifiedAt']))
+    payload=bundle['workerProof'];require(payload['plan']['executionKind']=='disabled-proof' and payload['plan']['runId']==q['proofRunId'])
+    read_runtime_assets(bundle['workerRun'],payload['plan'],original=payload['prepared']['runtimeAssetsFile'])
+    require(payload['prepared']['runtimeAssetsFile']['sha256']==q['runtimeAssetsSha256'])
+    result=diagnostic_worker_proof(Path(bundle['workerRun']),payload)
+    require(result['runId']==q['proofRunId'] and result['runtimeAssetsSha256']==q['runtimeAssetsSha256'])
+    return q
+
+
+def gateway_ready(adapters,ready_file,*,now,initial):
+    """Fresh baseline pair and live owned producers; initial false proof stays immutable."""
+    from pgcat_native_ingress import _Chain,_action_gate,_ready_pair,_fleet,instant
+    require(now()<instant(adapters.plan['deadline']['mutationCutoff']))
+    from pgcat_collector_control import process_identity
+    from types import SimpleNamespace
+    chain=_Chain(adapters.run,retain=True)
+    try:
+        require(chain.files['ready'][1]==ready_file and chain.plan==adapters.plan)
+        gate=SimpleNamespace(admission=lambda action:dict(localRequestId=adapters.action_id,runId=adapters.run_id,
+            planSha256=chain.context['planSha256'],readySha256=chain.ready_sha,feedBindingSha256=chain.ready['feedBindingSha256'],deadlineMonotonic=adapters.deadline),
+            probe_process=process_identity,live_clients=adapters.reads.live_clients,gateway_disabled=lambda:runtime_proof(adapters.run,adapters=adapters,now=now))
+        state=_action_gate(chain,gate,_Calls(),adapters.reads.read,now,'native-ingress',initial=initial)
+        from segmented_capture import read_progress
+        _,previous,latest=read_progress(adapters.run/'native-capture',chain.context)
+        _ready_pair([previous,latest],chain.baseline,chain.context,now())
+        _fleet({k:state['inventory'][k] for k in chain.baseline['fleet']},chain.plan['target']['originalInstanceIds'])
+        chain.unchanged();adapters._check()
+        return dict(readySha256=chain.ready_sha,observedAt=now(),latest=state['progress']['latest'])
+    finally:chain.close()
 
 
 def seal_native_qualification(controller):

@@ -22,6 +22,114 @@ def assets_for(p):
         application={k:p['application'][k] for k in ('namespace','name','uid','imageDigest')})
 
 
+class CaptureEnvelopeTests(unittest.TestCase):
+    def test_native_and_disabled_admit_only_bounded_capture_plans_and_templates(self):
+        import pgcat_native_ingress as ingress
+        for kind in ('native-replacement','disabled-proof'):
+            for cap,valid in ((74,False),(75,True),(899,True),(900,True),(901,False),
+                              (5400,False),(5401,False),(True,False),(900.0,False)):
+                value=plan(kind);value['deadline']['captureMaxSeconds']=cap
+                template={k:v for k,v in value.items() if k not in ('runId','baselineSha256')}
+                for validate,source in ((ingress.validate_plan,value),(controller.validate_template,template)):
+                    with self.subTest(kind=kind,cap=cap,validator=validate.__name__):
+                        if valid:self.assertEqual(validate(source),source)
+                        else:
+                            with self.assertRaises(ValueError):validate(source)
+
+    def test_oversized_templates_refuse_before_preflight_or_preparation_effects(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder).resolve();root.chmod(0o700)
+            template_file=root/'template.json';preflight=root/'preflight.json';write(preflight,{})
+            for kind in ('native-replacement','disabled-proof'):
+                for cap in (901,5400):
+                    value=plan(kind);value['deadline']['captureMaxSeconds']=cap
+                    write(template_file,{k:v for k,v in value.items() if k not in ('runId','baselineSha256')})
+                    owner=object.__new__(controller.NativeController)
+                    owner.prepared=owner.client=owner.feed=None
+                    owner.bindings=dict(laneBindings={k:value[k] for k in ('executionKind','target','sourceHashes')})
+                    owner.binding_sha='a'*64
+                    with self.subTest(kind=kind,cap=cap),patch.object(controller,'_closed'),patch.object(controller,'_require_verified'),patch.object(owner,'_gateway_qualification'),patch.object(controller,'validate_preflight',side_effect=AssertionError('oversized template passed admission')) as late,patch('subprocess.run',side_effect=AssertionError('command')),patch('subprocess.Popen',side_effect=AssertionError('spawn')):
+                        with self.assertRaises(ValueError):owner.prepare(template_file,preflight)
+                        late.assert_not_called()
+
+    def test_source_owned_provider_launch_keeps_fifteen_second_cadence(self):
+        import ast
+        tree=ast.parse(Path(controller.__file__).read_text())
+        method=next(node for node in ast.walk(tree) if isinstance(node,ast.FunctionDef) and node.name=='start_capture')
+        argv=next(node.value for node in ast.walk(method) if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id=='argv' for target in node.targets))
+        interval=next(i for i,node in enumerate(argv.elts) if isinstance(node,ast.Constant) and node.value=='--interval')
+        maximum=next(i for i,node in enumerate(argv.elts) if isinstance(node,ast.Constant) and node.value=='--max-seconds')
+        self.assertEqual(ast.literal_eval(argv.elts[interval+1]),'15')
+        self.assertEqual(ast.dump(argv.elts[maximum+1]),ast.dump(ast.parse('str(cap)',mode='eval').body))
+        cap_assignment=next(node for node in ast.walk(method) if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id=='cap' for target in node.targets))
+        self.assertEqual(ast.dump(cap_assignment.value),ast.dump(ast.parse('capture_budget(plan,capture_started)',mode='eval').body))
+        from pgcat_native_ingress import instant
+        value=plan();self.assertEqual(controller.capture_budget(value,instant(value['deadline']['mutationCutoff'])-60),900)
+
+    def test_full_capture_publications_fit_history_including_final_boundary(self):
+        import provider_feed as provider
+        for cap in (75,899,900):
+            for read_seconds,write_seconds,oversleep in ((0.,0.,0.),(7.,6.9,0.),(1.,1.,3.)):
+                clock=[0.];ticks=[];published=[];stops=[]
+                def read(*,deadline):
+                    ticks.append(clock[0]);clock[0]+=read_seconds;return len(ticks)
+                def write(value,*,deadline):
+                    published.append(value);clock[0]+=write_seconds
+                def sleep(delay):clock[0]+=delay+oversleep
+                def stop():stops.append(clock[0]);return False
+                with self.subTest(cap=cap,read=read_seconds,write=write_seconds,oversleep=oversleep):
+                    provider.run_loop(read,write,interval=15,max_seconds=cap,monotonic=lambda:clock[0],sleep=sleep,stop=stop)
+                    self.assertLessEqual(len(published),60)
+                    self.assertEqual(published,list(range(1,len(ticks)+1)))
+                    self.assertTrue(all(b-a>=15 for a,b in zip(ticks,ticks[1:])))
+                    self.assertTrue(all(tick<cap for tick in ticks))
+                    self.assertGreaterEqual(stops[-1],cap)
+                    if read_seconds==write_seconds==oversleep==0:
+                        self.assertEqual(ticks,list(range(0,cap,15)))
+                        self.assertEqual(len(published),(cap+14)//15)
+        # An incomplete tick at exactly the original end cannot publish.
+        clock=[0.];published=[]
+        def read_at_end(*,deadline):clock[0]=900.;return {}
+        with self.assertRaises(provider.FeedStop):
+            provider.run_loop(read_at_end,lambda value,**kw:published.append(value),interval=15,max_seconds=900,monotonic=lambda:clock[0])
+        self.assertEqual(published,[])
+
+    def test_one_ingress_opportunity_per_publication_cannot_replay_consumed_tick(self):
+        import pgcat_workbench_lane as lane
+        from pgcat_lane_supervisor import LaneSupervisor
+        from pgcat_lane_protocol import Refused
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder).resolve();root.chmod(0o700)
+            owner=object.__new__(LaneSupervisor);owner.bindings=dict(laneIntentDir=str(root))
+            session='11111111-1111-4111-8111-111111111111'
+            for sequence in range(1,61):
+                request=dict(feedSession=session);receipt=dict(sequence=sequence)
+                owner._unused(request,receipt)
+                lane.consume_intent(str(root),session,sequence)
+                with self.assertRaises(Refused):owner._unused(request,receipt)
+                with self.assertRaises(lane.Refused):lane.consume_intent(str(root),session,sequence)
+            self.assertEqual(len(list(root.iterdir())),60)
+
+    def test_original_history_retains_exact_hundred_bound_and_identity_checks(self):
+        import pgcat_native_ingress as ingress
+        from test_pgcat_native_ingress import file_record
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder).resolve();root.chmod(0o700)
+            chain=SimpleNamespace(run=root,plan=plan(),context=dict(planSha256='a'*64),ready_sha='b'*64)
+            prior=None
+            for index in range(1,102):
+                record=dict.fromkeys(ingress.RECORD_KEYS)
+                record.update(schemaVersion=2,runId=chain.plan['runId'],executionKind=chain.plan['executionKind'],planSha256='a'*64,readySha256='b'*64,priorIngress=prior)
+                name='native-ingress-%04d.json'%index;write(root/name,record)
+                prior=dict(basename=name,identity=file_record(root/name))
+                if index in (60,100):self.assertEqual(len(ingress._ingress_history(chain,prior)),index)
+                if index==60:
+                    forged=copy.deepcopy(prior);forged['identity']['inode']+=1
+                    with self.assertRaises(ValueError):ingress._ingress_history(chain,forged)
+            with self.assertRaises(ValueError):ingress._ingress_history(chain,prior)
+
+
 class AdmissionTests(unittest.TestCase):
     def test_full_stable_manifest_and_fresh_baseline_projection(self):
         p=plan();assets=assets_for(p)
@@ -54,7 +162,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_native_blocker_precedes_any_effect_even_with_valid_assets(self):
         with patch('subprocess.Popen',side_effect=AssertionError('spawn')),patch('subprocess.run',side_effect=AssertionError('command')):
-            with self.assertRaisesRegex(ValueError,'ClockAgreementUnavailable'):closure.runtime_admission(plan())
+            with self.assertRaises(ValueError):closure.runtime_admission(plan())
         self.assertIsNone(closure.runtime_admission(plan('disabled-proof')))
 
     def test_missing_or_summary_only_qualification_cannot_qualify(self):
@@ -102,9 +210,10 @@ for action in ACTIONS|{'native-gateway-enable','native-gateway-disable'}:
  except Refused:pass
  else:raise AssertionError('opened action')
 for action in NATIVE_ACTIONS|NATIVE_RESERVED:
- try:_release_admission(plan['mode'],action,kind='native-replacement')
- except Refused:pass
- else:raise AssertionError('opened native')
+ if action in {'native-gateway-enable','native-gateway-disable'}:
+  try:_release_admission(plan['mode'],action,kind='native-replacement')
+  except Refused:pass
+  else:raise AssertionError('opened reserved native support')
  try:ActionCatalog.command(action,dict(mode=plan['mode'],executionKind='native-replacement'))
  except Refused:pass
  else:raise AssertionError('native catalog bypass')
@@ -344,6 +453,13 @@ print('DIAGNOSTIC-ONLY')
                 with patch.object(closure.subprocess,'run',side_effect=transport):
                     qualified=closure.seal_native_qualification(owner)
                     self.assertEqual(closure.validate_native_qualification(root,assets),qualified)
+                    bundle=closure.validate_native_qualification(root,assets,with_worker=True)
+                    self.assertEqual(bundle['qualification'],qualified)
+                    self.assertEqual(closure.verify_worker_qualification(bundle,assets),qualified)
+                    bad=copy.deepcopy(bundle);bad['workerProof']['prepared']['baselineFile']['inode']+=1
+                    with self.assertRaises(ValueError):closure.verify_worker_qualification(bad,assets)
+                    bad=copy.deepcopy(bundle);bad['qualification']['sourceBundleSha256']='0'*64
+                    with self.assertRaises(ValueError):closure.verify_worker_qualification(bad,assets)
                     for original in (root/'native-restoration-provider.json',f.run/'native-restoration-provider.json'):
                         raw=original.read_bytes();held=original.with_name('held-provider.json');original.rename(held)
                         original.write_bytes(raw);original.chmod(0o600)
@@ -368,6 +484,8 @@ print('DIAGNOSTIC-ONLY')
         root,f,j,_,_=helper.journal()
         handoff=dict(schemaVersion=1,runId=f.plan['runId'],planSha256=hashlib.sha256(canonical(f.plan)).hexdigest(),requestId=REQUEST)
         write(root/'native-created-request.json',handoff)
+        with j._transaction() as db:
+            db.execute('INSERT INTO native_create VALUES (1,?,?)',('DISPATCHING',canonical(dict(runId=f.plan['runId'],planSha256=handoff['planSha256'],reservationId=REQUEST)).decode()))
         with patch.object(protocol,'_release_admission'):
             self.assertEqual(j.claim_native_request(),REQUEST)
             self.assertEqual(j.native_request()['handoff'],handoff)
