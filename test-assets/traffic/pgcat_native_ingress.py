@@ -958,7 +958,8 @@ def resource_scope(value,plan):
     from collections import OrderedDict
     fields={'envCode','proxyCode','groupId','serverGroupId','targetDbCode','application','accountId','region','listenerId','port','databaseResourceId','resolutionDigest'}
     exact(value,fields);app=value['application'];exact(app,{'envCode','appCode','clusterId','namespace','name','uid'})
-    require(all(token(value[k]) for k in fields-{'application','port','resolutionDigest'}) and all(token(v) for v in app.values()))
+    require(all(token(value[k]) for k in fields-{'application','port','resolutionDigest','listenerId'}) and all(token(v) for v in app.values()))
+    require(token(value['listenerId']) or (type(value['listenerId']) is str and re.fullmatch(r'lsn-[a-z0-9]{1,64}@6432',value['listenerId']) is not None))
     require(type(value['port']) is int and value['port']==6432 and hashed(value['resolutionDigest']))
     t=plan['target'];require((value['accountId'],value['region'],value['groupId'],value['serverGroupId'])==(t['accountId'],t['regionId'],t['scalingGroupId'],t['nlbServerGroupId']))
     selected=plan['plannedInput'];require(value['envCode']==app['envCode']==selected['envCode'] and value['proxyCode']==selected['object']['code'])
