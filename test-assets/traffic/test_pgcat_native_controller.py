@@ -461,6 +461,120 @@ class NativeCaptureContextTests(unittest.TestCase):
             with self.assertRaises(ValueError):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
             self.assertFalse((f.run/'native-ready.json').exists())
 
+class NativeProviderSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        import provider_feed as provider
+        from test_provider_feed import FeedTests
+        self.provider=provider
+        self.controller=object.__new__(native.NativeController)
+        self.controller.bindings={'laneBindings':{'aliyunCli':'/offline/aliyun',
+            'target':{'accountId':'offline-account','scalingGroupId':provider.GROUP_ID}}}
+        self.controller.feed=None
+        pages,group,ecs,nlb=FeedTests().fixture()
+        group.update(ScalingGroupId=provider.GROUP_ID,MinSize=2,MaxSize=4)
+        for page in pages:
+            for member in page['ScalingInstances']['ScalingInstance']:
+                member['ScalingGroupId']=provider.GROUP_ID
+        for server in nlb['Servers']:server['ServerGroupId']=provider.SERVER_GROUP_ID
+        nlb['Listener'].update(ListenerId=provider.LISTENER_ID,ServerGroupId=provider.SERVER_GROUP_ID)
+        health=nlb['Health']['ListenerHealthStatus'][0]
+        health['ListenerId']=provider.LISTENER_ID
+        health['ServerGroupInfos'][0]['ServerGroupId']=provider.SERVER_GROUP_ID
+        self.pages=pages
+        self.responses={('sts','GetCallerIdentity'):{'AccountId':'offline-account'},
+            ('ess','DescribeScalingActivities'):{'TotalCount':0,'RequestId':'offline-request','PageSize':50,'PageNumber':1},
+            ('ess','DescribeScalingGroups'):{'TotalCount':1,'PageNumber':1,'ScalingGroups':{'ScalingGroup':[group]}},
+            ('ecs','DescribeInstances'):{'TotalCount':2,'PageNumber':1,'Instances':{'Instance':list(ecs.values())}},
+            ('nlb','ListServerGroupServers'):{'TotalCount':2,'Servers':nlb['Servers']},
+            ('nlb','GetListenerAttribute'):nlb['Listener'],
+            ('nlb','GetListenerHealthStatus'):nlb['Health']}
+        self.calls=[]
+        self.raw_responses={};self.returncode=0
+
+    def cli(self,argv,**kwargs):
+        from types import SimpleNamespace
+        self.assertEqual(argv[0],'/offline/aliyun')
+        self.assertEqual(argv[3:7],['--profile','infra-ops-poc','--region','ap-southeast-1'])
+        self.assertGreater(kwargs['timeout'],0)
+        self.assertLessEqual(kwargs['timeout'],10)
+        self.calls.append(argv)
+        key=tuple(argv[1:3]);options=dict(zip(argv[7::2],argv[8::2]))
+        if key==('ess','DescribeScalingActivities'):
+            self.assertEqual(options,{'--ScalingGroupId':self.provider.GROUP_ID,'--StatusCode':'InProgress','--PageNumber':'1','--PageSize':'50'})
+        if key==('ess','DescribeScalingInstances'):
+            body=self.pages[int(options['--PageNumber'])-1]
+        else:body=self.responses[key]
+        return SimpleNamespace(returncode=self.returncode,
+            stdout=self.raw_responses.get(key,json.dumps(body,ensure_ascii=False).encode('utf-8')))
+
+    def snapshot(self):
+        with patch.object(native.subprocess,'run',side_effect=self.cli):
+            return self.controller._provider_snapshot()
+
+    def test_zero_activity_omitted_list_reaches_validated_fleet_snapshot(self):
+        value=self.snapshot()
+        self.assertEqual(value['desired'],2)
+        self.assertEqual(value['members'],['i-0','i-1'])
+        self.assertEqual(value['healthyRegistered'],['i-0','i-1'])
+        self.assertEqual(value['privateAddresses'],{'i-0':'10.0.0.1','i-1':'10.0.0.2'})
+
+    def test_zero_activity_present_empty_list_remains_valid(self):
+        self.responses[('ess','DescribeScalingActivities')]['ScalingActivities']={'ScalingActivity':[]}
+        self.assertEqual(self.snapshot()['members'],['i-0','i-1'])
+
+    def test_provider_json_accepts_valid_utf8_instance_name(self):
+        self.responses[('ess','DescribeScalingActivities')]['ScalingActivities']={'ScalingActivity':[]}
+        self.responses[('ecs','DescribeInstances')]['Instances']['Instance'][0]['InstanceName']='数据库代理'
+        self.assertEqual(self.snapshot()['members'],['i-0','i-1'])
+
+    def test_provider_json_rejects_invalid_utf8_and_oversized_output(self):
+        for raw in (b'{"AccountId":"offline-account","Name":"\xff"}',b' '* (2*1024*1024+1)):
+            with self.subTest(raw_length=len(raw)):
+                self.raw_responses[('sts','GetCallerIdentity')]=raw
+                with self.assertRaises(ValueError):self.snapshot()
+        self.raw_responses.clear();self.returncode=1
+        with self.assertRaises(ValueError):self.snapshot()
+
+    def test_optional_activity_list_never_relaxes_exact_zero_count(self):
+        for count in (1,-1,True,False,None,0.0,'0',[],{}):
+            for present in (False,True):
+                with self.subTest(count=count,present=present):
+                    body={'TotalCount':count}
+                    if present:body['ScalingActivities']={'ScalingActivity':[]}
+                    self.responses[('ess','DescribeScalingActivities')]=body
+                    with self.assertRaises((ValueError,KeyError)):self.snapshot()
+        for body in ({},{'ScalingActivities':{'ScalingActivity':[]}}):
+            self.responses[('ess','DescribeScalingActivities')]=body
+            with self.assertRaises((ValueError,KeyError)):self.snapshot()
+
+    def test_present_activity_wrapper_must_contain_empty_list(self):
+        for wrapper in (None,[],{},'invalid',{'ScalingActivity':None},{'ScalingActivity':{}},
+                        {'ScalingActivity':''},{'ScalingActivity':[{}]}):
+            with self.subTest(wrapper=wrapper):
+                self.responses[('ess','DescribeScalingActivities')]={'TotalCount':0,'ScalingActivities':wrapper}
+                with self.assertRaises((ValueError,TypeError,KeyError)):self.snapshot()
+
+    def test_omitted_activity_list_preserves_account_group_and_fleet_guards(self):
+        original=copy.deepcopy(self.responses)
+        for case in ('account','desired','minimum','maximum','fleet'):
+            with self.subTest(case=case):
+                self.responses=copy.deepcopy(original)
+                if case=='account':self.responses[('sts','GetCallerIdentity')]['AccountId']='foreign'
+                elif case=='fleet':self.pages[0]['ScalingInstances']['ScalingInstance'][0]['ScalingGroupId']='foreign'
+                else:
+                    key={'desired':'DesiredCapacity','minimum':'MinSize','maximum':'MaxSize'}[case]
+                    self.responses[('ess','DescribeScalingGroups')]['ScalingGroups']['ScalingGroup'][0][key]=3
+                with self.assertRaises((ValueError,self.provider.FeedStop)):self.snapshot()
+
+    def test_snapshot_refuses_active_feed_and_expired_read_deadline_before_cli(self):
+        self.controller.feed=object()
+        with self.assertRaises(ValueError):self.snapshot()
+        self.controller.feed=None
+        with patch.object(native.time,'monotonic',side_effect=[0.,30.]):
+            with self.assertRaises(ValueError):self.snapshot()
+        self.assertEqual(self.calls,[])
+
+
 class NativeProfileTests(unittest.TestCase):
     def test_capture_cap_reserves_hold_and_closure_and_refuses_after_cutoff(self):
         self.assertTrue(hasattr(native,'capture_budget'),'native closure budget missing')
