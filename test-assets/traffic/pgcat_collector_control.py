@@ -315,7 +315,7 @@ def capture_arguments(run,*,profile='no-scale'):
 
 
 def completion(run,*,profile='no-scale'):
-    if profile==NATIVE_MODE:raise ValueError('native closure not implemented')
+    if profile==NATIVE_MODE:return native_completion(run)
     output,seconds,_,_=profile_values(profile)
     job=directory(run/'collector-job')
     try:intent_profile(decode(read(job,'intent.json')),profile)
@@ -617,3 +617,22 @@ def native_boundary_completion(run,context,operation,terminal,inventory,progress
         require(read_private(fd,'boundary-completed.json')==completed_raw)
         return dict(boundaryRequestId=request['requestId'],receiptSha256=sha(raws['receipt']),boundaryCompletedSha256=sha(completed_raw))
     finally:os.close(capture);os.close(fd)
+
+
+def native_completion(run):
+    from pgcat_native_ingress import _identity,require
+    from segmented_capture import decode_private,sha,read_progress
+    from pgcat_native_evidence import validate_context,_replay
+    run=Path(run);raw,_=_identity(run/'native-capture'/'completion.json',2*1024*1024);m=decode_private(raw)
+    require(type(m['version']) is int and m['version']==1 and m['completed'] is True and m['cancelled'] is False and type(m['missingPollCount']) is int and m['missingPollCount']==0 and m['errors']==[])
+    job=directory(run/'collector-job')
+    try:started=decode(read(job,'intent.json'));intent_profile(started,NATIVE_MODE)
+    finally:os.close(job)
+    require(m['maxTotalSeconds']==started['captureMaxSeconds'] and type(m['pollSeconds']) is int and m['pollSeconds']==1 and m['maxSegmentSeconds']==1800)
+    context=validate_context(decode_private(_identity(run/'native-context.json')[0]));progress,_,_=read_progress(run/'native-capture',context)
+    fd=directory(run/'native-capture')
+    try:snapshot,count,_=_replay(fd,context,progress['latest'])
+    finally:os.close(fd)
+    require(snapshot==progress['nativeCohort'] and count==progress['committedFrames'] and not any(snapshot['flags'].values()) and not snapshot['startingPods'])
+    require(len(snapshot['cohort'])==4 and all(r['finalFrame'] is not None for r in snapshot['cohort']))
+    return sha(raw)

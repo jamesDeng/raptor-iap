@@ -211,16 +211,18 @@ class LaneClient:
         with self.journal._connection() as db:
             stopped=db.execute('SELECT 1 FROM rehearsal_stop').fetchone() is not None
             native_stopped=db.execute('SELECT 1 FROM native_stop').fetchone() is not None
-        if native_stopped:require(self.mode=='full-replacement-direct-v2' and action=='native-finish','incomplete')
+        if native_stopped:require(self.mode=='full-replacement-direct-v2' and action in ('native-finish','native-verdict','native-restore'),'incomplete')
         if stopped:
             self._active();raise Refused('incomplete')
         require(action != 'rehearsal-finish','configuration')
         try:
             self._active()
             require(type(receipt) is dict, 'receipt')
-            identity, current, _ = lane.read_receipt(self.bindings['receiptPath'],
-                                                   receipt['feedSession'], receipt['sequence'],
-                                                   expected_mode='full-replacement-direct-v2' if self.mode=='full-replacement-direct-v2' else 'disabled-rehearsal')
+            if native_stopped:identity,current=self.journal.native_stopped_receipt(require_fresh=action=='native-finish')
+            else:
+                identity, current, _ = lane.read_receipt(self.bindings['receiptPath'],
+                                                       receipt['feedSession'], receipt['sequence'],
+                                                       expected_mode='full-replacement-direct-v2' if self.mode=='full-replacement-direct-v2' else 'disabled-rehearsal')
             require(current == receipt, 'receipt')
             request = dict(requestId=str(uuid.uuid4()), runId=self.run_id,
                 supervisorId=self.supervisor_id, action=action, feedSession=receipt['feedSession'],
@@ -262,6 +264,13 @@ class LaneClient:
         stopped=self.journal.native_stop(require_fresh=True)
         # The exact frozen successful receipt is read; no provider tick is requested.
         return self.call('native-finish',stopped['receipt'],float(monotonic()+5.),native_selector={})
+
+    def native_terminal_call(self,action):
+        from pgcat_lane_protocol import _release_admission,NATIVE_MODE
+        require(action in ('native-verdict','native-restore'),'configuration')
+        _release_admission(NATIVE_MODE,action);self._active()
+        stopped=self.journal.native_stop(require_fresh=False)
+        return self.call(action,stopped['receipt'],float(monotonic()+5.),native_selector={})
 
     def post_stop_call(self):
         """One fixed journal-derived finish; never refresh a frozen publication."""

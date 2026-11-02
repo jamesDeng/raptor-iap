@@ -218,7 +218,7 @@ class GatewayClosureTests(unittest.TestCase):
     def test_closure_is_in_full_sources_but_not_collector_context(self):
         import pgcat_collector_control as collector
         self.assertEqual(bootstrap.NATIVE_SOURCES['nativeClosure'],'pgcat_native_closure.py')
-        self.assertEqual(len(bootstrap.NATIVE_SOURCES),24);self.assertEqual(len(collector.NATIVE_SOURCES),12)
+        self.assertEqual(len(bootstrap.NATIVE_SOURCES),25);self.assertEqual(len(collector.NATIVE_SOURCES),12)
         self.assertNotIn('nativeClosure',bootstrap.SOURCES)
         ast.parse(Path(closure.__file__).read_text(),feature_version=(3,6))
 

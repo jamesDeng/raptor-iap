@@ -19,8 +19,8 @@ ACTIONS = frozenset(('baseline-start', 'baseline-status', 'pre-scale-start',
     'scaleout-two-to-three', 'pre-drain-proof', 'deregister-new-node',
     'zero-proof', 'scaling-activity-check', 'scalein-three-to-two'))
 NATIVE_MODE = 'full-replacement-direct-v2'
-NATIVE_ACTIONS = frozenset(('native-baseline','native-collector-launch','native-collector-status','native-ingress','native-disabled-restart','native-terminal-seal','native-reconcile','native-finish'))
-NATIVE_RESERVED = frozenset(('native-gateway-enable','native-gateway-disable','native-feed-stop','native-verdict','native-restore','native-cleanup'))
+NATIVE_ACTIONS = frozenset(('native-baseline','native-collector-launch','native-collector-status','native-ingress','native-disabled-restart','native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'))
+NATIVE_RESERVED = frozenset(('native-gateway-enable','native-gateway-disable','native-feed-stop','native-cleanup'))
 
 def native_action(action,kind):
     require(kind in ('native-replacement','disabled-proof') and action in NATIVE_ACTIONS)
@@ -569,6 +569,8 @@ class Journal:
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS native_stop (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1), proof TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS native_cleanup (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), claim TEXT NOT NULL, artifact TEXT);
                 CREATE TABLE IF NOT EXISTS native_support (
                 request_id TEXT PRIMARY KEY, proof TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS feed_manifest (
@@ -703,7 +705,7 @@ class Journal:
             if run['mode']==NATIVE_MODE:
                 plan=self._native_plan_in_tx(db);native_action(request['action'],plan['executionKind'])
                 stopped=db.execute('SELECT 1 FROM native_stop').fetchone() is not None
-                require(request['action']=='native-finish' if stopped else request['action']!='native-finish','incomplete')
+                require(request['action'] in ('native-finish','native-verdict','native-restore') if stopped else request['action'] not in ('native-finish','native-verdict','native-restore'),'incomplete')
             require(request['runId'] == run['run_id'])
             require(request['target'] == json.loads(run['target']), 'target')
             require(request['bundleSha256'] == json.loads(run['hashes'])['bundleSha256'], 'source')
@@ -902,22 +904,26 @@ class Journal:
                 if proof['action']=='native-collector-launch':ready=proof['outputs']
             require(ready is not None,'incomplete')
             envelope.update(readySha256=ready['readyFile']['sha256'],feedBindingSha256=ready['ready']['feedBindingSha256'])
-        elif action in ('native-terminal-seal','native-reconcile','native-finish'):
+        elif action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
             records=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support')]
             bound=[r for r in records if r['action']=='native-ingress' and r['outputs'].get('status')=='BOUND']
             require(bound,'incomplete');operation=bound[-1]['outputs']['operationFile']
             needed=() if action=='native-terminal-seal' else ('native-terminal-seal',) if action=='native-reconcile' else ('native-terminal-seal','native-reconcile')
+            if action in ('native-verdict','native-restore'):needed=('native-terminal-seal','native-reconcile','native-finish')+(('native-verdict',) if action=='native-restore' else ())+(('native-gateway-disable',) if action=='native-restore' and plan['executionKind']=='native-replacement' else ())
             supports={}
             for name in needed:
                 matches=[r for r in records if r['action']==name];require(len(matches)==1,'incomplete')
                 supports[name]=matches[0]['outputs']['artifact']
             envelope.update(operation=operation,supports=supports)
-            if action=='native-finish':
-                stopped=self._native_stop_in_tx(db,require_fresh=True);envelope['stopped']=stopped
+            if action in ('native-finish','native-verdict','native-restore'):
+                stopped=self._native_stop_in_tx(db,require_fresh=action=='native-finish');envelope['stopped']=stopped
                 from pgcat_lane_supervisor import receipt_identity
                 from pgcat_workbench_lane import read_receipt
                 manifest=bytes(db.execute('SELECT raw FROM feed_manifest').fetchone()['raw']);outer=json.loads(manifest)
-                identity,receipt,_=read_receipt(outer['laneBindings']['receiptPath'],stopped['receipt']['feedSession'],stopped['receipt']['sequence'],expected_mode=NATIVE_MODE)
+                identity,receipt=self._native_stopped_receipt_in_tx(db,require_fresh=action=='native-finish')
+                if action in ('native-verdict','native-restore'):
+                    finishes=[r for r in records if r['action']=='native-finish'];require(len(finishes)==1,'incomplete')
+                    envelope.update(stopArtifact=finishes[0]['outputs']['stopArtifact'],holdArtifact=finishes[0]['outputs']['holdArtifact'],ingresses=[r['outputs']['ingressFile'] for r in records if r['action']=='native-ingress'])
                 require(receipt==stopped['receipt'] and request['feedSession']==receipt['feedSession'] and request['minimumSequence']==receipt['sequence'] and request['receiptIdentity']==receipt_identity(identity),'receipt')
             else:require(db.execute('SELECT 1 FROM native_stop').fetchone() is None,'incomplete')
         elif action=='native-collector-launch':
@@ -934,6 +940,44 @@ class Journal:
         result=matches[0];support=validate_support(result['outputs']['support'],plan,action)
         require(support['requestId']==result['requestId'] and result['outputs']['artifact']['identity']['sha256']==digest(support),'source')
         return support
+
+    def claim_native_cleanup(self):
+        _release_admission(NATIVE_MODE,'native-cleanup')
+        from pgcat_native_controller import _write_bytes
+        with self._transaction() as db:
+            plan=self._native_plan_in_tx(db)
+            require(db.execute('SELECT state FROM run').fetchone()['state']=='active','incomplete')
+            assessment=self._native_record_in_tx(db,'native-verdict');restored=self._native_record_in_tx(db,'native-restore')
+            self._native_stop_in_tx(db)
+            require(db.execute('SELECT 1 FROM native_cleanup').fetchone() is None,'incomplete')
+            record=dict(schemaVersion=1,action='native-cleanup',runId=plan['runId'],executionKind=plan['executionKind'],planSha256=digest(plan),requestId=str(uuid.uuid4()),
+                inputs=dict(assessmentSha256=assessment['outputs']['assessmentSha256'],restoreSha256=digest(restored)))
+            identity=_write_bytes(self.root.parent/'native-cleanup.intent',encode(record))
+            proof=dict(record=record,identity=identity)
+            db.execute('INSERT INTO native_cleanup VALUES (1,?,NULL)',(encode(proof).decode(),))
+            return record
+
+    def record_native_cleanup(self,original):
+        from pgcat_native_ingress import _identity
+        from pgcat_native_closure import validate_support
+        with self._transaction() as db:
+            plan=self._native_plan_in_tx(db);row=db.execute('SELECT claim,artifact FROM native_cleanup').fetchone()
+            require(row is not None and row['artifact'] is None,'incomplete');claimed=json.loads(row['claim'])
+            raw,identity=_identity(self.root.parent/'native-cleanup.intent');require(raw==encode(claimed['record']) and identity==claimed['identity'],'source')
+            raw,identity=_identity(self.root.parent/'native-cleanup.json');require(identity==original,'source')
+            record=validate_support(json.loads(raw),plan,'native-cleanup')
+            require({k:v for k,v in record.items() if k!='outputs'}==claimed['record'],'source')
+            db.execute('UPDATE native_cleanup SET artifact=? WHERE singleton=1',(encode(dict(identity=identity,record=record)).decode(),))
+            return record
+
+    def _native_cleanup_in_tx(self,db):
+        from pgcat_native_ingress import _identity
+        from pgcat_native_closure import validate_support
+        plan=self._native_plan_in_tx(db);row=db.execute('SELECT claim,artifact FROM native_cleanup').fetchone()
+        require(row is not None and row['artifact'] is not None,'incomplete');proof=json.loads(row['artifact']);claim=json.loads(row['claim'])
+        raw,identity=_identity(self.root.parent/'native-cleanup.intent');require(identity==claim['identity'] and raw==encode(claim['record']),'source')
+        raw,identity=_identity(self.root.parent/'native-cleanup.json');require(identity==proof['identity'] and raw==encode(proof['record']),'source')
+        return validate_support(proof['record'],plan,'native-cleanup')
 
     def native_reconcile(self,*,required=True):
         with self._connection() as db:
@@ -963,6 +1007,20 @@ class Journal:
         validate_support(context['support'],plan,'native-feed-stop')
         require(context['support']['inputs']==dict(reconcileSha256=digest(reconcile)) and context['support']['outputs']==dict(intentSha256=digest(context['intent']),ackSha256=digest(context['ack']),finalReceiptSha256=digest(context['receipt']),feedExit=exited),'source')
         return context
+
+    def _native_stopped_receipt_in_tx(self,db,*,require_fresh=False):
+        from pgcat_native_ingress import _identity
+        from pgcat_workbench_lane import identity as stat_identity
+        context=self._native_stop_in_tx(db,require_fresh=require_fresh)
+        proof=json.loads(db.execute('SELECT proof FROM native_stop').fetchone()['proof'])
+        manifest=json.loads(bytes(db.execute('SELECT raw FROM feed_manifest').fetchone()['raw']))
+        path=Path(manifest['laneBindings']['receiptPath']);require(path.parent==self.root.parent,'source')
+        before=stat_identity(os.lstat(path));raw,current=_identity(path)
+        require(before==stat_identity(os.lstat(path))==tuple(proof['receiptStat']) and raw==encode(context['receipt']),'source')
+        return (before,raw),context['receipt']
+
+    def native_stopped_receipt(self,*,require_fresh=False):
+        with self._connection() as db:return self._native_stopped_receipt_in_tx(db,require_fresh=require_fresh)
 
     def native_stop(self,*,require_fresh=False):
         with self._connection() as db:return self._native_stop_in_tx(db,require_fresh=require_fresh)
@@ -1023,7 +1081,7 @@ class Journal:
             files['native-feed-stop.intent']=claimed['identity']
             files['native-feed-stop.json']=_write_bytes(root/'native-feed-stop.json',encode(support))
             context=dict(support=support,intent=intent,ack=ack,receipt=receipt,feedBinding=binding,feedExit=exited)
-            db.execute('INSERT INTO native_stop VALUES (1,?)',(encode(dict(context=context,files=files)).decode(),))
+            db.execute('INSERT INTO native_stop VALUES (1,?)',(encode(dict(context=context,files=files,receiptStat=list(__import__('pgcat_workbench_lane').identity(os.lstat(root/receipt_name))))).decode(),))
             require(self._native_stop_in_tx(db,require_fresh=True)==context,'source');return context
 
     def native_admission(self,request_id,*,claim=False):
@@ -1719,6 +1777,12 @@ class Journal:
             require(run is not None and run['state'] == 'active' and run['run_id'] == run_id)
             validate_finish_receipts(feed_exit, assessment, run['mode'])
             require(run['session'] in (None, feed_exit['feedSession']))
+            if run['mode']==NATIVE_MODE:
+                stopped=self._native_stop_in_tx(db);cleanup=self._native_cleanup_in_tx(db)
+                verdict=self._native_record_in_tx(db,'native-verdict');restored=self._native_record_in_tx(db,'native-restore')
+                require(cleanup['inputs']==dict(assessmentSha256=verdict['outputs']['assessmentSha256'],restoreSha256=digest(restored)),'source')
+                require(assessment['status']==verdict['outputs']['status'] and assessment['evidenceSha256']==digest(cleanup),'source')
+                self._verify_feed_closure(db,stopped['feedBinding'],feed_exit)
             if run['mode']=='no-scale':
                 record,raw=private_json(self.root/NO_SCALE_PROOF)
                 self._verify_feed_closure(db,record,feed_exit)

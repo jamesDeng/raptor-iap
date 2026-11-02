@@ -140,7 +140,7 @@ class LaneSupervisor:
             collectorControl=here/'pgcat_collector_control.py',
             laneTimingAssessor=here/'pgcat_lane_timing_assessor.py')
         if b.get('mode')=='full-replacement-direct-v2':
-            paths.update(nativeController=here/'pgcat_native_controller.py',nativeIngress=here/'pgcat_native_ingress.py',nativeEvidence=here/'pgcat_native_evidence.py',nativeClosure=here/'pgcat_native_closure.py')
+            paths.update(nativeController=here/'pgcat_native_controller.py',nativeIngress=here/'pgcat_native_ingress.py',nativeEvidence=here/'pgcat_native_evidence.py',nativeClosure=here/'pgcat_native_closure.py',nativeAssessment=here/'pgcat_native_assessment.py')
         for name,path in paths.items():
             require(not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == b['sourceHashes'][name],'source')
         self.bundle=hashlib.sha256(encode(b['sourceHashes'])).hexdigest()
@@ -187,8 +187,10 @@ class LaneSupervisor:
                 self.child=None
 
     def _receipt(self, req):
-        try: identity,value,_=lane.read_receipt(self.bindings['receiptPath'],req['feedSession'],req['minimumSequence'],
-            expected_mode='full-replacement-direct-v2' if self.bindings.get('mode')=='full-replacement-direct-v2' else 'disabled-rehearsal')
+        try:
+            if self.bindings.get('mode')=='full-replacement-direct-v2' and req['action'] in ('native-finish','native-verdict','native-restore'):
+                identity,value=self.journal.native_stopped_receipt(require_fresh=req['action']=='native-finish')
+            else:identity,value,_=lane.read_receipt(self.bindings['receiptPath'],req['feedSession'],req['minimumSequence'],expected_mode='full-replacement-direct-v2' if self.bindings.get('mode')=='full-replacement-direct-v2' else 'disabled-rehearsal')
         except lane.Refused: raise Refused('receipt') from None
         require(receipt_identity(identity) == req['receiptIdentity'],'receipt')
         return identity,value
@@ -428,7 +430,7 @@ class LaneSupervisor:
                 if req['action'] == 'scaleout-two-to-three': self._ess(req,receipt)
                 if req['action'] == 'deregister-new-node': self._nlb(req,receipt)
                 if req['action'] == 'scalein-three-to-two': self._scalein(req,receipt)
-                if req['action'] not in ('scaleout-two-to-three','deregister-new-node',
+                if req['action'] not in ('native-finish','native-verdict','native-restore','scaleout-two-to-three','deregister-new-node',
                                          'scalein-three-to-two'):
                     deadline=min(deadline,monotonic()+receipt['observedAt']+12-time.time())
                 env.update(PGCAT_LANE_SESSION=req['feedSession'],PGCAT_LANE_MIN_SEQUENCE=str(req['minimumSequence']))
@@ -477,7 +479,7 @@ class LaneSupervisor:
                 else:
                     payload=ActionCatalog.parse(req['action'],raw,req,receipt)
                 self._alive(); require(monotonic() < deadline,'timeout')
-                if req['action'] not in ('scaleout-two-to-three','deregister-new-node',
+                if req['action'] not in ('native-finish','native-verdict','native-restore','scaleout-two-to-three','deregister-new-node',
                                          'scalein-three-to-two'):
                     require(time.time() < receipt['observedAt']+12,'receipt')
                 self._cleanup()

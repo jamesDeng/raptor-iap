@@ -176,7 +176,8 @@ class FinalActionTests(unittest.TestCase):
         with patch.object(closure,'_source',return_value={}),patch.object(a.reads,'live_clients',side_effect=f.live_clients):
             terminal=closure.seal_terminal(f.run,adapters=a,now=lambda:f.now)
             a.supports['native-terminal-seal']=closure.support_artifact(f.run,'native-terminal-seal',adapters=a)
-            cm=dict(metadata=copy.deepcopy(f.baseline['configMap']),data={'targets.json':closure._targets(dict(a='10.1.0.1',b='10.1.0.2',c='10.1.0.1',d='10.1.0.2')).decode()})
+            addresses={r['id']:r['address'] for r in f.baseline['originals']};addresses.update(a._provider(lambda:f.now)[0]['privateAddresses'])
+            cm=dict(metadata=copy.deepcopy(f.baseline['configMap']),data={'targets.json':closure._targets(addresses).decode()})
             def patch_targets(before,new):
                 cm['data']['targets.json']=new.decode();cm['metadata']['resourceVersion']='2';return copy.deepcopy(cm)
             with patch.object(a.reads,'read',side_effect=lambda *args:copy.deepcopy(cm)),patch.object(a,'_patch_targets',side_effect=patch_targets):
@@ -214,7 +215,7 @@ class FinalActionTests(unittest.TestCase):
                 finals=[dict(uid=r['identity']['uid'],processId=r['identity']['processId'],frame=r['finalFrame']) for r in progress['nativeCohort']['cohort'] if r['identity']['uid'].startswith('new-')]
                 done=dict(schemaVersion=2,bindingSha256=progress['bindingSha256'],requestSha256=sha(canonical(request)),requestId=request['requestId'],startSha256=sha(canonical(start)),receiptSha256=sha(canonical(actual)),finalDurableMonotonic=time.monotonic(),finals=finals,lastFrame=progress['latest'],terminalSha256=terminal['outputs']['terminalSha256'],executionKind=f.plan['executionKind'],predecessorFinals=sealed['predecessorFinals'])
                 write(boundary/'boundary-completed.json',done);return actual
-            with patch.object(a.reads,'read',side_effect=lambda *args:copy.deepcopy(cm)),patch('finish_clients.finish',side_effect=finish) as mutation:
+            with patch.object(a.reads,'read',side_effect=lambda *args:copy.deepcopy(cm)),patch('finish_clients.finish',side_effect=finish) as mutation,patch.object(closure,'_worker_boot',return_value='boot'):
                 result=closure.finish_terminal(f.run,adapters=a,now=lambda:f.now)
                 self.assertEqual(result['outputs']['boundaryRequestId'],'d'*32);self.assertEqual(mutation.call_count,1)
                 with self.assertRaises((ValueError,OSError)):closure.finish_terminal(f.run,adapters=a,now=lambda:f.now)
@@ -254,7 +255,8 @@ class FinalActionTests(unittest.TestCase):
         with patch.object(closure,'_source',return_value={}),patch.object(a.reads,'live_clients',side_effect=f.live_clients):
             closure.seal_terminal(f.run,adapters=a,now=lambda:f.now)
             a.supports['native-terminal-seal']=closure.support_artifact(f.run,'native-terminal-seal',adapters=a)
-            cm=dict(metadata=copy.deepcopy(f.baseline['configMap']),data={'targets.json':closure._targets(dict(a='10.1.0.1',b='10.1.0.2',c='10.1.0.1',d='10.1.0.2')).decode()})
+            addresses={r['id']:r['address'] for r in f.baseline['originals']};addresses.update(a._provider(lambda:f.now)[0]['privateAddresses'])
+            cm=dict(metadata=copy.deepcopy(f.baseline['configMap']),data={'targets.json':closure._targets(addresses).decode()})
             reads=[]
             def read(*args):
                 reads.append(args)
@@ -417,6 +419,7 @@ class JournalClosureTests(unittest.TestCase):
                     result=j.record_native_stop();self.assertEqual(result,j.native_stop());
                     with patch.object(protocol.time,'time',return_value=receipt['observedAt']+120):
                         self.assertEqual(j.native_stop(),result)
+                        identity,frozen=j.native_stopped_receipt();self.assertEqual(frozen,receipt);self.assertEqual(identity[1],canonical(receipt))
                         with self.assertRaises(protocol.Refused):j.native_stop(require_fresh=True)
                     self.assertEqual(result['support']['requestId'],claim['requestId'])
                     with self.assertRaises(protocol.Refused):j.record_native_stop()

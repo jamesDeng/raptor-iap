@@ -14,6 +14,9 @@ import time
 
 MODE = 'full-replacement-direct-v2'
 
+import weakref
+_native_owners=weakref.WeakKeyDictionary()
+
 
 def check(value):
     if not value:raise ValueError('native startup')
@@ -546,9 +549,10 @@ def validate_action(plan,envelope,selector):
     action=envelope['action'];validate_selector(plan,action,selector)
     keys={'schemaVersion','action','localRequestId','runId','executionKind','planSha256','baselineSha256','feedBinding','deadlineMonotonic','prepared'}
     if action in ('native-ingress','native-disabled-restart'):keys|={'readySha256','feedBindingSha256'}
-    if action in ('native-terminal-seal','native-reconcile','native-finish'):
+    if action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
         keys|={'operation','supports'}
-        if action=='native-finish':keys|={'stopped'}
+        if action in ('native-finish','native-verdict','native-restore'):keys|={'stopped'}
+        if action in ('native-verdict','native-restore'):keys|={'stopArtifact','holdArtifact','ingresses'}
     exact(envelope,keys);check(type(envelope['schemaVersion']) is int and envelope['schemaVersion']==1)
     identifier(envelope['localRequestId']);check(envelope['runId']==plan['runId'] and envelope['executionKind']==plan['executionKind'])
     check(envelope['planSha256']==digest(plan) and envelope['baselineSha256']==plan['baselineSha256'] and number(envelope['deadlineMonotonic']))
@@ -559,13 +563,22 @@ def validate_action(plan,envelope,selector):
     if 'operation' in envelope:
         exact(envelope['operation'],{'basename','identity'});check(envelope['operation']['basename']=='native-operation-binding.json');file_identity(envelope['operation']['identity'])
         needed=set() if action=='native-terminal-seal' else {'native-terminal-seal'} if action=='native-reconcile' else {'native-terminal-seal','native-reconcile'}
+        if action in ('native-verdict','native-restore'):needed={'native-terminal-seal','native-reconcile','native-finish'}|({'native-verdict'} if action=='native-restore' else set())|({'native-gateway-disable'} if action=='native-restore' and plan['executionKind']=='native-replacement' else set())
         exact(envelope['supports'],needed)
         for name,artifact in envelope['supports'].items():
             exact(artifact,{'basename','identity'});check(artifact['basename']==name+'.json');file_identity(artifact['identity'])
-        if action=='native-finish':
+        if action in ('native-finish','native-verdict','native-restore'):
             from pgcat_native_closure import validate_support
             exact(envelope['stopped'],{'support','intent','ack','receipt','feedBinding','feedExit'})
             validate_support(envelope['stopped']['support'],plan,'native-feed-stop')
+        if action in ('native-verdict','native-restore'):
+            for key in ('stopArtifact','holdArtifact'):
+                exact(envelope[key],{'basename','identity'});file_identity(envelope[key]['identity'])
+            check(envelope['stopArtifact']['basename']=='native-feed-stop.json' and envelope['holdArtifact']['basename']=='native-finish-hold.json')
+            check(type(envelope['ingresses']) is list and 1<=len(envelope['ingresses'])<=100)
+            for artifact in envelope['ingresses']:
+                exact(artifact,{'basename','identity'});file_identity(artifact['identity'])
+                check(__import__('re').fullmatch(r'native-ingress-[0-9]{4}\.json',artifact['basename']))
 
 
 def stage_action(run,plan,envelope,selector):
@@ -652,12 +665,15 @@ def validate_action_result(value,plan,action,local_request):
         check(output['status']=='VERIFIED' and output['baselineSha256']==plan['baselineSha256']);file_identity(output['feedBindingFile'])
     elif action=='native-disabled-restart':
         exact(output,{'receipt','receiptFile'});file_identity(output['receiptFile']);check(output['receiptFile']['sha256']==digest(output['receipt']))
-    elif action in ('native-terminal-seal','native-reconcile','native-finish'):
+    elif action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
         from pgcat_native_closure import validate_support
-        exact(output,{'support','artifact'});support=validate_support(output['support'],plan,action)
+        exact(output,{'support','artifact'}|({'stopArtifact','holdArtifact'} if action=='native-finish' else set()));support=validate_support(output['support'],plan,action)
         check(support['requestId']==local_request);exact(output['artifact'],{'basename','identity'})
         check(output['artifact']['basename']==action+'.json');file_identity(output['artifact']['identity'])
         check(output['artifact']['identity']['sha256']==digest(support))
+        if action=='native-finish':
+            for key,name in [('stopArtifact','native-feed-stop.json'),('holdArtifact','native-finish-hold.json')]:
+                exact(output[key],{'basename','identity'});check(output[key]['basename']==name);file_identity(output[key]['identity'])
     else:raise ValueError('native action')
     return value
 
@@ -748,6 +764,11 @@ class NativeController:
         check(self.bindings['sourceHashes']=={k:b['sourceHashes'][k] for k in ('nativeController','client','runner')})
         check(self.bindings['workerInventory']==str(Path(b['remoteRun'])/'provider-inventory.json') and self.bindings['workerKubeconfig']==b['workerKubeconfig']==str(Path(b['remoteRun']).parent/'kubeconfig'))
         self.binding_sha=hashlib.sha256(raw).hexdigest();self.client=None;self.feed=None;self.prepared=None;self.receipt=None
+        self.owner_pid=os.getpid();self.mac_credential=credential_identity(self.bindings['localKubeconfig']);self.worker_credential=None
+        self.worker_processes={};self.collector_attempted=False;self.phase='startup';self.run_id=str(__import__('uuid').uuid4())
+        from segmented_capture import canonical,decode_private
+        check(len(_native_owners)<128)
+        _native_owners[self]=dict(pid=os.getpid(),bindings=canonical(self.bindings),runId=self.run_id,mac=decode_private(canonical(self.mac_credential)),worker=None,prepared=None,feed=None,feedIdentity=None,client=None,workerProcesses={})
 
     def _provider_snapshot(self):
         from types import SimpleNamespace
@@ -777,7 +798,7 @@ class NativeController:
         template,_=private_json(Path(plan_path));template=validate_template(template)
         b=self.bindings['laneBindings'];check(template['target']==b['target'] and template['sourceHashes']==b['sourceHashes'] and template['executionKind']==b['executionKind'])
         preflight,_=private_json(Path(preflight_path));validate_preflight(preflight,self.binding_sha,template,time.time())
-        local_credential=credential_identity(self.bindings['localKubeconfig']);run_id=str(uuid.uuid4());provider=self._provider_snapshot()
+        local_credential=self.mac_credential;self._require_abort_owner();check(local_credential==_native_owners[self]['mac']);verify_credential(local_credential);run_id=self.run_id;provider=self._provider_snapshot()
         parts=['python3','-I','-S','-c',ROOT,str(Path(b['remoteRun'])/'pgcat_source_bootstrap.py'),b['sourceHashes']['sourceBootstrap'],
             'nativeController',encode(b['sourceHashes']).decode(),'prepare',b['remoteRun'],run_id,encode(template).decode(),encode(provider).decode()]
         result=subprocess.run([b['workbenchCli'],'exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',' '.join(shlex.quote(p) for p in parts)],
@@ -792,11 +813,13 @@ class NativeController:
         for key in ('planFile','baselineFile','gatewayRuntimeFile'):file_identity(prepared[key])
         check(prepared['planFile']['sha256']==sha(canonical(plan)) and prepared['baselineFile']['sha256']==plan['baselineSha256']==sha(canonical(prepared['baseline'])))
         verify_credential(local_credential);validate_preflight(preflight,self.binding_sha,template,time.time())
+        _native_owners[self]['prepared']=canonical(prepared)
         capture=Path(self.bindings['captureRoot']);capture.mkdir(mode=0o700)
         Path(b['laneIntentDir']).mkdir(mode=0o700)
-        prepared['macCredential']=local_credential
-        _write_bytes(capture/'native-prepared.json',canonical(prepared));_write_bytes(capture/'native-plan.json',canonical(plan))
-        self.prepared=prepared;return prepared
+        check(_native_owners[self]['worker'] is None or _native_owners[self]['worker']==prepared['workerCredential'])
+        prepared['macCredential']=local_credential;self.worker_credential=prepared['workerCredential'];_native_owners[self]['worker']=decode_private(canonical(self.worker_credential))
+        self.prepared_identity=_write_bytes(capture/'native-prepared.json',canonical(prepared));self.local_plan_identity=_write_bytes(capture/'native-plan.json',canonical(plan))
+        self.prepared=prepared;_native_owners[self]['prepared']=canonical(prepared);return prepared
 
     def _receipt(self,minimum=1):
         from pgcat_lane_supervisor import read_json
@@ -838,7 +861,7 @@ class NativeController:
         plan=prepared['plan'];verify_credential(prepared['macCredential']);b=self.bindings['laneBindings']
         try:
             anchors=validate_prepared(plan,{k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','workerCredential')})
-            self.client=LaneClient.start(b,MODE,Path(self.bindings['laneRoot']),native_plan=plan,native_prepared=anchors)
+            self.client=LaneClient.start(b,MODE,Path(self.bindings['laneRoot']),native_plan=plan,native_prepared=anchors);_native_owners[self]['client']=self.client
             _write_bytes(self.client.root/'native-prepared.json',encode(prepared))
             cap=capture_budget(plan,time.time())
             argv=[sys.executable,'-u',b['providerFeedPath'],'--mode',MODE,'--interval','15','--max-seconds',str(cap),
@@ -846,8 +869,11 @@ class NativeController:
                 '--status-file',b['receiptPath'],'--run-context',str(self.client.root/'run-context.json'),'--contract-dir',b['contractDir']]
             env={'PATH':_feed_path(b),'HOME':os.path.expanduser('~'),'LANG':'C','LC_ALL':'C','PGCAT_LANE_ROLE':'provider',
                 'PGCAT_LANE_REAL_CLI':b['workbenchCli'],'PGCAT_LANE_LOCK':b['laneLockPath']}
-            self.feed=self.client.start_feed(argv,env,self.binding_path)
-            self._call('native-baseline');return self._call('native-collector-launch')
+            self.feed=self.client.start_feed(argv,env,self.binding_path);self.feed_identity=dict(self.client.feed_binding);_native_owners[self].update(feed=self.feed,feedIdentity=dict(self.feed_identity))
+            self._call('native-baseline');self.collector_attempted=True
+            result=self._call('native-collector-launch');ready=result['outputs']['ready'] if 'outputs' in result else result['ready']
+            self.worker_processes=dict(collector=ready['collectorIdentity'],guardian=ready['guardianIdentity']);_native_owners[self]['workerProcesses']=__import__('json').loads(__import__('json').dumps(self.worker_processes));self.phase='capturing'
+            return result
         except BaseException:
             if self.client is not None:self.client.close()
             raise
@@ -916,8 +942,150 @@ class NativeController:
 
     def finish_terminal(self):
         _closed('native-finish');_require_verified()
-        try:return self.client.native_finish_call()['payload']
+        try:
+            result=self.client.native_finish_call()['payload'];self.finish_received=time.monotonic();self.phase='finished-clients';return result
         except BaseException:self.close();raise
+
+
+    def _require_abort_owner(self):
+        _require_verified()
+        row=_native_owners.get(self);check(row is not None and row['pid']==os.getpid())
+
+    def _abort_originals(self):
+        self._require_abort_owner()
+        from segmented_capture import decode_private,canonical
+        row=_native_owners[self]
+        return dict(bindings=decode_private(row['bindings']),runId=row['runId'],mac=decode_private(canonical(row['mac'])),
+            worker=None if row['worker'] is None else decode_private(canonical(row['worker'])),prepared=None if row['prepared'] is None else decode_private(row['prepared']),
+            feed=row['feed'],feedIdentity=row['feedIdentity'],client=row['client'],workerProcesses=decode_private(canonical(row['workerProcesses'])))
+
+    def _require_owner(self):
+        self._require_abort_owner();check(getattr(self,'owner_pid',None)==os.getpid())
+        from pgcat_lane_protocol import private_json
+        value,raw=private_json(self.binding_path);check(value==self.bindings and hashlib.sha256(raw).hexdigest()==self.binding_sha)
+        if self.prepared is not None:
+            check(__import__('json').dumps(self.prepared,sort_keys=True,separators=(',',':')).encode('ascii')==_native_owners[self]['prepared'])
+            from pgcat_native_ingress import _identity
+            from segmented_capture import canonical
+            root=Path(self.bindings['captureRoot'])
+            check(_identity(root/'native-prepared.json')==(canonical(self.prepared),self.prepared_identity))
+            check(_identity(root/'native-plan.json')==(canonical(self.prepared['plan']),self.local_plan_identity))
+
+    def _owned_worker(self,verb,payload):
+        self._require_abort_owner()
+        from pgcat_source_bootstrap import ROOT
+        from pgcat_lane_protocol import encode
+        from pgcat_lane_actions import PROFILE,REGION,WORKER
+        from segmented_capture import decode_private
+        import shlex
+        b=self._abort_originals()['bindings']['laneBindings'];run=b['remoteRun']
+        parts=['python3','-I','-S','-c',ROOT,str(Path(run)/'pgcat_source_bootstrap.py'),b['sourceHashes']['sourceBootstrap'],
+            'nativeController',encode(b['sourceHashes']).decode(),'owned-control',verb,run,encode(payload).decode()]
+        result=subprocess.run([b['workbenchCli'],'exec','-P',PROFILE,'-r',REGION,'-i',WORKER,'-c',' '.join(shlex.quote(p) for p in parts)],
+            stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=4,close_fds=True,
+            env={'PATH':os.defpath,'HOME':os.path.expanduser('~'),'LANG':'C'})
+        check(result.returncode==0 and len(result.stdout)<=65536);self._require_abort_owner();return decode_private(result.stdout)
+
+    def bind_worker_credential(self):
+        check(self.worker_credential is None)
+        identity=self._owned_worker('credential-identity',{})
+        check(identity['path']==self.bindings['workerKubeconfig']);self.worker_credential=identity
+        from segmented_capture import canonical,decode_private
+        _native_owners[self]['worker']=decode_private(canonical(identity))
+        return identity
+
+    def _recover_worker_processes(self):
+        prepared=self._abort_originals()['prepared'];check(prepared is not None)
+        anchors={k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','workerCredential')}
+        rows=self._owned_worker('process-identities',anchors)
+        from pgcat_collector_control import valid_identity
+        for role,identity in rows.items():
+            check(role in ('collector','guardian'));valid_identity(identity)
+            old=_native_owners[self]['workerProcesses'].get(role);check(old is None or old==identity)
+        from segmented_capture import canonical,decode_private
+        _native_owners[self]['workerProcesses'].update(decode_private(canonical(rows)))
+        return rows
+
+    def _cleanup_worker(self):
+        original=self._abort_originals();identity=original['worker']
+        check(identity is not None and self.worker_credential==identity and identity['path']==original['bindings']['workerKubeconfig'])
+        if getattr(self,'worker_cleanup',None) is not None:
+            check(self._owned_worker('credential-absent',{})==dict(absent=True));return dict(self.worker_cleanup,state='absent')
+        result=self._owned_worker('credential-cleanup',identity);self.worker_cleanup=result
+        check(self._owned_worker('credential-absent',{})==dict(absent=True))
+        return result
+
+    def _worker_process_stop(self,identity):return self._owned_worker('process-stop',identity)['state']
+    def _worker_ordinary_status(self):return self._owned_worker('ordinary-status',{})['status']
+
+    def _abort_gateway_false(self):
+        # C4 supplies actual runtime manifest/authority; missing context is unknown.
+        raise ValueError('native abort Gateway context integration unavailable')
+
+    def assess(self):
+        _closed('native-verdict');self._require_owner()
+        return self.client.native_terminal_call('native-verdict')['payload']
+
+    def wait_restoration_hold(self):
+        self._require_owner();check(hasattr(self,'finish_received'))
+        # Conservative Mac bound is later than actual worker final/ack; worker
+        # independently checks its original monotonic/boot anchor before restore.
+        until=self.finish_received+120.
+        while time.monotonic()<until:
+            self.client._active();time.sleep(min(1.,until-time.monotonic()))
+
+    def restore(self):
+        _closed('native-restore');self._require_owner()
+        return self.client.native_terminal_call('native-restore')['payload']
+
+    def cleanup(self):
+        _closed('native-cleanup');self._require_owner()
+        from pgcat_native_closure import cleanup_bound_credential
+        from segmented_capture import canonical
+        claim=self.client.journal.claim_native_cleanup()
+        worker=None;local=None;fault=None
+        try:worker=self._cleanup_worker()
+        except BaseException as error:fault=error
+        try:
+            local=cleanup_bound_credential(self.mac_credential['path'],self.mac_credential);self.local_cleanup=local
+        except BaseException as error:fault=error
+        check(worker is not None and local is not None and fault is None)
+        check(not os.path.lexists(self.mac_credential['path']))
+        outputs=dict(workerAbsent=True,localAbsent=True,workerCleanupSha256=worker['receiptSha256'],localCleanupSha256=local['receiptSha256'])
+        record=dict(claim,outputs=outputs)
+        identity=_write_bytes(Path(self.bindings['captureRoot'])/'native-cleanup.json',canonical(record))
+        self.client.journal.record_native_cleanup(identity)
+        return record
+
+    def complete(self):
+        self._require_owner()
+        from pgcat_lane_protocol import digest
+        from pgcat_native_closure import audit_global_completion
+        from segmented_capture import canonical
+        with self.client.journal._connection() as db:
+            cleanup=self.client.journal._native_cleanup_in_tx(db)
+            verdict=self.client.journal._native_record_in_tx(db,'native-verdict')
+            restored=self.client.journal._native_record_in_tx(db,'native-restore')
+        stopped=self.client.journal.native_stop();receipt=stopped['receipt']
+        check(isinstance(self.feed,subprocess.Popen) and self.feed.poll()==0)
+        feed_exit=dict(pid=self.feed.pid,exitCode=0,category='ok',feedSession=receipt['feedSession'],sequence=receipt['sequence'])
+        assessment=dict(status=verdict['outputs']['status'],mode=MODE,feedSession=receipt['feedSession'],endSequence=receipt['sequence'],evidenceSha256=digest(cleanup))
+        self.client.finish(self.feed,feed_exit,assessment)
+        self.client.process.wait(timeout=2.)
+        audit,audit_identity=audit_global_completion(self)
+        plan=self.prepared['plan']
+        record=dict(schemaVersion=1,runId=plan['runId'],executionKind=plan['executionKind'],planSha256=digest(plan),assessmentSha256=verdict['outputs']['assessmentSha256'],
+            restoreSha256=digest(restored),cleanupSha256=digest(cleanup),globalAuditSha256=audit_identity['sha256'],status=assessment['status'],closed=True)
+        _write_bytes(Path(self.bindings['captureRoot'])/'native-close.json',canonical(record));return record
+
+    def abort(self):
+        from pgcat_native_closure import abort_owned
+        return abort_owned(Path(self._abort_originals()['bindings']['captureRoot']),adapters=self,now=time.time)
+
+def _gateway_context(run,reads,prepared,action_id,envelope):
+    # C4 wires this fixed hook from its actual verified immutable runtime assets.
+    # Caller context/boolean/receipt shapes cannot mint a Gateway adapter.
+    raise ValueError('native runtime manifest integration unavailable')
 
 
 def worker_entry(action,run_dir,envelope=None,selector=None):
@@ -981,20 +1149,53 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
                 except FileNotFoundError:pass
             time.sleep(.01)
         output=dict(ready=ready,readyFile=_identity(run/'native-ready.json')[1])
-    elif action in ('native-terminal-seal','native-reconcile','native-finish'):
-        from pgcat_native_closure import FixedClosureAdapters,seal_terminal,reconcile,finish_terminal,support_artifact
-        adapter=FixedClosureAdapters(run,reads,prepared=prepared,action_id=request_id,operation=envelope['operation'],supports=envelope['supports'],stopped=envelope.get('stopped'))
-        perform={'native-terminal-seal':seal_terminal,'native-reconcile':reconcile,'native-finish':finish_terminal}[action]
+    elif action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
+        from pgcat_native_closure import FixedClosureAdapters,seal_terminal,reconcile,finish_terminal,verdict,restore,support_artifact
+        adapter=FixedClosureAdapters(run,reads,prepared=prepared,action_id=request_id,operation=envelope['operation'],supports=envelope['supports'],stopped=envelope.get('stopped'),stop_artifact=envelope.get('stopArtifact'),hold_artifact=envelope.get('holdArtifact'),ingresses=envelope.get('ingresses'))
+        perform={'native-terminal-seal':seal_terminal,'native-reconcile':reconcile,'native-finish':finish_terminal,'native-verdict':verdict,'native-restore':restore}[action]
+        if action=='native-restore':adapter.gateway=_gateway_context(run,reads,prepared,request_id,envelope)
         support=perform(run,adapters=adapter,now=time.time)
         output=dict(support=support,artifact=support_artifact(run,action,adapters=adapter))
+        if action=='native-finish':output.update(stopArtifact=dict(basename='native-feed-stop.json',identity=adapter.stop_mirror),holdArtifact=adapter.hold_artifact)
     else:raise ValueError('native action')
     verify_prepared(run,plan,prepared)
     value=dict(schemaVersion=1,action=action,runId=plan['runId'],executionKind=plan['executionKind'],planSha256=sha(canonical(plan)),requestId=request_id,staged=staged,outputs=output)
     return validate_action_result(value,plan,action,request_id)
 
 
+def _owned_worker_control(verb,run,payload):
+    _require_verified()
+    from segmented_capture import open_directory,assess_manifest
+    from pgcat_native_closure import cleanup_bound_credential,stop_bound_process
+    run=Path(run);check(run==Path(__file__).absolute().parent and run.name=='run')
+    fd=open_directory(run);os.close(fd)
+    credential=run.parent/'kubeconfig'
+    if verb=='credential-identity':check(payload=={});return credential_identity(credential)
+    if verb=='credential-cleanup':return cleanup_bound_credential(credential,payload)
+    if verb=='credential-absent':check(payload=={});return dict(absent=not os.path.lexists(credential))
+    if verb=='process-identities':
+        from pgcat_native_ingress import _identity
+        from segmented_capture import decode_private
+        from pgcat_collector_control import valid_identity
+        plan=decode_private(_identity(run/'native-plan.json')[0]);verify_prepared(run,plan,payload)
+        started=decode_private(_identity(run/'collector-job'/'intent.json')[0]);check(started['runId']==plan['runId'] and started['prepared']==payload)
+        rows={}
+        for role,name in [('collector','identity.json'),('guardian','guardian.json')]:
+            try:row=decode_private(_identity(run/'collector-job'/name)[0])
+            except FileNotFoundError:continue
+            valid_identity(row);rows[role]=row
+        verify_prepared(run,plan,payload);return rows
+    if verb=='process-stop':return dict(state=stop_bound_process(payload,deadline=time.monotonic()+2.))
+    if verb=='ordinary-status':check(payload=={});return dict(status=assess_manifest(run/'native-capture')['status'])
+    raise ValueError('owned worker operation')
+
+
 def main():
     try:
+        if len(sys.argv)==5 and sys.argv[1]=='owned-control':
+            from segmented_capture import decode_private,canonical
+            value=_owned_worker_control(sys.argv[2],sys.argv[3],decode_private(sys.argv[4].encode('ascii')))
+            print(canonical(value).decode('ascii'));return 0
         _closed();_require_verified()
         from segmented_capture import decode_private,canonical,sha
         if len(sys.argv)==6 and sys.argv[1]=='prepare':

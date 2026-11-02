@@ -16,7 +16,7 @@ def plan(kind='native-replacement'):
         runId=context()['runId'], target=dict(accountId='1360282071200743', regionId='ap-southeast-1',
         workerId='i-t4nj1bitmcz7cuoch82h', scalingGroupId='asg-t4necb4dfmu6o3z2rn0g',
         nlbServerGroupId='sgp-xs5s42tihtl6ja2a67', originalInstanceIds=['a','b']),
-        application=context()['deployment'], sourceHashes={k:'c'*64 for k in SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure'}},
+        application=context()['deployment'], sourceHashes={k:'c'*64 for k in SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure','nativeAssessment'}},
         baselineSha256='d'*64, plannedOperation='db-proxy.replace-nodes' if kind=='native-replacement' else 'disabled-client-restart',
         deadline=dict(mutationCutoff='2026-10-29T13:30:00Z',closureDeadline='2026-10-29T14:30:00Z',captureMaxSeconds=5400),
         serviceBindings=dict(namespace='raptor-system'))
@@ -26,10 +26,13 @@ def plan(kind='native-replacement'):
     if kind=='native-replacement':
         value['plannedInput']=dict(type='agent',providerId='codex',model='gpt-6-luna',object=dict(kind='db-proxy',code='DP00001'),
             envCode='rdev.ali',operations=[dict(name='db-proxy.replace-nodes',parameters=dict(mode='replacement'))],
-            skills=dict(tag='skills-v0.4.0',commitSha='a'*40))
+            skills=dict(tag='skills-v0.5.0',commitSha='a'*40))
         value['controllerScope']=dict(envCode='rdev.ali',proxyCode='DP00001',groupId=value['target']['scalingGroupId'],
             serverGroupId=value['target']['nlbServerGroupId'],targetDbCode='D00002',application=dict(envCode='rdev.ali',
             appCode='client',clusterId='cluster',namespace='raptor-test',name='rdev-test-client-client',uid='deployment'))
+    if kind=='native-replacement':
+        from test_pgcat_native_assessment import resource_scope
+        value['controllerScope']=resource_scope(value)
     return value
 
 
@@ -384,8 +387,8 @@ class BindingTests(unittest.TestCase):
         with self.assertRaises(ValueError):ingress.seal_operation_binding(self.f.run,self.f.run/'native-ingress-0002.json')
     def test_untrusted_approval_selector_must_match_exact_scalein_binding(self):
         complete_native(self.f);original=self.f.http
-        binding=dict(requestId=REQUEST,actionId='shrink',interface='ess.scale-in',envCode='rdev.ali',
-            target=dict(proxyCode='DP00001',groupId=self.f.plan['target']['scalingGroupId']),parameters=dict(desiredCapacity=2))
+        binding=dict(requestId=REQUEST,actionId='shrink',interface='db-proxy.scale-in',envCode='rdev.ali',
+            target=dict(proxyCode='DP00001'),parameters=dict(desiredCapacity=2))
         row=dict(approvalId=APPROVAL,requestId=REQUEST,actionId='shrink',binding=binding,state='approved',guidance=None)
         def http(origin,path,credentials):
             if path=='/v1/approvals/'+APPROVAL:return canonical(dict(data=row))
@@ -402,7 +405,7 @@ class BindingTests(unittest.TestCase):
 class AdditionalBoundaryTests(unittest.TestCase):
     setUp=IngressTests.setUp
     def test_full_source_closure_and_baseline_nested_shape(self):
-        self.assertEqual(len(self.f.plan['sourceHashes']),24)
+        self.assertEqual(len(self.f.plan['sourceHashes']),25)
         self.assertEqual(len(self.f.context['sourceHashes']),12)
         for key,value in [('feedSession',context()['feedSession']),('planSha256','f'*64),('sequence',1)]:
             baseline=copy.deepcopy(self.f.baseline);baseline[key]=value
@@ -480,7 +483,7 @@ class AdversarialTests(unittest.TestCase):
     setUp=IngressTests.setUp
     def test_selected_definition_wrong_identity_or_defaults_refuse(self):
         for key,value in [('providerId','other'),('model','other'),('envCode','other'),('object',dict(kind='application',code='other')),
-                          ('skills',dict(tag='skills-v0.4.0',commitSha='b'*40)),('operations',[dict(name='db-proxy.replace-nodes',parameters={})]),('connectionVersion',True)]:
+                          ('skills',dict(tag='skills-v0.5.0',commitSha='b'*40)),('operations',[dict(name='db-proxy.replace-nodes',parameters={})]),('connectionVersion',True)]:
             original=copy.deepcopy(self.f.api_context);self.f.api_context['definition'][key]=value
             with self.subTest(key=key),self.assertRaises(ValueError):self.f.read()
             self.f.api_context=original

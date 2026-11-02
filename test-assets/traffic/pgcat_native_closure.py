@@ -471,7 +471,7 @@ class FixedClosureAdapters:
     C4 obtains operation/support artifacts from claimed Journal admission. No
     caller pair, target list, command, credential value or finish executor exists.
     """
-    def __init__(self,run_dir,reads,*,prepared,action_id,operation,supports,stopped=None):
+    def __init__(self,run_dir,reads,*,prepared,action_id,operation,supports,stopped=None,stop_artifact=None,hold_artifact=None,ingresses=None,gateway=None):
         from pgcat_native_controller import FixedWorkerReads,verify_prepared
         from pgcat_native_ingress import _Chain
         require(type(reads) is FixedWorkerReads)
@@ -481,7 +481,7 @@ class FixedClosureAdapters:
         require(self.prepared['workerCredential']==reads.credential)
         self.credential=decode_private(canonical(reads.credential));self.deadline=reads.deadline
         self.action_id=action_id;identifier(action_id)
-        self.stopped=None;self.stop_mirror=None
+        self.stopped=None;self.stop_mirror=None;self.gateway=gateway;self.hold_artifact=hold_artifact;self.ingresses=[] if ingresses is None else decode_private(canonical(ingresses))
         self.operation=decode_private(canonical(operation));self.supports=decode_private(canonical(supports))
         exact(self.operation,{'basename','identity'});require(self.operation['basename']=='native-operation-binding.json')
         self.sources=_source(self.plan,self.run);self.chain=_Chain(self.run)
@@ -492,8 +492,12 @@ class FixedClosureAdapters:
         if stopped is not None:
             from pgcat_native_controller import _write_bytes
             self.stopped=decode_private(canonical(stopped))
-            _stopped_provider(self,time.time)
-            self.stop_mirror=_write_bytes(self.run/'native-feed-stop.json',canonical(self.stopped['support']))
+            historical='native-finish' in self.supports
+            _stopped_provider(self,time.time,require_fresh=not historical)
+            if historical:
+                exact(stop_artifact,{'basename','identity'});require(stop_artifact['basename']=='native-feed-stop.json')
+                raw,self.stop_mirror=_identity(self.run/'native-feed-stop.json');require(self.stop_mirror==stop_artifact['identity'] and raw==canonical(self.stopped['support']))
+            else:self.stop_mirror=_write_bytes(self.run/'native-feed-stop.json',canonical(self.stopped['support']))
             self._check()
 
     def _check(self):
@@ -546,7 +550,10 @@ def _closure_support(record,plan,action):
         'native-reconcile':({'operationBindingSha256','terminalSha256','coverageSha256'},
             {'pair','configMapUid','previousResourceVersion','resourceVersion','targetsSha256','feedSession','sequence','observedAt'}),
         'native-feed-stop':({'reconcileSha256'},{'intentSha256','ackSha256','finalReceiptSha256','feedExit'}),
-        'native-finish':({'terminalSha256','operationBindingSha256','stopSha256'},{'boundaryRequestId','receiptSha256','boundaryCompletedSha256'})}
+        'native-finish':({'terminalSha256','operationBindingSha256','stopSha256'},{'boundaryRequestId','receiptSha256','boundaryCompletedSha256'}),
+        'native-cleanup':({'assessmentSha256','restoreSha256'},{'workerAbsent','localAbsent','workerCleanupSha256','localCleanupSha256'}),
+        'native-verdict':({'stopSha256','finishSha256'},{'assessmentSha256','status'}),
+        'native-restore':({'assessmentSha256','finishSha256','gatewayProofSha256'},{'roster','framesSha256','restoredAt'})}
     ik,ok=fields[action];exact(inputs,ik);exact(out,ok);require(all(hashed(v) for v in inputs.values()))
     for key,value in out.items():
         if key.endswith('Sha256'):require(hashed(value))
@@ -559,6 +566,11 @@ def _closure_support(record,plan,action):
     elif action=='native-feed-stop':
         exit=out['feedExit'];exact(exit,{'runId','feedId','pid','exitCode'});identifier(exit['feedId'])
         require(exit['runId']==plan['runId'] and integer(exit['pid'],1) and type(exit['exitCode']) is int and exit['exitCode']==0)
+    elif action=='native-cleanup':require(type(out['workerAbsent']) is bool and out['workerAbsent'] is True and type(out['localAbsent']) is bool and out['localAbsent'] is True)
+    elif action=='native-verdict':require(out['status'] in ('PASS','FAIL','INCONCLUSIVE'))
+    elif action=='native-restore':
+        from finish_clients import validate_roster
+        validate_roster(out['roster']);require(number(out['restoredAt']))
     elif action=='native-finish':require(type(out['boundaryRequestId']) is str and re.fullmatch('[0-9a-f]{32}',out['boundaryRequestId']))
     return decode_private(canonical(record))
 
@@ -638,17 +650,17 @@ def reconcile(run_dir,*,adapters,now):
         targetsSha256=sha(new),feedSession=source['feedSession'],sequence=source['sequence'],observedAt=observed))
 
 
-def _stopped_provider(adapters,now):
+def _stopped_provider(adapters,now,*,require_fresh=True):
     from pgcat_lane_protocol import native_stop_ack,roster_sha,digest
     from pgcat_native_ingress import _fleet
     stopped=adapters.stopped;exact(stopped,{'support','intent','ack','receipt','feedBinding','feedExit'})
     record=validate_support(stopped['support'],adapters.plan,'native-feed-stop')
     reconcile=adapters._support('native-reconcile')
-    require(stopped['ack']==native_stop_ack(stopped['intent'],stopped['receipt'],reconcile,adapters.plan,now=now()))
+    require(stopped['ack']==native_stop_ack(stopped['intent'],stopped['receipt'],reconcile,adapters.plan,now=now() if require_fresh else stopped['receipt']['observedAt']))
     require(record['inputs']==dict(reconcileSha256=digest(reconcile)))
     require(record['outputs']==dict(intentSha256=digest(stopped['intent']),ackSha256=digest(stopped['ack']),finalReceiptSha256=digest(stopped['receipt']),feedExit=stopped['feedExit']))
     require(stopped['feedBinding']==adapters.chain.values['feedBinding'] and all(stopped['feedExit'][k]==stopped['feedBinding'][k] for k in ('runId','feedId','pid')))
-    source,inventory=adapters._provider(now);receipt=stopped['receipt']
+    source,inventory=adapters._provider(now if require_fresh else lambda:stopped['receipt']['observedAt']);receipt=stopped['receipt']
     require(all(source[k]==receipt[k] for k in ('feedSession','sequence','observedAt')) and roster_sha(inventory)==receipt['rosterSha256'])
     _fleet({k:inventory[k] for k in adapters.chain.baseline['fleet']},reconcile['outputs']['pair'])
     cm=adapters.reads.read('ConfigMap','raptor-test','pgcat-provider-inventory')
@@ -681,4 +693,261 @@ def finish_terminal(run_dir,*,adapters,now):
     completed=native_boundary_completion(adapters.run,chain.context,operation,terminal,inventory,progress,started=started,deadline=adapters.deadline)
     require(result['requestId']==completed['boundaryRequestId'])
     again,current=_stopped_provider(adapters,now);require(again==stop and current==inventory)
+    completed_raw,_=_identity(adapters.run/'native-boundary'/'boundary-completed.json');bound=decode_private(completed_raw)
+    acknowledged=time.monotonic();boot=_worker_boot()
+    hold=dict(schemaVersion=1,runId=adapters.run_id,bootId=boot,acknowledgedMonotonic=acknowledged,finalDurableMonotonic=bound['finalDurableMonotonic'],notBeforeMonotonic=max(acknowledged,bound['finalDurableMonotonic'])+120.)
+    from pgcat_native_controller import _write_bytes
+    adapters.hold_artifact=dict(basename='native-finish-hold.json',identity=_write_bytes(adapters.run/'native-finish-hold.json',canonical(hold)))
     return _seal_action(adapters,record,completed)
+
+
+@sanitized
+def gateway_false_idle(run_dir,*,adapters,now):
+    """Actual read-only false/idle observation; no fictional Raptor settlement."""
+    require(type(adapters) is FixedGatewayAdapters and Path(run_dir)==adapters.run)
+    adapters._check();before=adapters._metadata();adapters._idle()
+    result=runtime_proof(run_dir,adapters=adapters,now=now)
+    adapters._idle();require(adapters._metadata()==before);adapters._check()
+    return result
+
+
+@sanitized
+def cleanup_bound_credential(path,expected_identity):
+    """Remove one original authorized private copy, with same-descriptor checks."""
+    from pgcat_native_controller import credential_identity,_write_bytes
+    from segmented_capture import open_directory,check_directory,sha
+    path=Path(path);require(type(expected_identity) is dict and expected_identity.get('path')==str(path))
+    exact(expected_identity,{'path','device','inode','uid','mode','size','sha256'})
+    require(all(type(expected_identity[k]) is int and expected_identity[k]>=0 for k in ('device','inode','uid','mode','size')) and hashed(expected_identity['sha256']))
+    require(path.is_absolute() and path.name=='kubeconfig' and '..' not in path.parts)
+    folder=open_directory(path.parent)
+    try:
+        fd=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=folder)
+        try:
+            before=os.fstat(fd)
+            def fingerprint(s):return (s.st_dev,s.st_ino,s.st_uid,s.st_mode,s.st_nlink,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+            require(stat.S_ISREG(before.st_mode) and before.st_uid==os.geteuid() and stat.S_IMODE(before.st_mode)==0o600 and before.st_nlink==1 and before.st_size<=65536)
+            raw=os.read(fd,65537);require(len(raw)==before.st_size)
+            actual=dict(path=str(path),device=before.st_dev,inode=before.st_ino,uid=before.st_uid,mode=stat.S_IMODE(before.st_mode),size=before.st_size,sha256=sha(raw))
+            require(actual==expected_identity and fingerprint(os.fstat(fd))==fingerprint(before))
+            claim=dict(schemaVersion=1,credential=actual)
+            claim_identity=_write_bytes(path.parent/(path.name+'.cleanup.claim'),canonical(claim))
+            require(fingerprint(os.fstat(fd))==fingerprint(before)==fingerprint(os.stat(path.name,dir_fd=folder,follow_symlinks=False)))
+            check_directory(folder,path.parent);os.unlink(path.name,dir_fd=folder);os.fsync(folder)
+            try:os.stat(path.name,dir_fd=folder,follow_symlinks=False)
+            except FileNotFoundError:pass
+            else:raise ValueError('credential absence')
+            check_directory(folder,path.parent)
+            receipt=dict(schemaVersion=1,state='deleted',credentialSha256=actual['sha256'],claimSha256=claim_identity['sha256'],absent=True)
+            identity=_write_bytes(path.parent/(path.name+'.cleanup.json'),canonical(receipt))
+            return dict(state='deleted',claimSha256=claim_identity['sha256'],receiptSha256=identity['sha256'])
+        finally:os.close(fd)
+    finally:os.close(folder)
+
+
+POST_ACTIONS={'native-verdict','native-restore','native-cleanup'}
+CLOSURE_ACTIONS |= POST_ACTIONS
+SUPPORT_ACTIONS |= POST_ACTIONS
+
+
+def hold_ready(hold,run_id,boot,at):
+    exact(hold,{'schemaVersion','runId','bootId','acknowledgedMonotonic','finalDurableMonotonic','notBeforeMonotonic'})
+    require(type(hold['schemaVersion']) is int and hold['schemaVersion']==1 and hold['runId']==run_id and hold['bootId']==boot)
+    require(all(number(hold[k]) for k in ('acknowledgedMonotonic','finalDurableMonotonic','notBeforeMonotonic')) and number(at))
+    require(hold['notBeforeMonotonic']==max(hold['acknowledgedMonotonic'],hold['finalDurableMonotonic'])+120.)
+    return at>=hold['notBeforeMonotonic']
+
+
+@sanitized
+def verdict(run_dir,*,adapters,now):
+    require(type(adapters) is FixedClosureAdapters)
+    from pgcat_native_controller import _write_bytes
+    from pgcat_native_assessment import assess_native
+    stop=adapters.stopped['support'];finished=adapters._support('native-finish')
+    record=_action(adapters,run_dir,'native-verdict',dict(stopSha256=sha_bytes(canonical(stop)),finishSha256=sha_bytes(canonical(finished))))
+    inputs=dict(operation=adapters.operation,supports=adapters.supports,ingresses=adapters.ingresses)
+    _write_bytes(adapters.run/'native-assessment-input.json',canonical(inputs))
+    result=assess_native(adapters.run);identity=_write_bytes(adapters.run/'native-assessment.json',canonical(result))
+    return _seal_action(adapters,record,dict(assessmentSha256=identity['sha256'],status=result['status']))
+
+
+def _restoration_frame(adapters,now):
+    from worker_capture import _native_owner_records_for_deployment,read_pod
+    from capture_window import clean_client_pods,seconds
+    from finish_clients import validate_roster
+    live=adapters.reads.live_clients();dep=live['deployment'];bound=adapters.plan['application'];meta=dep['metadata']
+    require(meta['uid']==bound['uid'] and meta['generation']==bound['generation']+1 and dep['status']['observedGeneration']==meta['generation'])
+    require(dep['spec']['replicas']==2 and all(type(dep['status'][k]) is int and dep['status'][k]==2 for k in ('replicas','readyReplicas','updatedReplicas','availableReplicas')))
+    owners,starting=_native_owner_records_for_deployment(dep,live['replicaSets'],live['pods'],bound)
+    require(not starting and len(owners)==2 and all(not owner['terminating'] for owner in owners.values()))
+    readings=[read_pod(p,{},deadline=adapters.deadline) for p in live['pods']]
+    readings,valid=clean_client_pods(readings);require(valid and len(readings)==2)
+    from pgcat_native_assessment import complete_restored_history
+    for reading in readings:complete_restored_history(reading['snapshot'])
+    old=decode_private(_identity(adapters.run/'native-capture'/'terminal-clients.json')[0])['roster']
+    retired={(r['uid'],r['containerId'],r['processId']) for r in old}
+    for row in readings:
+        snap=row['snapshot'];sample=snap['sample']
+        require(row['ready'] is True and snap['final'] is False and snap['connected']>0 and not snap['truncated'])
+        require((row['uid'],row['containerId'],sample['processId']) not in retired and 0<=now()-seconds(sample['at'])<=3)
+        require(sample['Attempts']>0 and sample['Success']>0 and all(sample[k]==0 for k in ('Failure','Timeout','Ambiguous','Skipped')))
+    roster=validate_roster([dict(name=r['name'],uid=r['uid'],containerId=r['containerId'],processId=r['snapshot']['sample']['processId']) for r in readings])
+    require(sorted(live['roster'],key=lambda r:r['uid'])==roster)
+    return dict(observedAt=now(),deployment=dict(uid=meta['uid'],generation=meta['generation'],observedGeneration=dep['status']['observedGeneration'],imageDigest=bound['imageDigest']),ownership=owners,readings=readings,roster=roster)
+
+
+@sanitized
+def restore(run_dir,*,adapters,now):
+    require(type(adapters) is FixedClosureAdapters and type(adapters.gateway) is FixedGatewayAdapters)
+    from pgcat_native_assessment import _original
+    from pgcat_native_controller import _write_bytes
+    hold,_=_original(adapters.run,adapters.hold_artifact)
+    boot=_worker_boot()
+    require(hold_ready(hold,adapters.run_id,boot,time.monotonic()))
+    finished=adapters._support('native-finish');assessment=adapters._support('native-verdict')
+    g=adapters.gateway;require(g.plan==adapters.plan and g.prepared==adapters.prepared and g.credential==adapters.credential and g.action_id==adapters.action_id);g._idle()
+    if adapters.plan['executionKind']=='disabled-proof':runtime=gateway_false_idle(run_dir,adapters=g,now=now)
+    else:
+        disabled=adapters._support('native-gateway-disable');require(_settlement(g)==disabled['outputs']['settlement'])
+        runtime=_observe(g,False,now)
+        expected=disabled['outputs']['runtime'];require(all(runtime[k]==expected[k] for k in ('secretUid','secretResourceVersion','deploymentUid','podUid','generation','imageDigest','verification')))
+    g._idle();proof_identity=_write_bytes(adapters.run/'native-restore-gateway.json',canonical(runtime))
+    record=_action(adapters,run_dir,'native-restore',dict(assessmentSha256=assessment['outputs']['assessmentSha256'],finishSha256=sha_bytes(canonical(finished)),gatewayProofSha256=proof_identity['sha256']))
+    _stopped_provider(adapters,now,require_fresh=False)
+    first=_restoration_frame(adapters,now)
+    while True:
+        adapters._check();require(time.monotonic()<adapters.deadline)
+        second=_restoration_frame(adapters,now)
+        require(second['roster']==first['roster'])
+        one={r['uid']:r['snapshot']['sample'] for r in first['readings']};two={r['uid']:r['snapshot']['sample'] for r in second['readings']}
+        if all(two[k]['sequence']>one[k]['sequence'] and two[k]['Success']>one[k]['Success'] and two[k]['Attempts']>one[k]['Attempts'] for k in one):break
+        time.sleep(min(.02,max(0,adapters.deadline-time.monotonic())))
+    _stopped_provider(adapters,now,require_fresh=False);g._idle()
+    frames=_write_bytes(adapters.run/'native-restoration-frames.json',canonical([first,second]))
+    return _seal_action(adapters,record,dict(roster=second['roster'],framesSha256=frames['sha256'],restoredAt=second['observedAt']))
+
+
+def _worker_boot():return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+
+
+def stop_bound_process(identity,*,deadline):
+    """Signal only the exact worker tuple and re-probe within a finite budget."""
+    import signal
+    from pgcat_collector_control import process_identity,valid_identity
+    valid_identity(identity);current=process_identity(identity['pid'])
+    if current is None:return 'absent'
+    if current!=identity:return 'unknown'
+    os.kill(identity['pid'],signal.SIGTERM)
+    while time.monotonic()<deadline:
+        current=process_identity(identity['pid'])
+        if current is None:return 'stopped'
+        if current!=identity:return 'unknown'
+        time.sleep(min(.02,max(0,deadline-time.monotonic())))
+    if process_identity(identity['pid'])==identity:os.kill(identity['pid'],signal.SIGKILL)
+    return 'stopped' if process_identity(identity['pid']) is None else 'unknown'
+
+
+@sanitized
+def abort_owned(run_dir,*,adapters,now):
+    """Fixed Mac owner abort: independent cleanup attempts even before finish."""
+    from pgcat_native_controller import NativeController,_write_bytes
+    from segmented_capture import assess_manifest
+    require(type(adapters) is NativeController)
+    original=adapters._abort_originals();require(Path(run_dir)==Path(original['bindings']['captureRoot']))
+    run=Path(run_dir);run.mkdir(mode=0o700,exist_ok=True)
+    prepared=original['prepared'];plan=None if prepared is None else prepared['plan']
+    status='INCONCLUSIVE'
+    try:
+        if adapters._worker_ordinary_status()=='FAIL':status='FAIL'
+    except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError):pass
+    processes=[];faults=[]
+    if getattr(adapters,'collector_attempted',False):
+        try:
+            recovered=adapters._recover_worker_processes()
+            for role,identity in recovered.items():
+                require(role in ('collector','guardian'))
+                previous=original['workerProcesses'].get(role);require(previous is None or previous==identity)
+            original=adapters._abort_originals()
+        except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError):faults.append(dict(phase='collector-launch',operation='recover-worker-identities',state='unavailable'))
+    child=original['feed']
+    if child is None:processes.append(dict(role='feed',identity=None,state='never-started'))
+    else:
+        identity=original['feedIdentity']
+        # A retained Popen is necessary; a dict or a PID cannot grant kill authority.
+        if not isinstance(child,subprocess.Popen):processes.append(dict(role='feed',identity=identity,state='unknown'))
+        else:
+            state='absent' if child.poll() is not None else 'unknown'
+            if child.poll() is None:
+                try:child.terminate();child.wait(timeout=1);state='stopped'
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    try:child.wait(timeout=1);state='stopped'
+                    except subprocess.TimeoutExpired:pass
+            processes.append(dict(role='feed',identity=identity,state=state))
+    for role in ('collector','guardian'):
+        identity=original['workerProcesses'].get(role)
+        if identity is None:processes.append(dict(role=role,identity=None,state='never-started' if not getattr(adapters,'collector_attempted',False) else 'unknown'));continue
+        try:state=adapters._worker_process_stop(identity)
+        except (OSError,ValueError,TimeoutError,subprocess.SubprocessError):state='unknown'
+        processes.append(dict(role=role,identity=identity,state=state))
+    gateway='unknown'
+    try:
+        proof=adapters._abort_gateway_false()
+        if proof is not None:gateway='verified-disabled'
+    except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError):pass
+    unknown=dict(state='unknown',claimSha256=None,receiptSha256=None)
+    worker=dict(unknown);local=dict(unknown)
+    try:worker=adapters._cleanup_worker()
+    except (OSError,ValueError,KeyError,TimeoutError,subprocess.SubprocessError):pass
+    try:
+        identity=original['mac']
+        if getattr(adapters,'local_cleanup',None) is not None:
+            require(not os.path.lexists(identity['path']));local=dict(adapters.local_cleanup,state='absent')
+        elif identity is not None:local=cleanup_bound_credential(identity['path'],identity)
+    except (OSError,ValueError,KeyError):local=dict(state='refused',claimSha256=None,receiptSha256=None)
+    try:
+        if original['client'] is not None:
+            original['client'].journal.cancel('incomplete')
+            original['client'].close()
+            if original['client'].process is not None:
+                try:original['client'].process.wait(timeout=2)
+                except subprocess.TimeoutExpired:pass
+    finally:
+        _write_bytes(run/'native-abort-faults.json',canonical(dict(schemaVersion=1,failedPhase=getattr(adapters,'phase','startup'),faults=faults)))
+        record=dict(schemaVersion=1,runId=original['runId'] if plan is None else plan['runId'],executionKind=original['bindings']['laneBindings']['executionKind'],
+            planSha256=None if plan is None else sha_bytes(canonical(plan)),failedPhase=getattr(adapters,'phase','startup'),status=status,ownedProcesses=processes,
+            gatewayState=gateway,clientState='unknown',workerCleanup=worker,localCleanup=local,reservationState='unresolved')
+        _write_bytes(run/'native-abort.json',canonical(record))
+    return record
+
+
+def audit_global_completion(controller):
+    """Independently verify finished owner, then release only its reservation."""
+    import fcntl
+    from pgcat_lane_supervisor import GLOBAL_ROOT
+    from pgcat_native_controller import NativeController,_write_bytes
+    from segmented_capture import open_directory,check_directory,sha
+    require(type(controller) is NativeController);controller._require_owner()
+    client=controller.client;state=client.journal.run_snapshot();require(state['runState']=='finished')
+    require(isinstance(client.process,subprocess.Popen) and client.process.poll()==0)
+    stopped=client.journal.native_stop();plan=controller.prepared['plan']
+    root=open_directory(GLOBAL_ROOT)
+    try:
+        lock=os.open('owner.lock',os.O_RDWR|os.O_NOFOLLOW,dir_fd=root)
+        try:
+            info=os.fstat(lock);require(stat.S_ISREG(info.st_mode) and info.st_uid==os.geteuid() and stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1)
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            require((os.fstat(lock).st_dev,os.fstat(lock).st_ino)==(os.stat('owner.lock',dir_fd=root,follow_symlinks=False).st_dev,os.stat('owner.lock',dir_fd=root,follow_symlinks=False).st_ino))
+            try:raw,identity=_identity(GLOBAL_ROOT/'active-run')
+            except FileNotFoundError:pass
+            else:
+                expected=dict(runId=plan['runId'],supervisorId=client.supervisor_id,laneRoot=str(client.root))
+                require(decode_private(raw)==expected)
+                require(_identity(GLOBAL_ROOT/'active-run')==(raw,identity));os.unlink('active-run',dir_fd=root);os.fsync(root)
+            require(not os.path.lexists(GLOBAL_ROOT/'active-run'));check_directory(root,GLOBAL_ROOT)
+            audit=dict(schemaVersion=1,runId=plan['runId'],executionKind=plan['executionKind'],planSha256=sha(canonical(plan)),journalState='finished',
+                feedExitSha256=sha(canonical(stopped['feedExit'])),supervisorAbsent=True,reservationAbsent=True)
+            identity=_write_bytes(Path(controller.bindings['captureRoot'])/'native-global-audit.json',canonical(audit))
+            return audit,identity
+        finally:os.close(lock)
+    finally:os.close(root)
