@@ -595,6 +595,60 @@ class CollectionSealRaceTests(unittest.TestCase):
 
 class ReadinessTrafficTests(unittest.TestCase):
     setUp=IngressTests.setUp
+    def ready_frames(self):
+        from segmented_capture import read_frame
+        return [read_frame(self.f.writer.progress_fd,self.f.ready['frames'][k]) for k in ('previous','latest')]
+    def test_metrics_read_completion_after_capture_start_establishes_readiness(self):
+        frames=self.ready_frames()
+        frames[0]['metrics']['observedAt']='2026-10-29T00:00:00.710000Z'
+        frames[1]['metrics']['observedAt']='2026-10-29T00:00:01.710000Z'
+        ingress._ready_pair(frames,self.f.baseline,self.f.context,START+2)
+    def test_raw_source_samples_during_capture_establish_readiness(self):
+        frames=self.ready_frames()
+        for index,frame in enumerate(frames):
+            for row in frame['metrics']['raw']:row['sourceAt']=START+index+0.5
+        ingress._ready_pair(frames,self.f.baseline,self.f.context,START+2)
+    def test_metric_observation_age_is_bounded_at_readiness_decision(self):
+        # At START+2, START-13 is exactly 15 seconds old. START-13.001
+        # was fresh at capture start but is already stale at the decision.
+        for observed,valid in [(START-13,True),(START-13.001,False),(START+2,True),(START+2.001,False)]:
+            frames=self.ready_frames()
+            for frame in frames:frame['metrics']['observedAt']=observed
+            with self.subTest(observed=observed):
+                if valid:ingress._ready_pair(frames,self.f.baseline,self.f.context,START+2)
+                else:
+                    with self.assertRaises(ValueError):ingress._ready_pair(frames,self.f.baseline,self.f.context,START+2)
+    def test_raw_source_age_is_bounded_at_readiness_decision(self):
+        for source,valid in [(START-13,True),(START-13.001,False),(START+2,True),(START+2.001,False)]:
+            frames=self.ready_frames()
+            for frame in frames:
+                for row in frame['metrics']['raw']:row['sourceAt']=source
+            with self.subTest(source=source):
+                if valid:ingress._ready_pair(frames,self.f.baseline,self.f.context,START+2)
+                else:
+                    with self.assertRaises(ValueError):ingress._ready_pair(frames,self.f.baseline,self.f.context,START+2)
+    def test_readiness_frame_age_remains_bounded_to_three_seconds(self):
+        for decision,valid in [(START+3,True),(START+3.001,False),(START+0.999,False)]:
+            frames=self.ready_frames()
+            with self.subTest(decision=decision):
+                if valid:ingress._ready_pair(frames,self.f.baseline,self.f.context,decision)
+                else:
+                    with self.assertRaises(ValueError):ingress._ready_pair(frames,self.f.baseline,self.f.context,decision)
+    def test_current_metric_timestamps_do_not_bypass_baseline_guards(self):
+        mutations=[
+            lambda f:f['metrics'].update(available=False),
+            lambda f:f['metrics']['raw'].pop(),
+            lambda f:f['metrics']['raw'][0].update(pool='foreign'),
+            lambda f:f['metrics']['raw'][0].update(user='foreign'),
+            lambda f:f['metrics']['raw'][0].update(value=-1),
+            lambda f:f['metrics']['raw'][0].update(value=float('nan')),
+            lambda f:f['metrics']['raw'][0].update(value=float('inf')),
+            lambda f:f['pods'][0].update(uid='foreign'),
+            lambda f:f['pods'][0]['ownership'].update(replicaSetUid='foreign')]
+        for index,mutate in enumerate(mutations):
+            frames=self.ready_frames();mutate(frames[1])
+            with self.subTest(mutation=index),self.assertRaises(ValueError):
+                ingress._ready_pair(frames,self.f.baseline,self.f.context,START+2)
     def test_two_connected_but_stalled_samples_do_not_establish_readiness(self):
         from segmented_capture import read_frame
         frames=[read_frame(self.f.writer.progress_fd,self.f.ready['frames'][k]) for k in ('previous','latest')]
