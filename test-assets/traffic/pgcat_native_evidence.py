@@ -247,7 +247,7 @@ def _binding_bytes(fd,context,operation):
     return binding_raw,operation_raw
 
 
-def _replay(fd,context,latest):
+def _replay(fd,context,latest,*,visit=None):
     """Replay bounded actual frame bytes up to the sealed prefix, never its growing tail."""
     import os
     from segmented_capture import read_frame, private_info, sha, FRAME_LIMIT
@@ -266,6 +266,7 @@ def _replay(fd,context,latest):
                     value=decode_private(raw)
                     ref=dict(basename=name,device=info.st_dev,inode=info.st_ino,offset=offset,length=len(raw),sha256=sha(raw),at=value['at'])
                     value=read_frame(fd,ref)
+                    if visit is not None:visit(detached(value),detached(ref))
                     if last is not None:
                         gap=seconds(value['at'])-seconds(last['at']);require(0<gap<=3);max_gap=max(max_gap,gap)
                     cohort.observe(value);cohort.committed(value,ref)

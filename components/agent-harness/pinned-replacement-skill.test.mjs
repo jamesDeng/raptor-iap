@@ -53,11 +53,12 @@ test('direct profile is derived from verified selected content, never release ve
   assert.throws(()=>pinnedReplacementProfile(x.skills),/InvalidSkillsRelease/);
  }finally{fs.rmSync(x.root,{recursive:true,force:true});}
 });
-test('checked-in candidate stays an explicit migration gate until a compatible release',async()=>{
+test('checked-in candidate uses the resource contract and matching logical selectors',async()=>{
  const {pinnedReplacementProfile}=await import('./pinned-replacement-skill.mjs');
  assert.equal(typeof pinnedReplacementProfile,'function');
  const skills={path:fs.realpathSync(new URL('../../agent-skills',import.meta.url)),tag:'skills-v0.5.0',commitSHA:'a'.repeat(40)};
- assert.throws(()=>pinnedReplacementProfile(skills),/ResourceContractMigrationRequired/);
+ assert.equal(pinnedReplacementProfile(skills),'resource-v1');
+ const text=pinnedReplacementInstructions(skills);assert.match(text,/db-proxy.scale-in/);assert.match(text,/workloadKey/);assert.match(text,/mandatory 60-second/);assert.doesNotMatch(text,/Infra cloud_identity_get|interface=ess.scale-in|target=\{proxyCode,groupId\}|replacement-contract: direct-v2/);
 });
 test('legacy direct-v2 wire contract is an explicit migration gate',async()=>{
  const {pinnedReplacementProfile}=await import('./pinned-replacement-skill.mjs');const x=fixture();try{fs.appendFileSync(path.join(x.folder,'SKILL.md'),'\nreplacement-contract: direct-v2\n');assert.throws(()=>pinnedReplacementProfile(x.skills),/ResourceContractMigrationRequired/);}finally{fs.rmSync(x.root,{recursive:true,force:true});}

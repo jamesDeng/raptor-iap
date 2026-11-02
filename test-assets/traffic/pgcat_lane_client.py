@@ -9,12 +9,15 @@ import subprocess
 import sys
 import time
 import uuid
+import weakref
 
 from pgcat_lane_actions import validate_bindings
 from pgcat_lane_protocol import (Journal, Refused, require, encode, private,
     monotonic, identifier, digest, private_json, publish_request, publish_finish, read_finish, validate_finish_receipts)
 from pgcat_lane_supervisor import read_json, save_once, receipt_identity
 import pgcat_workbench_lane as lane
+
+_feed_children=weakref.WeakKeyDictionary()
 
 def _require_verified():
     from pgcat_source_bootstrap import require_verified
@@ -27,7 +30,7 @@ class LaneClient:
     @classmethod
     def start(cls, bindings: dict, mode: str, root: Path, *, native_plan=None,native_prepared=None):
         from pgcat_lane_protocol import _release_admission
-        _release_admission(mode)
+        _release_admission(mode,plan=native_plan,prepared=native_prepared)
         _require_verified()
         bindings = copy.deepcopy(bindings)
         validate_bindings(bindings,mode)
@@ -90,6 +93,8 @@ class LaneClient:
         require(self.mode in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and getattr(self,'feed_process',None) is None,'child')
         from pgcat_lane_protocol import _release_admission
         _release_admission(self.mode)
+        if self.mode=='full-replacement-direct-v2':
+            _release_admission(self.mode,plan=self.journal.native_plan(),prepared=self.journal.native_prepared())
         outer,raw=private_json(Path(outer_binding_path))
         b=self.bindings
         require(outer['laneBindings']==b and Path(outer['laneRoot'])==self.root,'source')
@@ -123,6 +128,7 @@ class LaneClient:
                 require(now < now.replace(hour=21,minute=30,second=0,microsecond=0) and
                         int(cap) <= int((now.replace(hour=22,minute=30,second=0,microsecond=0)-now).total_seconds())-120,'timeout')
         check_cap()
+        require(self in _feed_children or len(_feed_children)<128,'child')
         reader,writer=os.pipe()
         # The isolated bootstrap imports only stdlib and exec preserves this PID.
         # EOF and timeout exit without importing or executing provider code.
@@ -135,6 +141,7 @@ class LaneClient:
             self.feed_process=subprocess.Popen([sys.executable,'-I','-S','-c',gate,str(reader)]+verified_argv,
                 stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                 start_new_session=True,close_fds=True,pass_fds=(reader,),env=env)
+            _feed_children[self]=(os.getpid(),self.feed_process)
             os.close(reader);reader=None
             require(self.feed_process.poll() is None,'child')
             _,current=private_json(Path(outer_binding_path));require(current==raw,'source')
@@ -149,6 +156,13 @@ class LaneClient:
         finally:
             if reader is not None:os.close(reader)
             os.close(writer)
+
+    def _abort_feed_child(self):
+        """Original issuance only; this does not grant feed/finish authority."""
+        _require_verified();require(type(self) is LaneClient,'child')
+        origin=_feed_children.get(self)
+        require(origin is not None and origin[0]==os.getpid() and type(origin[1]) is subprocess.Popen,'child')
+        return origin[1]
 
     def confirm_feed_exit(self, feed_process):
         require(self.mode in ('no-scale','disabled-rehearsal','full-replacement-direct-v2') and feed_process is getattr(self,'feed_process',None) and
@@ -192,7 +206,11 @@ class LaneClient:
         if self.mode=='full-replacement-direct-v2':
             from pgcat_native_controller import validate_start_plan
             validate_start_plan(self.bindings,self.journal.native_plan())
-            if getattr(self,'feed_process',None) is not None:require(self.feed_process.poll() is None,'child')
+            child=getattr(self,'feed_process',None)
+            if child is not None and child.poll() is not None:
+                require(isinstance(child,subprocess.Popen),'child')
+                stopped=self.journal.native_stop()
+                require(stopped['feedBinding']==self.feed_binding and stopped['feedExit']==dict(runId=self.run_id,feedId=self.feed_binding['feedId'],pid=child.pid,exitCode=child.poll()) and child.poll()==0,'child')
 
     def _prepared_result_ready(self, action, request_id, result):
         if action != 'pending-status' or result['payload'].get('status') != 'PREPARED':
@@ -203,18 +221,25 @@ class LaneClient:
         return row is not None
 
     def call(self, action: str, receipt: dict, deadline: float, *, native_selector=None) -> dict:
+        if self.mode=='full-replacement-direct-v2':
+            from pgcat_lane_protocol import _release_admission
+            _release_admission(self.mode,action,plan=self.journal.native_plan(),prepared=self.journal.native_prepared())
         # Proven stopped calls refuse before the uncertainty/owner-close path.
         with self.journal._connection() as db:
             stopped=db.execute('SELECT 1 FROM rehearsal_stop').fetchone() is not None
+            native_stopped=db.execute('SELECT 1 FROM native_stop').fetchone() is not None
+        if native_stopped:require(self.mode=='full-replacement-direct-v2' and action in ('native-finish','native-verdict','native-restore'),'incomplete')
         if stopped:
             self._active();raise Refused('incomplete')
         require(action != 'rehearsal-finish','configuration')
         try:
             self._active()
             require(type(receipt) is dict, 'receipt')
-            identity, current, _ = lane.read_receipt(self.bindings['receiptPath'],
-                                                   receipt['feedSession'], receipt['sequence'],
-                                                   expected_mode='full-replacement-direct-v2' if self.mode=='full-replacement-direct-v2' else 'disabled-rehearsal')
+            if native_stopped:identity,current=self.journal.native_stopped_receipt(require_fresh=action=='native-finish')
+            else:
+                identity, current, _ = lane.read_receipt(self.bindings['receiptPath'],
+                                                       receipt['feedSession'], receipt['sequence'],
+                                                       expected_mode='full-replacement-direct-v2' if self.mode=='full-replacement-direct-v2' else 'disabled-rehearsal')
             require(current == receipt, 'receipt')
             request = dict(requestId=str(uuid.uuid4()), runId=self.run_id,
                 supervisorId=self.supervisor_id, action=action, feedSession=receipt['feedSession'],
@@ -248,6 +273,21 @@ class LaneClient:
             category = error.category if isinstance(error, Refused) else 'receipt'
             self._cancel_and_close(category)
             raise Refused(category) from None
+
+    def native_finish_call(self):
+        from pgcat_lane_protocol import _release_admission,NATIVE_MODE
+        _release_admission(NATIVE_MODE,'native-finish')
+        self._active();require(self.mode==NATIVE_MODE,'configuration')
+        stopped=self.journal.native_stop(require_fresh=True)
+        # The exact frozen successful receipt is read; no provider tick is requested.
+        return self.call('native-finish',stopped['receipt'],float(monotonic()+5.),native_selector={})
+
+    def native_terminal_call(self,action):
+        from pgcat_lane_protocol import _release_admission,NATIVE_MODE
+        require(action in ('native-verdict','native-restore'),'configuration')
+        _release_admission(NATIVE_MODE,action);self._active()
+        stopped=self.journal.native_stop(require_fresh=False)
+        return self.call(action,stopped['receipt'],float(monotonic()+5.),native_selector={})
 
     def post_stop_call(self):
         """One fixed journal-derived finish; never refresh a frozen publication."""

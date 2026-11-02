@@ -166,6 +166,17 @@ def _native_authority(argv,env,*,claim=False):
     except Exception:raise Refused('source') from None
 
 
+def _native_frozen_receipt(env):
+    # Caller must first pass _native_authority; an environment flag grants nothing.
+    from pgcat_lane_protocol import Journal
+    from pathlib import Path
+    journal=Journal(Path(env['PGCAT_LANE_ROOT']));admitted=journal.native_admission(env['PGCAT_LANE_REQUEST_ID'])
+    action=admitted['request']['action']
+    if action not in ('native-finish','native-verdict','native-restore'):return None
+    identity,value=journal.native_stopped_receipt(require_fresh=action=='native-finish')
+    return identity,value,admitted['request']['deadlineMonotonic']
+
+
 def execute(argv, env):
     require(len(argv) == 9 and argv[:8] ==
             ['exec', '-P', PROFILE, '-r', REGION, '-i', WORKER, '-c']
@@ -193,8 +204,13 @@ def execute(argv, env):
         require(os.path.isabs(receipt_path))
         private_directory(intent_dir)
         expected_mode=(_native_authority(argv,env) if 'PGCAT_LANE_ROOT' in env else 'disabled-rehearsal')
-        original, value, fresh_until = read_receipt(receipt_path, session, minimum,expected_mode=expected_mode)
-        deadline = time.clock_gettime(time.CLOCK_MONOTONIC) + fresh_until-time.time()
+        frozen=_native_frozen_receipt(env) if expected_mode=='full-replacement-direct-v2' else None
+        if frozen is not None:
+            original,value,deadline=frozen
+            require(value['feedSession']==session and value['sequence']==minimum,'receipt')
+        else:
+            original, value, fresh_until = read_receipt(receipt_path, session, minimum,expected_mode=expected_mode)
+            deadline = time.clock_gettime(time.CLOCK_MONOTONIC) + fresh_until-time.time()
     # Never unlink or replace this lock: every process must use the same inode.
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
@@ -213,10 +229,10 @@ def execute(argv, env):
         require((opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino))
         require(time.clock_gettime(time.CLOCK_MONOTONIC) < deadline, 'deadline' if role == 'provider' else 'receipt')
         if role == 'external':
-            latest, value, _ = read_receipt(receipt_path, session, minimum,expected_mode=expected_mode)
+            latest,value,_=(_native_frozen_receipt(env) if frozen is not None else read_receipt(receipt_path,session,minimum,expected_mode=expected_mode))
             require(latest == original, 'receipt')
-            consume_intent(intent_dir, session, value['sequence'])
-            latest, _, _ = read_receipt(receipt_path, session, minimum,expected_mode=expected_mode)
+            if frozen is None:consume_intent(intent_dir, session, value['sequence'])
+            latest,_,_=(_native_frozen_receipt(env) if frozen is not None else read_receipt(receipt_path,session,minimum,expected_mode=expected_mode))
             require(latest == original, 'receipt')
         if role=='external' and expected_mode=='full-replacement-direct-v2':
             require(_native_authority(argv,env,claim=True)==expected_mode,'source')

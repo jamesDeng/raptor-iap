@@ -66,7 +66,7 @@ def validate_plan(value):
     try:target_valid(value['target'])
     except Exception:raise ValueError('invalid native ingress') from None
     require(value['target']['originalInstanceIds']==sorted(value['target']['originalInstanceIds']))
-    exact(value['sourceHashes'],SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure'})
+    exact(value['sourceHashes'],SOURCE_NAMES|{'nativeController','nativeIngress','nativeEvidence','nativeClosure','nativeAssessment'})
     require(all(hashed(v) for v in value['sourceHashes'].values()) and hashed(value['baselineSha256']))
     limits=value['deadline'];exact(limits,{'mutationCutoff','closureDeadline','captureMaxSeconds'})
     require(integer(limits['captureMaxSeconds'],75) and limits['captureMaxSeconds']<=5400)
@@ -86,14 +86,8 @@ def validate_plan(value):
         exact(selected['object'],{'kind','code'});require(selected['object']['kind']=='db-proxy' and token(selected['object']['code']))
         require(selected['operations']==[dict(name='db-proxy.replace-nodes',parameters=dict(mode='replacement'))])
         skills=selected['skills'];exact(skills,{'tag','commitSha'})
-        require(skills['tag']=='skills-v0.4.0' and type(skills['commitSha']) is str and re.fullmatch('[0-9a-f]{40}',skills['commitSha']))
-        scope=value['controllerScope'];exact(scope,{'envCode','proxyCode','groupId','serverGroupId','targetDbCode','application'})
-        require(all(token(scope[k]) for k in set(scope)-{'application'}))
-        require(scope['envCode']==selected['envCode'] and scope['proxyCode']==selected['object']['code'])
-        require(scope['groupId']==value['target']['scalingGroupId'] and scope['serverGroupId']==value['target']['nlbServerGroupId'])
-        app=scope['application'];exact(app,{'envCode','appCode','clusterId','namespace','name','uid'})
-        require(all(token(v) for v in app.values()) and app['envCode']==selected['envCode'])
-        require(all(app[k]==value['application'][k] for k in ('namespace','name','uid')))
+        require(type(skills['tag']) is str and re.fullmatch(r'skills-v[0-9]+\.[0-9]+\.[0-9]+',skills['tag']) and skills['tag']!='skills-v0.4.0' and type(skills['commitSha']) is str and re.fullmatch('[0-9a-f]{40}',skills['commitSha']))
+        resource_scope(value['controllerScope'],value)
     return detached(value)
 
 # Imports shared with the reviewed worker closure remain lazy at call boundaries.
@@ -109,7 +103,7 @@ READY_KEYS={'schemaVersion','mode','executionKind','runId','planSha256','baselin
     'progressBindingSha256','feedBindingSha256','feedSession','collectorIdentity','guardianIdentity','frames','readyAt','sources'}
 BASELINE_KEYS={'schemaVersion','mode','executionKind','runId','observedAt','targetSha256','originals','configMap',
     'roster','metricGroups','deployment','fleet','gateway'}
-RECORD_KEYS={'schemaVersion','executionKind','runId','planSha256','readySha256','readAt','serviceBindings','context','execution','events','approvals','diagnostic'}
+RECORD_KEYS={'schemaVersion','executionKind','runId','planSha256','readySha256','readAt','serviceBindings','context','execution','events','approvals','diagnostic','withdrawalWitness','retirementWitness'}
 MAX_RESPONSE=2*1024*1024
 
 
@@ -565,7 +559,7 @@ def _collect_ingress(chain,selector,*,gate,kube_read,http_get,now):
     state=_action_gate(chain,gate,calls,kube_read,now,'native-ingress')
     capture_prefix=_capture_prefix(chain,state['progress']['latest'])
     record=dict(schemaVersion=1,executionKind=chain.plan['executionKind'],runId=chain.plan['runId'],planSha256=chain.context['planSha256'],
-        readySha256=chain.ready_sha,readAt=state['at'],serviceBindings=None,context=None,execution=None,events=None,approvals=None,diagnostic=None)
+        readySha256=chain.ready_sha,readAt=state['at'],serviceBindings=None,context=None,execution=None,events=None,approvals=None,diagnostic=None,withdrawalWitness=None,retirementWitness=None)
     if not native:
         exact(selector,set());record['diagnostic']=_diagnostic(chain,state)
     else:
@@ -582,7 +576,8 @@ def _collect_ingress(chain,selector,*,gate,kube_read,http_get,now):
         prefix='/v1/requests/'+request_id
         response=get('openapi',prefix+'/context');exact(response,{'data'})
         ctx=_context(response['data'],chain.plan,request_id)
-        response=get('gateway',prefix);exact(response,{'data'});first=_execution(response['data'],chain.plan,ctx)
+        response=get('gateway',prefix);exact(response,{'data'});first_raw=response['data'];first=_execution(first_raw,chain.plan,ctx)
+        wait_before=released_wait(first_raw,status=first['status']) if first['status'] in ('waiting_resource','waiting_approval') else None
         events=[];cursor=0;seen=set();pages=0;runtime_sequences={}
         def exhaust():
             nonlocal cursor,pages
@@ -607,18 +602,42 @@ def _collect_ingress(chain,selector,*,gate,kube_read,http_get,now):
                     events.append(event);seen.add(row['eventId']);cursor=row['sequence'];require(len(events)<=10000)
                 require(page['nextAfter']==cursor and (not page['hasMore'] or len(page['data'])>0))
                 if not page['hasMore']:break
-        exhaust();response=get('gateway',prefix);exact(response,{'data'});last=_execution(response['data'],chain.plan,ctx)
+        exhaust()
+        wait_prefix=canonical(events) if wait_before is not None else None
+        wait_frame=None
+        if wait_before is not None:
+            from segmented_capture import open_directory,read_frame
+            frame_fd=open_directory(chain.run/'native-capture')
+            try:
+                candidate=read_frame(frame_fd,state['progress']['latest'])
+                try:
+                    if wait_before['status']=='waiting_resource':_withdrawal_state(chain,candidate)
+                    else:_retirement_state(chain,candidate)
+                except ValueError:pass
+                else:wait_frame=detached(state['progress']['latest'])
+            finally:os.close(frame_fd)
+        response=get('gateway',prefix);exact(response,{'data'});last=_execution(response['data'],chain.plan,ctx)
         require((first['attemptId'],first.get('result'))==(last['attemptId'],last.get('result')))
         exhaust();response=get('gateway',prefix);exact(response,{'data'});require(_execution(response['data'],chain.plan,ctx)==last)
+        if wait_before is not None:
+            wait_after=released_wait(response['data'],status=wait_before['status']);require(wait_after==wait_before and canonical(events)==wait_prefix)
+            if wait_frame is not None and wait_before['status']=='waiting_resource':
+                record['withdrawalWitness']=dict(schemaVersion=1,kind='released-wait-withdrawal',attemptId=wait_before['attemptId'],before=wait_before,after=wait_after,frame=wait_frame,eventCursor=cursor,eventsSha256=__import__('hashlib').sha256(canonical(events)).hexdigest())
         approvals=[]
         for approval_id in ids:
             response=get('openapi','/v1/approvals/'+approval_id);exact(response,{'data'})
-            approvals.append(_approval(response['data'],approval_id,chain.plan,request_id,last.get('result')))
+            if wait_before is not None and wait_before['status']=='waiting_approval':approvals.append(_pending_scale_approval(response['data'],approval_id,chain.plan,request_id))
+            else:approvals.append(_approval(response['data'],approval_id,chain.plan,request_id,last.get('result')))
         for label in ('gateway','openapi'):
             current,current_binding=_credentials(chain,label,calls,kube_read);require(current==auth[label] and current_binding==bindings[label])
         require(_gateway_config(chain,calls,kube_read)==state['config'])
         record.update(serviceBindings=dict(namespace='raptor-system',gateway=bindings['gateway'],openapi=bindings['openapi'],gatewayConfiguration=state['config']),
             context=ctx,execution=last,events=events,approvals=approvals)
+        if record['withdrawalWitness'] is not None:validate_withdrawal_witness(record,chain)
+        if wait_before is not None and wait_before['status']=='waiting_approval' and wait_frame is not None:
+            require(len(approvals)==1)
+            record['retirementWitness']=dict(schemaVersion=1,kind='released-approval-retiring',attemptId=wait_before['attemptId'],before=wait_before,after=wait_after,frame=wait_frame,eventCursor=cursor,eventsSha256=__import__('hashlib').sha256(canonical(events)).hexdigest(),approvalId=approvals[0]['approvalId'],actionId=approvals[0]['actionId'])
+            validate_retirement_witness(record,chain)
         encoded=canonical(record).decode('ascii')
         require(all(json.dumps(secret)[1:-1] not in encoded for secret in secrets))
     final_state=_action_gate(chain,gate,calls,kube_read,now,'native-ingress')
@@ -685,8 +704,8 @@ def _approval(value,approval_id,plan,request_id,result):
     exact(value,{'approvalId','requestId','actionId','binding','state','guidance'})
     require(result is not None and value['approvalId']==approval_id and value['requestId']==request_id and value['state']=='approved')
     action=result['replacement']['actions'][1];require(value['actionId']==action['actionId'])
-    expected=dict(requestId=request_id,actionId=action['actionId'],interface='ess.scale-in',envCode=plan['plannedInput']['envCode'],
-        target=dict(proxyCode=plan['controllerScope']['proxyCode'],groupId=plan['controllerScope']['groupId']),parameters=dict(desiredCapacity=2))
+    expected=dict(requestId=request_id,actionId=action['actionId'],interface='db-proxy.scale-in',envCode=plan['plannedInput']['envCode'],
+        target=dict(proxyCode=plan['controllerScope']['proxyCode']),parameters=dict(desiredCapacity=2))
     require(value['binding']==expected)
     return {k:detached(value[k]) for k in ('approvalId','requestId','actionId','binding','state')}
 
@@ -908,3 +927,106 @@ def _ready_pair(frames,baseline,context,at):
         require(new['sequence']>old['sequence'] and new['Attempts']>old['Attempts'] and new['Success']>old['Success'])
         require(all(new[k]>=old[k] for k in ('Scheduled','Attempts','Success','Failure','Timeout','Ambiguous','Skipped')))
         require(all(new[k]==0 for k in ('Failure','Timeout','Ambiguous','Skipped')))
+
+
+def resource_scope(value,plan):
+    """Exact service resolution proof; no legacy projection or missing-field fill."""
+    import hashlib
+    from collections import OrderedDict
+    fields={'envCode','proxyCode','groupId','serverGroupId','targetDbCode','application','accountId','region','listenerId','port','databaseResourceId','resolutionDigest'}
+    exact(value,fields);app=value['application'];exact(app,{'envCode','appCode','clusterId','namespace','name','uid'})
+    require(all(token(value[k]) for k in fields-{'application','port','resolutionDigest'}) and all(token(v) for v in app.values()))
+    require(type(value['port']) is int and value['port']==6432 and hashed(value['resolutionDigest']))
+    t=plan['target'];require((value['accountId'],value['region'],value['groupId'],value['serverGroupId'])==(t['accountId'],t['regionId'],t['scalingGroupId'],t['nlbServerGroupId']))
+    selected=plan['plannedInput'];require(value['envCode']==app['envCode']==selected['envCode'] and value['proxyCode']==selected['object']['code'])
+    require(all(app[k]==plan['application'][k] for k in ('uid','namespace','name')))
+    ordered=('envCode','accountId','region','clusterId','proxyCode','groupId','serverGroupId','listenerId','port','targetDbCode','databaseResourceId','application')
+    identity=OrderedDict((k,app['clusterId'] if k=='clusterId' else value[k]) for k in ordered)
+    identity['application']=OrderedDict((k,app[k]) for k in ('envCode','appCode','clusterId','namespace','name','uid'))
+    require(hashlib.sha256(json.dumps(identity,separators=(',',':'),ensure_ascii=False).encode('utf-8')).hexdigest()==value['resolutionDigest'])
+    return detached(value)
+
+
+def released_wait(value,*,status='waiting_resource'):
+    """Only the supported released-wait cleanup projection; pending is not settled."""
+    keys={'requestId','attemptId','status','runtimeMode','stage','recoveryNeeded','cleanupStatus'}
+    require(type(value) is dict and keys<=set(value))
+    clean=value['cleanupStatus'];exact(clean,{'sandboxAbsent','keyAbsent','accessRevoked'})
+    require(all(type(v) is bool and v for v in clean.values()))
+    require(status in ('waiting_resource','waiting_approval'))
+    require(value['status']==value['stage']==status and value['runtimeMode']=='live' and value['recoveryNeeded'] is False)
+    require(token(value['attemptId']) and token(value['requestId']))
+    return detached({k:value[k] for k in keys})
+
+
+def validate_withdrawal_witness(record,chain):
+    """Historical validator only; issuance remains inside actual ingress collection."""
+    from segmented_capture import sha,canonical,open_directory,read_frame
+    witness=record['withdrawalWitness'];exact(witness,{'schemaVersion','kind','attemptId','before','frame','after','eventCursor','eventsSha256'})
+    require(type(witness['schemaVersion']) is int and witness['schemaVersion']==1 and witness['kind']=='released-wait-withdrawal')
+    before=released_wait(witness['before']);after=released_wait(witness['after']);require(before==after)
+    require(before['requestId']==record['context']['requestId'] and before['attemptId']==witness['attemptId'])
+    events=record['events'];require(events and integer(witness['eventCursor'],1) and witness['eventCursor']==events[-1]['sequence'])
+    require(witness['eventsSha256']==sha(canonical(events)) and all(e['evidenceMode']=='live' for e in events))
+    require(not any(e['kind']=='tool_start' and e['details'].get('tool')=='mcp__infra__deployment_restart' for e in events))
+    current=[e for e in events if e['attemptId']==witness['attemptId']]
+    waits=[e for e in current if e['details'].get('tool')=='resource_wait']
+    require(any(e['kind']=='tool_start' and e['details'].get('status')=='started' for e in waits))
+    require(any(e['kind']=='tool_result' and e['details'].get('status')=='succeeded' for e in waits))
+    require(any(e['kind']=='tool_start' and e['details'].get('tool')=='mcp__infra__db_proxy_nodes_deregister' for e in events))
+    fd=open_directory(chain.run/'native-capture')
+    try:frame=read_frame(fd,witness['frame'])
+    finally:os.close(fd)
+    pair=_withdrawal_state(chain,frame)
+    return detached(witness),pair
+
+
+def _withdrawal_state(chain,frame):
+    from capture_window import clean,seconds
+    require(clean(frame)==frame);inventory=frame['inventory'];originals=set(chain.plan['target']['originalInstanceIds'])
+    pair=_replacement_pair(inventory,originals);require(pair is not None)
+    require(not originals.intersection(r['id'] for r in inventory['backendStates']))
+    require({r['id'] for r in inventory['backendStates']}==set(pair))
+    require(inventory['feedSession']==chain.context['feedSession'] and 0<=seconds(frame['at'])-seconds(inventory['observedAt'])<30)
+    return pair
+
+
+def _pending_scale_approval(value,approval_id,plan,request_id):
+    exact(value,{'approvalId','requestId','actionId','binding','state','guidance'})
+    require(value['approvalId']==approval_id and value['requestId']==request_id and value['state'] in ('pending','approved') and token(value['actionId']))
+    require(value['binding']==dict(requestId=request_id,actionId=value['actionId'],interface='db-proxy.scale-in',envCode=plan['plannedInput']['envCode'],target=dict(proxyCode=plan['controllerScope']['proxyCode']),parameters=dict(desiredCapacity=2)))
+    return {k:detached(value[k]) for k in ('approvalId','requestId','actionId','binding','state')}
+
+
+def _retirement_state(chain,frame):
+    from pgcat_pending_proof_worker import complete_metrics
+    from capture_window import seconds
+    pair=_withdrawal_state(chain,frame);d=frame['deployment']
+    require(d==dict(uid=chain.plan['application']['uid'],generation=chain.plan['application']['generation']+1,observedGeneration=chain.plan['application']['generation']+1,desired=2,ready=2))
+    require(len(frame['pods'])==2 and not frame.get('startingPods',[]))
+    initial={r['uid'] for r in chain.context['initialRoster']}
+    for pod in frame['pods']:
+        require(pod['uid'] not in initial and pod['ready'] is True and pod['snapshot']['final'] is False and pod['ownership']['terminating'] is False)
+        require(pod['ownership']['deploymentUid']==chain.plan['application']['uid'] and pod['ownership']['imageDigest']==chain.plan['application']['imageDigest'])
+    metrics=frame['metrics'];ids=chain.plan['target']['originalInstanceIds'];require(set(ids)<=set(metrics['nodes']))
+    complete_metrics(frame,metrics['nodes'],seconds(frame['at']))
+    require(sum(row['value'] for row in metrics['raw'] if row['node'] in ids)<=1)
+    return pair
+
+
+def validate_retirement_witness(record,chain):
+    from segmented_capture import sha,canonical,open_directory,read_frame
+    w=record['retirementWitness'];exact(w,{'schemaVersion','kind','attemptId','before','frame','after','eventCursor','eventsSha256','approvalId','actionId'})
+    require(type(w['schemaVersion']) is int and w['schemaVersion']==1 and w['kind']=='released-approval-retiring')
+    before=released_wait(w['before'],status='waiting_approval');after=released_wait(w['after'],status='waiting_approval');require(before==after)
+    require(before['requestId']==record['context']['requestId'] and before['attemptId']==w['attemptId'])
+    events=record['events'];require(events and integer(w['eventCursor'],1) and w['eventCursor']==events[-1]['sequence'] and w['eventsSha256']==sha(canonical(events)))
+    require(all(e['evidenceMode']=='live' for e in events))
+    scales=[e for e in events if e['kind']=='tool_start' and e['details'].get('tool')=='mcp__infra__db_proxy_scale'];require(len(scales)==1)
+    restarts=[e for e in events if e['kind']=='tool_start' and e['details'].get('tool')=='mcp__infra__deployment_restart'];require(len(restarts)==1 and scales[0]['sequence']<restarts[0]['sequence'])
+    approvals=[a for a in record['approvals'] if a['approvalId']==w['approvalId'] and a['actionId']==w['actionId']];require(len(approvals)==1)
+    a=approvals[0];_pending_scale_approval(dict(a,guidance=None),a['approvalId'],chain.plan,record['context']['requestId'])
+    fd=open_directory(chain.run/'native-capture')
+    try:frame=read_frame(fd,w['frame'])
+    finally:os.close(fd)
+    return detached(w),_retirement_state(chain,frame)

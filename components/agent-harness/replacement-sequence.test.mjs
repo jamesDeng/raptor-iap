@@ -4,7 +4,7 @@ import {ReplacementTrace} from './replacement-trace.mjs';
 import {ReplacementReadiness} from './replacement-readiness.mjs';
 const module=await import('./replacement-sequence.mjs').catch(()=>({}));
 const {ReplacementSequence}=module;
-import {binding,scope,old,added,setup,observations,observe,argsFor,mutate,expanded,withdrawn,restarted,protect} from './replacement-sequence-fixtures.mjs';
+import {binding,scope,old,added,setup,observations,observe,argsFor,mutate,expanded,withdrawn,waited,requestWithdrawalWait,restarted,protect} from './replacement-sequence-fixtures.mjs';
 test('fleet alone cannot unlock any initial write; complete native reads do',()=>{
  const x=setup();x.gate.observe('fleet',observations().fleet);
  assert.throws(()=>x.gate.beforeMutation('db_proxy_node_protection_set',protect(old)),/MissingEvidence/);
@@ -21,14 +21,19 @@ test('direct sequence prohibits desired three, second expansion and foreign prot
  for(const ids of [['new-a','foreign'],['new-a','new-a'],['old-a','new-b']])assert.throws(()=>x.gate.beforeMutation('db_proxy_node_protection_set',protect(ids)),/MissingEvidence/);
  assert.deepEqual(x.gate.cohort(),{oldInstanceIds:old,newInstanceIds:added});
 });
-test('restart requires both old withdrawals and observed absence with protected healthy new pair',()=>{
+test('restart requires both old withdrawals, observed absence, and the completed wait',t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const x=expanded();assert.throws(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
  mutate(x,'db_proxy_nodes_deregister',{nodeIds:['old-a']},{instanceIds:['old-a'],outcome:'unknown'});
  observe(x,observations([...old,...added],{withdrawn:['old-a']}));assert.throws(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
  assert.throws(()=>x.gate.beforeMutation('db_proxy_nodes_deregister',argsFor('db_proxy_nodes_deregister',{nodeIds:old})),/MutationAlreadySubmitted|MissingEvidence/);
  mutate(x,'db_proxy_nodes_deregister',{nodeIds:['old-b']},{instanceIds:['old-b'],outcome:'submitted'});
  observe(x,observations([...old,...added],{withdrawn:old,unprotected:['new-a']}));assert.throws(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
- observe(x,observations([...old,...added],{withdrawn:old}));assert.doesNotThrow(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')));
+ observe(x,observations([...old,...added],{withdrawn:old}));assert.throws(()=>x.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
+ const decision=requestWithdrawalWait(x);assert.throws(()=>setup(x.session,decision),/MissingEvidence/);
+ t.mock.timers.tick(60000);const y=setup(x.session,decision);
+ assert.throws(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
+ observe(y,observations([...old,...added],{withdrawn:old}));assert.doesNotThrow(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')));
 });
 for(const [name,change] of [
  ['over budget',e=>{e.metrics.nodes[0].pools[0].idle=2;e.metrics.nodes[0].connectedClients=2;}],
@@ -100,7 +105,7 @@ test('resume retains ordering and generation but requires fresh current reads; o
  assert.deepEqual(y.gate.completionEvidence(),{oldInstanceIds:old,newInstanceIds:added,restartGeneration:6});
 });
 test('unresolved restart never replays or permits scale, even when app looks ready',()=>{
- const x=withdrawn(),args=argsFor('deployment_restart');x.gate.beforeMutation('deployment_restart',args);x.trace.beforeMutation('deployment_restart',args);
+ const x=waited(),args=argsFor('deployment_restart');x.gate.beforeMutation('deployment_restart',args);x.trace.beforeMutation('deployment_restart',args);
  const y=setup(x.session);observe(y,observations([...old,...added],{withdrawn:old,zero:true,generation:6}));
  assert.throws(()=>y.gate.beforeMutation('deployment_restart',args),/MutationAlreadySubmitted|MissingEvidence/);
  assert.throws(()=>y.gate.beforeMutation('db_proxy_node_protection_set',protect(old,false)),/MissingEvidence/);
@@ -184,4 +189,32 @@ for(const first of ['protectOld','expand'])test(`resume rejects first ${first} p
  const entries=x.session.entries,index=entries.findIndex(e=>e.customType==='raptor-replacement-sequence-v2');
  const [permit]=entries.splice(index,1);entries.unshift(permit);
  assert.throws(()=>setup(x.session),/InvalidEvidence/);
+});
+
+for(const [label,change] of [
+ ['identity',r=>r.identity.model='other-model'],['cohort',r=>r.cohort.newInstanceIds[0]='other'],
+ ['duration',r=>r.wait.wakeAfterSeconds=59],['binding',r=>r.wait.bindingDigest='f'.repeat(64)],
+ ['registered original',r=>r.evidence.backend.nodes[0].instanceId='old-a'],
+ ['unprotected replacement',r=>r.evidence.fleet.instances[2].protectedFromScaleIn=false],
+ ['stale prewait read',r=>r.evidence.capacity.observedAt=new Date(Date.parse(r.wait.startedAt)-30001).toISOString()],
+ ['unknown field',r=>r.approved=true],
+])test('withdrawal wait rejects altered '+label,()=>{
+ const x=waited();change(x.session.entries.find(e=>e.customType==='raptor-replacement-withdrawal-wait-v1').data);
+ assert.throws(()=>setup(x.session),/InvalidEvidence/);
+});
+for(const decisionChange of [d=>d.actionId+='other',d=>d.approvalId='human-approval',d=>d.bindingDigest='f'.repeat(64),d=>delete d.decision])test('withdrawal continuation rejects wrong decision binding',t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});const x=withdrawn(),decision=requestWithdrawalWait(x);t.mock.timers.tick(60000);decisionChange(decision);
+ assert.throws(()=>setup(x.session,decision),/MissingEvidence/);
+});
+test('withdrawal continuation rejects 59999ms and duplicate or reordered milestones',t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});const x=withdrawn(),decision=requestWithdrawalWait(x);t.mock.timers.tick(59999);assert.throws(()=>setup(x.session,decision),/MissingEvidence/);
+ t.mock.timers.tick(1);const y=setup(x.session,decision);assert.ok(y.gate.withdrawalCompleted);
+ const entry=x.session.entries.find(e=>e.customType==='raptor-replacement-withdrawal-wait-v1');x.session.entries.push(structuredClone(entry));assert.throws(()=>setup(x.session),/InvalidEvidence/);
+});
+for(const omitted of ['fleet','backend','capacity','metrics','deployment','sql','discovery'])test('restart after withdrawal wait requires fresh '+omitted,()=>{
+ const x=waited(),y=setup(x.session),e=observations([...old,...added],{withdrawn:old});
+ for(const [kind,data] of Object.entries(e))if(kind!==omitted)y.gate.observe(kind,data);
+ if(omitted!=='sql')for(const instanceId of added)y.gate.observe('sql',{instanceId,connected:true},{instanceId});
+ if(omitted!=='discovery')y.gate.observe('mcp',['raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'].map(name=>({server:name.split('.')[0],tool:name.split('.')[1],observedAt:new Date().toISOString()})));
+ assert.throws(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
 });

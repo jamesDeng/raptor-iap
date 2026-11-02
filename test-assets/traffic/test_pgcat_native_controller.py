@@ -33,7 +33,9 @@ def Fixture(root,kind='native-replacement'):
     for name in sources.values():
         shutil.copyfile(here/name,value.run/name);(value.run/name).chmod(0o600)
     credential=root/'kubeconfig';credential.write_bytes(b'private-offline-fixture');credential.chmod(0o600)
-    value.prepared=dict(planFile=file_record(value.run/'native-plan.json'),baselineFile=file_record(value.run/'native-baseline.json'),gatewayRuntimeFile=file_record(value.run/'native-gateway-runtime.json'),workerCredential=native.credential_identity(credential))
+    from test_pgcat_native_admission import assets_for
+    write(value.run/'native-runtime-assets.json',assets_for(value.plan))
+    value.prepared=dict(runtimeAssetsFile=file_record(value.run/'native-runtime-assets.json'),planFile=file_record(value.run/'native-plan.json'),baselineFile=file_record(value.run/'native-baseline.json'),gatewayRuntimeFile=file_record(value.run/'native-gateway-runtime.json'),workerCredential=native.credential_identity(credential))
     return value
 
 
@@ -44,7 +46,7 @@ class NativeStartupTests(unittest.TestCase):
         self.root=Path(os.path.realpath(self.tmp.name));self.root.chmod(0o700)
 
     def test_exact_native_closure_and_subset(self):
-        self.assertEqual(len(bootstrap.source_names('full-replacement-direct-v2')),24)
+        self.assertEqual(len(bootstrap.source_names('full-replacement-direct-v2')),25)
         self.assertEqual(len(bootstrap.source_names('no-scale')),20)
         self.assertEqual(set(native.collector_sources()),set(__import__('pgcat_collector_control').SOURCES)|{'nativeEvidence'})
         with self.assertRaises(ValueError):bootstrap.source_names('direct-v2')
@@ -194,6 +196,24 @@ class NativeStartupTests(unittest.TestCase):
         self.assertEqual((f.run/'native-capture'/'native-operation-binding.json').read_bytes(),source.read_bytes())
         self.assertEqual(result['sha256'],hashlib.sha256(source.read_bytes()).hexdigest())
         with self.assertRaises(FileExistsError):native.mirror_operation_binding(f.run)
+
+    def test_diagnostic_ingress_waits_for_retained_successors_before_binding(self):
+        from pgcat_native_ingress import restart_disabled
+        from test_pgcat_native_evidence import rolling,kubernetes
+        f=Fixture(self.root,'disabled-proof')
+        def restart(ns,name,payload):
+            dep=f.objects[('Deployment',ns,name)];dep['metadata'].update(generation=2,resourceVersion='2')
+            dep['spec']['template'].setdefault('metadata',{})['annotations']=payload['spec']['template']['metadata']['annotations']
+            return copy.deepcopy(dep)
+        restart_disabled(f.run,gate=f,kube_read=f.kube,kube_patch=restart,now=lambda:f.now)
+        frame=rolling(1);frame['inventory']=copy.deepcopy(f.frame['inventory']);f.append(2,frame);f.live=kubernetes(1)
+        def collect():return native.collect_ingress(f.run,{},gate=f,kube_read=f.kube,http_get=f.http,now=lambda:f.now)
+        self.assertEqual(collect()['status'],'OBSERVED')
+        self.assertFalse((f.run/'native-operation-binding.json').exists())
+        for n in (3,4,5):
+            frame=rolling(n-1);frame['inventory']=copy.deepcopy(f.frame['inventory']);f.append(n,frame)
+        f.live=kubernetes(4)
+        self.assertEqual(collect()['status'],'BOUND')
 
     def test_actual_child_handle_and_pid_reuse(self):
         child=subprocess.Popen([sys.executable,'-I','-S','-c','import time;time.sleep(30)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -353,9 +373,9 @@ class NativeBaselineTests(unittest.TestCase):
 class NativeCaptureContextTests(unittest.TestCase):
     def test_native_feed_checks_originals_before_first_actual_publication(self):
         import provider_feed as feed
-        for name in (None,'native-plan.json','native-baseline.json','native-gateway-runtime.json','kubeconfig'):
+        for name in (None,'native-plan.json','native-baseline.json','native-gateway-runtime.json','native-runtime-assets.json','kubeconfig'):
             with self.subTest(replaced=name),tempfile.TemporaryDirectory() as d:
-                root=Path(d).resolve();root.chmod(0o700);f=Fixture(root)
+                root=Path(d).resolve();root.chmod(0o700);f=Fixture(root,'disabled-proof')
                 context=json.loads((f.source/'run-context.json').read_bytes())['runContext']
                 inventory=f.run/'provider-inventory.json';value=json.loads(inventory.read_bytes());value['sequence']=1
                 raw=json.dumps(value,separators=(',',':')).encode('ascii');shutil.rmtree(f.source);inventory.unlink()
@@ -386,7 +406,7 @@ class NativeCaptureContextTests(unittest.TestCase):
             healthy=subprocess.run(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
             self.assertEqual(healthy.returncode,0,healthy.stderr);self.assertEqual(healthy.stdout,b'BOUND\n')
             replaced=copy.deepcopy(f.prepared)
-            for key,name in (('planFile','native-plan.json'),('baselineFile','native-baseline.json'),('gatewayRuntimeFile','native-gateway-runtime.json'),('workerCredential','kubeconfig')):
+            for key,name in (('planFile','native-plan.json'),('baselineFile','native-baseline.json'),('gatewayRuntimeFile','native-gateway-runtime.json'),('runtimeAssetsFile','native-runtime-assets.json'),('workerCredential','kubeconfig')):
                 path=(root if key=='workerCredential' else f.run)/name;raw=path.read_bytes()
                 path.rename(path.with_name('held-'+name));path.write_bytes(raw);path.chmod(0o600)
                 replaced[key]=native.credential_identity(path) if key=='workerCredential' else file_record(path)
@@ -478,7 +498,7 @@ class NativeJournalTests(unittest.TestCase):
             self.assertEqual(journal.native_plan(),f.plan)
             request=dict(requestId=f.admitted['localRequestId'],action='native-baseline',deadlineMonotonic=123.)
             write(lane/('native-selector-'+request['requestId']+'.json'),{})
-            with journal._transaction() as db:
+            with patch('pgcat_lane_protocol._release_admission'),journal._transaction() as db:
                 journal._native_admit_in_tx(db,request)
                 actual=json.loads(db.execute('SELECT proof FROM native_admission').fetchone()['proof'])
                 self.assertEqual(actual['envelope']['prepared'],f.prepared)

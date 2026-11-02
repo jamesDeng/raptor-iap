@@ -381,7 +381,8 @@ class SegmentedCapture:
         result=assess_manifest(self.directory);private_json(self.directory/'summary.json',result);return result
 
 
-def assess_manifest(directory: Path):
+def assess_manifest(directory: Path, *, require_transition=True):
+    if type(require_transition) is not bool:raise ValueError('assessment option')
     directory=Path(directory);issues=[];finals={};failure_counters={};observed_failure=False
     invalid=(OSError,ValueError,KeyError,TypeError,IndexError,OverflowError)
     def issue(reason):
@@ -461,7 +462,7 @@ def assess_manifest(directory: Path):
         if set(p.name for p in directory.glob('segment-*.jsonl'))!=seen:issue('unlisted segment')
 
     stream=frames()
-    result=assess(stream,completed=completed,cancelled=cancelled)
+    result=assess(stream,completed=completed,cancelled=cancelled,require_transition=require_transition)
     # assess deliberately aborts on semantic corruption. Finish the same bounded
     # iterator so later authenticated observations can still establish FAIL.
     for _ in stream:pass

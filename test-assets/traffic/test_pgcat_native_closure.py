@@ -35,11 +35,10 @@ class GatewayClosureTests(unittest.TestCase):
         (self.f.run/'native-plan.json').write_bytes(canonical(self.f.plan))
         self.f.prepared['planFile']=file_record(self.f.run/'native-plan.json')
         self.gate = self.f.run/'gateway-live-gate'; self.gate.write_bytes(b'#!/bin/sh\nexit 1\n'); self.gate.chmod(0o700)
-        self.assets = dict(schemaVersion=1, sourceBundleSha256='a'*64, infraApiRevision='b'*40,
-            gatewayImage='ghcr.io/jamesdeng/raptor-iap-gateway@sha256:'+'e'*64,
-            axImage='ax@sha256:'+'1'*64, clientImage='client@sha256:'+'2'*64,
-            gateBinarySha256=hashlib.sha256(self.gate.read_bytes()).hexdigest(),
-            skillsTag='skills-v0.4.0',skillsCommit='f'*40,scope=self.f.plan['controllerScope'],application=self.f.plan['application'])
+        from test_pgcat_native_admission import assets_for
+        self.assets=assets_for(self.f.plan);self.assets['gateBinarySha256']=hashlib.sha256(self.gate.read_bytes()).hexdigest()
+        (self.f.run/'native-runtime-assets.json').write_bytes(canonical(self.assets))
+        self.f.prepared['runtimeAssetsFile']=file_record(self.f.run/'native-runtime-assets.json')
         self.calls=[]; self.failure_mode=None; self.mutate=None
         self.enabled=False
         self.objects=copy.deepcopy(self.f.objects)
@@ -218,7 +217,7 @@ class GatewayClosureTests(unittest.TestCase):
     def test_closure_is_in_full_sources_but_not_collector_context(self):
         import pgcat_collector_control as collector
         self.assertEqual(bootstrap.NATIVE_SOURCES['nativeClosure'],'pgcat_native_closure.py')
-        self.assertEqual(len(bootstrap.NATIVE_SOURCES),24);self.assertEqual(len(collector.NATIVE_SOURCES),12)
+        self.assertEqual(len(bootstrap.NATIVE_SOURCES),25);self.assertEqual(len(collector.NATIVE_SOURCES),12)
         self.assertNotIn('nativeClosure',bootstrap.SOURCES)
         ast.parse(Path(closure.__file__).read_text(),feature_version=(3,6))
 

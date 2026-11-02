@@ -1,5 +1,8 @@
+import {createHash} from 'node:crypto';
 // Only trusted observation callbacks populate current evidence. Protected session
 // permits retain ordering, never current health, across approval/resource waits.
+const WAIT='raptor-replacement-withdrawal-wait-v1';
+const digest=v=>createHash('sha256').update(canonical(v)).digest('hex');
 const TYPE='raptor-replacement-sequence-v2',TRACE='raptor-replacement-evidence-v1';
 const missing=()=>Error('MissingEvidence'),invalid=()=>Error('InvalidEvidence');
 const canonical=v=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
@@ -26,7 +29,7 @@ function metricsValid(m,ids,budgeted=[],after=0){
  return Number.isSafeInteger(retiringTotal)&&retiringTotal<=1;
 }
 export class ReplacementSequence {
- constructor(manager,trace,readiness,profile){
+ constructor(manager,trace,readiness,profile,decisionContext){
   if(profile!=='resource-v1')throw Error('InvalidSkillsRelease');
   this.manager=manager;this.trace=trace;this.readiness=readiness;this.current={};this.probes=new Map();this.checks=new Map();
   const entries=manager.getEntries(),saved=entries.filter(e=>e.type==='custom'&&e.customType===TYPE);
@@ -51,6 +54,50 @@ export class ReplacementSequence {
    const result=trace.rows.find(r=>r.kind==='result'&&r.key===intent.key);
    if(result)this.validateReceipt(intent.tool,intent.args,result.state);
   }
+  this.loadWithdrawalWait(entries,decisionContext);
+ }
+ loadWithdrawalWait(entries,decision){
+  const saved=entries.filter(e=>e.type==='custom'&&e.customType===WAIT);
+  if(saved.length>2)throw invalid();
+  if(!saved.length){if(this.intents('restart').length)throw invalid();return;}
+  const requested=saved[0].data,at=entries.indexOf(saved[0]),wait=requested?.wait;
+  if(!requested||Object.keys(requested).sort().join(',')!=='cohort,evidence,identity,kind,observedAt,version,wait,withdrawalKeys'||requested.version!==1||requested.kind!=='requested'||!same(requested.identity,this.trace.identity)||!same(requested.cohort,this.cohort())||Buffer.byteLength(canonical(requested))>32768)throw invalid();
+  const withdrawals=this.intents('withdraw');
+  if(this.idsFor('withdraw').length!==2||!same(requested.withdrawalKeys,withdrawals.map(i=>i.key))||!wait||Object.keys(wait).sort().join(',')!=='actionId,approvalId,bindingDigest,definitionSha256,kind,requestId,startedAt,wakeAfterSeconds'||wait.kind!=='resource'||wait.approvalId!==''||!/^capacity-[a-f0-9-]{36}$/.test(wait.actionId)||wait.requestId!==this.trace.identity.requestId||wait.definitionSha256!==this.trace.identity.definitionSha256||wait.bindingDigest!==wait.definitionSha256||wait.wakeAfterSeconds!==60||!Number.isFinite(Date.parse(wait.startedAt)))throw invalid();
+  const begun=Date.parse(wait.startedAt),e=requested.evidence,c=requested.cohort;
+  if(!Number.isFinite(Date.parse(requested.observedAt))||Date.parse(requested.observedAt)<begun||Date.parse(requested.observedAt)-begun>30000)throw invalid();
+  const resultAts=withdrawals.map(i=>entries.findIndex(e=>e.type==='custom'&&e.customType===TRACE&&e.data.kind==='result'&&e.data.key===i.key));
+  if(resultAts.some(i=>i<0||i>=at))throw invalid();
+  const lastResult=Math.max(...resultAts.map(i=>Date.parse(entries[i].data.observedAt)));
+  if(!e||Object.keys(e).sort().join(',')!=='backend,capacity,fleet'||Object.values(e).some(r=>!r||!Number.isFinite(Date.parse(r.observedAt))||Date.parse(r.observedAt)<lastResult||Date.parse(r.observedAt)>begun||begun-Date.parse(r.observedAt)>30000)||Object.keys(e.capacity).sort().join(',')!=='desiredCapacity,groupId,maxSize,minSize,observedAt'||Object.keys(e.fleet).sort().join(',')!=='groupId,instances,observedAt'||Object.keys(e.backend).sort().join(',')!=='nodes,observedAt,serverGroupId'||e.capacity.groupId!==this.trace.identity.scope.groupId||e.capacity.desiredCapacity!==4||e.capacity.minSize!==2||e.capacity.maxSize!==4||e.fleet.groupId!==this.trace.identity.scope.groupId||!exact(e.fleet.instances,[...c.oldInstanceIds,...c.newInstanceIds])||!e.fleet.instances.every(n=>Object.keys(n).sort().join(',')==='healthStatus,instanceId,lifecycleState,protectedFromScaleIn'&&protectedNode(n))||e.backend.serverGroupId!==this.trace.identity.scope.serverGroupId||!exact(e.backend.nodes,c.newInstanceIds)||!e.backend.nodes.every(n=>Object.keys(n).sort().join(',')==='healthy,instanceId,registered,status'&&registered(n)))throw invalid();
+  this.withdrawalRequested=requested;
+  if(saved.length===2){
+   const completed=saved[1].data;
+   if(!completed||Object.keys(completed).sort().join(',')!=='identity,kind,requestedSha256,resumedAt,version,waitActionId'||completed.version!==1||completed.kind!=='completed'||!same(completed.identity,this.trace.identity)||completed.waitActionId!==wait.actionId||completed.requestedSha256!==digest(requested)||!Number.isFinite(Date.parse(completed.resumedAt))||Date.parse(completed.resumedAt)<begun+60000||Date.parse(completed.resumedAt)>Date.now())throw invalid();
+   this.withdrawalCompleted=completed;
+  }else if(decision?.decision==='resume'&&decision.approvalId===''&&decision.actionId===wait.actionId&&decision.bindingDigest===wait.bindingDigest&&Date.now()>=begun+60000){
+   const completed={version:1,kind:'completed',identity:structuredClone(this.trace.identity),waitActionId:wait.actionId,requestedSha256:digest(requested),resumedAt:new Date().toISOString()};
+   this.manager.appendCustomEntry(WAIT,completed);this.withdrawalCompleted=completed;
+  }else throw missing();
+  const restart=this.permits.find(p=>p.stage==='restart');
+  if(restart){const restartAt=entries.findIndex(e=>e.type==='custom'&&e.customType===TYPE&&e.data.key===restart.key);if(saved.length!==2||entries.indexOf(saved[1])>=restartAt||Date.parse(restart.observedAt)<Date.parse(this.withdrawalCompleted.resumedAt))throw invalid();}
+ }
+ recordResourceWait(wait){
+  if(wait?.kind!=='resource'||this.withdrawalRequested||this.intents('restart').length||this.idsFor('withdraw').length!==2)return;
+  const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();
+  if(this.trace.unresolved()||!this.retained()||!this.backend(added,old)||!this.current.fleet.instances.every(protectedNode))return;
+  const lastResult=Math.max(...this.intents('withdraw').map(i=>Date.parse(this.trace.rows.find(r=>r.kind==='result'&&r.key===i.key).observedAt)));
+  if(!['fleet','backend','capacity'].every(k=>fresh(this.current[k],lastResult)))return;
+  const pick=(value,keys)=>Object.fromEntries(keys.map(k=>[k,value[k]]));
+  const f=this.current.fleet,b=this.current.backend,c=this.current.capacity;
+  const evidence={fleet:{...pick(f,['observedAt','groupId']),instances:f.instances.map(n=>pick(n,['instanceId','lifecycleState','healthStatus','protectedFromScaleIn']))},backend:{...pick(b,['observedAt','serverGroupId']),nodes:b.nodes.map(n=>pick(n,['instanceId','status','registered','healthy']))},capacity:pick(c,['observedAt','groupId','desiredCapacity','minSize','maxSize'])};
+  const row={version:1,kind:'requested',identity:structuredClone(this.trace.identity),cohort:this.cohort(),withdrawalKeys:this.intents('withdraw').map(i=>i.key),evidence,wait:structuredClone(wait),observedAt:new Date().toISOString()};
+  if(Buffer.byteLength(canonical(row))>32768)throw invalid();
+  this.manager.appendCustomEntry(WAIT,row);this.withdrawalRequested=row;
+ }
+ withdrawalReady(){
+  const at=Date.parse(this.withdrawalCompleted?.resumedAt);
+  return Number.isFinite(at)&&metricsValid(this.current.metrics,[...this.cohort().oldInstanceIds,...this.cohort().newInstanceIds],[],at)&&['fleet','backend','capacity','metrics','deployment'].every(k=>fresh(this.current[k],at))&&this.cohort().newInstanceIds.every(id=>fresh(this.probes.get(id),at))&&['raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'].every(k=>fresh({observedAt:this.checks.get(k)},at));
  }
  intents(stage){return this.permits.filter(p=>p.stage===stage).map(p=>this.trace.rows.find(r=>r.kind==='intent'&&r.key===p.key));}
  cohort(){const oldInstanceIds=this.trace.baseline()?.instanceIds;const ids=this.readiness.witness?.evidence.fleet.instances.map(n=>n.instanceId);if(!oldInstanceIds||!ids)throw missing();const newInstanceIds=ids.filter(id=>!oldInstanceIds.includes(id)).sort();if(newInstanceIds.length!==2)throw missing();return {oldInstanceIds:[...oldInstanceIds].sort(),newInstanceIds};}
@@ -118,7 +165,7 @@ export class ReplacementSequence {
    }else if(stage==='withdraw'){
     const withdrawn=this.idsFor('withdraw');if(!this.backend([...old,...added].filter(id=>!withdrawn.includes(id))))throw missing();
    }else if(stage==='restart'){
-    if(!this.backend(added,old)||!this.app())throw missing();
+    if(!this.withdrawalReady()||!this.backend(added,old)||!this.app())throw missing();
    }else if(!this.drained()||(stage==='shrink'&&this.current.fleet.instances.filter(n=>old.includes(n.instanceId)).some(n=>n.protectedFromScaleIn!==false||n.lifecycleState!=='InService')))throw missing();
   }
   const row={version:2,identity:structuredClone(this.trace.identity),key,stage,observedAt:new Date().toISOString()};this.manager.appendCustomEntry(TYPE,row);this.permits.push(row);

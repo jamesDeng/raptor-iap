@@ -24,7 +24,7 @@ BINDING_KEYS = frozenset(('workbenchCli', 'aliyunCli', 'laneWrapper', 'providerF
     'nlbIntentPath', 'preScaleProofPath', 'sourceHashes', 'target'))
 SOURCE_NAMES = frozenset(('laneWrapper','providerFeed','laneProtocol','laneSupervisor','laneActions','sourceBootstrap','controller','client','runner',
                           'pendingProofWorker','preDrainProofWorker','zeroProofWorker','collectorControl','laneTimingAssessor')) | frozenset(WORKER_SOURCES)
-NATIVE_SOURCE_NAMES = SOURCE_NAMES | frozenset(('nativeController','nativeIngress','nativeEvidence','nativeClosure'))
+NATIVE_SOURCE_NAMES = SOURCE_NAMES | frozenset(('nativeController','nativeIngress','nativeEvidence','nativeClosure','nativeAssessment'))
 NATIVE_BINDING_KEYS = BINDING_KEYS | frozenset(('mode','executionKind'))
 GROUP = 'asg-t4necb4dfmu6o3z2rn0g'
 ACCOUNT = '1360282071200743'
@@ -77,7 +77,7 @@ class ActionCatalog:
         if type(bindings) is dict and bindings.get('mode')=='full-replacement-direct-v2':
             from pgcat_lane_protocol import _release_admission, native_action
             native_action(action,bindings.get('executionKind'))
-            _release_admission(bindings['mode'],action)
+            _release_admission(bindings['mode'],action,kind=bindings.get('executionKind'))
             return ActionCatalog.native_command(action,bindings,run_id,run_context,lane_root)
         require(type(action) is str and action in ACTIONS)
         validate_bindings(bindings)
@@ -220,12 +220,14 @@ class ActionCatalog:
 
     @staticmethod
     def native_worker_command(action,bindings,run_id,context):
-        from pgcat_lane_protocol import native_action
+        from pgcat_lane_protocol import native_action,_release_admission
+        _release_admission('full-replacement-direct-v2',action,kind=bindings.get('executionKind'))
         from pgcat_source_bootstrap import ROOT
         validate_bindings(bindings,'full-replacement-direct-v2');native_action(action,bindings['executionKind']);identifier(run_id)
         require(type(context) is dict and set(context)=={'request','bindings','envelope','selector','selectorFile'},'source')
         require(context['bindings']==bindings and context['request']['runId']==run_id and context['request']['action']==action,'source')
         envelope=context['envelope'];selector=context['selector'];request_id=context['request']['requestId']
+        _release_admission('full-replacement-direct-v2',action,kind=bindings['executionKind'],prepared=envelope['prepared'])
         require(envelope['localRequestId']==request_id and envelope['runId']==run_id and envelope['action']==action and envelope['executionKind']==bindings['executionKind'],'source')
         raw=encode(envelope);selected=encode(selector)
         parts=['python3','-I','-S','-c',ROOT,str(Path(bindings['remoteRun'])/'pgcat_source_bootstrap.py'),bindings['sourceHashes']['sourceBootstrap'],
