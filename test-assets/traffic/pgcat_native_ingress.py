@@ -262,10 +262,10 @@ def _baseline_frame(frame,baseline,context,at):
     for pod in pods:
         require(pod['ready'] is True and pod['snapshot']['final'] is False and pod['snapshot']['connected']>0)
         require(pod['ownership']==dict(deploymentUid=dep['uid'],replicaSetUid=dep['initialReplicaSetUid'],templateHash=dep['initialTemplateHash'],imageDigest=dep['imageDigest'],terminating=False))
-    metrics=frame['metrics'];require(metrics['available'] is True and 0<=seconds(frame['at'])-seconds(metrics['observedAt'])<=15)
+    metrics=frame['metrics'];require(metrics['available'] is True and 0<=at-seconds(metrics['observedAt'])<=15)
     groups={}
     for row in metrics['raw']:
-        require(number(row['value']) and row['value']>=0 and 0<=seconds(frame['at'])-seconds(row['sourceAt'])<=15)
+        require(number(row['value']) and row['value']>=0 and 0<=at-seconds(row['sourceAt'])<=15)
         group=(row['node'],row['pool'],row['user']);require(row['kind'] not in groups.setdefault(group,set()));groups[group].add(row['kind'])
     require(all(kinds=={'active','idle','waiting'} for kinds in groups.values()))
     require([dict(node=n,pool=p,user=u) for n,p,u in sorted(groups)]==baseline['metricGroups'])

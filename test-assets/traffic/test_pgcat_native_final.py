@@ -308,6 +308,7 @@ class OwnedStopTests(unittest.TestCase):
     def test_controller_stop_waits_for_same_real_child_after_ack_delay(self):
         import subprocess,sys,time,threading
         from types import SimpleNamespace
+        from pgcat_lane_supervisor import save_once
         import pgcat_native_controller as controller
         import pgcat_lane_protocol as protocol
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=Path(tmp.name).resolve();root.chmod(0o700)
@@ -330,13 +331,74 @@ class OwnedStopTests(unittest.TestCase):
             while not (root/'native-stop.intent').exists():time.sleep(.01)
             intent=__import__('json').loads((root/'native-stop.intent').read_text())
             time.sleep(3.1)
-            write(root/'native-stop.ack',protocol.native_stop_ack(intent,receipt,reconcile,plan,now=time.time()))
+            save_once(root,'native-stop.ack',protocol.native_stop_ack(intent,receipt,reconcile,plan,now=time.time()),atomic=True)
             (root/'exit').touch()
         thread=threading.Thread(target=producer,daemon=True);thread.start()
         with patch.object(controller,'_closed'),patch.object(controller,'_require_verified'):
             result=owner.stop_feed()
         thread.join(timeout=1);self.assertFalse(thread.is_alive())
         self.assertEqual(len(claims),1);self.assertEqual(result['feedExit']['pid'],child.pid);self.assertEqual(child.returncode,0)
+
+    def test_controller_stop_waits_for_owned_writer_to_complete_partial_ack(self):
+        self._stop_with_partial_ack_writer()
+
+    def test_stop_validation_must_finish_before_original_deadline(self):
+        import pgcat_lane_protocol as protocol
+        actual=protocol.native_stop_ack
+        for completed,valid in [(104.999,True),(105.,False),(105.001,False)]:
+            clock=[100.];validations=[]
+            def validate(*args,**kwargs):
+                result=actual(*args,**kwargs);validations.append(result)
+                if len(validations)==2:clock[0]=completed
+                return result
+            with self.subTest(completed=completed),patch.object(protocol,'monotonic',side_effect=lambda:clock[0]),patch.object(protocol,'native_stop_ack',side_effect=validate):
+                if valid:self._stop_with_partial_ack_writer()
+                else:
+                    with self.assertRaises(ValueError):self._stop_with_partial_ack_writer()
+                self.assertEqual(len(validations),2)
+
+    def _stop_with_partial_ack_writer(self):
+        import subprocess,sys,time
+        from types import SimpleNamespace
+        import pgcat_native_controller as controller
+        import pgcat_lane_protocol as protocol
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=Path(tmp.name).resolve();root.chmod(0o700)
+        plan=dict(runId='11111111-1111-4111-8111-111111111111',executionKind='native-replacement')
+        reconcile=dict(action='native-reconcile',runId=plan['runId'],executionKind=plan['executionKind'],planSha256=sha(canonical(plan)),outputs=dict(pair=['c','d'],feedSession='33333333-3333-4333-8333-333333333333',sequence=5,observedAt=time.time()-2))
+        receipt=dict(mode=controller.MODE,feedSession=reconcile['outputs']['feedSession'],sequence=6,observedAt=time.time()-1,desired=2,rosterSha256=protocol.roster_sha(protocol.original_roster(['c','d'])))
+        write(root/'status.json',receipt)
+        script='''import json,os,pathlib,sys,time
+sys.path.insert(0,sys.argv[3])
+from pgcat_lane_protocol import encode,native_stop_ack
+root=pathlib.Path(sys.argv[1]);value=json.loads(sys.argv[2])
+while True:
+    try:
+        intent=json.loads((root/'native-stop.intent').read_text());break
+    except (FileNotFoundError,json.JSONDecodeError):time.sleep(.01)
+raw=encode(native_stop_ack(intent,value['receipt'],value['reconcile'],value['plan'],now=time.time()))
+fd=os.open(root/'native-stop.ack',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+try:
+    os.write(fd,raw[:1]);os.fsync(fd)
+    time.sleep(.3)
+    os.write(fd,raw[1:]);os.fsync(fd)
+finally:os.close(fd)
+'''
+        child=subprocess.Popen([sys.executable,'-c',script,str(root),canonical(dict(plan=plan,reconcile=reconcile,receipt=receipt)).decode('ascii'),str(Path(controller.__file__).parent)])
+        def reap():
+            if child.poll() is None:child.kill()
+            child.wait(timeout=3)
+        self.addCleanup(reap)
+        owner=object.__new__(controller.NativeController);owner.feed=child;owner.bindings=dict(captureRoot=str(root),laneBindings=dict(receiptPath=str(root/'status.json')))
+        claims=[];exits=[]
+        journal=SimpleNamespace(native_plan=lambda:plan,native_reconcile=lambda:reconcile,claim_native_stop=lambda deadline:claims.append(deadline),record_native_stop=lambda:dict(feedExit=exits[0]))
+        def confirm(actual):
+            self.assertIs(actual,child);self.assertEqual(actual.poll(),0)
+            exits.append(dict(runId=plan['runId'],feedId='f'*36,pid=child.pid,exitCode=actual.poll()))
+        owner.client=SimpleNamespace(feed_process=child,journal=journal,_active=lambda:None,confirm_feed_exit=confirm,close=lambda:None)
+        with patch.object(controller,'_closed'),patch.object(controller,'_require_verified'):
+            result=owner.stop_feed()
+        self.assertEqual(len(claims),1);self.assertEqual(result['feedExit']['pid'],child.pid);self.assertEqual(child.returncode,0)
+        self.assertEqual((root/'native-stop.ack').stat().st_mode&0o777,0o600)
 
     def test_client_liveness_after_stop_needs_exact_owned_exit_binding(self):
         import subprocess,sys
