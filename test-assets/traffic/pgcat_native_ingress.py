@@ -357,6 +357,12 @@ def _action_gate(chain,gate,calls,kube_read,now,action,initial=False):
     from worker_capture import _native_owner_records
     from pgcat_rehearsal_contract import fresh_provider_source
     started=now();require(number(started))
+    decision_at=started
+    def decision():
+        nonlocal decision_at
+        at=now();require(number(at) and at>=decision_at)
+        decision_at=at
+        return at
     admission=calls.call(gate.admission,action)
     exact(admission,{'localRequestId','runId','planSha256','readySha256','feedBindingSha256','deadlineMonotonic'})
     identifier(admission['localRequestId']);require(number(admission['deadlineMonotonic']))
@@ -374,7 +380,7 @@ def _action_gate(chain,gate,calls,kube_read,now,action,initial=False):
         finally:os.close(fd)
         require(snapshot==progress['nativeCohort'] and count==progress['committedFrames'] and gap==progress['maxGapSeconds'])
         require(_capture_prefix(chain,progress['latest'])==retained)
-        if initial:_ready_pair([previous,latest],chain.baseline,chain.context,seconds(latest['at']))
+        if initial:_ready_pair([previous,latest],chain.baseline,chain.context,decision())
         return retained
     original_prefix=prefix(progress,previous,latest)
     live=calls.call(gate.live_clients);exact(live,{'deployment','replicaSets','pods','roster'})
@@ -426,11 +432,11 @@ def _action_gate(chain,gate,calls,kube_read,now,action,initial=False):
         if initial:
             _ready_pair([previous,latest],chain.baseline,chain.context,at)
             require(at<instant(chain.plan['deadline']['mutationCutoff']))
-    at=now();fresh(at)
+    at=decision();fresh(at)
     # Last gate call: actual WorkerGate checks only its original local deadline
     # and action. Assess retained evidence again after even this call completes.
     require(calls.call(gate.admission,action)==admission)
-    completed=now();require(number(completed) and completed>=at);fresh(completed)
+    completed=decision();fresh(completed)
     at=completed;progress=current
     return dict(progress=progress,inventory=inventory,config=config,live=live,at=at,admission=detached(admission))
 

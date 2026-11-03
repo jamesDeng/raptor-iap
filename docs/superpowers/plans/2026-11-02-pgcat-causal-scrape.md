@@ -155,3 +155,14 @@ Run planned-volume exact-workerPython3.6 timing, actual disabled proof (one rest
 - [ ] Root: actual worker offline tests and fresh read-only timing with all missing costs and write/receipt reserve; only if adequate margin, one actual closed disabled proof and its complete cleanup/qualification, then the authorized full2→4→2 flow. Source completion alone is not runtime completion.
 
 Task7 review focus: exact named versus selector-bound commands; no arbitrary command admission; original deadline survives shared-helper refactor; every child is stopped/reaped after another fails; Gateway before/after and live-client ownership behavior stay unchanged. Constraints from the amendment/spec and this plan's Global Constraints all apply.
+
+### Task8: repair prefix observation time under the existing clock contract
+
+**Spec:** corrective clarification in `docs/superpowers/specs/2026-11-03-pgcat-action-observation-design.md`; this restores the existing approved genuine-decision-time requirement, without new scope/policy.
+
+**Files:** existing `test-assets/traffic/pgcat_native_ingress.py` and its existing tests. No other production file. Existing `_action_gate` and restart public signatures/result schemas remain unchanged.
+
+- [ ] Write a failing actual-kernel regression: metrics completed after frame start but before the actual observation decision must reach the existing fixture PATCH exactly once. Use actual prefix/_ready_pair logic and realistic observation ordering; do not mock away `restart_disabled` or `_action_gate`. Preserve genuine-future, stale3/15/30, rollback/nonfinite, invalid initial prefix followed by healthy tail, source/prefix/identity drift and final-admission refusal coverage.
+- [ ] Run RED proving the old substituted frame-start predicate refuses; implement genuine finite nondecreasing intermediate decision times while retaining all earlier/later prefix checks and common final freshness/admission.
+- [ ] Run focused normal/optimized GREEN, final full traffic once,27-source compatibility/freeze/scope checks. Preserve65b/085d/807d freezes; write distinct `prefix-decision-source-freeze.json`. Commit only task paths and report exact changes, tests and worker-safe offline selection.
+- [ ] Independent task/final reviews and exact-head CI; root stages frozen source and verifies actual worker tests. Repeat genuine read-only timing with current source/explicit reserves before at most one fresh source-owned disabled proof, then the full2→4→2 flow only after its real closed qualification. Preserve all old failed records and recover only the exact stale reservation under the established guard procedure.
