@@ -1032,3 +1032,192 @@ class RetainedObjectReviewTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class ActionObservationTests(unittest.TestCase):
+    setUp=DiagnosticTests.setUp
+    patch=DiagnosticTests.patch
+    restart=DiagnosticTests.restart
+
+    def gate(self,initial=True):
+        chain=ingress._Chain(self.f.run)
+        return ingress._action_gate(chain,self.f,ingress._Calls(),self.f.kube,lambda:self.f.now,'native-disabled-restart',initial=initial)
+
+    def test_actual_gateway_read_progression_reaches_one_patch_and_receipt(self):
+        original=self.f.kube
+        def advancing(*args):
+            value=original(*args);self.f.now+=.05;return value
+        self.f.kube=advancing
+        result=self.restart()
+        self.assertEqual(len(self.f.patches),1)
+        self.assertEqual(result['restartGeneration'],2)
+        self.assertTrue((self.f.run/'native-restart-receipt.json').exists())
+
+    def test_fresh_runtime_after_entry_uses_actual_completion(self):
+        def observed():
+            self.f.now+=.2;return dict(self.f.runtime,observedAt=self.f.now)
+        self.f.gateway_disabled=observed
+        result=self.gate();self.assertEqual(result['at'],self.f.now)
+
+    def test_final_frame_and_provider_age_refuse_before_intent(self):
+        for kind in ('frame','provider'):
+            with self.subTest(kind=kind):
+                if kind=='provider':
+                    self.f.now=START+1
+                original=self.f.kube
+                def delayed(*args):
+                    value=original(*args)
+                    if args[0]=='ConfigMap':self.f.now+=30 if kind=='provider' else 2.01
+                    return value
+                self.f.kube=delayed
+                with self.assertRaises(ValueError):self.gate()
+                self.assertFalse((self.f.run/'native-restart.intent').exists())
+                self.f.kube=original;self.f.now=START+1
+
+    def test_original_admission_rechecked_after_reads(self):
+        calls=[]
+        def admission(action):
+            calls.append(action)
+            if len(calls)>1:raise ValueError('expired original')
+            return copy.deepcopy(self.f.admitted)
+        self.f.admission=admission
+        with self.assertRaises(ValueError):self.gate()
+        self.assertFalse((self.f.run/'native-restart.intent').exists())
+
+    def test_one_bounded_healthy_tail_advance_is_replayed(self):
+        original=self.f.gateway_disabled
+        def advancing():
+            result=original()
+            for n in (2,3,4):self.f.append(n)
+            return result
+        self.f.gateway_disabled=advancing
+        result=self.gate()
+        self.assertEqual(result['progress']['committedFrames'],5)
+        self.assertEqual(result['at'],START+4)
+
+    def test_tail_advance_cannot_replace_old_prefix_or_hide_failure(self):
+        for failure in ('history','inode','sticky','stale','owner'):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as d:
+                self.f=Fixture(Path(d).resolve(),'disabled-proof')
+                original=self.f.gateway_disabled
+                def advancing():
+                    result=original();self.f.append(2)
+                    path=self.f.run/'native-capture'/'segment-0001.jsonl'
+                    if failure=='history':path.write_bytes(path.read_bytes().replace(b'"observedAt":',b'"observedAx":',1))
+                    if failure=='inode':
+                        path.rename(path.with_name('held'));path.write_bytes((path.with_name('held')).read_bytes());path.chmod(0o600)
+                    if failure=='sticky':self.f.writer.note_poll_error(self.f.now)
+                    if failure=='stale':self.f.now+=4
+                    if failure=='owner':
+                        frame=copy.deepcopy(self.f.frame);frame['pods'][0]['containerId']='containerd://changed';self.f.append(3,frame)
+                    return result
+                self.f.gateway_disabled=advancing
+                with self.assertRaises(ValueError):self.gate()
+
+    def test_future_runtime_completion_rollback_and_nonfinite_refuse(self):
+        for value in (START, float('nan'),float('inf')):
+            original=self.f.kube
+            def changed(*args):
+                result=original(*args)
+                if args[0]=='ConfigMap':self.f.now=value
+                return result
+            self.f.kube=changed
+            with self.subTest(value=value),self.assertRaises(ValueError):self.gate()
+            self.f.kube=original;self.f.now=START+1
+        self.f.gateway_disabled=lambda:dict(self.f.runtime,observedAt=self.f.now+1)
+        with self.assertRaises(ValueError):self.gate()
+
+    def test_metrics_observation_and_source_age_use_completion_with_exact_boundary(self):
+        for field in ('observedAt','sourceAt'):
+            for completion,accepted in ((START+4,True),(START+4.001,False)):
+                with self.subTest(field=field,completion=completion),tempfile.TemporaryDirectory() as d:
+                    self.f=Fixture(Path(d).resolve(),'disabled-proof');append=self.f.writer.append
+                    def metrics(value):
+                        if field=='observedAt':value['metrics']['observedAt']=START-11
+                        else:
+                            for row in value['metrics']['raw']:row['sourceAt']=START-11
+                        return append(value)
+                    self.f.writer.append=metrics
+                    self.f.append(2);self.f.append(3);kube=self.f.kube
+                    def trailing(*args):
+                        value=kube(*args)
+                        if args[0]=='ConfigMap':self.f.now=completion
+                        return value
+                    self.f.kube=trailing
+                    if accepted:self.assertEqual(self.gate()['at'],completion)
+                    else:
+                        with self.assertRaises(ValueError):self.gate()
+
+    def test_latest_frame_three_seconds_boundary_remains_inclusive(self):
+        self.f.now=START+4
+        self.assertEqual(self.gate(initial=False)['at'],START+4)
+        self.f.now+=.001
+        with self.assertRaises(ValueError):self.gate(initial=False)
+
+    def test_frame_and_source_read_after_entry_is_not_false_future(self):
+        live=self.f.live_clients
+        def advancing():
+            self.f.append(2);return live()
+        self.f.live_clients=advancing
+        self.assertEqual(self.gate()['at'],START+2)
+
+    def test_noninitial_native_action_keeps_rollout_roster_and_generation(self):
+        with tempfile.TemporaryDirectory() as d:
+            f=Fixture(Path(d).resolve(),'native-replacement')
+            for n in (2,3,4):
+                frame=rolling(n-1);frame['inventory']=copy.deepcopy(f.frame['inventory']);f.append(n,frame)
+            f.live=kubernetes(3)
+            chain=ingress._Chain(f.run)
+            result=ingress._action_gate(chain,f,ingress._Calls(),f.kube,lambda:f.now,'native-ingress')
+            self.assertEqual(result['live']['deployment']['metadata']['generation'],2)
+            self.assertNotEqual(result['live']['roster'],f.baseline['roster'])
+
+    def test_admission_identity_must_equal_original_after_reads(self):
+        admission=self.f.admission;count=[0]
+        def changed(action):
+            value=admission(action);count[0]+=1
+            if count[0]==2:value['deadlineMonotonic']+=1
+            return value
+        self.f.admission=changed
+        with self.assertRaises(ValueError):self.gate()
+
+    def test_provider_thirty_seconds_is_excluded_at_completion(self):
+        for elapsed,accepted in ((29.999,True),(30.,False)):
+            with self.subTest(elapsed=elapsed),tempfile.TemporaryDirectory() as d:
+                self.f=Fixture(Path(d).resolve(),'disabled-proof');self.f.append(2);self.f.append(3)
+                inventory=__import__('json').loads((self.f.run/'provider-inventory.json').read_bytes())
+                inventory['observedAt']=START-26;write(self.f.run/'provider-inventory.json',inventory)
+                sidecar=__import__('json').loads((self.f.source/'000004.json').read_bytes())
+                sidecar.update(observedAt=START-26,inventorySha256=sha((self.f.run/'provider-inventory.json').read_bytes()),inventorySemanticSha256=sha(canonical(inventory)))
+                write(self.f.source/'000004.json',sidecar)
+                kube=self.f.kube
+                def trailing(*args):
+                    value=kube(*args)
+                    if args[0]=='ConfigMap':self.f.now=START-26+elapsed
+                    return value
+                self.f.kube=trailing
+                if accepted:self.assertEqual(self.gate()['at'],self.f.now)
+                else:
+                    with self.assertRaises(ValueError):self.gate()
+
+    def test_final_original_admission_follows_completion_predicates(self):
+        expired=[False];admission=self.f.admission;count=[0]
+        def original(action):
+            if expired[0]:raise ValueError('original admission expired')
+            return admission(action)
+        def completed():
+            count[0]+=1
+            if count[0]==2:expired[0]=True
+            return self.f.now
+        self.f.admission=original
+        with self.assertRaises(ValueError):
+            ingress._action_gate(ingress._Chain(self.f.run),self.f,ingress._Calls(),self.f.kube,completed,'native-disabled-restart',initial=True)
+
+    def test_delayed_final_admission_cannot_return_evidence_aged_during_it(self):
+        admission=self.f.admission;count=[0]
+        def delayed(action):
+            value=admission(action);count[0]+=1
+            if count[0]==2:self.f.now+=2.01
+            return value
+        self.f.admission=delayed
+        with self.assertRaises(ValueError):self.gate()

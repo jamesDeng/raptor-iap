@@ -356,7 +356,7 @@ def _action_gate(chain,gate,calls,kube_read,now,action,initial=False):
     from capture_window import seconds
     from worker_capture import _native_owner_records
     from pgcat_rehearsal_contract import fresh_provider_source
-    at=now();require(number(at))
+    started=now();require(number(started))
     admission=calls.call(gate.admission,action)
     exact(admission,{'localRequestId','runId','planSha256','readySha256','feedBindingSha256','deadlineMonotonic'})
     identifier(admission['localRequestId']);require(number(admission['deadlineMonotonic']))
@@ -364,46 +364,74 @@ def _action_gate(chain,gate,calls,kube_read,now,action,initial=False):
     for key in ('collectorIdentity','guardianIdentity'):
         identity=chain.ready[key];require(calls.call(gate.probe_process,identity['pid'])==identity)
     capture=chain.run/'native-capture';progress,previous,latest=read_progress(capture,chain.context)
-    require(previous is not None and latest is not None and 0<=at-seconds(latest['at'])<=3 and 0<seconds(latest['at'])-seconds(previous['at'])<=3)
-    require(progress['maxGapSeconds']<=3 and not any(progress['flags'].values()))
-    fd=open_directory(capture)
-    try:snapshot,count,_=_replay(fd,chain.context,progress['latest'])
-    finally:os.close(fd)
-    require(snapshot==progress['nativeCohort'] and count==progress['committedFrames'])
+    def prefix(progress,previous,latest):
+        require(previous is not None and latest is not None)
+        require(0<seconds(latest['at'])-seconds(previous['at'])<=3)
+        require(progress['maxGapSeconds']<=3 and not any(progress['flags'].values()))
+        retained=_capture_prefix(chain,progress['latest'])
+        fd=open_directory(capture)
+        try:snapshot,count,gap=_replay(fd,chain.context,progress['latest'])
+        finally:os.close(fd)
+        require(snapshot==progress['nativeCohort'] and count==progress['committedFrames'] and gap==progress['maxGapSeconds'])
+        require(_capture_prefix(chain,progress['latest'])==retained)
+        if initial:_ready_pair([previous,latest],chain.baseline,chain.context,seconds(latest['at']))
+        return retained
+    original_prefix=prefix(progress,previous,latest)
     live=calls.call(gate.live_clients);exact(live,{'deployment','replicaSets','pods','roster'})
-    owners,starting=_native_owner_records(live['deployment'],live['replicaSets'],live['pods'],chain.context,allow_starting=True)
-    active=[p for p in latest['pods'] if not p['snapshot']['final']]
-    retained={p['uid']:p for p in latest['pods']}
-    require({p['uid'] for p in active}<=set(owners)<=set(retained))
-    expected=sorted([pod_identity(retained[uid]) for uid in owners],key=lambda r:r['uid'])
-    require(sorted(live['roster'],key=lambda r:r['uid'])==expected)
-    require(sorted(starting,key=lambda r:r['uid'])==latest.get('startingPods',[]))
-    require(all(owners[uid]==retained[uid]['ownership'] for uid in owners))
-    for pod in live['pods']:
-        uid=pod['metadata']['uid']
-        if uid in owners:
-            require(pod['metadata']['name']==retained[uid]['name'] and pod['status']['containerStatuses'][0]['containerID']==retained[uid]['containerId'])
-    require(live['deployment']['metadata']['generation']==latest['deployment']['generation'])
+    def matching_clients(latest):
+        owners,starting=_native_owner_records(live['deployment'],live['replicaSets'],live['pods'],chain.context,allow_starting=True)
+        active=[p for p in latest['pods'] if not p['snapshot']['final']]
+        retained={p['uid']:p for p in latest['pods']}
+        require({p['uid'] for p in active}<=set(owners)<=set(retained))
+        expected=sorted([pod_identity(retained[uid]) for uid in owners],key=lambda r:r['uid'])
+        require(sorted(live['roster'],key=lambda r:r['uid'])==expected)
+        require(sorted(starting,key=lambda r:r['uid'])==latest.get('startingPods',[]))
+        require(all(owners[uid]==retained[uid]['ownership'] for uid in owners))
+        for pod in live['pods']:
+            uid=pod['metadata']['uid']
+            if uid in owners:
+                require(pod['metadata']['name']==retained[uid]['name'] and pod['status']['containerStatuses'][0]['containerID']==retained[uid]['containerId'])
+        require(live['deployment']['metadata']['generation']==latest['deployment']['generation'])
+    matching_clients(latest)
     source=fresh_provider_source(chain.run.parent/'contract',chain.plan['runId'],chain.run/'provider-inventory.json',require_fresh=False,mode=MODE)
-    require(source['providerRunContextSha256']==chain.context['providerRunContextSha256'] and source['feedSession']==chain.context['feedSession'] and 0<=at-source['observedAt']<30)
+    require(source['providerRunContextSha256']==chain.context['providerRunContextSha256'] and source['feedSession']==chain.context['feedSession'])
     from segmented_capture import decode_private,sha
     raw,_=_identity(chain.run/'provider-inventory.json');require(sha(raw)==source['inventoryRawSha256'])
     inventory=decode_private(raw)
     config=_gateway_config(chain,calls,kube_read)
+    runtime=None
     if initial or chain.plan['executionKind']=='disabled-proof':
         _fleet({k:inventory[k] for k in chain.baseline['fleet']},chain.plan['target']['originalInstanceIds'])
         require(source['privateAddresses']=={r['id']:r['address'] for r in chain.baseline['originals']})
-        runtime=calls.call(gate.gateway_disabled);_runtime(runtime,chain.plan,at)
+        runtime=calls.call(gate.gateway_disabled)
         require({k:v for k,v in runtime.items() if k!='observedAt'}=={k:v for k,v in chain.values['gatewayRuntime'].items() if k!='observedAt'})
         require(config==dict(secretUid=runtime['secretUid'],secretResourceVersion=runtime['secretResourceVersion'],replacementEnabled=False))
         if initial:
             from pgcat_rehearsal_contract import _read_configmap
             cm=_read_configmap(lambda *args:calls.call(kube_read,'ConfigMap','raptor-test','pgcat-provider-inventory'),source['privateAddresses'])
             require(cm['uid']==chain.baseline['configMap']['uid'])
-            require(at<instant(chain.plan['deadline']['mutationCutoff']))
-            _ready_pair([previous,latest],chain.baseline,chain.context,at)
             require(live['deployment']['metadata']['generation']==chain.baseline['deployment']['generation'])
     chain.unchanged()
+    current,previous,latest=read_progress(capture,chain.context)
+    require(all(current[k]>=progress[k] for k in ('generation','attempts','committedFrames','lastCommitMonotonic')))
+    require(current['firstAt']==progress['firstAt'])
+    prefix(current,previous,latest)
+    require(_capture_prefix(chain,progress['latest'])==original_prefix)
+    matching_clients(latest)
+    chain.unchanged()
+    def fresh(at):
+        require(number(at) and at>=started)
+        require(0<=at-seconds(latest['at'])<=3 and 0<=at-source['observedAt']<30)
+        if runtime is not None:_runtime(runtime,chain.plan,at)
+        if initial:
+            _ready_pair([previous,latest],chain.baseline,chain.context,at)
+            require(at<instant(chain.plan['deadline']['mutationCutoff']))
+    at=now();fresh(at)
+    # Last gate call: actual WorkerGate checks only its original local deadline
+    # and action. Assess retained evidence again after even this call completes.
+    require(calls.call(gate.admission,action)==admission)
+    completed=now();require(number(completed) and completed>=at);fresh(completed)
+    at=completed;progress=current
     return dict(progress=progress,inventory=inventory,config=config,live=live,at=at,admission=detached(admission))
 
 

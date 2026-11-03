@@ -27,6 +27,8 @@ import weakref
 _guarded=weakref.WeakKeyDictionary()
 _sealed=weakref.WeakKeyDictionary()
 _closure_contexts=weakref.WeakKeyDictionary()
+# Eligibility is installed/removed only by actual worker_entry, never an adapter.
+_restart_observations=weakref.WeakKeyDictionary()
 
 
 
@@ -203,8 +205,55 @@ class FixedGatewayAdapters:
         if kind!='pods':args.append('gateway-live-config' if kind=='secret' else 'agent-gateway')
         return decode_private(self._command(args+['-o','json','--request-timeout=2s'],2*1024*1024))
 
+    def _metadata_objects(self):
+        """Three fixed independent GETs; retain and reap each actual child."""
+        import select,threading
+        require(threading.current_thread() is threading.main_thread())
+        children=[];channels={};values={};limit=2*1024*1024
+        self._check()
+        try:
+            for kind in ('secret','deployment','pods'):
+                require(time.monotonic()<self.deadline)
+                args=['kubectl','--kubeconfig',self.reads.credential['path'],'-n','raptor-system','get',kind]
+                if kind!='pods':args.append('gateway-live-config' if kind=='secret' else 'agent-gateway')
+                args+=['-o','json','--request-timeout=2s'];self._fixed_command(args)
+                child=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                    close_fds=True,env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8','KUBECONFIG':self.reads.credential['path']})
+                children.append(child);os.set_blocking(child.stdout.fileno(),False)
+                channels[child.stdout.fileno()]=[kind,child,bytearray()]
+            while channels:
+                remaining=self.deadline-time.monotonic();require(remaining>0)
+                readable,_,_=select.select(list(channels),[],[],min(.05,remaining))
+                for fd in readable:
+                    kind,child,raw=channels[fd]
+                    chunk=os.read(fd,min(65536,limit+1-len(raw)))
+                    if chunk:
+                        raw.extend(chunk);require(len(raw)<=limit)
+                    else:
+                        require(child.wait(timeout=max(.001,self.deadline-time.monotonic()))==0)
+                        values[kind]=decode_private(bytes(raw));del channels[fd]
+                for child in children:require(child.poll() in (None,0))
+            self._check();require(time.monotonic()<self.deadline)
+            return [values[k] for k in ('secret','deployment','pods')]
+        finally:
+            # Kill all before waiting for any: neither a sibling nor an executor
+            # can outlive a failed/interrupted batch and keep reading authority.
+            cleanup_errors=[]
+            for child in children:
+                try:
+                    if child.poll() is None:child.kill()
+                except BaseException as error:cleanup_errors.append(error)
+            for child in children:
+                try:child.wait(timeout=.2)
+                except BaseException as error:cleanup_errors.append(error)
+                finally:child.stdout.close()
+            if cleanup_errors:raise cleanup_errors[0]
+
     def _metadata(self):
-        secret=self._kube('secret');dep=self._kube('deployment');pods=self._kube('pods')['items']
+        return self._snapshot(False)[0]
+
+    def _snapshot(self,rich):
+        secret,dep,listing=self._metadata_objects();pods=listing['items']
         sm=secret['metadata'];dm=dep['metadata'];require(all(token(m[k]) for m in (sm,dm) for k in ('uid','resourceVersion')))
         require(dm['uid']==self.plan['serviceBindings']['gateway']['deploymentUid'] and integer(dm['generation'],1))
         data=secret['data'];exact(data,{'config.json'});require(type(data['config.json']) is str)
@@ -222,10 +271,12 @@ class FixedGatewayAdapters:
             runtime=[c for c in status['containerStatuses'] if c['name']=='agent-gateway']
             digest=self.image.split('@')[1]
             require(len(runtime)==1 and runtime[0]['ready'] is True and runtime[0]['imageID'] in (self.image,'docker-pullable://'+self.image,digest,'containerd://'+digest))
-            ready.append(meta['uid'])
+            ready.append(pod)
         require(len(ready)==1)
-        return dict(secretUid=sm['uid'],secretResourceVersion=sm['resourceVersion'],deploymentUid=dm['uid'],
-            deploymentResourceVersion=dm['resourceVersion'],podUid=ready[0],generation=dm['generation'],imageDigest=self.image.split('@')[1],replacementEnabled=config['replacementEnabled'])
+        projection=dict(secretUid=sm['uid'],secretResourceVersion=sm['resourceVersion'],deploymentUid=dm['uid'],
+            deploymentResourceVersion=dm['resourceVersion'],podUid=ready[0]['metadata']['uid'],generation=dm['generation'],imageDigest=self.image.split('@')[1],replacementEnabled=config['replacementEnabled'])
+        fingerprint=_loaded_fingerprint(secret,dep,ready[0],self.image) if rich else None
+        return projection,fingerprint
 
     def _idle(self):
         require(self._command(['kubectl','--kubeconfig',self.reads.credential['path'],'-n','raptor-system','exec',
@@ -241,14 +292,92 @@ class FixedGatewayAdapters:
         return dict(readySha256=job['readyFile']['sha256'],qualificationSha256=sha_bytes(canonical(job['qualification']['qualification'])))
 
 
-def _observe(adapters,want,now,*,set_receipt=None):
+def _loaded_fingerprint(secret,dep,pod,image):
+    """Private structural digest; raw config and credentials never leave memory."""
+    def named(rows,name):
+        require(type(rows) is list)
+        found=[r for r in rows if r.get('name')==name];require(len(found)==1)
+        return found[0]
+    def binding(spec):
+        gateway=named(spec['containers'],'agent-gateway');init=named(spec['initContainers'],'live-private-files')
+        require(gateway['image']==init['image']==image)
+        require(gateway.get('command')==['/usr/local/bin/gateway'] and gateway.get('args',[])==[])
+        for name,value in (('GATEWAY_RUNTIME_MODE','live'),('GATEWAY_LIVE_CONFIG_FILE','/run/raptor/live/config.json')):
+            env=named(gateway['env'],name);require(env.get('value')==value and 'valueFrom' not in env)
+        require(init.get('command')==['/bin/sh','-ec'] and not init.get('env') and not init.get('envFrom'))
+        base='umask 077; install -m 0600 /live-config-source/config.json /live-private/config.json'
+        sts='; install -m 0600 /live-controller-source/credential.json /live-private/credential.json'
+        tls='; install -m 0600 /ax-tls-source/ca.crt /live-private/ax-ca.crt; install -m 0600 /ax-tls-source/tls.crt /live-private/ax-client.crt; install -m 0600 /ax-tls-source/tls.key /live-private/ax-client.key'
+        require(init.get('args') in ([base],[base+sts],[base+tls],[base+sts+tls]))
+        def mount(container,name,path,readonly):
+            m=named(container['volumeMounts'],name)
+            require(m.get('mountPath')==path and m.get('readOnly',False) is readonly)
+            require(not any(k in m for k in ('subPath','subPathExpr','mountPropagation')))
+            for other in container['volumeMounts']:
+                if other is m:continue
+                target=other['mountPath'];require(type(target) is str and target.startswith('/'))
+                require(not (target=='/' or path==target or path.startswith(target+'/') or target.startswith(path+'/')))
+        mount(gateway,'live-private','/run/raptor/live',True)
+        mount(init,'live-private','/live-private',False);mount(init,'live-config-source','/live-config-source',True)
+        volume=named(spec['volumes'],'live-private');exact(volume,{'name','emptyDir'});require(volume['emptyDir'].get('medium')=='Memory')
+        source=named(spec['volumes'],'live-config-source');exact(source,{'name','secret'})
+        ref=source['secret'];require(ref['secretName']=='gateway-live-config' and ref.get('optional',False) is False)
+        if 'items' in ref:require(ref['items']==[dict(key='config.json',path='config.json')])
+        for kind in ('containers','initContainers','ephemeralContainers'):
+            for container in spec.get(kind,[]):
+                if (kind=='containers' and container is gateway) or (kind=='initContainers' and container is init):continue
+                require(all(m.get('name')!='live-private' for m in container.get('volumeMounts',[])))
+        return init['args']
+    require(binding(dep['spec']['template']['spec'])==binding(pod['spec']))
+    dm=dep['metadata'];status=dep['status']
+    require(type(dep['spec']['replicas']) is int and dep['spec']['replicas']==1)
+    require(type(status['observedGeneration']) is int and status['observedGeneration']==dm['generation'])
+    require(all(type(status[k]) is int and status[k]==1 for k in ('replicas','readyReplicas','updatedReplicas','availableReplicas')))
+    meta=pod['metadata'];require(meta.get('deletionTimestamp') is None and meta['namespace']=='raptor-system')
+    owners=meta['ownerReferences'];require(type(owners) is list and len(owners)==1)
+    owner=owners[0];require(owner.get('kind')=='ReplicaSet' and owner.get('apiVersion')=='apps/v1' and owner.get('controller') is True and token(owner.get('uid')) and token(owner.get('name')))
+    ps=pod['status'];require(ps['phase']=='Running')
+    conditions=[r for r in ps['conditions'] if r.get('type')=='Ready'];require(len(conditions)==1 and conditions[0]['status']=='True')
+    def runtime(rows,name,init=False):
+        row=named(rows,name);require(token(row['containerID']) and integer(row['restartCount']))
+        digest=image.split('@')[1];require(row['imageID'] in (image,'docker-pullable://'+image,digest,'containerd://'+digest))
+        state=row['state'];exact(state,{'terminated' if init else 'running'})
+        if init:
+            require(type(state['terminated']['exitCode']) is int and state['terminated']['exitCode']==0)
+            require(instant(state['terminated']['startedAt'])<=instant(state['terminated']['finishedAt']))
+            require(row['image']==image)
+        else:require(row['ready'] is True);instant(state['running']['startedAt'])
+        return {k:row[k] for k in ('containerID','imageID','restartCount','state')}
+    gateway=runtime(ps['containerStatuses'],'agent-gateway')
+    init=runtime(ps['initContainerStatuses'],'live-private-files',True)
+    raw=base64.b64decode(secret['data']['config.json'],validate=True);require(len(raw)<=65536)
+    config=decode_private(raw);require(config.get('replacementEnabled') is False)
+    evidence=dict(secret=dict(uid=secret['metadata']['uid'],resourceVersion=secret['metadata']['resourceVersion'],configSha256=hashlib.sha256(raw).hexdigest(),replacementEnabled=False),
+        deployment=dict(uid=dm['uid'],resourceVersion=dm['resourceVersion'],generation=dm['generation'],spec=dep['spec'],status={k:status[k] for k in ('observedGeneration','replicas','readyReplicas','updatedReplicas','availableReplicas')}),
+        pod=dict(uid=meta['uid'],name=meta['name'],namespace=meta['namespace'],owners=owners,spec=pod['spec'],gateway=gateway,init=init))
+    return hashlib.sha256(canonical(evidence)).hexdigest()
+
+
+def _restart_check(adapters,row):
+    gate=row['gate']();require(gate is not None and not row['poisoned'] and row['pid']==os.getpid())
+    require(gate.reads is adapters.reads and gate.run==adapters.run and gate.plan==adapters.plan)
+    require(adapters.deadline==adapters.reads.deadline==gate.deadline==row['deadline'])
+    current=time.monotonic();require(number(current) and row['last']<=current<row['deadline']);row['last']=current
+    require(canonical(gate.envelope)==row['envelope'] and canonical(gate.admission('native-disabled-restart'))==row['admission'])
+    require(canonical(adapters.plan)==row['plan'] and canonical(adapters.prepared)==row['prepared'] and canonical(adapters.credential)==row['credential'])
+    require(adapters.sources==row['sources'] and adapters.asset==row['asset'] and adapters.runtime_asset_identity==row['runtimeAssets'])
+    adapters._check()
+
+
+def _observe(adapters,want,now,*,set_receipt=None,_fingerprints=None):
     require(type(adapters) is FixedGatewayAdapters and type(want) is bool)
     retained=set_receipt
     if retained is None:
         issued=_guarded.get(adapters)
         if issued is not None:
             require(issued[0]==os.getpid());retained=issued[1]
-    started=now();require(number(started));adapters._check();before=adapters._metadata()
+    started=now();require(number(started));adapters._check()
+    before,fingerprint=adapters._snapshot(True) if _fingerprints is not None else (adapters._metadata(),None)
     require(before['replacementEnabled'] is want)
     if retained is not None and retained['resourceVersion']==before['secretResourceVersion'] and retained['replacementEnabled'] is want:
         _set_receipt(retained,want,started)
@@ -260,7 +389,9 @@ def _observe(adapters,want,now,*,set_receipt=None):
     exact(verification,{'replacementEnabled','generation','ready','podUID'})
     require(type(verification['replacementEnabled']) is bool and type(verification['ready']) is bool and type(verification['generation']) is int)
     require(verification==dict(replacementEnabled=want,generation=before['generation'],ready=True,podUID=before['podUid']))
-    require(adapters._metadata()==before);adapters._check()
+    after,after_fingerprint=adapters._snapshot(True) if _fingerprints is not None else (adapters._metadata(),None)
+    require(after==before and after_fingerprint==fingerprint);adapters._check()
+    if _fingerprints is not None:_fingerprints.append(fingerprint)
     observed=now();require(number(observed) and 0<=observed-started<30)
     result=dict(schemaVersion=1,runId=adapters.run_id,observedAt=observed,provenance=provenance,verification=verification,
         **{k:before[k] for k in ('secretUid','secretResourceVersion','deploymentUid','podUid','generation','imageDigest')})
@@ -276,15 +407,38 @@ def runtime_proof(run_dir: Path,*,adapters,now) -> dict:
     receipt. Current enabled observations use the separate support runtime type.
     """
     require(type(adapters) is FixedGatewayAdapters and Path(run_dir)==adapters.run)
-    result=_observe(adapters,False,now)
-    _runtime(result,dict(adapters.plan,runId=adapters.run_id),result['observedAt'])
-    if 'runId' in adapters.plan:
-        raw,_=_identity(adapters.run/'native-gateway-runtime.json');initial=decode_private(raw)
-        # Freshness belongs to initial ready admission; aged historical proof is
-        # still immutable evidence. Current inspection must bind the same load.
-        require({k:result[k] for k in ('runId','secretUid','secretResourceVersion','deploymentUid','podUid','generation','imageDigest','verification')}==
-            {k:initial[k] for k in ('runId','secretUid','secretResourceVersion','deploymentUid','podUid','generation','imageDigest','verification')})
-    return result
+    row=_restart_observations.get(adapters.reads)
+    try:
+        if row is not None:
+            _restart_check(adapters,row)
+            if row.get('result') is not None:
+                started=now();require(number(started) and started>=row['wall'])
+                before,fingerprint=adapters._snapshot(True)
+                _restart_check(adapters,row)
+                after,other=adapters._snapshot(True)
+                _restart_check(adapters,row)
+                require(before==after and fingerprint==other==row['fingerprint'])
+                completed=now();require(number(completed) and completed>=started)
+                result=decode_private(row['result']);_runtime(result,adapters.plan,completed)
+                current=time.monotonic();require(number(current) and row['last']<=current<row['deadline']);row['last']=current
+                row['wall']=completed
+                return result
+        fingerprints=[]
+        result=_observe(adapters,False,now,_fingerprints=fingerprints if row is not None else None)
+        _runtime(result,dict(adapters.plan,runId=adapters.run_id),result['observedAt'])
+        if 'runId' in adapters.plan:
+            raw,_=_identity(adapters.run/'native-gateway-runtime.json');initial=decode_private(raw)
+            # Freshness belongs to initial ready admission; aged historical proof is
+            # still immutable evidence. Current inspection must bind the same load.
+            require({k:result[k] for k in ('runId','secretUid','secretResourceVersion','deploymentUid','podUid','generation','imageDigest','verification')}==
+                {k:initial[k] for k in ('runId','secretUid','secretResourceVersion','deploymentUid','podUid','generation','imageDigest','verification')})
+        if row is not None:
+            _restart_check(adapters,row)
+            row['fingerprint']=fingerprints[0];row['result']=canonical(result);row['wall']=result['observedAt']
+        return result
+    except BaseException:
+        if row is not None:row['poisoned']=True
+        raise
 
 
 def _set_receipt(value,want,at):
@@ -807,9 +961,14 @@ def finish_terminal(run_dir,*,adapters,now):
 def gateway_false_idle(run_dir,*,adapters,now):
     """Actual read-only false/idle observation; no fictional Raptor settlement."""
     require(type(adapters) is FixedGatewayAdapters and Path(run_dir)==adapters.run)
+    started=now();require(number(started))
     adapters._check();before=adapters._metadata();adapters._idle()
+    # Abort/idle observations always inspect; they cannot consume action issuance.
+    require(adapters.reads not in _restart_observations)
     result=runtime_proof(run_dir,adapters=adapters,now=now)
     adapters._idle();require(adapters._metadata()==before);adapters._check()
+    completed=now();require(number(completed) and completed>=started)
+    _runtime(result,dict(adapters.plan,runId=adapters.run_id),completed)
     return result
 
 

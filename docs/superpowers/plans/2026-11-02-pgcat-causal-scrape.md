@@ -120,3 +120,21 @@ Run planned-volume exact-workerPython3.6 timing, actual disabled proof (one rest
 - [x] Cover original runtime fresh at readyAt but aged at later status, altered readyAt/bytes/inode/intent/process/binding, missing/partial/failed results, EOF/crash/collector exit, proof deadline at final publication, unchanged original capture end, and acknowledged-launch abort cleanup; retain foreign-sidecar rejection.
 - [x] Run focused tests normal/optimized while iterating, then full traffic suite once on supported bundled Python; verify all27 production sources Python3.6 grammar/import, existing focused actual-process fixtures and diff hygiene.
 - [x] Commit only task paths, self-review and write report including RED/GREEN evidence, exact test commands/counts, final27-source freeze and scope union15. Independent review required before publication/runtime. Root owns reviewed merge, exact-worker smoke/calibration, stale reservation recovery and fresh real disabled proof.
+
+### Task 6: Completion-time evidence and action-bound Gateway read reuse
+
+**Spec:** docs/superpowers/specs/2026-11-03-pgcat-action-observation-design.md. Owner approved the identical measured proposal Nov3.
+
+**Files:** Modify only test-assets/traffic/pgcat_native_ingress.py, pgcat_native_closure.py and pgcat_native_controller.py. Modify existing related tests as required. No Go guard or new production module/registry/pin changes.
+
+**Interfaces:** Ingress returns evidence assessed at completion after one bounded verified capture-tail advance and final original admission check. Closure owns private original-restart issuance keyed to exact WorkerGate/reads/PID/request/plan/prepared/credential/deadline, richer actual metadata fingerprints, bounded three-child GET multiplex and reuse of original proof bytes/timestamp only after fresh matching snapshots. Controller registers and removes eligibility only in actual worker_entry for native-disabled-restart and validates abort evidence after transport. All other contexts inspect freshly.
+
+- [x] Write advancing-clock and terminal-freshness regressions before changing production; reproduce fresh runtime false-future refusal, aged final evidence, bounded healthy tail and changed original prefix/admission.
+- [x] Implement final decision-time checks without widening3/15/30 freshness, losing failure flags, baseline restrictions or existing two precondition gates.
+- [x] Write real owned-child multiplex tests for exact fixed GET commands, concurrent completion, oversized/malformed/failed/slow/interrupted reads and sibling stop/wait; implement same absolute deadline/2MiB output cap with actual Popen retention.
+- [x] Add private full fingerprint of actual Secret/config, Deployment spec/version/status, Pod spec/owners/container/process/init identity; preserve existing external runtime schema and before/after checks.
+- [x] Write source-registered issuance/reuse tests: genuine cold inspection once, fresh ordered warm snapshots, unchanged observedAt/provenance; forged/unregistered/template/abort/native/foreign object/PID/deadline/anchor contexts refuse; all drift terminally invalidates with no reissue after restoration.
+- [x] Implement action-only registry lifetime and finally cleanup, with independent fresh abort observation and both idle checks. Retain both credential cleanup attempts and earlier SQL FAIL precedence.
+- [x] Run focused normal/optimized tests during iteration, then one full final traffic suite on bundled Python. Check27 registered sources against Python3.6 grammar/import and unchanged inventory; diff hygiene, scope and secret-output self-review.
+- [x] Commit only task source/tests/docs; generate action-observation-source-freeze.json and report RED/GREEN, interfaces, commands/counts, concerns and exact-worker offline test selections. Independent review gates publication.
+- [ ] Root stages reviewed bytes and measures cold+actual warm-snapshot read-only composition (templates remain ineligible for cache), exact worker offline issuance/ownership tests, replay/prepared overhead and conservative unmeasured PATCH/transport reserve. Require demonstrated restart5s, abort3.5s worker/4s transport margins before another actual disabled proof; no inference of PASS from proxy timing. Root alone owns cloud access, PRs and actual proof.
