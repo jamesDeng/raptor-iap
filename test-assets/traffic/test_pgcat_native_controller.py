@@ -739,3 +739,297 @@ class NativeCausalTransportTests(unittest.TestCase):
         with patch('http.client.HTTPConnection.connect',new=lambda conn:setattr(conn,'sock',client)):
             with self.assertRaises(ValueError):reader.prometheus_get('/api/v1/status/tsdb')
         self.assertLess(time.monotonic()-started,1.)
+
+
+class StartupBarrierTests(unittest.TestCase):
+    def fixture(self):
+        self.assertTrue(hasattr(native,'validate_launch'),'launch-only authenticated startup barrier missing')
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        root=Path(directory.name).resolve();root.chmod(0o700);return Fixture(root,'disabled-proof')
+
+    def launch(self,f):
+        from pgcat_collector_control import startup_slot
+        folder=f.run/'collector-job';folder.mkdir(mode=0o700,exist_ok=True)
+        if not (folder/'intent.json').exists():write(folder/'intent.json',dict(runId=f.plan['runId'],startedAt=int(f.now),profile=native.MODE,captureMaxSeconds=75,prepared=f.prepared))
+        fd=os.open(str(folder/'startup-result.json'),os.O_RDWR|os.O_CREAT|os.O_EXCL,0o600);self.addCleanup(os.close,fd)
+        binding=dict(runId=f.plan['runId'],planSha256=hashlib.sha256((f.run/'native-plan.json').read_bytes()).hexdigest(),
+            collectorIntentFile=file_record(folder/'intent.json'),guardianIdentity=f.guardian,collectorIdentity=f.context['collectorIdentity'],
+            resultPath=str(folder/'startup-result.json'),resultSlot=startup_slot(os.fstat(fd)),deadlineMonotonic=time.monotonic()+4.)
+        return dict(status='LAUNCHED',**binding,resultKey='a'*64),fd
+
+    def result(self,f,launch):
+        from pgcat_collector_control import publish_startup_result
+        fd=os.open(launch['resultPath'],os.O_RDWR);self.addCleanup(os.close,fd)
+        return publish_startup_result(f.run,fd,bytes.fromhex(launch['resultKey']),{k:v for k,v in launch.items() if k not in ('status','resultKey')},f.ready)
+
+    def test_launch_schema_has_no_readiness_and_status_authenticates_original(self):
+        f=self.fixture();launch,fd=self.launch(f)
+        native.validate_launch(launch,f.plan)
+        with self.assertRaises(ValueError):native.validate_launch(dict(launch,ready=f.ready),f.plan)
+        result=self.result(f,launch)
+        native.verify_startup_result(result,launch,f.plan,f.prepared)
+        self.assertEqual(result['ready']['readyAt'],f.ready['readyAt'])
+        for field in ('readyAt','guardianIdentity','runId'):
+            bad=copy.deepcopy(result)
+            if field=='readyAt':bad['ready']['readyAt']+=1
+            elif field=='runId':bad['binding'][field]=REQUEST
+            else:bad['binding'][field]['startTicks']+=1
+            with self.subTest(field=field),self.assertRaises(ValueError):native.verify_startup_result(bad,launch,f.plan,f.prepared)
+        with self.assertRaises(ValueError):native.verify_startup_result(result,dict(launch,resultKey='b'*64),f.plan,f.prepared)
+
+    def test_status_preserves_original_ready_time_after_runtime_ages(self):
+        import pgcat_collector_control as control
+        f=self.fixture();launch,fd=self.launch(f);self.result(f,launch)
+        f.now+=31
+        with patch('pgcat_lane_protocol._release_admission'),patch.object(control,'context',return_value=(f.run,control.directory(f.run/'collector-job'),{})):
+            output=control.status(f.run.parent/'contract',f.plan['runId'],f.plan['sourceHashes'],profile=native.MODE,prepared=f.prepared,launch={k:v for k,v in launch.items() if k!='resultKey'},probe=f.probe_process,now=lambda:f.now)
+        self.assertEqual(output['status'],'READY',output)
+        native.verify_startup_result(output['result'],launch,f.plan,f.prepared)
+        self.assertEqual(output['ready'],f.ready)
+        (f.run/'native-ready.json').unlink()
+        with self.assertRaises(ValueError):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now)
+
+    def test_final_ready_publication_checks_original_monotonic_deadline(self):
+        f=self.fixture();(f.run/'native-ready.json').unlink()
+        deadline=time.monotonic()-1
+        with self.assertRaises(ValueError):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now,deadline=deadline)
+        self.assertFalse((f.run/'native-ready.json').exists())
+
+    def test_result_publication_never_accepts_late_or_duplicate_completion(self):
+        import pgcat_collector_control as control
+        f=self.fixture();launch,fd=self.launch(f);binding={k:v for k,v in launch.items() if k not in ('status','resultKey')}
+        binding['deadlineMonotonic']=time.monotonic()-1
+        with self.assertRaises(ValueError):control.publish_startup_result(f.run,fd,bytes.fromhex(launch['resultKey']),binding,f.ready)
+        self.assertEqual(os.fstat(fd).st_size,0)
+        # A failed proof never renews. Duplicate publication is checked on a
+        # separate successful original launch, not a retry of the failed one.
+        f=self.fixture();launch,fd=self.launch(f);self.result(f,launch)
+        with self.assertRaises(ValueError):self.result(f,launch)
+
+    def test_status_requires_original_result_inode_ready_bytes_process_and_intent(self):
+        import pgcat_collector_control as control
+        for change in ('missing','partial','foreign-result','ready-bytes','ready-inode','intent-inode','process-reuse','guardian-dead','collector-dead','original-runtime-stale','source'):
+            with self.subTest(change=change):
+                f=self.fixture();launch,fd=self.launch(f)
+                if change=='original-runtime-stale':
+                    f.ready['readyAt']+=31;write(f.run/'native-ready.json',f.ready)
+                if change!='missing':self.result(f,launch)
+                path=Path(launch['resultPath'])
+                if change=='partial':path.write_bytes(b'{')
+                elif change=='foreign-result':raw=path.read_bytes();path.rename(path.with_suffix('.old'));path.write_bytes(raw);path.chmod(0o600)
+                elif change in ('ready-bytes','ready-inode','intent-inode'):
+                    path=f.run/'native-ready.json' if change.startswith('ready') else f.run/'collector-job'/'intent.json'
+                    raw=path.read_bytes()
+                    if change.endswith('inode'):path.rename(path.with_suffix('.old'))
+                    path.write_bytes(raw+b' ' if change=='ready-bytes' else raw);path.chmod(0o600)
+                elif change=='source':(f.run/'pgcat_native_controller.py').write_bytes(b'changed')
+                probe=(lambda pid:dict(f.probe_process(pid),startTicks=999)) if change=='process-reuse' else f.probe_process
+                if change in ('guardian-dead','collector-dead'):
+                    dead=f.guardian['pid'] if change=='guardian-dead' else f.context['collectorIdentity']['pid']
+                    probe=lambda pid:None if pid==dead else f.probe_process(pid)
+                with patch('pgcat_lane_protocol._release_admission'),patch.object(control,'context',return_value=(f.run,control.directory(f.run/'collector-job'),{})):
+                    output=control.status(f.run.parent/'contract',f.plan['runId'],f.plan['sourceHashes'],profile=native.MODE,prepared=f.prepared,launch={k:v for k,v in launch.items() if k!='resultKey'},probe=probe,now=lambda:f.now)
+                self.assertEqual(output,dict(status='INCONCLUSIVE'))
+
+
+    def test_result_fsync_crossing_original_deadline_leaves_no_usable_ready(self):
+        import pgcat_collector_control as control
+        f=self.fixture();launch,fd=self.launch(f);deadline=launch['deadlineMonotonic'];clock=[deadline-.1]
+        original=control.os.fsync
+        def delayed(fd):original(fd);clock[0]=deadline+.01
+        with patch.object(control.time,'monotonic',side_effect=lambda:clock[0]),patch.object(control.os,'fsync',side_effect=delayed):
+            with self.assertRaises(ValueError):self.result(f,launch)
+        self.assertEqual(Path(launch['resultPath']).read_bytes(),b'')
+
+    def test_bulk_publication_is_unprovable_until_original_deadline_checked_commit(self):
+        import pgcat_collector_control as control
+        f=self.fixture();launch,fd=self.launch(f);original=control.os.fsync;observed=[]
+        def inspect(fd):
+            raw=Path(launch['resultPath']).read_bytes()
+            try:
+                value=json.loads(raw);native.verify_startup_result(value,launch,f.plan,f.prepared)
+            except (ValueError,KeyError):observed.append(False)
+            else:observed.append(True)
+            original(fd)
+        with patch.object(control.os,'fsync',side_effect=inspect):self.result(f,launch)
+        self.assertFalse(observed[0],'bulk write exposes READY before original deadline commit')
+        self.assertTrue(observed[-1])
+
+    def test_status_refuses_parseable_result_while_final_fsync_is_unfinished(self):
+        import pgcat_collector_control as control
+        f=self.fixture();launch,fd=self.launch(f);original=control.os.fsync;observed=[]
+        def status():
+            with patch('pgcat_lane_protocol._release_admission'),patch.object(control,'context',return_value=(f.run,control.directory(f.run/'collector-job'),{})):
+                return control.status(f.run.parent/'contract',f.plan['runId'],f.plan['sourceHashes'],profile=native.MODE,prepared=f.prepared,launch={k:v for k,v in launch.items() if k!='resultKey'},probe=f.probe_process,now=lambda:f.now)['status']
+        def unfinished(fd):
+            try:json.loads(Path(launch['resultPath']).read_bytes())
+            except ValueError:pass
+            else:observed.append(status())
+            original(fd)
+        with patch.object(control.os,'fsync',side_effect=unfinished):self.result(f,launch)
+        self.assertEqual(observed,['INCONCLUSIVE'])
+        self.assertEqual(status(),'READY')
+
+    def test_post_signing_fsync_overrun_cannot_leave_an_authenticated_ready(self):
+        import pgcat_collector_control as control
+        f=self.fixture();launch,fd=self.launch(f);deadline=launch['deadlineMonotonic'];clock=[deadline-.1];calls=[0];original=control.os.fsync
+        def late(fd):
+            original(fd);calls[0]+=1
+            if calls[0]==2:clock[0]=deadline+.01
+        with patch.object(control.time,'monotonic',side_effect=lambda:clock[0]),patch.object(control.os,'fsync',side_effect=late):
+            with self.assertRaises(ValueError):self.result(f,launch)
+        self.assertEqual(Path(launch['resultPath']).read_bytes(),b'')
+
+    def test_failed_late_invalidation_keeps_signed_result_locked_while_guardian_lives(self):
+        import pgcat_collector_control as control
+        f=self.fixture();launch,fd=self.launch(f);deadline=launch['deadlineMonotonic'];clock=[deadline-.1];calls=[0];original=control.os.fsync
+        def late(fd):
+            original(fd);calls[0]+=1
+            if calls[0]==2:clock[0]=deadline+.01
+        with patch.object(control.time,'monotonic',side_effect=lambda:clock[0]),patch.object(control.os,'fsync',side_effect=late),patch.object(control.os,'ftruncate',side_effect=OSError('offline invalidation failure')):
+            with self.assertRaises(OSError):self.result(f,launch)
+        # The bytes alone are parseable and keyed, but still convey no status
+        # authority: the original owner's inherited FD remains exclusively held.
+        native.verify_startup_result(json.loads(Path(launch['resultPath']).read_bytes()),launch,f.plan,f.prepared)
+        with patch('pgcat_lane_protocol._release_admission'),patch.object(control,'context',return_value=(f.run,control.directory(f.run/'collector-job'),{})):
+            output=control.status(f.run.parent/'contract',f.plan['runId'],f.plan['sourceHashes'],profile=native.MODE,prepared=f.prepared,launch={k:v for k,v in launch.items() if k!='resultKey'},probe=f.probe_process,now=lambda:f.now)
+        self.assertEqual(output,dict(status='INCONCLUSIVE'))
+
+    def test_ready_final_source_work_cannot_extend_worker_deadline(self):
+        f=self.fixture();(f.run/'native-ready.json').unlink();clock=[0.];original=native.verify_source_inventory;count=[0]
+        def verify(*args):
+            value=original(*args);count[0]+=1
+            if count[0]==2:clock[0]=4.01
+            return value
+        with patch.object(native,'verify_source_inventory',side_effect=verify),patch.object(native.time,'monotonic',side_effect=lambda:clock[0]):
+            with self.assertRaises(ValueError):native.seal_ready(f.run,prepared=f.prepared,guardian_identity=f.guardian,probe_process=f.probe_process,live_clients=f.live_clients,now=lambda:f.now,deadline=4.)
+        self.assertFalse((f.run/'native-ready.json').exists())
+
+    def test_acknowledged_launch_retains_both_originals_when_status_fails(self):
+        from types import SimpleNamespace
+        from pgcat_lane_client import LaneClient
+        from segmented_capture import canonical
+        f=self.fixture();launch,fd=self.launch(f);root=f.run.parent
+        prepared=dict(f.prepared,plan=f.plan,macCredential=f.prepared['workerCredential']);write(root/'native-prepared.json',prepared)
+        lane=root/'lane';lane.mkdir(mode=0o700);global_root=root/'global';global_root.mkdir(mode=0o700)
+        (global_root/'owner.lock').write_bytes(b'');(global_root/'owner.lock').chmod(0o600)
+        feed=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])
+        def reap():
+            if feed.poll() is None:feed.kill()
+            feed.wait(timeout=2)
+        self.addCleanup(reap)
+        client=SimpleNamespace(root=lane,process=feed,feed_binding=f.feed,start_feed=lambda *a:feed,close=lambda:None)
+        owner=object.__new__(native.NativeController);owner.prepared=prepared;owner.client=None;owner.binding_path=root/'bindings';owner.phase='startup'
+        b=dict(providerFeedPath='/offline/feed',laneWrapper='/offline/wrapper',receiptPath=str(root/'receipt'),workbenchCli='/offline/cli',laneLockPath=str(root/'lock'),contractDir=str(root/'contract'),workerKubeconfig=str(root/'kubeconfig'))
+        owner.bindings=dict(captureRoot=str(root),laneRoot=str(lane),laneBindings=b,workerInventory='/offline/inventory',workerKubeconfig=str(root/'kubeconfig'))
+        native._native_owners[owner]=dict(pid=os.getpid(),bindings=canonical(owner.bindings),runId=f.plan['runId'],mac=prepared['macCredential'],worker=prepared['workerCredential'],prepared=canonical(prepared),feed=None,feedIdentity=None,client=None,workerProcesses={})
+        seen=[]
+        def call(action):
+            seen.append(action)
+            if action=='native-collector-launch':return dict(outputs=launch)
+            if action=='native-collector-status':raise RuntimeError('offline status refusal')
+            return dict(outputs={})
+        with patch.object(native,'_closed'),patch.object(native,'_require_verified'),patch.object(LaneClient,'start',return_value=client),patch.object(owner,'_call',side_effect=call),patch('pgcat_rehearsal_controller._feed_path',return_value=os.defpath),patch('pgcat_lane_supervisor.GLOBAL_ROOT',global_root),patch.object(native.time,'time',return_value=f.now):
+            with self.assertRaisesRegex(RuntimeError,'offline status refusal'):owner.start_capture()
+            originals=owner._abort_originals()
+        self.assertEqual(seen,['native-baseline','native-collector-launch','native-collector-status'])
+        self.assertEqual(originals['workerProcesses'],dict(collector=launch['collectorIdentity'],guardian=launch['guardianIdentity']))
+        self.assertEqual(owner.phase,'startup')
+
+
+class StartupJournalTests(unittest.TestCase):
+    def fixture(self):
+        from pgcat_lane_protocol import Journal,encode,digest
+        f=StartupBarrierTests.fixture(self);lane=f.run.parent/'lane';lane.mkdir(mode=0o700);j=Journal(lane)
+        raw=(f.run/'native-plan.json').read_bytes();write(lane/'native-plan.json',f.plan)
+        with j._transaction() as db:
+            db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?)',(f.plan['runId'],native.MODE,encode(f.plan['target']).decode(),encode(dict(f.plan['sourceHashes'],bundleSha256=digest(f.plan['sourceHashes']))).decode(),'active',None,None))
+            db.execute('INSERT INTO native_plan VALUES (1,?,?)',(raw,encode(file_record(lane/'native-plan.json')).decode()))
+            db.execute('INSERT INTO native_prepared VALUES (1,?)',(encode(f.prepared).decode(),))
+            db.execute('INSERT INTO feed_binding VALUES (1,?)',(encode(f.feed).decode(),))
+        return f,j
+
+    def admit(self,f,j,action):
+        import uuid
+        from pgcat_lane_protocol import encode,monotonic
+        request=dict(requestId=str(uuid.uuid4()),action=action,runId=f.plan['runId'],deadlineMonotonic=monotonic()+5.)
+        write(j.root/('native-selector-'+request['requestId']+'.json'),{})
+        with patch('pgcat_lane_protocol._release_admission'),j._transaction() as db:
+            db.execute('INSERT INTO requests VALUES (?,?,?,?,?,?)',(request['requestId'],f.plan['runId'],request['requestId'],encode(request).decode(),'dispatching',None))
+            j._native_admit_in_tx(db,request)
+            db.execute('UPDATE native_admission SET claimed=1 WHERE request_id=?',(request['requestId'],))
+            proof=json.loads(db.execute('SELECT proof FROM native_admission WHERE request_id=?',(request['requestId'],)).fetchone()['proof'])
+        return request,proof
+
+    def store_launch(self,f,j,state='complete'):
+        from pgcat_lane_protocol import encode
+        launch,_=StartupBarrierTests.launch(self,f)
+        wrapper=startup_wrapper(f,'native-collector-launch',launch,'11111111-1111-4111-8111-111111111111')
+        with j._transaction() as db:
+            db.execute('INSERT INTO requests VALUES (?,?,?,?,?,?)',(wrapper['requestId'],f.plan['runId'],wrapper['requestId'],encode(dict(action=wrapper['action'])).decode(),state,None))
+            db.execute('INSERT INTO native_support VALUES (?,?)',(wrapper['requestId'],encode(wrapper).decode()))
+        return launch
+
+    def test_status_cannot_admit_before_a_completed_original_launch(self):
+        for state in (None,'dispatching','uncertain'):
+            f,j=self.fixture()
+            if state:self.store_launch(f,j,state)
+            with self.subTest(state=state),self.assertRaises(Refused):self.admit(f,j,'native-collector-status')
+
+    def test_status_envelope_binds_launch_but_never_transfers_result_key_back(self):
+        f,j=self.fixture();launch=self.store_launch(f,j)
+        request,proof=self.admit(f,j,'native-collector-status')
+        self.assertIn('launch',proof['envelope'])
+        self.assertNotIn('resultKey',proof['envelope']['launch'])
+        self.assertTrue(proof['envelope']['launch']=={k:v for k,v in launch.items() if k!='resultKey'})
+        with self.assertRaises(Refused):self.admit(f,j,'native-collector-status')
+
+    def test_launch_only_cannot_admit_ingress_or_restart(self):
+        for action in ('native-ingress','native-disabled-restart'):
+            f,j=self.fixture();self.store_launch(f,j)
+            with self.subTest(action=action),self.assertRaises(Refused):self.admit(f,j,action)
+
+    def test_journal_authenticates_exact_status_before_ready_admission(self):
+        import pgcat_collector_control as control
+        for change in (None,'signature','binding','ready-time','prepared'):
+            f,j=self.fixture();launch=self.store_launch(f,j);signed=StartupBarrierTests.result(self,f,launch)
+            request,proof=self.admit(f,j,'native-collector-status')
+            output=dict(status='READY',ready=signed['ready'],readyFile=signed['readyFile'],result=signed,resultFile=file_record(Path(launch['resultPath'])))
+            if change=='signature':output['result']['seal']['authenticator']='b'*64
+            elif change=='binding':output['result']['binding']['collectorIdentity']['startTicks']+=1
+            elif change=='ready-time':output['ready']['readyAt']+=1
+            elif change=='prepared':output['result']['ready']['sources']['gatewayRuntime']['inode']+=1
+            payload=startup_wrapper(f,'native-collector-status',output,request['requestId'],proof)
+            result=dict(state='complete',category='ok',payload=payload)
+            with patch('pgcat_lane_protocol._release_admission'):
+                if change:
+                    with self.subTest(change=change),self.assertRaises((ValueError,Refused)):j.seal_native(request['requestId'],result)
+                else:
+                    j.seal_native(request['requestId'],result)
+                    request2,proof2=self.admit(f,j,'native-disabled-restart')
+                    self.assertEqual(proof2['envelope']['readySha256'],output['readyFile']['sha256'])
+                    with self.assertRaises(Refused):self.admit(f,j,'native-collector-launch')
+
+
+def startup_wrapper(f,action,output,request_id,proof=None):
+    from pgcat_lane_protocol import digest
+    staged=dict(admission=file_record(f.run/'native-plan.json'),selector=file_record(f.run/'native-baseline.json'))
+    if proof:
+        staged['admission']=dict(staged['admission'],sha256=digest(proof['envelope']))
+        staged['selector']=dict(staged['selector'],sha256=digest(proof['selector']))
+    return dict(schemaVersion=1,action=action,runId=f.plan['runId'],executionKind=f.plan['executionKind'],planSha256=digest(f.plan),requestId=request_id,staged=staged,outputs=output)
+
+
+def record_startup_fixture(test,f,j):
+    """Durable completed launch, then real authenticated Journal status sealing."""
+    with j._connection() as db:f.feed=json.loads(db.execute('SELECT proof FROM feed_binding').fetchone()['proof'])
+    write(f.run/'native-feed-binding.json',f.feed)
+    f.ready['feedBindingSha256']=hashlib.sha256(json.dumps(f.feed,sort_keys=True,separators=(',',':')).encode('ascii')).hexdigest()
+    f.ready['sources']['feedBinding']=file_record(f.run/'native-feed-binding.json');write(f.run/'native-ready.json',f.ready)
+    launch=StartupJournalTests.store_launch(test,f,j)
+    signed=StartupBarrierTests.result(test,f,launch)
+    request,proof=StartupJournalTests.admit(test,f,j,'native-collector-status')
+    output=dict(status='READY',ready=signed['ready'],readyFile=signed['readyFile'],result=signed,resultFile=file_record(Path(launch['resultPath'])))
+    payload=startup_wrapper(f,'native-collector-status',output,request['requestId'],proof)
+    with patch('pgcat_lane_protocol._release_admission'):j.seal_native(request['requestId'],dict(state='complete',category='ok',payload=payload))
+    return launch,output

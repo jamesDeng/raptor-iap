@@ -293,11 +293,13 @@ class JournalContinuationTests(unittest.TestCase):
                 db.execute('INSERT INTO native_plan VALUES (1,?,?)',(raw,encode(file_record(lane/'native-plan.json')).decode()))
                 db.execute('INSERT INTO native_prepared VALUES (1,?)',(encode(f.prepared).decode(),))
                 db.execute('INSERT INTO feed_binding VALUES (1,?)',(encode(f.feed).decode(),))
-                db.execute('INSERT INTO native_support VALUES (?,?)',('ready',encode(dict(action='native-collector-launch',outputs=dict(readyFile=file_record(f.run/'native-ready.json'),ready=f.ready))).decode()))
                 for name,artifact in [('earlier',first),('latest',last)]:
                     db.execute('INSERT INTO native_support VALUES (?,?)',(name,encode(dict(action='native-ingress',outputs=dict(ingressFile=artifact))).decode()))
+            from test_pgcat_native_controller import record_startup_fixture
+            record_startup_fixture(self,f,journal)
+            with patch('pgcat_lane_protocol._release_admission'),journal._transaction() as db:
                 journal._native_admit_in_tx(db,request)
-                proof=json.loads(db.execute('SELECT proof FROM native_admission').fetchone()['proof'])
+                proof=json.loads(db.execute('SELECT proof FROM native_admission WHERE request_id=?',(request['requestId'],)).fetchone()['proof'])
                 self.assertEqual(proof['envelope']['priorIngress'],last)
                 self.assertEqual(proof['selector'],{})
                 with self.assertRaises(ValueError):native.validate_selector(f.plan,'native-ingress',dict(priorIngress=first))

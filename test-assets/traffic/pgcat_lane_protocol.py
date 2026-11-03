@@ -917,6 +917,7 @@ class Journal:
             require(plan['executionKind']=='native-replacement' and row is not None and row['state']=='RESERVED' and job is not None and job['state']=='VERIFIED','incomplete')
             require(db.execute('SELECT 1 FROM native_created_request').fetchone() is None,'incomplete')
             require(db.execute("SELECT 1 FROM native_gateway WHERE action='native-gateway-disable'").fetchone() is None,'incomplete')
+            self._native_startup_in_tx(db,'native-collector-status')
             db.execute("UPDATE native_create SET state='DISPATCHING'")
             return dict(json.loads(row['proof']),state='DISPATCHING')
 
@@ -933,7 +934,7 @@ class Journal:
             require(db.execute("SELECT 1 FROM native_gateway WHERE state!='VERIFIED'").fetchone() is None,'incomplete')
             require(db.execute("SELECT 1 FROM requests WHERE state='dispatching'").fetchone() is None,'incomplete')
             records=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support')]
-            ready=[r['outputs'] for r in records if r['action']=='native-collector-launch'];require(len(ready)==1,'incomplete')
+            ready=self._native_startup_in_tx(db,'native-collector-status')
             if action=='native-gateway-enable':
                 require(db.execute("SELECT 1 FROM requests WHERE state!='complete'").fetchone() is None,'incomplete')
                 require(db.execute('SELECT 1 FROM native_create').fetchone() is None and db.execute('SELECT 1 FROM native_created_request').fetchone() is None,'incomplete')
@@ -953,7 +954,7 @@ class Journal:
                     db.execute("UPDATE native_create SET state='ABORTING'")
                     settlement=dict(kind='pre-create-reserved',runId=plan['runId'],planSha256=digest(plan),reservationSha256=digest(reservation),ownerSha256=digest(evidence),state='ABORTING')
             claim=dict(schemaVersion=1,action=action,requestId=str(uuid.uuid4()),runId=plan['runId'],planSha256=digest(plan),
-                prepared=self._native_prepared_in_tx(db,plan),readyFile=ready[0]['readyFile'],qualification=qualification,settlement=settlement,owner=evidence,reservation=reservation,budget=budget)
+                prepared=self._native_prepared_in_tx(db,plan),readyFile=ready['readyFile'],qualification=qualification,settlement=settlement,owner=evidence,reservation=reservation,budget=budget)
             require(owner._gateway_budget(enable=action=='native-gateway-enable')==budget,'timeout')
             db.execute('INSERT INTO native_gateway VALUES (?,?,?,?,NULL)',(action,claim['requestId'],'CLAIMED',encode(claim).decode()))
             return claim
@@ -1058,12 +1059,11 @@ class Journal:
         if action=='native-ingress':
             prior=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support ORDER BY rowid') if json.loads(r['proof'])['action']=='native-ingress']
             envelope['priorIngress']=prior[-1]['outputs']['ingressFile'] if prior else None
-        if action in ('native-ingress','native-disabled-restart'):
-            ready=None
-            for row in db.execute('SELECT proof FROM native_support'):
-                proof=json.loads(row['proof'])
-                if proof['action']=='native-collector-launch':ready=proof['outputs']
-            require(ready is not None,'incomplete')
+        if action=='native-collector-status':
+            launched=self._native_startup_in_tx(db,'native-collector-launch')
+            envelope['launch']={k:v for k,v in launched.items() if k!='resultKey'}
+        elif action in ('native-ingress','native-disabled-restart'):
+            ready=self._native_startup_in_tx(db,'native-collector-status')
             envelope.update(readySha256=ready['readyFile']['sha256'],feedBindingSha256=ready['ready']['feedBindingSha256'])
         elif action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
             records=[json.loads(r['proof']) for r in db.execute('SELECT proof FROM native_support')]
@@ -1096,6 +1096,23 @@ class Journal:
         validate_action(plan,envelope,selector)
         proof=dict(envelope=envelope,selector=selector,selectorFile=selector_file)
         db.execute('INSERT INTO native_admission VALUES (?,?,0)',(request['requestId'],encode(proof).decode()))
+
+    def _native_startup_in_tx(self,db,action):
+        """Only completed two-phase support may grant readiness or ownership."""
+        from pgcat_native_controller import validate_action_result,verify_startup_result
+        require(action in ('native-collector-launch','native-collector-status'),'configuration')
+        plan=self._native_plan_in_tx(db)
+        matches=[(r['request_id'],json.loads(r['proof'])) for r in db.execute('SELECT request_id,proof FROM native_support') if json.loads(r['proof'])['action']==action]
+        require(len(matches)==1,'incomplete');request_id,payload=matches[0]
+        request=db.execute('SELECT * FROM requests WHERE request_id=?',(request_id,)).fetchone()
+        require(request is not None and request['state']=='complete' and request['run_id']==plan['runId'] and json.loads(request['request'])['action']==action,'incomplete')
+        validate_action_result(payload,plan,action,request_id)
+        output=payload['outputs']
+        if action=='native-collector-status':
+            launch=self._native_startup_in_tx(db,'native-collector-launch')
+            verify_startup_result(output['result'],launch,plan,self._native_prepared_in_tx(db,plan))
+        return output
+
 
     def _native_record_in_tx(self,db,action):
         from pgcat_native_closure import validate_support
@@ -1289,7 +1306,7 @@ class Journal:
 
     def seal_native(self,request_id,result):
         _release_admission(NATIVE_MODE)
-        from pgcat_native_controller import validate_action_result
+        from pgcat_native_controller import validate_action_result,verify_startup_result
         with self._transaction() as db:
             plan=self._native_plan_in_tx(db)
             row=db.execute('SELECT * FROM requests WHERE request_id=?',(request_id,)).fetchone()
@@ -1301,8 +1318,11 @@ class Journal:
             payload=validate_action_result(result['payload'],plan,request['action'],request_id)
             prepared=self._native_prepared_in_tx(db,plan);require(proof['envelope']['prepared']==prepared,'source')
             if request['action']=='native-restore':require(payload['outputs']['providerArtifact']==proof['envelope']['restorationProvider'],'source')
-            if request['action']=='native-collector-launch':
-                require(all(payload['outputs']['ready']['sources'][k]==prepared[v] for k,v in (('plan','planFile'),('baseline','baselineFile'),('gatewayRuntime','gatewayRuntimeFile'))),'source')
+            if request['action']=='native-collector-status':
+                launched=self._native_startup_in_tx(db,'native-collector-launch')
+                require(proof['envelope']['launch']=={k:v for k,v in launched.items() if k!='resultKey'},'source')
+                verify_startup_result(payload['outputs']['result'],launched,plan,prepared)
+                require(payload['outputs']['ready']['feedBindingSha256']==digest(proof['envelope']['feedBinding']),'source')
             require(payload['staged']['admission']['sha256']==digest(proof['envelope']) and payload['staged']['selector']['sha256']==digest(proof['selector']),'source')
             require(db.execute('SELECT state FROM run').fetchone()['state']=='active','incomplete')
             if request['action']=='native-ingress' and plan['executionKind']=='native-replacement':self._associate_native_context_in_tx(db,plan,payload['outputs'])

@@ -267,7 +267,7 @@ def seal_capture_context(run_dir,hashes,*,prepared,probe_process,live_clients,no
     _write_bytes(run/'native-context.json',canonical(result));return result
 
 
-def seal_ready(run_dir,*,prepared,guardian_identity,probe_process,live_clients,now):
+def seal_ready(run_dir,*,prepared,guardian_identity,probe_process,live_clients,now,deadline=None):
     """Seal a fresh baseline pair from a validated committed prefix.
 
     This pure evidence kernel has no transport or runtime authority. Its caller
@@ -355,7 +355,9 @@ def seal_ready(run_dir,*,prepared,guardian_identity,probe_process,live_clients,n
         progressBindingSha256=sha(files['progressBinding'][0]),feedBindingSha256=sha(files['feedBinding'][0]),
         feedSession=context['feedSession'],collectorIdentity=context['collectorIdentity'],guardianIdentity=guardian_identity,
         sources={k:identity for k,(_,identity) in files.items()},frames={k:progress[k] for k in ('previous','latest')},readyAt=at)
+    if deadline is not None:check(time.monotonic()<deadline)
     _write_bytes(run/'native-ready.json',canonical(ready))
+    if deadline is not None:check(time.monotonic()<deadline)
     return ready
 
 
@@ -682,6 +684,7 @@ def validate_action(plan,envelope,selector):
     keys={'schemaVersion','action','localRequestId','runId','executionKind','planSha256','baselineSha256','feedBinding','deadlineMonotonic','prepared'}
     if action in ('native-ingress','native-disabled-restart'):keys|={'readySha256','feedBindingSha256'}
     if action=='native-ingress':keys.add('priorIngress')
+    if action=='native-collector-status':keys.add('launch')
     if plan['executionKind']=='native-replacement' and action not in ('native-baseline','native-collector-launch','native-collector-status'):keys.add('qualifiedEnable')
     if action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
         keys|={'operation','supports'}
@@ -693,6 +696,7 @@ def validate_action(plan,envelope,selector):
     identifier(envelope['localRequestId']);check(envelope['runId']==plan['runId'] and envelope['executionKind']==plan['executionKind'])
     check(envelope['planSha256']==digest(plan) and envelope['baselineSha256']==plan['baselineSha256'] and number(envelope['deadlineMonotonic']))
     validate_prepared(plan,envelope['prepared'])
+    if action=='native-collector-status':validate_launch(envelope['launch'],plan,keyed=False)
     if 'qualifiedEnable' in envelope:
         exact(envelope['qualifiedEnable'],{'basename','identity'});check(envelope['qualifiedEnable']['basename']=='native-gateway-enable.json')
         file_identity(envelope['qualifiedEnable']['identity'])
@@ -784,6 +788,53 @@ def prepared_source_prefix(run,plan,prepared):
     return ROOT.replace('p,h=sys.argv[1:3]', 'p,h='+repr((str(run/'pgcat_source_bootstrap.py'),plan['sourceHashes']['sourceBootstrap']))).replace('sys.argv=[p]+sys.argv[3:]\nsys.exit(m.main())\n',setup)
 
 
+def validate_launch(value,plan,*,keyed=True):
+    """Ownership only. The private key belongs to the completed launch record."""
+    from pgcat_native_ingress import exact,number,hashed
+    from pgcat_collector_control import valid_identity
+    from segmented_capture import canonical,sha
+    keys={'status','runId','planSha256','collectorIntentFile','guardianIdentity','collectorIdentity','resultPath','resultSlot','deadlineMonotonic'}
+    exact(value,keys|({'resultKey'} if keyed else set()))
+    check(value['status']=='LAUNCHED' and value['runId']==plan['runId'] and value['planSha256']==sha(canonical(plan)))
+    file_identity(value['collectorIntentFile'])
+    for name in ('guardianIdentity','collectorIdentity'):valid_identity(value[name])
+    check(value['guardianIdentity']['pid']!=value['collectorIdentity']['pid'])
+    slot=value['resultSlot'];exact(slot,{'device','inode','uid','mode','nlink'})
+    check(all(type(v) is int and v>=0 for v in slot.values()) and slot['mode']==0o600 and slot['nlink']==1)
+    path=Path(value['resultPath']);check(path.is_absolute() and '..' not in path.parts and path.parts[-3:]==('run','collector-job','startup-result.json'))
+    check(number(value['deadlineMonotonic']))
+    if keyed:check(hashed(value['resultKey']))
+    return value
+
+
+def validate_startup_result(value,plan):
+    from pgcat_native_ingress import exact,number,hashed,READY_KEYS
+    from segmented_capture import canonical,sha
+    exact(value,{'binding','ready','readyFile','seal'});exact(value['seal'],{'completedMonotonic','authenticator'})
+    validate_launch(dict(status='LAUNCHED',**value['binding']),plan,keyed=False)
+    check(number(value['seal']['completedMonotonic']) and value['seal']['completedMonotonic']<value['binding']['deadlineMonotonic'] and hashed(value['seal']['authenticator']))
+    ready=value['ready'];exact(ready,READY_KEYS);file_identity(value['readyFile'])
+    check(value['readyFile']['sha256']==sha(canonical(ready)))
+    check(type(ready['schemaVersion']) is int and ready['schemaVersion']==1 and number(ready['readyAt']))
+    check(ready['planSha256']==sha(canonical(plan)) and all(ready[k]==plan[k] for k in ('mode','executionKind','runId','baselineSha256')))
+    check(all(ready[k]==value['binding'][k] for k in ('guardianIdentity','collectorIdentity')))
+    exact(ready['sources'],{'plan','baseline','context','feedBinding','providerRunContext','progressBinding','gatewayRuntime'})
+    for identity in ready['sources'].values():file_identity(identity)
+    return value
+
+
+def verify_startup_result(result,launch,plan,prepared):
+    """Authenticate original readiness; never re-date or re-seal it at status."""
+    import hmac
+    from segmented_capture import canonical
+    validate_launch(launch,plan);validate_startup_result(result,plan);validate_prepared(plan,prepared)
+    check(result['binding']=={k:v for k,v in launch.items() if k not in ('status','resultKey')})
+    signed=dict({k:v for k,v in result.items() if k!='seal'},completedMonotonic=result['seal']['completedMonotonic'])
+    check(hmac.compare_digest(result['seal']['authenticator'],hmac.new(bytes.fromhex(launch['resultKey']),canonical(signed),hashlib.sha256).hexdigest()))
+    check(all(result['ready']['sources'][k]==prepared[v] for k,v in (('plan','planFile'),('baseline','baselineFile'),('gatewayRuntime','gatewayRuntimeFile'))))
+    return result
+
+
 def validate_action_result(value,plan,action,local_request):
     from pgcat_native_ingress import exact
     from pgcat_lane_protocol import digest
@@ -806,17 +857,12 @@ def validate_action_result(value,plan,action,local_request):
             file_identity(output['operationFile']['identity']);file_identity(output['operationMirror'])
             check(output['operationFile']['identity']['sha256']==output['operationMirror']['sha256']==digest(output['operationBinding']))
     elif action=='native-collector-launch':
-        exact(output,{'ready','readyFile','collectorIntentFile'});file_identity(output['collectorIntentFile'])
-        file_identity(output['readyFile']);check(output['readyFile']['sha256']==digest(output['ready']))
-        from pgcat_native_ingress import READY_KEYS
-        exact(output['ready'],READY_KEYS);check(output['ready']['planSha256']==digest(plan))
-        check(all(output['ready'][k]==plan[k] for k in ('mode','executionKind','runId','baselineSha256')))
-        exact(output['ready']['sources'],{'plan','baseline','context','feedBinding','providerRunContext','progressBinding','gatewayRuntime'})
-        for identity in output['ready']['sources'].values():file_identity(identity)
+        validate_launch(output,plan)
     elif action=='native-collector-status':
-        exact(output,{'status','identity','guardianIdentity'});check(output['status']=='ALIVE')
-        from pgcat_collector_control import valid_identity
-        valid_identity(output['identity']);valid_identity(output['guardianIdentity'])
+        exact(output,{'status','ready','readyFile','result','resultFile'});check(output['status']=='READY')
+        result=validate_startup_result(output['result'],plan);file_identity(output['resultFile'])
+        check(output['ready']==result['ready'] and output['readyFile']==result['readyFile'])
+        check(output['resultFile']['sha256']==digest(result) and all(output['resultFile'][k]==v for k,v in result['binding']['resultSlot'].items()))
     elif action=='native-baseline':
         exact(output,{'status','baselineSha256','feedBindingFile'})
         check(output['status']=='VERIFIED' and output['baselineSha256']==plan['baselineSha256']);file_identity(output['feedBindingFile'])
@@ -1057,8 +1103,10 @@ class NativeController:
             _native_owners[self]['feedAttempted']=True
             self.feed=self.client.start_feed(argv,env,self.binding_path);self.feed_identity=dict(self.client.feed_binding);_native_owners[self].update(feed=self.feed,feedIdentity=dict(self.feed_identity))
             self._call('native-baseline');self.collector_attempted=True
-            result=self._call('native-collector-launch');ready=result['outputs']['ready'] if 'outputs' in result else result['ready']
-            self.worker_processes=dict(collector=ready['collectorIdentity'],guardian=ready['guardianIdentity']);_native_owners[self]['workerProcesses']=__import__('json').loads(__import__('json').dumps(self.worker_processes));self.phase='capturing'
+            result=self._call('native-collector-launch');launched=result['outputs'];validate_launch(launched,plan)
+            self.worker_processes=dict(collector=launched['collectorIdentity'],guardian=launched['guardianIdentity'])
+            _native_owners[self]['workerProcesses']=__import__('json').loads(__import__('json').dumps(self.worker_processes))
+            result=self._call('native-collector-status');check(result['outputs']['status']=='READY');self.phase='capturing'
             return result
         except BaseException:
             if self.client is not None:self.client.close()
@@ -1135,9 +1183,9 @@ class NativeController:
         row=_native_owners[self];budget=row.get('captureBudget');exact(budget,{'captureStartedAt','captureUntil'})
         check(self.capture_until==budget['captureUntil'])
         with self.client.journal._connection() as db:
-            records=[decode_private(r['proof'].encode()) for r in db.execute('SELECT proof FROM native_support')]
-        ready=[r['outputs'] for r in records if r['action']=='native-collector-launch'];check(len(ready)==1)
-        result=dict(budget,collectorIntentFile=ready[0]['collectorIntentFile'])
+            launched=self.client.journal._native_startup_in_tx(db,'native-collector-launch')
+            self.client.journal._native_startup_in_tx(db,'native-collector-status')
+        result=dict(budget,collectorIntentFile=launched['collectorIntentFile'])
         end=validate_gateway_budget(self.prepared['plan'],result);now=time.time()
         check(budget['captureStartedAt']<=now and end-now>=(407. if enable else 0.) and end>now)
         return decode_private(canonical(result))
@@ -1601,33 +1649,16 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
         output=dict(receipt=receipt,receiptFile=_identity(run/'native-restart-receipt.json')[1])
     elif action=='native-collector-status':
         from pgcat_collector_control import status
-        output=status(run.parent/'contract',plan['runId'],plan['sourceHashes'],profile=MODE,prepared=prepared)
+        output=status(run.parent/'contract',plan['runId'],plan['sourceHashes'],profile=MODE,prepared=prepared,launch=envelope['launch'])
     elif action=='native-collector-launch':
-        from pgcat_collector_control import launch,status,process_identity
+        from pgcat_collector_control import launch
         runtime=reads.gateway_disabled()
         from pgcat_native_ingress import _runtime,_gateway_config,_Calls
         from types import SimpleNamespace
         _runtime(runtime,plan,time.time());sealed_runtime=decode_private(_identity(run/'native-gateway-runtime.json')[0])
         check({k:v for k,v in runtime.items() if k!='observedAt'}=={k:v for k,v in sealed_runtime.items() if k!='observedAt'})
         check(_gateway_config(SimpleNamespace(plan=plan),_Calls(),reads.read)==dict(secretUid=runtime['secretUid'],secretResourceVersion=runtime['secretResourceVersion'],replacementEnabled=False))
-        launched=launch(run.parent/'contract',plan['runId'],run.parent/'kubeconfig',plan['sourceHashes'],profile=MODE,prepared=prepared)
-        collector_intent=_identity(run/'collector-job'/'intent.json')
-        until=time.monotonic()+5.
-        while True:
-            check(time.monotonic()<until)
-            observed=status(run.parent/'contract',plan['runId'],plan['sourceHashes'],profile=MODE,prepared=prepared)
-            if observed.get('status')=='ALIVE' and (run/'native-context.json').exists():
-                try:
-                    from segmented_capture import read_progress
-                    context=decode_private(_identity(run/'native-context.json')[0])
-                    progress,_,_=read_progress(run/'native-capture',context)
-                    if progress['committedFrames']<2:time.sleep(.01);continue
-                    ready=seal_ready(run,prepared=prepared,guardian_identity=launched['guardianIdentity'],probe_process=process_identity,live_clients=reads.live_clients,now=time.time)
-                    break
-                except FileNotFoundError:pass
-            time.sleep(.01)
-        check(_identity(run/'collector-job'/'intent.json')==collector_intent)
-        output=dict(ready=ready,readyFile=_identity(run/'native-ready.json')[1],collectorIntentFile=collector_intent[1])
+        output=launch(run.parent/'contract',plan['runId'],run.parent/'kubeconfig',plan['sourceHashes'],profile=MODE,prepared=prepared,deadline=gate.deadline)
     elif action in ('native-terminal-seal','native-reconcile','native-finish','native-verdict','native-restore'):
         from pgcat_native_closure import FixedClosureAdapters,seal_terminal,reconcile,finish_terminal,verdict,restore,support_artifact
         adapter=FixedClosureAdapters(run,reads,prepared=prepared,action_id=request_id,operation=envelope['operation'],supports=envelope['supports'],stopped=envelope.get('stopped'),stop_artifact=envelope.get('stopArtifact'),hold_artifact=envelope.get('holdArtifact'),ingresses=envelope.get('ingresses'),restoration_provider=envelope.get('restorationProvider'))

@@ -20,7 +20,7 @@
 - Use only original sealed evidence and actual process-private read issuance; caller dictionaries/summary booleans cannot grant runtime proof. Preserve sample age<=15s, provider age<30s, capture gap<=3s, existing four-/five-second closure limits and SQL FAIL precedence.
 - Preserve min2/max4, desired>=minimum, exact decrease approval, resource-code Infra MCP and all withdrawal-before-restart and approval-before-reduction guards. No native enablement before matching real disabled proof including120s hold/restoration/both credential absence/global audit.
 - Private native-replacement and disabled-proof plans/templates admit captureMaxSeconds only from75 through900, before preparation effects. The source-owned provider uses interval15, publishes once per tick strictly before its original runtime end, and each ingress consumes a publication once. Therefore a full900-second capture has at most60 ingress originals (ticks0 through885), within the unchanged100-original Journal-linked history bound. Do not restart/renew the provider or bypass publication ownership to extend this envelope. Generic legacy capture contracts remain unchanged; source changes require a new27-source freeze and relevant exact-worker calibration before runtime qualification.
-- Production path budget10–14 plus tests/docs. Start with9 timing paths below; Task3 adds existing worker_control.py as path10, Task4 adds only capture_window.py as path11, root release uses at most3existing pin paths; remain<=14. Do not rewrite existing collector/provider/feed/Go Gateway guard.
+- Owner-approved Nov3 cumulative production cap15 plus tests/docs: existing11 timing/closure paths,3 existing release pins, and only pgcat_collector_control.py as path15 for Task5. No collector/frame/provider/feed rewrite or Go Gateway guard change.
 
 ## Review Focus
 
@@ -105,3 +105,18 @@ Run planned-volume exact-workerPython3.6 timing, actual disabled proof (one rest
 - [ ] TDD: first write and observe failing tests that repeated identical valid timestamp strings avoid repeated parsing and the cache never exceeds4096. Test fractional truncation, timezone offsets, numeric/bool/nonfinite/invalid/subclass behavior against the preserved parser contract. Use a real capture assessment demonstrating a warmed timestamp is still rejected as stale after advancing frame time; no mocked freshness comparison. Tests may spy on the parser solely to verify this pure performance contract.
 - [ ] Apply only the exact minimal edit above, focused RED/GREEN and Python3.6 grammar/import compatibility. Run the whole Python discovery suite normal and optimized once on the final tree, freeze registered source hashes. Preserve unrelated untracked iCloud copies. Commit source/tests and report; no network/cloud/GitHub actions by task agent.
 - [ ] Independent scoped task review, then root repeats exact-worker frozen901-frame calibration using production code without monkeypatches. Existing4s/5s limits stand; whole-branch review follows only if actual measured bound is feasible. Actual disabled proof still required.
+
+### Task 5: Separate owned collector launch from original readiness
+
+**Spec:** docs/superpowers/specs/2026-11-03-pgcat-startup-barrier-design.md; approved detailed proposal in this plan’s ignored workspace/startup-timeout-20261103-design.md.
+
+**Files:** Modify only test-assets/traffic/pgcat_native_controller.py, pgcat_lane_protocol.py and pgcat_collector_control.py. Existing native controller/collector/gateway/causal/assessment tests as necessary; no new production path beyond those three.
+
+**Interfaces:** Native launch output acknowledges actual retained guardian/collector and exact private result binding, without readiness. Native status consumes the exact authenticated original guardian result. All ready consumers use completed status; gateway capture budget continues using the original launch intent. Guardian invokes unchanged evidence semantics once within4s, retaining actual collector Popen and original capture end.
+
+- [x] Write regression tests for actual startup delay shape, inherited actual process acknowledgement, authenticated later result and launch-only denial. Verify RED before production edits.
+- [x] Implement the private owned launch channel and one-shot guardian readiness; bind original destination, key and identities without leaking authentication material or trusting sidecars.
+- [x] Update typed launch/status validation, Journal admission/seal, immediate Mac ownership retention, worker dispatch and all restart/ingress/Gateway/Create readiness consumers. Preserve duplicate refusal and original run/plan/source anchors.
+- [x] Cover original runtime fresh at readyAt but aged at later status, altered readyAt/bytes/inode/intent/process/binding, missing/partial/failed results, EOF/crash/collector exit, proof deadline at final publication, unchanged original capture end, and acknowledged-launch abort cleanup; retain foreign-sidecar rejection.
+- [x] Run focused tests normal/optimized while iterating, then full traffic suite once on supported bundled Python; verify all27 production sources Python3.6 grammar/import, existing focused actual-process fixtures and diff hygiene.
+- [x] Commit only task paths, self-review and write report including RED/GREEN evidence, exact test commands/counts, final27-source freeze and scope union15. Independent review required before publication/runtime. Root owns reviewed merge, exact-worker smoke/calibration, stale reservation recovery and fresh real disabled proof.
