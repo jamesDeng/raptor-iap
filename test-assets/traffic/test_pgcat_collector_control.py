@@ -602,3 +602,114 @@ class CollectorWitnessContext(unittest.TestCase):
                 with patch.object(control,'process_identity',return_value=dict(IDENTITY)),self.assertRaises(ValueError):self.derive()
                 path.write_bytes(saved);seal.write_bytes(saved_seal)
                 if kind=='source':self.verified['worker_capture']=self.verified['worker_capture'][:-1]
+
+
+# These fixtures replace cluster reads only. Both guardian and collector are
+# actual disposable Popen children; the production inherited FDs and publication
+# code run unchanged. Evidence semantics are covered by the controller kernels.
+def startup_test_identity(pid):
+    return dict(pid=pid,bootId='offline-test',startTicks=pid,commandSha256='a'*64)
+
+
+def startup_guardian_fixture(run,prepared_sha,payload,mode):
+    import pgcat_native_controller as native
+    run=Path(run);payload=json.loads(payload);plan=control.decode((run/'native-plan.json').read_bytes())
+    if mode=='ack-closed':os.close(payload['ackFD'])
+    if mode=='missing-context':(run/'native-context.json').unlink()
+    def proof(folder,**kwargs):
+        delay=1.15 if mode=='delayed' else .03
+        time.sleep(delay)
+        if mode=='proof-failure':raise ValueError('offline proof refusal')
+        if mode=='proof-timeout':
+            time.sleep(max(0,kwargs['deadline']-time.monotonic())+.02)
+        if mode=='collector-exit':time.sleep(.15)
+        ready=control.decode((run/'fixture-ready.json').read_bytes())
+        ready.update(collectorIdentity=control.decode((run/'collector-job'/'identity.json').read_bytes()),guardianIdentity=startup_test_identity(os.getpid()))
+        native._write_bytes(run/'native-ready.json',json.dumps(ready,sort_keys=True,separators=(',',':')).encode('ascii'))
+        return ready
+    def command(*args):return [sys.executable,'-c','import time;time.sleep(%s)'%('.06' if mode=='collector-exit' else '30')]
+    with patch('pgcat_lane_protocol._release_admission'),patch.object(control,'context',side_effect=lambda *a,**k:(run,control.directory(run/'collector-job'),{})),patch.object(control,'process_identity',side_effect=startup_test_identity),patch.object(control,'native_entry_command',side_effect=command),patch.object(native,'seal_ready',side_effect=proof),patch.object(control,'completion',return_value='a'*64):
+        # This ceiling is only for the local disposable process test. Production
+        # profile_values and the admitted 75..900 capture limit stay unchanged.
+        original=control.profile_values
+        def bounded(profile,cap=5400):
+            values=original(profile,cap)
+            return (values[0],values[1],1.7,values[3]) if profile==control.NATIVE_MODE else values
+        with patch.object(control,'profile_values',side_effect=bounded):
+            return control.run_child(run.parent/'contract',plan['runId'],run.parent/'kubeconfig',plan['sourceHashes'],profile=control.NATIVE_MODE,prepared_sha=prepared_sha,startup=payload)
+
+
+class NativeOwnedStartupTests(unittest.TestCase):
+    def fixture(self,mode='delayed'):
+        import pgcat_native_controller as native
+        from test_pgcat_native_controller import Fixture
+        self.assertTrue(hasattr(control,'receive_startup_ack'),'private owned startup channel missing')
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        root=Path(temporary.name).resolve();root.chmod(0o700);f=Fixture(root,'disabled-proof')
+        (root/'contract').mkdir(mode=0o700,exist_ok=True);(f.run/'native-boundary').mkdir(mode=0o700,exist_ok=True)
+        ready=f.run/'native-ready.json';ready.rename(f.run/'fixture-ready.json')
+        # The fixture proof's context/pair prerequisite is supplied below; the
+        # actual production seal_ready tests replay the complete real capture.
+        self.children=[]
+        def reap():
+            for child in self.children:
+                if child.poll() is None:child.kill()
+                child.wait(timeout=2)
+        self.addCleanup(reap)
+        here=Path(__file__).parent.resolve()
+        def spawn(args,**kwargs):
+            prepared_sha,payload=args[-2:]
+            body="import sys;sys.path.insert(0,%r);from test_pgcat_collector_control import startup_guardian_fixture;sys.exit(startup_guardian_fixture(*sys.argv[1:]))"%str(here)
+            child=subprocess.Popen([sys.executable,'-c',body,str(f.run),prepared_sha,payload,mode],**kwargs);self.children.append(child);return child
+        return f,spawn
+
+    def launch(self,f,spawn):
+        import pgcat_native_controller as native
+        with patch('pgcat_lane_protocol._release_admission'),patch.object(control,'context',side_effect=lambda *a,**k:(f.run,control.directory(f.run/'collector-job') if (f.run/'collector-job').exists() else self.job(f.run),{})),patch.object(control,'process_identity',side_effect=startup_test_identity),patch.object(control.time,'time',return_value=f.now):
+            return control.launch(f.run.parent/'contract',f.plan['runId'],f.run.parent/'kubeconfig',f.plan['sourceHashes'],profile=control.NATIVE_MODE,prepared=f.prepared,spawn=spawn)
+
+    def job(self,run):
+        (run/'collector-job').mkdir(mode=0o700);return control.directory(run/'collector-job')
+
+    def test_owned_ack_returns_before_delayed_proof_and_capture_end_does_not_renew(self):
+        f,spawn=self.fixture();before=time.monotonic();launched=self.launch(f,spawn);acked=time.monotonic()
+        self.assertEqual(launched['status'],'LAUNCHED');self.assertNotIn('ready',launched)
+        self.assertLess(acked-before,1.);self.assertFalse((f.run/'native-ready.json').exists())
+        self.assertEqual(launched['guardianIdentity']['pid'],self.children[0].pid)
+        self.assertFalse(launched['resultKey'] in '\0'.join(self.children[0].args))
+        self.assertEqual(launched['collectorIdentity'],control.decode((f.run/'collector-job'/'identity.json').read_bytes()))
+        self.assertGreater(launched['deadlineMonotonic'],acked)
+        self.assertGreaterEqual(launched['deadlineMonotonic'],before+4.);self.assertLessEqual(launched['deadlineMonotonic'],acked+4.)
+        self.children[0].wait(timeout=3)
+        elapsed=time.monotonic()-before
+        self.assertLess(elapsed,2.6) # 1.15s proof + original 1.7s cap, not 2.85s
+        result=control.decode(Path(launched['resultPath']).read_bytes())
+        import pgcat_native_controller as native
+        native.verify_startup_result(result,launched,f.plan,f.prepared)
+
+    def test_guardian_proof_failure_timeout_or_collector_exit_stops_actual_child(self):
+        for mode in ('proof-failure','proof-timeout','collector-exit','missing-context'):
+            with self.subTest(mode=mode):
+                f,spawn=self.fixture(mode);launched=self.launch(f,spawn)
+                self.assertEqual(self.children[0].wait(timeout=5),1)
+                self.assertEqual(Path(launched['resultPath']).read_bytes(),b'')
+                # Reaping is performed by run_child, not a test sidecar adopter.
+                pid=launched['collectorIdentity']['pid']
+                with self.assertRaises(ProcessLookupError):os.kill(pid,0)
+
+    def test_startup_ack_eof_partial_and_crash_refuse_without_adoption(self):
+        for body in ('pass','import os;os.write(int(__import__("sys").argv[1]),b"{")','raise RuntimeError()'):
+            f,unused=self.fixture()
+            def spawn(args,**kwargs):
+                payload=json.loads(args[-1]);child=subprocess.Popen([sys.executable,'-c',body,str(payload['ackFD'])],**kwargs);self.children.append(child);return child
+            with self.subTest(body=body),self.assertRaises(ValueError):self.launch(f,spawn)
+            self.assertFalse((f.run/'collector-job'/'guardian.json').exists())
+
+    def test_guardian_losing_original_ack_pipe_stops_its_retained_collector(self):
+        f,spawn=self.fixture('ack-closed')
+        with self.assertRaises(ValueError):self.launch(f,spawn)
+        self.children[0].wait(timeout=2)
+        identity=control.decode((f.run/'collector-job'/'identity.json').read_bytes())
+        with self.assertRaises(ProcessLookupError):os.kill(identity['pid'],0)
+        self.assertEqual((f.run/'collector-job'/'startup-result.json').read_bytes(),b'')
+        self.assertFalse((f.run/'collector-job'/'guardian.json').exists())

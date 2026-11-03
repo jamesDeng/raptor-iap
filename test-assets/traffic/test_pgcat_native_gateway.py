@@ -68,8 +68,10 @@ def owned_fixture(test,capture_max=None):
     patches=[patch.object(native.time,'time',return_value=f.now),patch.object(bootstrap,'require_verified'),patch.object(bootstrap,'current_hashes',return_value=f.plan['sourceHashes']),
         patch.object(closure,'release_assets',return_value=(assets,owner.runtime_assets_identity)),patch('pgcat_lane_supervisor.GLOBAL_ROOT',global_root),patch.object(protocol,'_release_admission')]
     for context in patches:context.start();test.addCleanup(context.stop)
-    with j._transaction() as db:
-        db.execute('INSERT INTO native_support VALUES (?,?)',('ready',canonical(dict(action='native-collector-launch',outputs=dict(ready=f.ready,readyFile=file_record(f.run/'native-ready.json'),collectorIntentFile=budget['collectorIntentFile']))).decode()))
+    f.feed=binding;write(f.run/'native-feed-binding.json',binding)
+    f.ready['feedBindingSha256']=sha(canonical(binding));f.ready['sources']['feedBinding']=file_record(f.run/'native-feed-binding.json');write(f.run/'native-ready.json',f.ready)
+    from test_pgcat_native_controller import record_startup_fixture
+    record_startup_fixture(test,f,j)
     return owner,f,j,global_root
 
 
@@ -83,6 +85,8 @@ class CreateReservationTests(unittest.TestCase):
             db.execute('INSERT INTO native_create VALUES (1,?,?)',(state,canonical(dict(runId=f.plan['runId'],planSha256=sha(canonical(f.plan)),reservationId=REQUEST)).decode()))
             if enabled:
                 db.execute('INSERT INTO native_gateway VALUES (?,?,?,?,?)',('native-gateway-enable',REQUEST,'VERIFIED','{}','{}'))
+        from test_pgcat_native_controller import record_startup_fixture
+        record_startup_fixture(self,f,j)
         return root,f,j
 
     def test_begin_is_durable_before_ui_and_never_reconsumed(self):
@@ -480,3 +484,16 @@ time.sleep(20)
 
 
 if __name__=='__main__':unittest.main()
+
+
+class StartupReadinessConsumersTests(unittest.TestCase):
+    def test_launch_only_never_grants_gateway_or_create_even_with_a_flag_job(self):
+        owner,f,j,global_root=owned_fixture(self)
+        with j._transaction() as db:
+            db.execute("DELETE FROM native_support WHERE json_extract(proof,'$.action')='native-collector-status'")
+            db.execute('INSERT INTO native_create VALUES (1,?,?)',('RESERVED',canonical(dict(runId=f.plan['runId'],planSha256=sha(canonical(f.plan)),reservationId=REQUEST)).decode()))
+        with self.assertRaises(protocol.Refused):owner._gateway_budget(enable=True)
+        with self.assertRaises(protocol.Refused):j.claim_native_gateway('native-gateway-enable',owner)
+        with j._transaction() as db:db.execute('INSERT INTO native_gateway VALUES (?,?,?,?,?)',('native-gateway-enable',REQUEST,'VERIFIED','{}','{}'))
+        with self.assertRaises(protocol.Refused):j.begin_native_create()
+        with j._connection() as db:self.assertEqual(db.execute('SELECT state FROM native_create').fetchone()['state'],'RESERVED')

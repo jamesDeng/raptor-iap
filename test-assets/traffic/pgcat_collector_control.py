@@ -257,11 +257,155 @@ def native_prepared(run,started,expected_sha):
     return verify_prepared(run,decode(_identity(run/'native-plan.json')[0]),started['prepared'])
 
 
-def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,*,profile='no-scale',prepared=None):
+def startup_slot(info):
+    check(stat.S_ISREG(info.st_mode) and info.st_uid==os.geteuid() and stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1)
+    return dict(device=info.st_dev,inode=info.st_ino,uid=info.st_uid,mode=stat.S_IMODE(info.st_mode),nlink=info.st_nlink)
+
+
+def receive_startup_ack(reader,guardian,probe,deadline):
+    """Read one bounded message from our actual guardian's inherited pipe."""
+    import select
+    from pgcat_native_controller import owned_process
+    actual=owned_process(guardian,probe);raw=b''
+    while True:
+        remaining=deadline-time.monotonic();check(remaining>0)
+        readable,_,_=select.select([reader],[],[],remaining);check(readable)
+        part=os.read(reader,4097-len(raw))
+        if not part:break
+        raw+=part;check(len(raw)<=4096)
+    check(time.monotonic()<deadline and owned_process(guardian,probe)==actual)
+    value=decode(raw);check(value['guardianIdentity']==actual)
+    check(probe(value['collectorIdentity']['pid'])==value['collectorIdentity'])
+    return value
+
+
+def guardian_startup(run,child,identity,started,intent_file,startup,spawned,probe):
+    """One proof, owned by the existing guardian and its retained collector."""
+    from pgcat_native_controller import owned_process,seal_ready,FixedWorkerReads,validate_launch
+    from pgcat_native_ingress import _identity,validate_plan,exact
+    from segmented_capture import canonical,sha,read_progress
+    exact(startup,{'ackFD','resultFD','keyFD'})
+    check(all(type(v) is int and v>=3 for v in startup.values()) and len(set(startup.values()))==3)
+    for name in ('ackFD','keyFD'):check(stat.S_ISFIFO(os.fstat(startup[name]).st_mode))
+    key=os.read(startup['keyFD'],33);os.close(startup['keyFD']);startup.pop('keyFD');check(len(key)==32)
+    fd=startup['resultFD'];slot=startup_slot(os.fstat(fd));check(os.fstat(fd).st_size==0)
+    plan=validate_plan(decode(_identity(run/'native-plan.json')[0]))
+    guardian=probe(os.getpid());valid_identity(guardian)
+    check(guardian['pid']==os.getpid() and owned_process(child,probe)==identity)
+    deadline=spawned+4.
+    binding=dict(runId=plan['runId'],planSha256=sha(canonical(plan)),collectorIntentFile=intent_file,
+        guardianIdentity=guardian,collectorIdentity=identity,resultPath=str(run/'collector-job'/'startup-result.json'),resultSlot=slot,deadlineMonotonic=deadline)
+    validate_launch(dict(status='LAUNCHED',**binding),plan,keyed=False)
+    check(startup_slot(os.stat(binding['resultPath'],follow_symlinks=False))==slot)
+    check(_identity(run/'collector-job'/'intent.json')[1]==intent_file and time.monotonic()<deadline)
+    message=canonical(binding);check(len(message)<=4096 and os.write(startup['ackFD'],message)==len(message))
+    os.close(startup['ackFD']);startup.pop('ackFD')
+    # Poll only for the initial context and two committed frames. Once proof
+    # begins it runs once; refusal never refreshes or retries its deadline.
+    while True:
+        check(time.monotonic()<deadline and owned_process(child,probe)==identity)
+        try:
+            context=decode(_identity(run/'native-context.json')[0])
+            progress,_,_=read_progress(run/'native-capture',context)
+            if progress['committedFrames']>=2:break
+        except FileNotFoundError:pass
+        time.sleep(min(.01,max(0,deadline-time.monotonic())))
+    reads=FixedWorkerReads(plan,run.parent/'kubeconfig',credential=started['prepared']['workerCredential'],prepared=started['prepared']);reads.deadline=deadline
+    ready=seal_ready(run,prepared=started['prepared'],guardian_identity=guardian,probe_process=probe,live_clients=reads.live_clients,now=time.time,deadline=deadline)
+    check(owned_process(child,probe)==identity and _identity(run/'collector-job'/'intent.json')[1]==intent_file and time.monotonic()<deadline)
+    publish_startup_result(run,fd,key,binding,ready)
+
+
+def publish_startup_result(run,fd,key,binding,ready):
+    import fcntl
+    fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    # Failure retains this lock until the owning guardian exits. In particular,
+    # failed truncation must never expose a signed late result to status.
+    result=_publish_startup_result(run,fd,key,binding,ready)
+    fcntl.flock(fd,fcntl.LOCK_UN)
+    return result
+
+
+def _publish_startup_result(run,fd,key,binding,ready):
+    """Only the original guardian holds this inherited slot and signing key."""
+    import hmac
+    from pgcat_native_ingress import _identity
+    from segmented_capture import canonical
+    check(type(key) is bytes and len(key)==32 and binding['resultPath']==str(Path(run)/'collector-job'/'startup-result.json'))
+    check(startup_slot(os.fstat(fd))==binding['resultSlot'] and os.fstat(fd).st_size==0)
+    check(startup_slot(os.stat(binding['resultPath'],follow_symlinks=False))==binding['resultSlot'])
+    ready_raw,ready_file=_identity(Path(run)/'native-ready.json');check(ready_raw==canonical(ready))
+    value=dict(binding=binding,ready=ready,readyFile=ready_file)
+    # The large body remains incomplete JSON until it is durable and the
+    # original deadline is checked. Only then can the small authenticated seal
+    # make this one inherited slot a complete result. No retry or second file.
+    prefix=canonical(value)[:-1]+b',"seal":'
+    check(len(prefix)<=65000 and time.monotonic()<binding['deadlineMonotonic'])
+    try:
+        remaining=prefix
+        while remaining:
+            check(time.monotonic()<binding['deadlineMonotonic'])
+            count=os.write(fd,remaining);check(count>0);remaining=remaining[count:]
+        os.fsync(fd)
+        completed=time.monotonic();check(completed<binding['deadlineMonotonic'])
+        signed=dict(value,completedMonotonic=completed)
+        seal=dict(completedMonotonic=completed,authenticator=hmac.new(key,canonical(signed),hashlib.sha256).hexdigest())
+        suffix=canonical(seal)+b'}';result=dict(value,seal=seal)
+        check(time.monotonic()<binding['deadlineMonotonic'] and os.write(fd,suffix)==len(suffix))
+        os.fsync(fd)
+        check(time.monotonic()<binding['deadlineMonotonic'])
+        raw,identity=_identity(Path(binding['resultPath']),65536)
+        check(raw==canonical(result) and {k:identity[k] for k in binding['resultSlot']}==binding['resultSlot']==startup_slot(os.fstat(fd)))
+        check(time.monotonic()<binding['deadlineMonotonic'])
+    except BaseException:
+        os.ftruncate(fd,0);os.fsync(fd);raise
+    return result
+
+
+def read_startup_result(run,launch,prepared,probe):
+    import fcntl
+    path=Path(run)/'collector-job'/'startup-result.json';check(launch['resultPath']==str(path))
+    fd=os.open(str(path),os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        check(startup_slot(os.fstat(fd))==launch['resultSlot'])
+        fcntl.flock(fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
+        return _read_startup_result(run,launch,prepared,probe)
+    finally:os.close(fd)
+
+
+def _read_startup_result(run,launch,prepared,probe):
+    from pgcat_native_controller import validate_launch,validate_startup_result,verify_prepared,verify_source_inventory
+    from pgcat_native_ingress import _identity,_Chain
+    from segmented_capture import canonical
+    run=Path(run);plan=decode(_identity(run/'native-plan.json')[0]);validate_launch(launch,plan,keyed=False)
+    verify_prepared(run,plan,prepared);sources=verify_source_inventory(run,plan['sourceHashes'])
+    check(launch['resultPath']==str(run/'collector-job'/'startup-result.json'))
+    intent_raw,intent_file=_identity(run/'collector-job'/'intent.json');check(intent_file==launch['collectorIntentFile'])
+    started=intent_profile(decode(intent_raw),NATIVE_MODE);check(started['prepared']==prepared and started['runId']==plan['runId'])
+    result_raw,result_file=_identity(Path(launch['resultPath']),65536)
+    check({k:result_file[k] for k in launch['resultSlot']}==launch['resultSlot'])
+    result=validate_startup_result(decode(result_raw),plan)
+    check(result['binding']=={k:v for k,v in launch.items() if k!='status'})
+    for name in ('guardianIdentity','collectorIdentity'):check(probe(launch[name]['pid'])==launch[name])
+    chain=_Chain(run,retain=True)
+    try:
+        check(chain.ready==result['ready'] and chain.files['ready']==(canonical(result['ready']),result['readyFile']))
+        chain.unchanged()
+        verify_prepared(run,plan,prepared);check(verify_source_inventory(run,plan['sourceHashes'])==sources)
+        check(_identity(run/'collector-job'/'intent.json')==(intent_raw,intent_file) and _identity(Path(launch['resultPath']),65536)==(result_raw,result_file))
+        chain.unchanged()
+        for name in ('guardianIdentity','collectorIdentity'):check(probe(launch[name]['pid'])==launch[name])
+    finally:chain.close()
+    return dict(status='READY',ready=result['ready'],readyFile=result['readyFile'],result=result,resultFile=result_file)
+
+
+def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,*,profile='no-scale',prepared=None,deadline=None):
     if profile==NATIVE_MODE:
         from pgcat_lane_protocol import _release_admission
         _release_admission(profile,'native-collector-launch')
     profile_values(profile)
+    stop=min(deadline,time.monotonic()+4.) if deadline is not None else time.monotonic()+4.
+    startup_fds=[]
     run,fd,_=context(contract,run_id,expected,worker_path,profile=profile)
     try:
         kubeconfig=kube_binding(contract,kubeconfig)
@@ -285,19 +429,36 @@ def launch(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,*,pro
             from segmented_capture import canonical,sha
             args=native_entry_command(run,expected,['_native-run',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':')),sha(canonical(prepared))])
         env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8'}
+        options={}
+        if profile==NATIVE_MODE:
+            from pgcat_native_ingress import _identity
+            intent_file=_identity(run/'collector-job'/'intent.json')[1]
+            result_fd=os.open('startup-result.json',os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd);startup_fds.append(result_fd)
+            slot=startup_slot(os.fstat(result_fd))
+            ack_reader,ack_writer=os.pipe();startup_fds.extend((ack_reader,ack_writer))
+            key_reader,key_writer=os.pipe();startup_fds.extend((key_reader,key_writer))
+            key=os.urandom(32);check(os.write(key_writer,key)==32);os.close(key_writer);startup_fds.remove(key_writer)
+            payload=dict(ackFD=ack_writer,resultFD=result_fd,keyFD=key_reader)
+            args.append(json.dumps(payload,sort_keys=True,separators=(',',':')))
+            options['pass_fds']=(result_fd,ack_writer,key_reader)
         try:
             guardian=(spawn or subprocess.Popen)(args,cwd=str(run),env=env,stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,close_fds=True)
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,close_fds=True,**options)
         except BaseException:
             raise ValueError('collector') from None
         if profile==NATIVE_MODE:
-            from pgcat_native_controller import owned_process
-            identity=owned_process(guardian,process_identity)
+            from pgcat_native_controller import validate_launch
+            for item in (ack_writer,key_reader):os.close(item);startup_fds.remove(item)
+            binding=receive_startup_ack(ack_reader,guardian,process_identity,stop)
+            result=dict(status='LAUNCHED',**binding,resultKey=key.hex());validate_launch(result,plan)
+            check(binding['resultSlot']==slot and binding['resultPath']==str(run/'collector-job'/'startup-result.json') and binding['collectorIntentFile']==intent_file)
+            check(_identity(run/'collector-job'/'intent.json')[1]==intent_file)
             verify_prepared(run,plan,prepared)
-            write(fd,'guardian.json',identity)
-            return dict(status='LAUNCHED',guardianIdentity=identity)
+            write(fd,'guardian.json',binding['guardianIdentity'])
+            return result
         return {'status':'LAUNCHED'}
     finally:
+        for item in startup_fds:os.close(item)
         os.close(fd)
 
 
@@ -343,11 +504,11 @@ def completion(run,*,profile='no-scale'):
         os.close(fd)
 
 
-def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,probe=None,*,profile='no-scale',prepared_sha=None):
+def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,probe=None,*,profile='no-scale',prepared_sha=None,startup=None):
     if profile==NATIVE_MODE:
         from pgcat_lane_protocol import _release_admission
         _release_admission(profile,'native-collector-launch')
-    fd=None;child=None
+    fd=None;child=None;published=False
     try:
         _,_,wait_seconds,_=profile_values(profile)
         run,fd,_=context(contract,run_id,expected,worker_path,profile=profile)
@@ -362,6 +523,7 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
             ['_native-capture' if profile==NATIVE_MODE else '_capture' if profile=='no-scale' else '_rehearsal-capture',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':'))]
             +capture_arguments(run,profile=profile))
         if profile==NATIVE_MODE:args=native_entry_command(run,expected,['_native-capture',str(contract),run_id,kubeconfig,json.dumps(expected,sort_keys=True,separators=(',',':')),prepared_sha]+capture_arguments(run,profile=profile))
+        spawned=time.monotonic();capture_end=spawned+wait_seconds
         child=(spawn or subprocess.Popen)(args,cwd=str(run),
             env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8','KUBECONFIG':kubeconfig},
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
@@ -371,9 +533,13 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
             native_prepared(run,started,prepared_sha)
         else:identity=(probe or process_identity)(child.pid);valid_identity(identity)
         write(fd,'identity.json',identity)
+        if profile==NATIVE_MODE:
+            guardian_startup(run,child,identity,started,_identity(run/'collector-job'/'intent.json')[1],startup,spawned,probe or process_identity)
+            published=True
         category='incomplete';digest=None
         try:
-            code=child.wait(timeout=wait_seconds)
+            remaining=capture_end-time.monotonic() if profile==NATIVE_MODE else wait_seconds
+            check(remaining>0);code=child.wait(timeout=remaining)
             if type(code) is int and code==0:
                 digest=completion(run,profile=profile);category='completed'
         except subprocess.TimeoutExpired:
@@ -390,11 +556,18 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
                 pass
         return 1
     finally:
+        if profile==NATIVE_MODE and type(startup) is dict:
+            for name,item in startup.items():
+                # A failed publication keeps its exclusive lock until actual
+                # guardian process exit, even if invalidation/child stop fails.
+                if name=='resultFD' and not published:continue
+                try:os.close(item)
+                except OSError:pass
         if fd is not None:
             os.close(fd)
 
 
-def status(contract,run_id,expected,probe=None,now=None,*,profile='no-scale',prepared=None):
+def status(contract,run_id,expected,probe=None,now=None,*,profile='no-scale',prepared=None,launch=None):
     if profile==NATIVE_MODE:
         from pgcat_lane_protocol import _release_admission
         _release_admission(profile,'native-collector-status')
@@ -404,11 +577,10 @@ def status(contract,run_id,expected,probe=None,now=None,*,profile='no-scale',pre
         run,fd,_=context(contract,run_id,expected,profile=profile)
         started=intent(fd,run_id,profile=profile)
         if profile==NATIVE_MODE:
-            from segmented_capture import canonical,sha
-            check(started['prepared']==prepared);native_prepared(run,started,sha(canonical(prepared)))
+            check(started['prepared']==prepared and launch['runId']==run_id)
             _,_,_,status_seconds=profile_values(profile,started['captureMaxSeconds'])
-            guardian=decode(read(fd,'guardian.json'));valid_identity(guardian)
-            check((probe or process_identity)(guardian['pid'])==guardian)
+            check(0<=(now or time.time)()-started['startedAt']<=status_seconds)
+            return read_startup_result(run,launch,prepared,probe or process_identity)
         check(0<=(now or time.time)()-started['startedAt']<=status_seconds)
         check(decode(read(fd,'claim.json')) == dict(runId=run_id))
         identity=decode(read(fd,'identity.json'));valid_identity(identity)
@@ -490,8 +662,8 @@ def main():
             from pgcat_source_bootstrap import require_verified
             require_verified(__name__)
             if verb=='_native-run':
-                check(len(args)==6)
-                return run_child(contract,run_id,kubeconfig,expected,worker_path=Path(__file__),profile=NATIVE_MODE,prepared_sha=args[5])
+                check(len(args)==7)
+                return run_child(contract,run_id,kubeconfig,expected,worker_path=Path(__file__),profile=NATIVE_MODE,prepared_sha=args[5],startup=decode(args[6].encode('ascii')))
             if verb=='_native-capture':
                 from pgcat_native_controller import seal_capture_context,FixedWorkerReads
                 from pgcat_native_ingress import _identity
