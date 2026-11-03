@@ -2,6 +2,14 @@
 
 This component is a test asset, not a deployed app or evidence of zero-loss replacement. Each replica opens four persistent sessions (three operation emitters and one idle client). Each active session schedules once per second. A logical operation inserts a unique ID and reads it back within a transaction, with a five-second deadline and no SQL retry. A lost commit reply is ambiguous; a PostgreSQL rejection is failure. Failed sessions reconnect for the next distinct operation.
 
+### Application stdout logs
+
+Service mode prints one JSON record per line: `traffic_startup`, `scheduled`, `skipped`, `operation`, `connected`, `disconnected`, `connection_failure`, and `traffic_final`. Each includes UTC time, process ID and Pod UID. Events retain their original sequence; SQL outcomes include operation ID, success/failure/timeout/ambiguous classification and duration. The final record contains compact cumulative counters instead of repeating the event ring. DSNs, query text and raw error messages are not logged. Existing `/metrics` and `/evidence` responses remain unchanged.
+
+Writes are synchronous and can backpressure traffic. Returned write/short-write errors are sticky and sanitized; subsequent writes stop and the service reports the logging error after normal shutdown. This does not retry SQL or change its outcome. Forced termination or OS-level SIGPIPE can prevent a final record.
+
+Stdout is not durable storage across Pod deletion. The current app chart does not configure a persistent log destination; cluster log retention has not been verified. Preserve and verify the app logs before using them to judge a whole replacement run. Missing records or a missing final result do not establish success. The older capture tooling described below remains existing code while the owner-directed collector removal is being designed.
+
 Provide `TEST_DB_DSN_FILE` as a private mounted secret file. Verified TLS is the default. The owner-approved private POC can use `sslmode=disable` with `TEST_ALLOW_PLAINTEXT_POC=true`; this does not change evidence mode. `TEST_EVIDENCE_MODE=local` remains reserved for disposable local testing. Do not point this asset at platform RDS. Initialize the dedicated database with `testdata/schema.sql` through the reviewed setup path. The application never creates tables at startup or changes schema.
 
 `/ready` needs all four session connections; `/health` measures process health. `/metrics` exposes cumulative process-scoped outcome/scheduling/connection counters and duration sum/count. `/evidence` returns a bounded 8,192-event window plus an atomic counter snapshot. Collect it externally every five seconds from every replica, retaining process identities, boundary samples and all intervening sequence numbers. Missing events, unknown processes, resets and gaps prevent a passing summary. The ring is deliberately bounded; losing older events is observable via `truncated` and sequence gaps.
