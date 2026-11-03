@@ -59,6 +59,8 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	logs := newTrafficLog(os.Stdout, hex.EncodeToString(id), os.Getenv("TEST_POD_UID"))
+	logs.startup()
 	controlCtx, stopControl := context.WithCancel(context.Background())
 	defer stopControl()
 	controlErr := make(chan error, 1)
@@ -74,16 +76,12 @@ func run() error {
 	srv := http.Server{Addr: ":9090", Handler: mux, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- srv.ListenAndServe(); cancel() }()
-	runner := traffic.Runner{Config: traffic.Config{Sessions: 4, Idle: 1, Timeout: 5 * time.Second, Interval: time.Second, ProcessID: hex.EncodeToString(id)}, Dial: func(c context.Context) (traffic.Session, error) { return traffic.ConnectPostgres(c, dsn) }, Emit: store.Record}
+	runner := traffic.Runner{Config: traffic.Config{Sessions: 4, Idle: 1, Timeout: 5 * time.Second, Interval: time.Second, ProcessID: hex.EncodeToString(id)}, Dial: func(c context.Context) (traffic.Session, error) { return traffic.ConnectPostgres(c, dsn) }, Emit: logs.emit(store.Record)}
 	runner.Admit = controller.Admit
 	runner.Ticks = controlledTicks(ctx, controller.Done(), time.Second)
 	e = runner.Run(ctx)
 	if final, err := store.Finalize(); err == nil {
-		// Sanitized final counters survive Prometheus restart in external capture/logs.
-		_ = json.NewEncoder(os.Stdout).Encode(struct {
-			Kind     string           `json:"kind"`
-			Snapshot observe.Snapshot `json:"snapshot"`
-		}{"traffic_final", final})
+		logs.final(final)
 		// Keep final evidence readable throughout several one-second collector polls.
 		controller.MarkFinal()
 		hold := 10 * time.Second
@@ -112,7 +110,10 @@ func run() error {
 	if err := <-controlErr; err != nil {
 		return err
 	}
-	return e
+	if e != nil {
+		return e
+	}
+	return logs.err()
 }
 
 func evidenceHandler(store *observe.Store) http.Handler {
