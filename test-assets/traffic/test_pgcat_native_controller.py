@@ -1033,3 +1033,212 @@ def record_startup_fixture(test,f,j):
     payload=startup_wrapper(f,'native-collector-status',output,request['requestId'],proof)
     with patch('pgcat_lane_protocol._release_admission'):j.seal_native(request['requestId'],dict(state='complete',category='ok',payload=payload))
     return launch,output
+
+
+class NativeClientBatchTests(unittest.TestCase):
+    """Fixed client commands, real local children and fake external Pod I/O."""
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(os.path.realpath(self.tmp.name));self.root.chmod(0o700)
+        self.f=Fixture(self.root)
+        from segmented_capture import read_progress
+        self.f.frame=read_progress(self.f.run/'native-capture',self.f.context)[2]
+        self.reads=object.__new__(native.FixedWorkerReads)
+        self.reads.credential={'path':'/offline/client-kubeconfig'}
+        self.reads.plan=self.f.plan;self.reads.deadline=time.monotonic()+2
+        self.children=[];self.actual_popen=subprocess.Popen
+
+    def programs(self,objects=None):
+        if objects is None:
+            objects=dict(deployment=self.f.live['deployment'],replicaset={'items':self.f.live['replicaSets']},pod={'items':self.f.live['pods']})
+        return {kind:'import os;os.write(1,%r)'%json.dumps(value).encode() for kind,value in objects.items()}
+
+    def batch(self,programs=None,*,live=False,verify=None,launch_hook=None):
+        programs=self.programs() if programs is None else programs
+        def launch(argv,**kwargs):
+            kind=argv[6]
+            tail=['rdev-test-client-client'] if kind=='deployment' else ['-l','app.kubernetes.io/name=rdev-test-client-client']
+            self.assertIn(kind,('deployment','replicaset','pod'))
+            self.assertEqual(argv,['kubectl','--kubeconfig','/offline/client-kubeconfig','-n','raptor-test','get',kind]+tail+['-o','json','--request-timeout=2s'])
+            self.assertEqual(kwargs,dict(stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                close_fds=True,env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8'}))
+            if launch_hook is not None:launch_hook(len(self.children))
+            child=self.actual_popen([sys.executable,'-I','-S','-c',programs[kind]],**kwargs)
+            self.children.append(child);return child
+        with patch.object(subprocess,'Popen',side_effect=launch),patch.object(native,'verify_credential',side_effect=verify):
+            try:return self.reads.live_clients() if live else self.reads._client_metadata()
+            finally:
+                for child in self.children:
+                    self.assertIsNotNone(child.poll(),'owned client child still running')
+                    self.assertTrue(child.stdout.closed,'owned client pipe still open')
+                    with self.assertRaises(ChildProcessError):os.waitpid(child.pid,os.WNOHANG)
+
+    def test_three_fixed_children_overlap_and_preserve_projection(self):
+        # Serial communication cannot cross this three-process barrier.
+        with tempfile.TemporaryDirectory() as folder:
+            programs=self.programs()
+            for kind,program in list(programs.items()):
+                programs[kind]="import os,time\np=%r\nopen(os.path.join(p,%r),'w').close()\nend=time.monotonic()+1\nwhile len(os.listdir(p))<3 and time.monotonic()<end:time.sleep(.005)\nassert len(os.listdir(p))==3\n"%(folder,kind)+program
+            def read(pod,unused,*,deadline):
+                return next(p for p in self.f.frame['pods'] if p['uid']==pod['metadata']['uid'])
+            with patch('worker_capture.read_pod',side_effect=read):result=self.batch(programs,live=True)
+        self.assertEqual(len(self.children),3)
+        self.assertEqual({k:result[k] for k in ('deployment','replicaSets','pods')},
+            {k:self.f.live[k] for k in ('deployment','replicaSets','pods')})
+
+    def test_failed_malformed_missing_oversized_and_slow_child_reap_siblings(self):
+        for bad in ('raise SystemExit(1)','print("bad-json")','print("{}")',
+                'import os;os.write(1,b"x"*(2*1024*1024+1))','import time;time.sleep(4)'):
+            self.children=[];self.reads.deadline=time.monotonic()+.35
+            programs={k:'import time;time.sleep(4)' for k in ('deployment','replicaset','pod')};programs['replicaset']=bad
+            with self.subTest(bad=bad),self.assertRaises((ValueError,KeyError,TimeoutError)):
+                self.batch(programs)
+            self.assertEqual(len(self.children),3)
+
+    def test_all_successful_responses_decode_before_any_metadata_is_returned(self):
+        for kind,bad in (('deployment',[]),('replicaset',{'items':None}),('pod',{'other':[]})):
+            objects=dict(deployment=self.f.live['deployment'],replicaset={'items':self.f.live['replicaSets']},pod={'items':self.f.live['pods']})
+            objects[kind]=bad;self.children=[];self.reads.deadline=time.monotonic()+2
+            with self.subTest(kind=kind),self.assertRaises((ValueError,KeyError,TypeError)):
+                self.batch(self.programs(objects))
+
+    def test_interruption_and_second_launch_failure_reap_all_owned_children(self):
+        with patch('select.select',side_effect=KeyboardInterrupt),self.assertRaises(KeyboardInterrupt):self.batch()
+        self.assertEqual(len(self.children),3);self.children=[]
+        def fail(index):
+            if index==1:raise OSError('offline launch failure')
+        with self.assertRaises(ValueError):self.batch(launch_hook=fail)
+        self.assertEqual(len(self.children),1)
+
+    def test_original_deadline_includes_launch_and_has_no_new_budget(self):
+        self.reads.deadline=time.monotonic()+.1;original=self.reads.deadline
+        def delay(index):
+            if index==0:time.sleep(.15)
+        with self.assertRaises((ValueError,TimeoutError)):self.batch(launch_hook=delay)
+        self.assertEqual(self.reads.deadline,original);self.assertEqual(len(self.children),1)
+        self.children=[]
+        with self.assertRaises((ValueError,TimeoutError)):self.batch()
+        self.assertEqual(self.children,[])
+
+    def test_credential_drift_before_launch_or_after_child_reads_refuses_group(self):
+        for stage in ('before','after'):
+            self.children=[];self.reads.deadline=time.monotonic()+2
+            def verify(credential):
+                self.assertEqual(credential,{'path':'/offline/client-kubeconfig'})
+                if stage=='before' or len(self.children)==3:raise ValueError('offline drift')
+            with self.subTest(stage=stage),self.assertRaises(ValueError):self.batch(verify=verify)
+            self.assertEqual(len(self.children),0 if stage=='before' else 3)
+
+    def test_live_projection_and_sequential_pod_http_follow_completed_batch(self):
+        calls=[]
+        def read(pod,unused,*,deadline):
+            self.assertEqual(len(self.children),3)
+            self.assertTrue(all(c.poll() is not None and c.stdout.closed for c in self.children))
+            self.assertEqual(deadline,self.reads.deadline);calls.append(pod['metadata']['uid'])
+            return copy.deepcopy(next(p for p in self.f.frame['pods'] if p['uid']==pod['metadata']['uid']))
+        with patch('worker_capture.read_pod',side_effect=read):result=self.batch(live=True)
+        self.assertEqual(result,dict(self.f.live,roster=[dict(name=p['name'],uid=p['uid'],containerId=p['containerId'],processId=p['snapshot']['sample']['processId']) for p in self.f.frame['pods']]))
+        self.assertEqual(calls,[p['metadata']['uid'] for p in self.f.live['pods']])
+
+    def test_foreign_owner_image_and_missing_metadata_refuse_before_pod_http(self):
+        original=copy.deepcopy(self.f.live)
+        for case in ('owner','image','missing'):
+            self.f.live=copy.deepcopy(original);self.children=[];self.reads.deadline=time.monotonic()+2
+            if case=='owner':self.f.live['replicaSets'][0]['metadata']['ownerReferences'][0]['uid']='foreign'
+            if case=='image':self.f.live['pods'][0]['status']['containerStatuses'][0]['imageID']='foreign'
+            if case=='missing':del self.f.live['deployment']['metadata']['uid']
+            with self.subTest(case=case),patch('worker_capture.read_pod',side_effect=AssertionError('foreign metadata reached Pod HTTP')),self.assertRaises((ValueError,KeyError)):
+                self.batch(live=True)
+
+    def test_batch_refuses_non_main_thread_before_any_child(self):
+        import threading
+        results=[]
+        def run():
+            try:self.reads._client_metadata()
+            except BaseException as error:results.append(type(error))
+        with patch.object(subprocess,'Popen',side_effect=AssertionError('non-main child')):
+            thread=threading.Thread(target=run);thread.start();thread.join(timeout=2)
+        self.assertFalse(thread.is_alive());self.assertEqual(results,[ValueError])
+
+    def test_each_stdout_cap_accepts_exact_limit_and_rejects_one_more_byte(self):
+        objects=dict(deployment={},replicaset={'items':[]},pod={'items':[]})
+        programs={kind:'import os\nraw=%r\nos.write(1,raw+b" "*(2*1024*1024-len(raw)))'%json.dumps(value).encode() for kind,value in objects.items()}
+        self.assertEqual(self.batch(programs),({},[],[]))
+        for kind in ('deployment','replicaset','pod'):
+            self.children=[];self.reads.deadline=time.monotonic()+2
+            oversized=self.programs(objects);oversized[kind]=programs[kind]+'\nos.write(1,b" ")'
+            with self.subTest(kind=kind),self.assertRaises(ValueError):self.batch(oversized)
+
+    def test_eof_does_not_renew_deadline_for_child_that_stays_alive(self):
+        programs=self.programs();programs['pod']='import os,time;os.close(1);time.sleep(4)'
+        self.reads.deadline=time.monotonic()+.15;original=self.reads.deadline;started=time.monotonic()
+        with self.assertRaises((ValueError,subprocess.TimeoutExpired)):self.batch(programs)
+        self.assertEqual(self.reads.deadline,original);self.assertLess(time.monotonic()-started,1.)
+
+    def test_pending_successors_skip_http_but_initial_and_running_clients_remain_sequential(self):
+        from test_pgcat_native_evidence import kubernetes,rolling
+        original=kubernetes(1)
+        for case in ('pending','refused','ready-refused','initial-refused','foreign'):
+            self.f.live=copy.deepcopy(original);self.children=[];self.reads.deadline=time.monotonic()+2;calls=[]
+            for pod in self.f.live['pods'][2:]:
+                pod['status']['conditions']=[dict(type='Ready',status='True' if case=='ready-refused' else 'False')]
+                if case=='pending':pod['status'].update(phase='Pending',containerStatuses=[])
+                if case=='foreign':pod['metadata']['ownerReferences'][0]['uid']='foreign'
+            def read(pod,unused,*,deadline):
+                calls.append(pod['metadata']['uid'])
+                if case=='initial-refused' or pod['metadata']['uid'].startswith('new-'):raise ConnectionError('offline unavailable')
+                return next(p for p in rolling(1)['pods'] if p['uid']==pod['metadata']['uid'])
+            with self.subTest(case=case),patch('worker_capture.read_pod',side_effect=read):
+                if case in ('pending','refused'):
+                    value=self.batch(live=True)
+                    self.assertEqual([p['uid'] for p in value['roster']],['uid-0','uid-1'])
+                    self.assertEqual(calls,['uid-0','uid-1']+([] if case=='pending' else ['new-uid-0','new-uid-1']))
+                else:
+                    with self.assertRaises(ValueError):self.batch(live=True)
+                    if case=='foreign':self.assertEqual(calls,[])
+
+    def test_credential_drift_between_each_launch_stops_before_next_child(self):
+        for count in (1,2):
+            self.children=[];self.reads.deadline=time.monotonic()+2
+            def verify(credential):
+                if len(self.children)==count:raise ValueError('offline drift')
+            with self.subTest(count=count),self.assertRaises(ValueError):self.batch(verify=verify)
+            self.assertEqual(len(self.children),count)
+
+    def test_batch_errors_keep_worker_read_sanitization(self):
+        programs=self.programs();programs['pod']='import os;os.write(1,b"\\xffprivate-response")'
+        try:self.batch(programs)
+        except Exception as error:
+            self.assertEqual(type(error),ValueError)
+            self.assertEqual(str(error),'native worker read')
+        else:self.fail('malformed metadata accepted')
+
+    def test_each_completed_child_checks_credential_before_next_response(self):
+        completed=[0];verified=[0];actual=self.actual_popen
+        def launch(argv,**kwargs):
+            child=actual(argv,**kwargs);wait=child.wait;seen=[False]
+            def checked_wait(timeout=None):
+                status=wait(timeout=timeout)
+                if not seen[0]:
+                    self.assertEqual(verified[0],completed[0],'previous response skipped credential check')
+                    seen[0]=True;completed[0]+=1
+                return status
+            child.wait=checked_wait;return child
+        self.actual_popen=launch
+        def verify(credential):verified[0]=completed[0]
+        self.batch(verify=verify)
+        self.assertEqual(completed,[3]);self.assertEqual(verified,[3])
+
+    def test_one_wait_failure_still_reaps_and_closes_every_other_child(self):
+        actual=self.actual_popen;created=[]
+        def launch(argv,**kwargs):
+            child=actual(argv,**kwargs);created.append(child)
+            if len(created)==1:
+                wait=child.wait
+                def failing_wait(timeout=None):
+                    wait(timeout=timeout);raise subprocess.TimeoutExpired('offline wait failure',timeout)
+                child.wait=failing_wait
+            return child
+        self.actual_popen=launch
+        with self.assertRaises(ValueError):self.batch()
+        self.assertEqual(len(self.children),3)
