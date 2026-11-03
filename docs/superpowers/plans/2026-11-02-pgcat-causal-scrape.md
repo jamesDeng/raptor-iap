@@ -166,3 +166,15 @@ Task7 review focus: exact named versus selector-bound commands; no arbitrary com
 - [ ] Run RED proving the old substituted frame-start predicate refuses; implement genuine finite nondecreasing intermediate decision times while retaining all earlier/later prefix checks and common final freshness/admission.
 - [ ] Run focused normal/optimized GREEN, final full traffic once,27-source compatibility/freeze/scope checks. Preserve65b/085d/807d freezes; write distinct `prefix-decision-source-freeze.json`. Commit only task paths and report exact changes, tests and worker-safe offline selection.
 - [ ] Independent task/final reviews and exact-head CI; root stages frozen source and verifies actual worker tests. Repeat genuine read-only timing with current source/explicit reserves before at most one fresh source-owned disabled proof, then the full2→4→2 flow only after its real closed qualification. Preserve all old failed records and recover only the exact stale reservation under the established guard procedure.
+
+
+### Task9: retain private owner and guardian failure boundaries
+
+**Spec:** docs/superpowers/specs/2026-11-03-pgcat-startup-diagnostics-design.md. Same continuous debugging authorization, two existing production paths already inside15.
+
+**Files:** existing pgcat_native_controller.py and pgcat_collector_control.py; their existing tests only. No providerFeed/laneClient/source registry change.
+
+- [ ] Write RED failure-only boundary tests: owner wait-for-receipt versus dispatch; feed actual returncode captured before close (None if alive); guardian waiting-frames versus seal-ready failure; sanitized fixed source locations/categories with sentinel secret exception; original exception/cleanup and exit1 preserved when log writer refuses; existing file/symlink never overwritten/followed; no success-path record/authority.
+- [ ] Implement private bounded exclusive0600 diagnostics using existing pinned directories. Only numeric clocks/returncodes, fixed categories/source locations, run/action identities; no arbitrary messages/locals/paths/argv/keys. Preserve actual original errors and cleanup. Diagnostics ignored by every admission/assessment and never write native-ready/result. Provider inner error explicitly remains unavailable.
+- [ ] Focused normal/optimized, one full traffic suite;27 Python3.6 grammar/import/hash and cumulative15 scope; new startup-diagnostics-source-freeze.json preserving earlier freezes. Commit exact paths/report REDGREEN, interfaces and worker-safe tests; sole source/index ownership released.
+- [ ] Root task/final review/exact-headCI; actualworker tests and source freeze; one disabled diagnostic only after original timing requirements met. No blind source repair or limit relaxation from this task.
