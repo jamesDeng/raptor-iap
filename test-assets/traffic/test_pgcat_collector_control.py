@@ -616,10 +616,12 @@ def startup_guardian_fixture(run,prepared_sha,payload,mode):
     run=Path(run);payload=json.loads(payload);plan=control.decode((run/'native-plan.json').read_bytes())
     if mode=='ack-closed':os.close(payload['ackFD'])
     if mode=='missing-context':(run/'native-context.json').unlink()
+    if mode=='diagnostic-refused':(run/'collector-job'/'native-guardian-failure.json').symlink_to(run/'fixture-ready.json')
+    if mode=='diagnostic-existing':(run/'collector-job'/'native-guardian-failure.json').write_bytes(b'SENTINEL-original')
     def proof(folder,**kwargs):
         delay=1.15 if mode=='delayed' else .03
         time.sleep(delay)
-        if mode=='proof-failure':raise ValueError('offline proof refusal')
+        if mode in ('proof-failure','diagnostic-refused','diagnostic-existing','diagnostic-write-error','diagnostic-fsync-error'):raise ValueError('SENTINEL-secret-url-key-path')
         if mode=='proof-timeout':
             time.sleep(max(0,kwargs['deadline']-time.monotonic())+.02)
         if mode=='collector-exit':time.sleep(.15)
@@ -635,7 +637,23 @@ def startup_guardian_fixture(run,prepared_sha,payload,mode):
         def bounded(profile,cap=5400):
             values=original(profile,cap)
             return (values[0],values[1],1.7,values[3]) if profile==control.NATIVE_MODE else values
-        with patch.object(control,'profile_values',side_effect=bounded):
+        from segmented_capture import read_progress
+        def progress(*args):
+            if mode=='waiting-failure':raise RuntimeError('SENTINEL-secret-url-key-path')
+            return read_progress(*args)
+        original_write=control.write
+        def write_after_cleanup(fd,name,value):
+            if name=='native-guardian-failure.json':
+                identity=control.decode((run/'collector-job'/'identity.json').read_bytes())
+                try:os.kill(identity['pid'],0)
+                except ProcessLookupError:pass
+                else:raise AssertionError('diagnostic before child cleanup')
+                if mode=='diagnostic-write-error':raise OSError('SENTINEL-writer-refused')
+                if mode=='diagnostic-fsync-error':
+                    with patch.object(control.os,'fsync',side_effect=OSError('SENTINEL-fsync-refused')):
+                        return original_write(fd,name,value)
+            return original_write(fd,name,value)
+        with patch.object(control,'profile_values',side_effect=bounded),patch('segmented_capture.read_progress',side_effect=progress),patch.object(control,'write',side_effect=write_after_cleanup):
             return control.run_child(run.parent/'contract',plan['runId'],run.parent/'kubeconfig',plan['sourceHashes'],profile=control.NATIVE_MODE,prepared_sha=prepared_sha,startup=payload)
 
 
@@ -713,3 +731,57 @@ class NativeOwnedStartupTests(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):os.kill(identity['pid'],0)
         self.assertEqual((f.run/'collector-job'/'startup-result.json').read_bytes(),b'')
         self.assertFalse((f.run/'collector-job'/'guardian.json').exists())
+
+
+class GuardianFailureDiagnosticsTests(unittest.TestCase):
+    fixture=NativeOwnedStartupTests.fixture
+    launch=NativeOwnedStartupTests.launch
+    job=NativeOwnedStartupTests.job
+    def test_actual_failure_phase_clocks_precleanup_exit_and_sanitization(self):
+        for mode,phase,category in [('waiting-failure','waiting-frames','runtime-error'),('proof-failure','seal-ready','value-error'),('collector-exit','seal-ready','value-error'),('proof-timeout','seal-ready','value-error')]:
+            with self.subTest(mode=mode):
+                f,spawn=self.fixture(mode);launched=self.launch(f,spawn)
+                self.assertEqual(self.children[0].wait(timeout=6),1)
+                path=f.run/'collector-job'/'native-guardian-failure.json';self.assertTrue(path.exists(),'guardian failure record missing');raw=path.read_bytes();record=json.loads(raw)
+                self.assertNotIn(b'SENTINEL',raw);self.assertLessEqual(len(raw),4096)
+                self.assertEqual(path.stat().st_mode & 0o777,0o600)
+                self.assertEqual(record['phase'],phase);self.assertEqual(record['category'],category)
+                self.assertEqual(record['location'],'collectorControl.guardian_startup')
+                self.assertTrue(record['sourceLocations'])
+                for location in record['sourceLocations']:
+                    self.assertEqual(set(location),{'module','line'});self.assertIn(location['module'],('collectorControl','nativeController'))
+                    self.assertIs(type(location['line']),int);self.assertGreater(location['line'],0)
+                self.assertEqual(record['action'],'native-collector-launch');self.assertEqual(record['runId'],f.plan['runId'])
+                self.assertEqual(record['childReturnCode'],0 if mode=='collector-exit' else None)
+                self.assertEqual(record['deadlineMonotonic'],launched['deadlineMonotonic'])
+                self.assertAlmostEqual(record['elapsedSeconds'],record['failedMonotonic']-(record['deadlineMonotonic']-4.))
+                self.assertEqual(record['deadlineExceeded'],mode=='proof-timeout')
+                self.assertEqual(set(record),{'schemaVersion','runId','action','phase','location','category','childReturnCode','deadlineMonotonic','failedMonotonic','elapsedSeconds','deadlineExceeded','sourceLocations'})
+                self.assertEqual(Path(launched['resultPath']).read_bytes(),b'')
+                with self.assertRaises(ProcessLookupError):os.kill(launched['collectorIdentity']['pid'],0)
+
+    def test_diagnostic_symlink_refusal_keeps_guardian_exit_and_cleanup(self):
+        f,spawn=self.fixture('diagnostic-refused');before=(f.run/'fixture-ready.json').read_bytes();launched=self.launch(f,spawn)
+        self.assertEqual(self.children[0].wait(timeout=3),1)
+        self.assertTrue((f.run/'collector-job'/'native-guardian-failure.json').is_symlink())
+        self.assertEqual((f.run/'fixture-ready.json').read_bytes(),before)
+        self.assertEqual(Path(launched['resultPath']).read_bytes(),b'')
+        with self.assertRaises(ProcessLookupError):os.kill(launched['collectorIdentity']['pid'],0)
+
+    def test_existing_and_writer_errors_keep_original_exit_and_reap_child(self):
+        for mode in ('diagnostic-existing','diagnostic-write-error','diagnostic-fsync-error'):
+            with self.subTest(mode=mode):
+                f,spawn=self.fixture(mode);launched=self.launch(f,spawn)
+                self.assertEqual(self.children[0].wait(timeout=3),1)
+                path=f.run/'collector-job'/'native-guardian-failure.json'
+                if mode=='diagnostic-existing':self.assertEqual(path.read_bytes(),b'SENTINEL-original')
+                if mode=='diagnostic-write-error':self.assertFalse(path.exists())
+                if mode=='diagnostic-fsync-error':
+                    self.assertNotIn(b'SENTINEL',path.read_bytes());self.assertEqual(path.stat().st_mode & 0o777,0o600)
+                self.assertEqual(Path(launched['resultPath']).read_bytes(),b'')
+                with self.assertRaises(ProcessLookupError):os.kill(launched['collectorIdentity']['pid'],0)
+
+    def test_success_has_no_diagnostic_record(self):
+        f,spawn=self.fixture('delayed');launched=self.launch(f,spawn);self.children[0].wait(timeout=3)
+        self.assertFalse((f.run/'collector-job'/'native-guardian-failure.json').exists())
+        self.assertNotEqual(Path(launched['resultPath']).read_bytes(),b'')
