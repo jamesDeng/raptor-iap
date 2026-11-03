@@ -138,3 +138,20 @@ Run planned-volume exact-workerPython3.6 timing, actual disabled proof (one rest
 - [x] Run focused normal/optimized tests during iteration, then one full final traffic suite on bundled Python. Check27 registered sources against Python3.6 grammar/import and unchanged inventory; diff hygiene, scope and secret-output self-review.
 - [x] Commit only task source/tests/docs; generate action-observation-source-freeze.json and report RED/GREEN, interfaces, commands/counts, concerns and exact-worker offline test selections. Independent review gates publication.
 - [ ] Root stages reviewed bytes and measures cold+actual warm-snapshot read-only composition (templates remain ineligible for cache), exact worker offline issuance/ownership tests, replay/prepared overhead and conservative unmeasured PATCH/transport reserve. Require demonstrated restart5s, abort3.5s worker/4s transport margins before another actual disabled proof; no inference of PASS from proxy timing. Root alone owns cloud access, PRs and actual proof.
+
+### Task7: approved client metadata batching amendment
+
+**Spec:** `docs/superpowers/specs/2026-11-03-pgcat-client-read-batching-design.md` (owner approvedNov3). This is one bounded source task; earlier tasks are complete and must not be repeated.
+
+**Files:** existing `test-assets/traffic/pgcat_native_controller.py`, optionally `pgcat_native_closure.py`; existing `test_pgcat_native_controller.py`/`test_pgcat_native_closure.py`. No other production paths.
+
+**Interfaces:** `FixedWorkerReads.live_clients()` continues returning exactly `{deployment,replicaSets,pods,roster}`. Add private `FixedWorkerReads._client_metadata()` returning `(deployment_dict,replicaset_items,pod_items)` after the fixed three-child group completes. If the existing owned-read transport is shared, keep its private selector limited to the two exact Gateway/client groups; callers cannot supply arbitrary argv. Preserve `FixedGatewayAdapters._metadata_objects()` return order/projection and before/after checks.
+
+- [ ] Write failing module/discovery tests for fixed three-GET overlap and same projection; foreign/missing/malformed metadata; original deadline/credential drift; failed/oversized/slow/interrupted child cleanup and no partial acceptance. Use actual disposable children for ownership/overlap boundaries. Keep existing live-client ownership/rollout/starting-Pod tests.
+- [ ] Run focused tests RED, preserving fixed failure evidence; do not rerun the completed1227-test baseline merely to begin.
+- [ ] Implement minimal private fixed-group batching in the allowed modules, preserving exact existing argv/selectors/env, all validation, original absolute deadline and2MiB bounds. Pod HTTP reads, Gateway config reads, snapshots/gates/effects stay sequential. No source cache or lifecycle change.
+- [ ] Run focused normal/optimized tests GREEN; final full traffic once;27-source Python3.6 grammar/import, diff/scope/freeze checks. Preserve prior085d/807d freezes and write a new distinct `client-read-batching-source-freeze.json`.
+- [ ] Commit only task paths, report exact interfaces/RED/GREEN/final verification and offline worker-safe test selection; release source/index ownership. Independent task/final reviews and exact-head CI precede merge.
+- [ ] Root: actual worker offline tests and fresh read-only timing with all missing costs and write/receipt reserve; only if adequate margin, one actual closed disabled proof and its complete cleanup/qualification, then the authorized full2→4→2 flow. Source completion alone is not runtime completion.
+
+Task7 review focus: exact named versus selector-bound commands; no arbitrary command admission; original deadline survives shared-helper refactor; every child is stopped/reaped after another fails; Gateway before/after and live-client ownership behavior stay unchanged. Constraints from the amendment/spec and this plan's Global Constraints all apply.

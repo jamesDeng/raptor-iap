@@ -621,11 +621,64 @@ class FixedWorkerReads:
             signal.setitimer(signal.ITIMER_REAL,0);signal.signal(signal.SIGALRM,old_handler)
             if old_timer[0]>0:signal.setitimer(signal.ITIMER_REAL,max(.000001,old_timer[0]-(time.monotonic()-started)))
 
+    def _client_metadata(self):
+        """Only the three fixed client GETs; own all children until reaped."""
+        try:
+            import select,threading
+            from segmented_capture import decode_private
+            check(threading.current_thread() is threading.main_thread())
+            children=[];channels={};values={};limit=2*1024*1024
+            try:
+                for kind in ('deployment','replicaset','pod'):
+                    verify_credential(self.credential);check(time.monotonic()<self.deadline)
+                    args=['kubectl','--kubeconfig',self.credential['path'],'-n','raptor-test','get',kind]
+                    if kind=='deployment':args.append('rdev-test-client-client')
+                    else:args+=['-l','app.kubernetes.io/name=rdev-test-client-client']
+                    args+=['-o','json','--request-timeout=2s']
+                    child=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                        close_fds=True,env={'PATH':os.defpath,'HOME':'/root','LANG':'C.UTF-8'})
+                    children.append(child);os.set_blocking(child.stdout.fileno(),False)
+                    channels[child.stdout.fileno()]=[kind,child,bytearray()]
+                while channels:
+                    remaining=self.deadline-time.monotonic();check(remaining>0)
+                    readable,_,_=select.select(list(channels),[],[],min(.05,remaining))
+                    for fd in readable:
+                        kind,child,raw=channels[fd]
+                        chunk=os.read(fd,min(65536,limit+1-len(raw)))
+                        if chunk:
+                            raw.extend(chunk);check(len(raw)<=limit)
+                        else:
+                            remaining=self.deadline-time.monotonic();check(remaining>0)
+                            check(child.wait(timeout=remaining)==0)
+                            values[kind]=decode_private(bytes(raw));verify_credential(self.credential)
+                            del channels[fd]
+                    for child in children:check(child.poll() in (None,0))
+                verify_credential(self.credential);check(time.monotonic()<self.deadline)
+                dep=values['deployment'];rss=values['replicaset']['items'];pods=values['pod']['items']
+                check(type(dep) is dict and type(rss) is list and type(pods) is list)
+                return dep,rss,pods
+            finally:
+                # Stop every sibling before waiting for any; a failed group never
+                # leaves a reader running with the group's credential authority.
+                cleanup_errors=[]
+                for child in children:
+                    try:
+                        if child.poll() is None:child.kill()
+                    except BaseException as error:cleanup_errors.append(error)
+                for child in children:
+                    try:child.wait(timeout=.2)
+                    except BaseException as error:cleanup_errors.append(error)
+                    finally:
+                        try:child.stdout.close()
+                        except BaseException as error:cleanup_errors.append(error)
+                if cleanup_errors:raise cleanup_errors[0]
+        except Exception:pass
+        raise ValueError('native worker read')
+
     def live_clients(self):
         from worker_capture import read_pod
         from finish_clients import validate_roster
-        dep=self.read('Deployment','raptor-test','rdev-test-client-client')
-        rss=self.read('ReplicaSet','raptor-test')['items'];pods=self.read('Pod','raptor-test')['items']
+        dep,rss,pods=self._client_metadata()
         rows=[]
         from worker_capture import _native_owner_records_for_deployment,_pod_ready
         owners,starting=_native_owner_records_for_deployment(dep,rss,pods,self.plan['application'],allow_starting=True)
