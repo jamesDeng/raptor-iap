@@ -1086,13 +1086,17 @@ class PrefixDecisionTests(unittest.TestCase):
         self.asynchronous_tail(observed_offset=1.)
         live=self.f.live_clients
         def healthy_tail():
-            self.f.append(4);self.f.now+=.5
+            if self.f.now<START+5.1:
+                self.f.append(4);self.f.now=START+5.1
             return live()
         self.f.live_clients=healthy_tail
         with self.assertRaises(ValueError):self.restart()
         self.assertEqual(read_progress(self.f.run/'native-capture',self.f.context)[0]['committedFrames'],4)
         self.assertFalse(self.f.patches)
         self.assertFalse((self.f.run/'native-restart.intent').exists())
+        healthy_tail()
+        _,previous,latest=read_progress(self.f.run/'native-capture',self.f.context)
+        ingress._ready_pair([previous,latest],self.f.baseline,self.f.context,self.f.now)
 
     def test_each_prefix_and_final_decision_refuses_rollback_or_nonfinite_clock(self):
         # Entry, first prefix, second prefix, final freshness, final admission.
