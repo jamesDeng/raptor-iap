@@ -1034,6 +1034,83 @@ class RetainedObjectReviewTests(unittest.TestCase):
 if __name__=='__main__':unittest.main()
 
 
+class PrefixDecisionTests(unittest.TestCase):
+    setUp=DiagnosticTests.setUp
+    patch=DiagnosticTests.patch
+    restart=DiagnosticTests.restart
+
+    def asynchronous_tail(self,observed_offset=.4,source_offset=.4):
+        append=self.f.writer.append
+        def completed_metrics(value):
+            value['metrics']['observedAt']=value['at']+observed_offset
+            for row in value['metrics']['raw']:row['sourceAt']=value['at']+source_offset
+            return append(value)
+        self.f.writer.append=completed_metrics
+        self.f.append(2);self.f.append(3);self.f.now=START+3.5
+
+    def test_actual_restart_accepts_metrics_completed_between_frame_start_and_decision(self):
+        self.asynchronous_tail()
+        _,previous,latest=read_progress(self.f.run/'native-capture',self.f.context)
+        ingress._ready_pair([previous,latest],self.f.baseline,self.f.context,self.f.now)
+        with self.assertRaises(ValueError):
+            ingress._ready_pair([previous,latest],self.f.baseline,self.f.context,latest['at'])
+        receipt=self.restart()
+        self.assertEqual(receipt['restartGeneration'],2)
+        self.assertEqual(len(self.f.patches),1)
+        self.assertTrue((self.f.run/'native-restart-receipt.json').exists())
+        with self.assertRaises(ValueError):self.restart()
+        self.assertEqual(len(self.f.patches),1)
+
+    def test_genuinely_future_metrics_refuse_before_restart_intent(self):
+        for field in ('observed_offset','source_offset'):
+            with self.subTest(field=field),tempfile.TemporaryDirectory() as d:
+                self.f=Fixture(Path(d).resolve(),'disabled-proof')
+                self.asynchronous_tail(**{field:1.})
+                with self.assertRaises(ValueError):self.restart()
+                self.assertFalse(self.f.patches)
+                self.assertFalse((self.f.run/'native-restart.intent').exists())
+
+    def test_bounded_second_prefix_uses_its_own_actual_observation_decision(self):
+        self.asynchronous_tail();live=self.f.live_clients
+        def advanced():
+            if self.f.now<START+4:
+                self.f.append(4);self.f.now+=.5
+            return live()
+        self.f.live_clients=advanced
+        receipt=self.restart()
+        self.assertEqual(receipt['restartGeneration'],2)
+        self.assertEqual(len(self.f.patches),1)
+        self.assertTrue((self.f.run/'native-restart-receipt.json').exists())
+
+    def test_bad_initial_prefix_cannot_be_replaced_by_healthy_new_tail(self):
+        self.asynchronous_tail(observed_offset=1.)
+        live=self.f.live_clients
+        def healthy_tail():
+            self.f.append(4);self.f.now+=.5
+            return live()
+        self.f.live_clients=healthy_tail
+        with self.assertRaises(ValueError):self.restart()
+        self.assertEqual(read_progress(self.f.run/'native-capture',self.f.context)[0]['committedFrames'],4)
+        self.assertFalse(self.f.patches)
+        self.assertFalse((self.f.run/'native-restart.intent').exists())
+
+    def test_each_prefix_and_final_decision_refuses_rollback_or_nonfinite_clock(self):
+        # Entry, first prefix, second prefix, final freshness, final admission.
+        for point in range(1,5):
+            for bad in ('rollback','nan','inf','-inf'):
+                with self.subTest(point=point,bad=bad),tempfile.TemporaryDirectory() as d:
+                    self.f=Fixture(Path(d).resolve(),'disabled-proof')
+                    values=[START+1+i*.1 for i in range(5)]
+                    values[point]=values[point-1]-.01 if bad=='rollback' else float(bad)
+                    decisions=iter(values)
+                    def now():
+                        self.f.now=next(decisions,START+1.5);return self.f.now
+                    with self.assertRaises(ValueError):
+                        ingress.restart_disabled(self.f.run,gate=self.f,kube_read=self.f.kube,kube_patch=self.patch,now=now)
+                    self.assertFalse(self.f.patches)
+                    self.assertFalse((self.f.run/'native-restart.intent').exists())
+
+
 class ActionObservationTests(unittest.TestCase):
     setUp=DiagnosticTests.setUp
     patch=DiagnosticTests.patch
