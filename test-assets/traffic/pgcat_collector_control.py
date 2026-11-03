@@ -106,6 +106,44 @@ def write(fd, name, value):
     os.fsync(fd)
 
 
+def _failure_category(error):
+    # Never inspect exception text, dynamic names, traceback paths or locals.
+    for kind,category in ((subprocess.TimeoutExpired,'timeout'),(OSError,'os-error'),
+            (ValueError,'value-error'),(TypeError,'type-error'),(KeyError,'key-error'),
+            (RuntimeError,'runtime-error'),(KeyboardInterrupt,'interrupted'),(SystemExit,'system-exit')):
+        if isinstance(error,kind):return category
+    return 'other-error'
+
+
+def _failure_locations(error):
+    # Compare exact source filenames in this loaded bundle directory. Never
+    # export traceback filenames, dynamic function names, messages or locals.
+    parent=os.path.dirname(os.path.abspath(__file__))
+    names={'pgcat_native_controller.py':'nativeController','pgcat_native_ingress.py':'nativeIngress',
+        'pgcat_collector_control.py':'collectorControl','pgcat_lane_protocol.py':'laneProtocol',
+        'pgcat_lane_client.py':'laneClient','pgcat_native_closure.py':'nativeClosure',
+        'pgcat_native_evidence.py':'nativeEvidence','segmented_capture.py':'segmentedCapture',
+        'capture_window.py':'captureWindow','pgcat_rehearsal_contract.py':'rehearsalContract'}
+    allowed={os.path.join(parent,name):module for name,module in names.items()}
+    trace=error.__traceback__;locations=[];examined=0
+    while trace is not None and examined<64:
+        module=allowed.get(trace.tb_frame.f_code.co_filename)
+        if module is not None and type(trace.tb_lineno) is int and trace.tb_lineno>0:
+            locations.append(dict(module=module,line=trace.tb_lineno));locations=locations[-8:]
+        trace=trace.tb_next;examined+=1
+    return locations
+
+
+def _private_startup_failure(fd,name,value):
+    """Failure-only, bounded private sibling; never a startup authority."""
+    check(name in ('native-owner-failure.json','native-guardian-failure.json'))
+    info=os.fstat(fd)
+    check(stat.S_ISDIR(info.st_mode) and info.st_uid==os.geteuid() and stat.S_IMODE(info.st_mode)==0o700)
+    raw=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode('ascii')
+    check(len(raw)<=4096)
+    write(fd,name,value)
+
+
 def entry_command(worker, digest, arguments):
     return [sys.executable,'-I','-S','-c',BOOTSTRAP,str(worker),digest]+arguments
 
@@ -279,7 +317,7 @@ def receive_startup_ack(reader,guardian,probe,deadline):
     return value
 
 
-def guardian_startup(run,child,identity,started,intent_file,startup,spawned,probe):
+def guardian_startup(run,child,identity,started,intent_file,startup,spawned,probe,*,diagnostic=None):
     """One proof, owned by the existing guardian and its retained collector."""
     from pgcat_native_controller import owned_process,seal_ready,FixedWorkerReads,validate_launch
     from pgcat_native_ingress import _identity,validate_plan,exact
@@ -302,6 +340,7 @@ def guardian_startup(run,child,identity,started,intent_file,startup,spawned,prob
     os.close(startup['ackFD']);startup.pop('ackFD')
     # Poll only for the initial context and two committed frames. Once proof
     # begins it runs once; refusal never refreshes or retries its deadline.
+    if diagnostic is not None:diagnostic['phase']='waiting-frames'
     while True:
         check(time.monotonic()<deadline and owned_process(child,probe)==identity)
         try:
@@ -310,9 +349,11 @@ def guardian_startup(run,child,identity,started,intent_file,startup,spawned,prob
             if progress['committedFrames']>=2:break
         except FileNotFoundError:pass
         time.sleep(min(.01,max(0,deadline-time.monotonic())))
+    if diagnostic is not None:diagnostic['phase']='seal-ready'
     reads=FixedWorkerReads(plan,run.parent/'kubeconfig',credential=started['prepared']['workerCredential'],prepared=started['prepared']);reads.deadline=deadline
     ready=seal_ready(run,prepared=started['prepared'],guardian_identity=guardian,probe_process=probe,live_clients=reads.live_clients,now=time.time,deadline=deadline)
     check(owned_process(child,probe)==identity and _identity(run/'collector-job'/'intent.json')[1]==intent_file and time.monotonic()<deadline)
+    if diagnostic is not None:diagnostic['phase']='publish-result'
     publish_startup_result(run,fd,key,binding,ready)
 
 
@@ -508,7 +549,7 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
     if profile==NATIVE_MODE:
         from pgcat_lane_protocol import _release_admission
         _release_admission(profile,'native-collector-launch')
-    fd=None;child=None;published=False
+    fd=None;child=None;published=False;diagnostic=None
     try:
         _,_,wait_seconds,_=profile_values(profile)
         run,fd,_=context(contract,run_id,expected,worker_path,profile=profile)
@@ -534,7 +575,8 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
         else:identity=(probe or process_identity)(child.pid);valid_identity(identity)
         write(fd,'identity.json',identity)
         if profile==NATIVE_MODE:
-            guardian_startup(run,child,identity,started,_identity(run/'collector-job'/'intent.json')[1],startup,spawned,probe or process_identity)
+            diagnostic=dict(phase='initialize')
+            guardian_startup(run,child,identity,started,_identity(run/'collector-job'/'intent.json')[1],startup,spawned,probe or process_identity,diagnostic=diagnostic)
             published=True
         category='incomplete';digest=None
         try:
@@ -547,13 +589,28 @@ def run_child(contract,run_id,kubeconfig,expected,worker_path=None,spawn=None,pr
         write(fd,'exit.json',dict(identity=identity,exitCode=code,category=category,
                                   completionSha256=digest))
         return 0 if category=='completed' else 1
-    except BaseException:
+    except BaseException as error:
+        record=None
+        # Capture the actual failure instant and exit before cleanup changes it.
+        # The dict carries only fixed boundary identifiers, never inner locals.
+        if diagnostic is not None and not published:
+            try:
+                check(type(run_id) is str and str(uuid.UUID(run_id))==run_id)
+                failed=time.monotonic();code=child.poll()
+                record=dict(schemaVersion=1,runId=run_id,action='native-collector-launch',phase=diagnostic['phase'],
+                    location='collectorControl.guardian_startup',category=_failure_category(error),sourceLocations=_failure_locations(error),
+                    childReturnCode=code if type(code) is int else None,deadlineMonotonic=spawned+4.,
+                    failedMonotonic=failed,elapsedSeconds=failed-spawned,deadlineExceeded=failed>=spawned+4.)
+            except BaseException:pass
         # The owning guardian never leaves an unknown child running on failure.
         if child is not None:
             try:
                 child.kill();child.wait(timeout=5)
             except BaseException:
                 pass
+        if record is not None:
+            try:_private_startup_failure(fd,'native-guardian-failure.json',record)
+            except BaseException:pass
         return 1
     finally:
         if profile==NATIVE_MODE and type(startup) is dict:

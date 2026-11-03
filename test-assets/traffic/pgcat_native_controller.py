@@ -1121,12 +1121,41 @@ class NativeController:
 
     def _call(self,action,selector=None):
         from pgcat_lane_protocol import monotonic
+        phase='waiting-receipt'
         try:
             receipt=self._receipt(1 if self.receipt is None else self.receipt['sequence']+1)
+            phase='dispatch'
             result=self.client.call(action,receipt,float(monotonic()+5.),native_selector=selector)
             return result['payload']
-        except BaseException:
-            self.close();raise
+        except BaseException as error:
+            # Observe before close can kill the feed. Diagnostic failure must
+            # neither replace this error nor prevent the owner's cleanup.
+            code=None;failed=None
+            try:failed=time.time()
+            except BaseException:pass
+            try:code=self.feed.poll()
+            except BaseException:pass
+            try:self.close()
+            except BaseException:pass
+            fd=None
+            try:
+                from pgcat_collector_control import directory,_private_startup_failure,_failure_category,_failure_locations
+                from pgcat_lane_protocol import NATIVE_ACTIONS
+                import uuid,math
+                check(type(failed) in (int,float) and math.isfinite(failed))
+                check(type(self.run_id) is str and str(uuid.UUID(self.run_id))==self.run_id)
+                owner_phase=self.phase if self.phase in ('startup','capturing','finished-clients') else 'unknown'
+                record=dict(schemaVersion=1,runId=self.run_id,action=action if action in NATIVE_ACTIONS else 'unknown',
+                    ownerPhase=owner_phase,phase=phase,location='nativeController.NativeController._call',
+                    category=_failure_category(error),sourceLocations=_failure_locations(error),failedAt=failed,feedReturnCode=code if type(code) is int else None,providerInnerStage='unknown')
+                fd=directory(self.bindings['captureRoot'])
+                _private_startup_failure(fd,'native-owner-failure.json',record)
+            except BaseException:pass
+            finally:
+                if fd is not None:
+                    try:os.close(fd)
+                    except BaseException:pass
+            raise
 
     def close(self):
         child=getattr(self,'feed',None);client=getattr(self,'client',None)

@@ -1242,3 +1242,100 @@ class NativeClientBatchTests(unittest.TestCase):
         self.actual_popen=launch
         with self.assertRaises(ValueError):self.batch()
         self.assertEqual(len(self.children),3)
+
+
+class NativeFailureDiagnosticsTests(unittest.TestCase):
+    """Catch lost pre-cleanup exit status, leaked errors and diagnostic authority."""
+    def fixture(self,exited=False):
+        from types import SimpleNamespace
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        root=Path(temporary.name).resolve();root.chmod(0o700)
+        child=subprocess.Popen([sys.executable,'-c','raise SystemExit(7)' if exited else 'import time;time.sleep(30)'])
+        def reap():
+            if child.poll() is None:child.kill()
+            child.wait(timeout=2)
+        self.addCleanup(reap)
+        if exited:child.wait(timeout=2)
+        owner=object.__new__(native.NativeController);owner.feed=child;owner.receipt=None
+        owner.run_id='00000000-0000-0000-0000-000000000001';owner.phase='startup'
+        owner.bindings={'captureRoot':str(root)}
+        owner.client=SimpleNamespace(feed_process=child,close=lambda:None,_active=lambda:None,call=lambda *a,**k:{'payload':{'ok':True}})
+        return owner,child,root
+
+    def test_call_failure_records_wait_or_dispatch_and_preclose_exit_without_secret(self):
+        for stage,exited,want in [('waiting-receipt',False,None),('waiting-receipt',True,7),('dispatch',False,None)]:
+            with self.subTest(stage=stage,exited=exited):
+                owner,child,root=self.fixture(exited);error=RuntimeError('SENTINEL-secret-url-key-path')
+                def refused(*a,**k):raise error
+                if stage=='dispatch':owner.client.call=refused
+                with patch.object(owner,'_receipt',side_effect=refused if stage=='waiting-receipt' else lambda *a:{'sequence':2}):
+                    with self.assertRaises(RuntimeError) as caught:owner._call('native-collector-status')
+                self.assertIs(caught.exception,error);self.assertIsNotNone(child.poll())
+                path=root/'native-owner-failure.json';self.assertTrue(path.exists(),'owner failure record missing');raw=path.read_bytes();record=json.loads(raw)
+                self.assertNotIn(b'SENTINEL',raw);self.assertLessEqual(len(raw),4096)
+                self.assertEqual(path.stat().st_mode & 0o777,0o600)
+                self.assertGreater(record.pop('failedAt'),0.)
+                locations=record.pop('sourceLocations');self.assertEqual([v['module'] for v in locations],['nativeController'])
+                self.assertTrue(all(set(v)=={'module','line'} and type(v['line']) is int and v['line']>0 for v in locations))
+                self.assertEqual(record,dict(schemaVersion=1,runId=owner.run_id,action='native-collector-status',ownerPhase='startup',phase=stage,
+                    location='nativeController.NativeController._call',category='runtime-error',feedReturnCode=want,providerInnerStage='unknown'))
+                self.assertEqual(sorted(p.name for p in root.iterdir()),['native-owner-failure.json'])
+
+    def test_source_locations_exclude_unknown_paths_names_messages_and_bound_trusted_frames(self):
+        owner,child,root=self.fixture();namespace={}
+        exec(compile("def SENTINEL_unknown_function():\n    raise RuntimeError('SENTINEL-secret-message')\n",'/SENTINEL-secret-directory/pgcat_native_controller.py','exec'),namespace)
+        exec(compile("def SENTINEL_trusted_function(n):\n    if n: return SENTINEL_trusted_function(n-1)\n    return SENTINEL_unknown_function()\n",str(Path(native.__file__).absolute()),'exec'),namespace)
+        with patch.object(owner,'_receipt',side_effect=lambda *a:namespace['SENTINEL_trusted_function'](20)):
+            with self.assertRaises(RuntimeError):owner._call('native-collector-status')
+        raw=(root/'native-owner-failure.json').read_bytes();record=json.loads(raw)
+        self.assertIn('sourceLocations',record,'trusted source locations missing')
+        self.assertNotIn(b'SENTINEL',raw);self.assertEqual(len(record['sourceLocations']),8)
+        self.assertEqual(record['sourceLocations'][-1]['line'],3) # deepest trusted frame; unknown same basename is excluded
+        for location in record['sourceLocations']:
+            self.assertEqual(set(location),{'module','line'});self.assertEqual(location['module'],'nativeController')
+            self.assertIs(type(location['line']),int);self.assertGreater(location['line'],0)
+
+    def test_failed_wall_clock_is_captured_before_close_changes_time(self):
+        owner,child,root=self.fixture();clock=[1700000000.125]
+        owner.client.close=lambda:clock.__setitem__(0,1700000100.125)
+        with patch.object(owner,'_receipt',side_effect=ValueError('SENTINEL-original')),patch.object(native.time,'time',side_effect=lambda:clock[0]):
+            with self.assertRaises(ValueError):owner._call('native-collector-status')
+        record=json.loads((root/'native-owner-failure.json').read_bytes())
+        self.assertEqual(record.get('failedAt'),1700000000.125)
+        self.assertEqual(clock[0],1700000100.125);self.assertIsNotNone(child.poll())
+
+    def test_actual_dead_feed_receipt_boundary_records_observed_nonzero_exit(self):
+        owner,child,root=self.fixture(exited=True)
+        with self.assertRaises(ValueError):owner._call('native-collector-status')
+        record=json.loads((root/'native-owner-failure.json').read_bytes())
+        self.assertEqual(record['phase'],'waiting-receipt');self.assertEqual(record['feedReturnCode'],7)
+        self.assertEqual(record['category'],'value-error');self.assertEqual(child.returncode,7)
+
+    def test_writer_refusal_and_cleanup_error_preserve_original_and_owned_reaping(self):
+        for kind in ('existing','symlink','write-error','fsync-error','cleanup-error','parent-symlink'):
+            with self.subTest(kind=kind):
+                owner,child,root=self.fixture();path=root/'native-owner-failure.json';original=b'SENTINEL-existing'
+                target=root/'target';target.write_bytes(original)
+                if kind=='existing':path.write_bytes(original)
+                if kind=='symlink':path.symlink_to(target)
+                if kind=='parent-symlink':
+                    alias=root/'alias';alias.symlink_to(root,target_is_directory=True);owner.bindings['captureRoot']=str(alias)
+                if kind=='cleanup-error':owner.client.close=lambda:(_ for _ in ()).throw(RuntimeError('SENTINEL-cleanup'))
+                error=ValueError('SENTINEL-original')
+                from contextlib import ExitStack
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(owner,'_receipt',side_effect=error))
+                    if kind=='write-error':stack.enter_context(patch('pgcat_collector_control.write',side_effect=OSError('SENTINEL-write')))
+                    if kind=='fsync-error':stack.enter_context(patch('pgcat_collector_control.os.fsync',side_effect=OSError('SENTINEL-fsync')))
+                    with self.assertRaises(BaseException) as caught:owner._call('native-collector-status')
+                self.assertIs(caught.exception,error);self.assertIsNotNone(child.poll())
+                self.assertEqual(target.read_bytes(),original)
+                if kind in ('existing','symlink'):self.assertEqual(path.read_bytes(),original)
+                if kind=='symlink':self.assertTrue(path.is_symlink())
+                if kind=='parent-symlink':self.assertFalse(path.exists())
+
+    def test_success_adds_no_diagnostic_io_or_authority(self):
+        owner,child,root=self.fixture()
+        with patch.object(owner,'_receipt',return_value={'sequence':2}),patch('pgcat_collector_control.directory',side_effect=AssertionError('extra IO')),patch('pgcat_collector_control.write',side_effect=AssertionError('extra IO')):
+            self.assertEqual(owner._call('native-collector-status'),{'ok':True})
+        self.assertIsNone(child.poll());self.assertEqual(list(root.iterdir()),[])
