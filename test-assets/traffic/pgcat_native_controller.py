@@ -659,11 +659,17 @@ class FixedWorkerReads:
         from pgcat_native_closure import read_runtime_assets,FixedGatewayAdapters,gateway_false_idle,runtime_proof
         check(hasattr(self,'credential') and hasattr(self,'prepared'))
         run=Path(self.credential['path']).parent/'run'
-        prepared=self.prepared
-        if 'runId' in self.plan:verify_prepared(run,self.plan,prepared)
-        assets,_=read_runtime_assets(run,self.plan,original=None if prepared is None else prepared['runtimeAssetsFile'])
-        adapter=FixedGatewayAdapters(run,self,runtime_assets=assets,prepared=prepared)
-        return (gateway_false_idle if prepared is None else runtime_proof)(run,adapters=adapter,now=time.time)
+        from pgcat_native_closure import _restart_observations
+        row=_restart_observations.get(self)
+        try:
+            prepared=self.prepared
+            if 'runId' in self.plan:verify_prepared(run,self.plan,prepared)
+            assets,_=read_runtime_assets(run,self.plan,original=None if prepared is None else prepared['runtimeAssetsFile'])
+            adapter=FixedGatewayAdapters(run,self,runtime_assets=assets,prepared=prepared)
+            return (gateway_false_idle if prepared is None else runtime_proof)(run,adapters=adapter,now=time.time)
+        except BaseException:
+            if row is not None:row['poisoned']=True
+            raise
 
 
 def validate_selector(plan,action,selector):
@@ -1482,9 +1488,13 @@ class NativeController:
                     self._owned_worker('gateway-job-stop',dict(claim=state['claim'],launch=state['launch']))
                     raise ValueError('uncertain Gateway disable')
             check(state['state']=='VERIFIED')
-            return self._owned_worker('gateway-job-false',dict(claim=state['claim'],launch=state['launch']))
+            result=self._owned_worker('gateway-job-false',dict(claim=state['claim'],launch=state['launch']))
+            from pgcat_native_ingress import _runtime
+            _runtime(result,prepared['plan'],time.time());return result
         anchors={k:prepared[k] for k in ('planFile','baselineFile','gatewayRuntimeFile','runtimeAssetsFile','workerCredential')}
-        return self._owned_worker('gateway-false-idle',dict(plan=prepared['plan'],prepared=anchors))
+        result=self._owned_worker('gateway-false-idle',dict(plan=prepared['plan'],prepared=anchors))
+        from pgcat_native_ingress import _runtime
+        _runtime(result,prepared['plan'],time.time());return result
 
     def assess(self):
         _closed('native-verdict');self._require_owner()
@@ -1616,7 +1626,7 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
     from segmented_capture import decode_private,canonical,sha
     from pgcat_source_bootstrap import current_hashes
     run=Path(run_dir);plan=validate_plan(decode_private(_identity(run/'native-plan.json')[0]))
-    _closed(action,plan);check(plan['sourceHashes']==current_hashes());verify_source_inventory(run,plan['sourceHashes'])
+    _closed(action,plan);check(plan['sourceHashes']==current_hashes());source_inventory=verify_source_inventory(run,plan['sourceHashes'])
     prepared=verify_prepared(run,plan,envelope['prepared'])
     if 'qualifiedEnable' in envelope:
         from pgcat_native_closure import read_support
@@ -1644,8 +1654,19 @@ def worker_entry(action,run_dir,envelope=None,selector=None):
         http=FixedHTTP(plan);http.deadline=gate.deadline
         output=collect_ingress(run,selector,gate=gate,kube_read=reads.read,http_get=http,now=time.time)
     elif action=='native-disabled-restart':
-        # The restart kernel verifies current false proof at its action gates.
-        receipt=restart_disabled(run,gate=gate,kube_read=reads.read,kube_patch=reads.restart_patch,now=time.time)
+        # Only this staged/admitted source entry issues the original context.
+        # A new adapter, dict, CLI verb or ordinary runtime caller cannot opt in.
+        from pgcat_native_closure import _restart_observations,_asset
+        import weakref
+        check(plan['executionKind']=='disabled-proof')
+        _restart_observations[reads]=dict(pid=os.getpid(),gate=weakref.ref(gate),deadline=reads.deadline,last=time.monotonic(),
+            plan=canonical(plan),prepared=canonical(prepared),credential=canonical(reads.credential),
+            envelope=canonical(envelope),admission=canonical(gate.admission(action)),sources=source_inventory,
+            asset=_asset(run/'gateway-live-gate'),runtimeAssets=prepared['runtimeAssetsFile'],poisoned=False)
+        try:
+            receipt=restart_disabled(run,gate=gate,kube_read=reads.read,kube_patch=reads.restart_patch,now=time.time)
+        finally:
+            _restart_observations.pop(reads,None)
         output=dict(receipt=receipt,receiptFile=_identity(run/'native-restart-receipt.json')[1])
     elif action=='native-collector-status':
         from pgcat_collector_control import status
