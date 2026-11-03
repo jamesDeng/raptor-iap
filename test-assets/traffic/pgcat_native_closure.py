@@ -345,9 +345,13 @@ def _loaded_fingerprint(secret,dep,pod,image):
         if init:
             require(type(state['terminated']['exitCode']) is int and state['terminated']['exitCode']==0)
             require(instant(state['terminated']['startedAt'])<=instant(state['terminated']['finishedAt']))
-            require(row['image']==image)
+            # Runtime status may report a config digest, distinct from the
+            # manifest pin already enforced in both specs and imageID above.
+            require(type(row['image']) is str and (row['image']==image or re.fullmatch(r'sha256:[0-9a-f]{64}',row['image'])))
         else:require(row['ready'] is True);instant(state['running']['startedAt'])
-        return {k:row[k] for k in ('containerID','imageID','restartCount','state')}
+        identity={k:row[k] for k in ('containerID','imageID','restartCount','state')}
+        if init:identity['image']=row['image']
+        return identity
     gateway=runtime(ps['containerStatuses'],'agent-gateway')
     init=runtime(ps['initContainerStatuses'],'live-private-files',True)
     raw=base64.b64decode(secret['data']['config.json'],validate=True);require(len(raw)<=65536)

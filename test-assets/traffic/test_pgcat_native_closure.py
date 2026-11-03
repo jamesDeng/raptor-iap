@@ -58,7 +58,7 @@ class GatewayClosureTests(unittest.TestCase):
         pod=self.objects[('Pod','raptor-system',None)]['items'][0];pod['spec']=copy.deepcopy(spec)
         pod['metadata']['ownerReferences']=[dict(apiVersion='apps/v1',kind='ReplicaSet',name='gateway-rs',uid='gateway-rs',controller=True)]
         pod['status']['containerStatuses'][0].update(containerID='containerd://gateway-original',restartCount=0,state=dict(running=dict(startedAt='2026-10-20T00:00:00Z')))
-        pod['status']['initContainerStatuses']=[dict(name='live-private-files',image=image,imageID=image,containerID='containerd://init-original',restartCount=0,state=dict(terminated=dict(exitCode=0,startedAt='2026-10-19T23:59:00Z',finishedAt='2026-10-19T23:59:01Z')))]
+        pod['status']['initContainerStatuses']=[dict(name='live-private-files',image='sha256:e2bf9c427c4e15f0079bbecfe19c7745b1a2db997baacffe8f37b2cb3158c413',imageID=image,containerID='containerd://init-original',restartCount=0,state=dict(terminated=dict(exitCode=0,startedAt='2026-10-19T23:59:00Z',finishedAt='2026-10-19T23:59:01Z')))]
         def objects(adapter):return [json.loads(self.command(['kubectl','--kubeconfig',str(self.root/'kubeconfig'),'-n','raptor-system','get',kind]+([] if kind=='pods' else ['gateway-live-config' if kind=='secret' else 'agent-gateway'])+['-o','json','--request-timeout=2s']).stdout) for kind in ('secret','deployment','pods')]
         self.metadata_io=patch.object(closure.FixedGatewayAdapters,'_metadata_objects',new=objects,create=True)
         self.metadata_io.start();self.addCleanup(self.metadata_io.stop)
@@ -647,6 +647,57 @@ class ActionRuntimeTests(unittest.TestCase):
                 gate.gateway_disabled()
             with self.assertRaises(ValueError):gate.gateway_disabled()
         self.run_entry(body)
+
+    def test_actual_init_reported_config_digest_keeps_pinned_spec_and_image_id_authority(self):
+        init=self.objects[('Pod','raptor-system',None)]['items'][0]['status']['initContainerStatuses'][0]
+        # Sanitized worker observation: status.image is a runtime config digest,
+        # distinct from the admitted manifest reference in spec and imageID.
+        init['image']='sha256:e2bf9c427c4e15f0079bbecfe19c7745b1a2db997baacffe8f37b2cb3158c413'
+        results=[]
+        def body(gate):
+            results.append(gate.gateway_disabled());results.append(gate.gateway_disabled())
+        self.run_entry(body)
+        self.assertEqual(results[0],results[1])
+        self.assertEqual(len([a for a in self.calls if a[0]==str(self.gate)]),1)
+        init['image']=self.assets['gatewayImage'];self.run_entry(body)
+        self.assertEqual(results[2],results[3])
+        self.assertEqual(len([a for a in self.calls if a[0]==str(self.gate)]),2)
+
+    def test_changed_init_reported_image_poisoned_even_with_unchanged_pinned_image_id(self):
+        init=self.objects[('Pod','raptor-system',None)]['items'][0]['status']['initContainerStatuses'][0]
+        def body(gate):
+            gate.gateway_disabled();old=init['image']
+            init['image']='sha256:'+'d'*64
+            with self.assertRaises(ValueError):gate.gateway_disabled()
+            init['image']=old
+            with self.assertRaises(ValueError):gate.gateway_disabled()
+        self.run_entry(body)
+        self.assertEqual(len([a for a in self.calls if a[0]==str(self.gate)]),1)
+
+    def test_unrelated_or_malformed_init_reported_image_never_issues(self):
+        init=self.objects[('Pod','raptor-system',None)]['items'][0]['status']['initContainerStatuses'][0]
+        for value in ('repo:latest','repo@sha256:'+'e'*64,'sha256:'+'E'*64,'sha256:'+'e'*63,'sha256:'+'e'*65,'sha256:'+'g'*64,'',None,True):
+            self.calls=[]
+            def body(gate):
+                init['image']=value
+                with self.assertRaises(ValueError):gate.gateway_disabled()
+            with self.subTest(value=value):self.run_entry(body)
+            self.assertFalse([a for a in self.calls if a[0]==str(self.gate)])
+
+    def test_actual_init_config_digest_cannot_override_foreign_spec_or_image_id(self):
+        original=copy.deepcopy(self.objects)
+        for field in ('pod-spec','deployment-spec','image-id'):
+            self.objects=copy.deepcopy(original);self.calls=[]
+            def body(gate):
+                p=self.objects[('Pod','raptor-system',None)]['items'][0]
+                row=p['status']['initContainerStatuses'][0]
+                row['image']='sha256:e2bf9c427c4e15f0079bbecfe19c7745b1a2db997baacffe8f37b2cb3158c413'
+                if field=='pod-spec':p['spec']['initContainers'][0]['image']='repo@sha256:'+'0'*64
+                if field=='deployment-spec':self.objects[('Deployment','raptor-system','agent-gateway')]['spec']['template']['spec']['initContainers'][0]['image']='repo@sha256:'+'0'*64
+                if field=='image-id':row['imageID']='sha256:'+'0'*64
+                with self.assertRaises(ValueError):gate.gateway_disabled()
+            with self.subTest(field=field):self.run_entry(body)
+            self.assertFalse([a for a in self.calls if a[0]==str(self.gate)])
 
     def test_abort_transport_result_requires_fresh_exact_false_runtime(self):
         owner=object.__new__(native.NativeController)
