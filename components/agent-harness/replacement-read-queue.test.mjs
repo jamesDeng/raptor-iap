@@ -8,7 +8,7 @@ import {operationCapabilities,operationToolSchema} from './operation-profile.mjs
 import {observations,withResourceProof} from './replacement-sequence-fixtures.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
 
-async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay=false){
+async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay=false,wrongProbe){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'replacement-read-queue-')));
  try{
   const state=path.join(root,'state'),skills=path.join(root,'skills');
@@ -23,7 +23,7 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
  const {getCurrentTools}=await import('@earendil-works/pi-ai');
   const {runtime}=await loadPiRuntime({stateRoot:state});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
- let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[],writes=[],readOrder=[];
+ let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[],writes=[],readOrder=[],probedIds=[];let probeAdvice;
  const target={requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode};
  const expand={name:'mcp__infra__db_proxy_scale',arguments:{...target,actionId:'expand',desiredCapacity:4}};
  const postWrites={
@@ -50,7 +50,18 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
    ...['trafficFailures','connections','pgcatClients'].map(kind=>({name:'metrics_read',arguments:{kind}})),
    ...['i-one','i-two'].map(instanceId=>({name:'db_connection_probe',arguments:{instanceId}}))
   ];
-  const calls=deadlineReplay?(round===1?initialCalls:[{name:'resource_wait',arguments:{seconds:60}}]):expansionCase?(round===1?initialCalls:round===2?[expand,...(expansionCase==='ready-scale-batch'?[...readinessCalls,postWrites.protection]:postWrites[expansionCase]?[postWrites[expansionCase]]:[])]:readyCase&&round===3?[...readinessCalls,...(expansionCase==='ready-batch'?[postWrites.protection]:[])]:readyCase&&round===4?[postWrites.protection]:[{name:'resource_wait',arguments:{seconds:60}}]):baselineCase?(round===1?[{name:'cloud_read',arguments:{kind:'fleet'}}]:[{name:'resource_wait',arguments:{seconds:60}}]):round===1?[
+  if(wrongProbe&&round===1){
+   const first=initialCalls.findIndex(call=>call.name==='db_connection_probe');
+   initialCalls.splice(first,2,{name:'db_connection_probe',arguments:{instanceId:'i-foreign'}});
+  }
+  if(wrongProbe&&round===2){
+   const advice=context.messages.find(m=>m.role==='toolResult'&&m.toolName==='db_connection_probe');
+   if(advice)probeAdvice=JSON.parse(advice.content[0].text);
+  }
+  const replayCalls=round===1?initialCalls:wrongProbe==='recover'&&round===2?
+   (probeAdvice?.baselineInstanceIds??[]).map(instanceId=>({name:'db_connection_probe',arguments:{instanceId}})):
+   [{name:'resource_wait',arguments:{seconds:60}}];
+  const calls=deadlineReplay?replayCalls:expansionCase?(round===1?initialCalls:round===2?[expand,...(expansionCase==='ready-scale-batch'?[...readinessCalls,postWrites.protection]:postWrites[expansionCase]?[postWrites[expansionCase]]:[])]:readyCase&&round===3?[...readinessCalls,...(expansionCase==='ready-batch'?[postWrites.protection]:[])]:readyCase&&round===4?[postWrites.protection]:[{name:'resource_wait',arguments:{seconds:60}}]):baselineCase?(round===1?[{name:'cloud_read',arguments:{kind:'fleet'}}]:[{name:'resource_wait',arguments:{seconds:60}}]):round===1?[
     {name:'mcp__raptor__request_get',arguments:{requestId:b.requestId}},
     {name:'cloud_read',arguments:{kind:'backend'}},
     {name:'metrics_read',arguments:{kind:'trafficFailures'}},
@@ -80,7 +91,7 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
-  const read=async args=>{observerCalls++;readOrder.push('observation');active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');if((expansionCase||deadlineReplay)&&round===1){const e=observations(['i-one','i-two']);if(args.instanceId)return {instanceId:args.instanceId,connected:true};if(!args.kind)return {...e.deployment,...scope.application};return e[args.kind==='pgcatClients'?'metrics':args.kind];}if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
+  const read=async args=>{if(args.instanceId)probedIds.push(args.instanceId);if(wrongProbe&&args.instanceId==='i-foreign')throw Error('FixtureGateway503');observerCalls++;readOrder.push('observation');active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');if(((expansionCase||deadlineReplay)&&round===1)||(wrongProbe==='recover'&&round===2)){const e=observations(['i-one','i-two']);if(args.instanceId)return {instanceId:args.instanceId,connected:true};if(!args.kind)return {...e.deployment,...scope.application};return e[args.kind==='pgcatClients'?'metrics':args.kind];}if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
    const ids=['i-one','i-two','new-a','new-b'],observedAt=new Date().toISOString();
    if(args.kind==='fleet')return {groupId:scope.groupId,observedAt,instances:ids.map(instanceId=>({instanceId,protectedFromScaleIn:true,lifecycleState:'Protected',healthStatus:'Healthy'}))};
    if(args.kind==='backend')return {serverGroupId:scope.serverGroupId,observedAt,nodes:ids.map(instanceId=>({instanceId,status:'Available',healthy:true,registered:true,privateIp:'10.0.0.1'}))};
@@ -104,8 +115,13 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
   else assert.equal(out.paused?.kind,'resource',JSON.stringify(out));
   if(deadlineReplay){
    assert.deepEqual(readOrder.slice(0,6),['request_get','environment_get','object_get','deployments_list','deployments_list','deployment_status_get']);
-   assert.equal(observerCalls,9);
-   assert.ok(visibleTools[1].includes('mcp__infra__db_proxy_scale'),'complete fresh baseline must unlock writes on the next turn');
+   assert.equal(observerCalls,wrongProbe==='only'?7:9);
+   assert.equal(visibleTools[1].includes('mcp__infra__db_proxy_scale'),!wrongProbe,'only a complete fresh baseline may unlock writes on the next turn');
+   if(wrongProbe==='recover')assert.ok(visibleTools[2].includes('mcp__infra__db_proxy_scale'),'reissued exact probes must unlock scale only on the following turn');
+   if(wrongProbe){
+    assert.deepEqual(probedIds,wrongProbe==='only'?[]:['i-one','i-two']);
+    assert.deepEqual(probeAdvice,{connected:false,readiness:'target-mismatch',baselineInstanceIds:['i-one','i-two']});
+   }
    assert.deepEqual(writes,[]);
   }
   assert.equal(maximum,1,'first-turn reads must never overlap at their service boundary');
@@ -143,6 +159,8 @@ test('replacement baseline queue does not consume the MCP request deadline',asyn
  await runScenario(undefined,undefined,undefined,true);
  assert.ok(mcpDeadlines>=6,'exercise the actual SDK timeout');
 });
+test('foreign initial probe is corrected locally and cannot count as SQL evidence',()=>runScenario(undefined,undefined,undefined,true,'only'));
+test('the exact original probes can still complete the baseline after a foreign selector',()=>runScenario(undefined,undefined,undefined,true,'recover'));
 test('replacement stops queued reads after an HTTP failure',()=>runScenario('http'));
 test('replacement stops queued reads after a malformed MCP response',()=>runScenario('malformed'));
 test('replacement stops queued reads after an observation failure',()=>runScenario('observer'));

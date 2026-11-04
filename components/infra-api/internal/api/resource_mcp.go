@@ -116,11 +116,13 @@ func boundClientsMCPResponse(next http.Handler) http.Handler {
 		buffer := &clientsMCPResponse{header: w.Header().Clone()}
 		// Keep one overall budget even when the incoming server request has no
 		// deadline. A shorter caller deadline/cancellation always wins.
-		requestContext, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		callerContext := r.Context()
+		requestContext, cancel := context.WithTimeout(callerContext, 20*time.Second)
 		defer cancel()
 		r = r.WithContext(context.WithValue(requestContext, clientsHTTPContextKey{}, requestContext))
 		next.ServeHTTP(buffer, r)
-		if r.Context().Err() != nil {
+		// Check the caller directly in case cancellation has not reached the child.
+		if callerContext.Err() != nil || requestContext.Err() != nil {
 			return
 		}
 		body := buffer.body.Bytes()

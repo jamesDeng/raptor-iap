@@ -440,6 +440,33 @@ func (f concurrentClientsResolver) ResolveProof(ctx context.Context, _, _ string
 	return f.readProof(ctx)
 }
 
+// Hide the cancelCtx value so WithTimeout uses AfterFunc. Holding the callback
+// models the interval before a cancelled request's child notices cancellation.
+type delayedClientsCancellation struct{ context.Context }
+
+func (delayedClientsCancellation) Value(any) any { return nil }
+func (delayedClientsCancellation) AfterFunc(func()) func() bool {
+	return func() bool { return true }
+}
+
+func TestClientsMCPResponseChecksCallerBeforePublishing(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := boundClientsMCPResponse(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"samples":[]}`))
+		cancel()
+		if parent.Err() == nil || r.Context().Err() != nil {
+			t.Fatal("fixture must delay propagation to the child context")
+		}
+	}))
+	request := httptest.NewRequest("POST", "/mcp", strings.NewReader(clientsRPC))
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request.WithContext(delayedClientsCancellation{parent}))
+	if response.Body.Len() != 0 {
+		t.Fatal("cancelled caller received buffered evidence")
+	}
+}
+
 func TestResourceMCPClientsIsolatesOriginalAndDefaultRequestBudgets(t *testing.T) {
 	type requestKey struct{}
 	i, p := replacementResourceIdentity()
