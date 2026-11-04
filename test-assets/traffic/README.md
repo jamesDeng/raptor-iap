@@ -1,4 +1,11 @@
-# Retained traffic evidence
+> **Legacy collector tooling (2026-11-04):** the active MVP uses
+> [ordinary worker-disk app logs](../../docs/superpowers/plans/2026-11-04-pgcat-mvp-runbook.md)
+> via `app_log_retention.py`. Start there. Collector/native-controller
+> qualification, scoring, timing and finish requirements below are historical
+> reproduction interfaces, not current MVP admission or acceptance requirements.
+> Existing business safeguards and runtime `acceptance=pending` remain unchanged.
+
+# Retained traffic evidence (historical collector documentation)
 
 The operator collector runs on the verified ACK worker using its authorized
 Kubernetes configuration. It discovers the test-client Pod UIDs every second,
