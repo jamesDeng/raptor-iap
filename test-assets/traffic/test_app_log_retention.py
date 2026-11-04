@@ -1,7 +1,9 @@
 """Exercise the real recorder against isolated fake kubectl processes."""
 import ast
+import contextlib
 import importlib.util
 import json
+import io
 import os
 from pathlib import Path
 import signal
@@ -10,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -68,6 +71,18 @@ def stop(signum, frame):
     os.write(1, ('2026-11-04T00:00:01Z terminal-' + identity + '\n').encode())
     sys.exit(0)
 signal.signal(signal.SIGTERM, stop)
+if state.get('descendant'):
+    child = os.fork()
+    if child == 0:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
+        time.sleep(120)
+        os._exit(0)
+    with (root / 'descendants').open('a') as f:
+        f.write(name + ' ' + str(child) + '\n')
 if not state.get('quiet'):
     os.write(1, ('2026-11-04T00:00:00Z output-' + identity + '\n').encode())
 if state.get('exit_stream'):
@@ -93,6 +108,9 @@ class AppLogRetentionTests(unittest.TestCase):
     def setUp(self):
         # Missing implementation is an assertion failure during the initial RED run.
         self.assertTrue(HELPER.is_file(), 'ordinary app-log recorder is not implemented')
+        if (not sys.platform.startswith('linux') or not hasattr(os, 'waitid')) and self._testMethodName not in (
+                'test_python36_syntax_and_cli_help', 'test_unsupported_platform_refuses_capture_clearly'):
+            self.skipTest('runtime capture requires Linux os.waitid(WNOWAIT); verified in Linux CI/worker')
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
@@ -211,6 +229,79 @@ class AppLogRetentionTests(unittest.TestCase):
         self.assertEqual(result['status'], 'COMPLETED')
         for stream in result['streams']:
             self.assertIn('terminal-', (self.output / stream['file']).read_text())
+
+    def test_final_stop_never_signals_reused_retired_group_and_drains_active_stream(self):
+        spec = importlib.util.spec_from_file_location('app_log_retention', HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        directory = module.private_directory(str(self.output))
+        self.addCleanup(os.close, directory)
+        recorder = module.Recorder(SimpleNamespace(kubectl=str(self.fake),
+                                                  output_dir=str(self.output),
+                                                  max_bytes=268435456, seconds=7200), directory)
+        with patch.dict(os.environ, FAKE_ROOT=str(self.root)):
+            recorder.discover(first=True)
+            deadline = time.monotonic() + 5
+            while not all(s['record']['bytes'] for s in recorder.streams):
+                self.assertLess(time.monotonic(), deadline)
+                recorder.pump()
+            recorder.ready = True
+            self.state['pods'].pop(0)
+            self.write_state()
+            recorder.discover()
+            old, active = recorder.streams
+            deadline = time.monotonic() + 5
+            while old['record']['exitCode'] is None:
+                self.assertLess(time.monotonic(), deadline)
+                recorder.pump()
+            old_pid = old['process'].pid
+            with self.assertRaises(ProcessLookupError):
+                os.kill(old_pid, 0)
+            original_category = old['record']['exitCategory']
+            real_killpg = module.os.killpg
+            reused_signals = []
+            def simulate_reuse(group, sig):
+                if group == old_pid:
+                    # The numeric group now belongs to an unrelated process.
+                    reused_signals.append(sig)
+                    return
+                return real_killpg(group, sig)
+            recorder.stopped = True
+            with patch.object(module.os, 'killpg', side_effect=simulate_reuse):
+                recorder.finish()
+        self.assertEqual(reused_signals, [], 'final STOP signaled released process-group ID')
+        self.assertEqual(old['record']['exitCategory'], original_category)
+        self.assertIn('terminal-', (self.output / active['record']['file']).read_text())
+        self.assertEqual(recorder.document['status'], 'COMPLETED')
+        with self.assertRaises(ProcessLookupError):
+            os.kill(active['process'].pid, 0)
+
+    def test_natural_stream_retirement_cleans_descendants_before_releasing_leader(self):
+        self.state['descendant'] = True
+        self.write_state()
+        self.launch()
+        self.await_condition(lambda: self.manifest()['status'] == 'READY' and
+                             len((self.root / 'descendants').read_text().splitlines()) == 2)
+        self.state['pods'].pop(0)
+        self.write_state()
+        self.await_condition(lambda: self.manifest()['streams'][0]['exitCode'] is not None)
+        old_child = next(int(line.split()[1]) for line in
+                         (self.root / 'descendants').read_text().splitlines()
+                         if line.startswith('old-a '))
+        # The retired stream's child has closed its inherited pipes but remains
+        # in the owned process group. Merely reaping the leader would leak it.
+        gone = False
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(old_child, 0)
+            except ProcessLookupError:
+                gone = True
+                break
+            time.sleep(0.03)
+        result = self.stop()
+        self.assertTrue(gone, 'retired kubectl descendant survived ownership release')
+        self.assertEqual(result['streams'][0]['exitCategory'], 'container_ended')
 
     def test_ready_requires_output_from_both_current_containers(self):
         self.state['quiet'] = True
@@ -396,6 +487,18 @@ class AppLogRetentionTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(HELPER), '--help'], stdout=subprocess.PIPE)
         self.assertEqual(result.returncode, 0)
         self.assertIn(b'--deployment-uid', result.stdout)
+
+    def test_unsupported_platform_refuses_capture_clearly(self):
+        spec = importlib.util.spec_from_file_location('app_log_retention', HELPER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        output = io.StringIO()
+        with patch.object(module.sys, 'platform', 'unsupported'), contextlib.redirect_stderr(output):
+            result = module.main(['--namespace', 'raptor-test', '--deployment', 'rdev-test-client-client',
+                                  '--deployment-uid', UID, '--output-dir', str(self.output)])
+        self.assertNotEqual(result, 0)
+        self.assertIn('requires Linux with os.waitid(WNOWAIT)', output.getvalue())
+        self.assertFalse(self.output.exists())
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bounded ordinary app stdout retention; never a traffic acceptance verdict.
 
-Python 3.6 standard library only. Access is supplied through kubectl's existing
+Linux, Python 3.6 standard library only. Access is supplied through kubectl's existing
 environment, never copied into this utility's manifest or diagnostics.
 """
 import argparse
@@ -56,10 +56,26 @@ def private_directory(path):
 
 def terminate(process, hard=False):
     # Each child has its own session, including any kubectl auth-plugin children.
+    if process.returncode is not None:
+        return
     try:
         os.killpg(process.pid, signal.SIGKILL if hard else signal.SIGTERM)
     except ProcessLookupError:
         pass
+
+
+def child_exited(process):
+    # WNOWAIT observes exit without releasing the leader's PID/PGID for reuse.
+    return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+
+def release_process(process):
+    if process.returncode is None:
+        # The unreaped leader still pins this group ID, even after natural exit.
+        # Clean up any pipe-closing descendants before reaping that leader.
+        terminate(process, hard=True)
+        process.wait()
+    return process.returncode
 
 
 def metadata(command):
@@ -83,15 +99,17 @@ def metadata(command):
                     result.extend(chunk)
                     if len(result) > 2 * 1024 * 1024:
                         raise CaptureError('metadata_limit')
-        process.wait(timeout=max(0.001, deadline - time.monotonic()))
-        if process.returncode != 0:
+        while not child_exited(process):
+            if time.monotonic() >= deadline:
+                raise CaptureError('metadata_timeout')
+            time.sleep(0.01)
+        if release_process(process) != 0:
             raise CaptureError('metadata_failed')
         return json.loads(result.decode('utf-8'))
     except (ValueError, subprocess.TimeoutExpired):
         raise CaptureError('metadata_failed')
     finally:
-        terminate(process, hard=True)
-        process.wait()
+        release_process(process)
         process.stdout.close()
         selector.close()
 
@@ -272,12 +290,14 @@ class Recorder:
             raise CaptureError('stream_spawn_failed')
         record['pid'] = process.pid
         stream = {'key': key, 'record': record, 'process': process, 'fd': descriptor,
-                  'stopping': False, 'stopAt': None}
+                  'stopping': False, 'stopAt': None, 'owned': True}
         self.streams.append(stream)
         self.selector.register(process.stdout, selectors.EVENT_READ, (stream, True))
         self.selector.register(process.stderr, selectors.EVENT_READ, (stream, False))
 
     def stop_stream(self, stream, category):
+        if not stream['owned']:
+            return
         stream['stopping'] = True
         stream['stopAt'] = time.monotonic()
         stream['record']['exitCategory'] = category
@@ -309,9 +329,13 @@ class Recorder:
                     chunk = chunk[count:]
         pending_exits = []
         for stream in self.streams:
+            if not stream['owned']:
+                continue
             process = stream['process']
-            code = process.poll()
-            if code is not None and stream['record']['exitCode'] is None:
+            code = None
+            if child_exited(process):
+                code = release_process(process)
+                stream['owned'] = False
                 stream['record']['exitCode'] = code
                 stream['record']['endedAt'] = utc_now()
                 if not stream['stopping']:
@@ -347,8 +371,8 @@ class Recorder:
 
     def finish(self):
         for stream in self.streams:
-            if not stream['stopping'] or stream['stopAt'] is None:
-                if stream['process'].poll() is None and stream['stopping']:
+            if stream['owned'] and (not stream['stopping'] or stream['stopAt'] is None):
+                if stream['stopping']:
                     self.problem('retired_stream_interrupted', fatal=False)
                 self.stop_stream(stream, 'operator_stop' if self.stopped else 'recorder_stop')
         # Read throughout graceful termination and then through EOF, rather than
@@ -360,10 +384,10 @@ class Recorder:
             self.problem('stream_drain_timeout')
         for stream in self.streams:
             process = stream['process']
-            terminate(process, hard=True)
-            process.wait()
-            stream['record']['exitCode'] = process.returncode
-            stream['record']['endedAt'] = stream['record']['endedAt'] or utc_now()
+            if stream['owned']:
+                stream['record']['exitCode'] = release_process(process)
+                stream['owned'] = False
+                stream['record']['endedAt'] = utc_now()
             for pipe in (process.stdout, process.stderr):
                 if not pipe.closed:
                     self.selector.unregister(pipe)
@@ -443,6 +467,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 0 < args.seconds <= 7200 or not 0 < args.max_bytes <= MAX_BYTES:
         parser.error('limits must be positive and within their documented ceilings')
+    if not sys.platform.startswith('linux') or not hasattr(os, 'waitid'):
+        sys.stderr.write('app_log_retention: requires Linux with os.waitid(WNOWAIT)\n')
+        return 1
     directory = None
     previous = {}
     try:

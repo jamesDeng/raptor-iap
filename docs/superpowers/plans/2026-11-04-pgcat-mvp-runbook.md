@@ -51,7 +51,11 @@ kubeconfig copies after completion, failure or stop. No cloud provisioning.
 ## Record logs before any change
 
 The small [app_log_retention.py](../../../test-assets/traffic/app_log_retention.py)
-utility is Python3.6-compatible and uses only the standard library and kubectl.
+utility requires Linux with `os.waitid(WNOWAIT)`, is Python3.6-compatible and uses
+only the standard library and kubectl. Exit observation keeps each owned group
+leader unreaped until descendant cleanup, then releases ownership permanently;
+historical stream records are never later signaled. Other platforms support help
+but refuse recording explicitly.
 It binds Deployment `raptor-test/rdev-test-client-client`, UID
 `17b7b33c-fd64-4d07-863e-f65b6563e504`, container `client` from the app chart.
 It follows the Deployment→ReplicaSet→Pod controller-UID chain, including surge
