@@ -1,4 +1,12 @@
-# PgCat two-node live-test operator runbook
+> **Retired active entry (2026-11-04):** use the
+> [active PgCat MVP worker-log runbook](2026-11-04-pgcat-mvp-runbook.md).
+> The owner replaced collector-dependent qualification/enable/finish acceptance
+> with ordinary retained app logs. Native collector/controller admission and
+> historical collector timing gates below are not current MVP prerequisites.
+> Business capacity, scope, approval, freshness and uncertainty guards continue
+> under the active runbook. Everything below is preserved historical procedure.
+
+# PgCat two-node live-test operator runbook (historical)
 
 ## 2026-10-30 policy correction and release status
 
