@@ -8,7 +8,7 @@ import {operationCapabilities,operationToolSchema} from './operation-profile.mjs
 import {observations,withResourceProof} from './replacement-sequence-fixtures.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
 
-async function runScenario(failureKind,baselineCase,expansionCase){
+async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay=false){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'replacement-read-queue-')));
  try{
   const state=path.join(root,'state'),skills=path.join(root,'skills');
@@ -23,7 +23,7 @@ async function runScenario(failureKind,baselineCase,expansionCase){
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
  const {getCurrentTools}=await import('@earendil-works/pi-ai');
   const {runtime}=await loadPiRuntime({stateRoot:state});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
- let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[],writes=[];
+ let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[],writes=[],readOrder=[];
  const target={requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode};
  const expand={name:'mcp__infra__db_proxy_scale',arguments:{...target,actionId:'expand',desiredCapacity:4}};
  const postWrites={
@@ -50,7 +50,7 @@ async function runScenario(failureKind,baselineCase,expansionCase){
    ...['trafficFailures','connections','pgcatClients'].map(kind=>({name:'metrics_read',arguments:{kind}})),
    ...['i-one','i-two'].map(instanceId=>({name:'db_connection_probe',arguments:{instanceId}}))
   ];
-  const calls=expansionCase?(round===1?initialCalls:round===2?[expand,...(expansionCase==='ready-scale-batch'?[...readinessCalls,postWrites.protection]:postWrites[expansionCase]?[postWrites[expansionCase]]:[])]:readyCase&&round===3?[...readinessCalls,...(expansionCase==='ready-batch'?[postWrites.protection]:[])]:readyCase&&round===4?[postWrites.protection]:[{name:'resource_wait',arguments:{seconds:60}}]):baselineCase?(round===1?[{name:'cloud_read',arguments:{kind:'fleet'}}]:[{name:'resource_wait',arguments:{seconds:60}}]):round===1?[
+  const calls=deadlineReplay?(round===1?initialCalls.filter(call=>call.name!=='mcp__infra__deployment_status_get'):[{name:'resource_wait',arguments:{seconds:60}}]):expansionCase?(round===1?initialCalls:round===2?[expand,...(expansionCase==='ready-scale-batch'?[...readinessCalls,postWrites.protection]:postWrites[expansionCase]?[postWrites[expansionCase]]:[])]:readyCase&&round===3?[...readinessCalls,...(expansionCase==='ready-batch'?[postWrites.protection]:[])]:readyCase&&round===4?[postWrites.protection]:[{name:'resource_wait',arguments:{seconds:60}}]):baselineCase?(round===1?[{name:'cloud_read',arguments:{kind:'fleet'}}]:[{name:'resource_wait',arguments:{seconds:60}}]):round===1?[
     {name:'mcp__raptor__request_get',arguments:{requestId:b.requestId}},
     {name:'cloud_read',arguments:{kind:'backend'}},
     {name:'metrics_read',arguments:{kind:'trafficFailures'}},
@@ -67,7 +67,7 @@ async function runScenario(failureKind,baselineCase,expansionCase){
    if(rpc.method==='initialize')result={protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:server,version:'1'}};
    else if(rpc.method==='tools/list')result={tools:operationCapabilities(b,scope)[server].map(name=>({name,description:'Scoped operation',inputSchema:operationToolSchema(server,name)}))};
    else if(rpc.method==='tools/call'){
-    serviceCalls++;
+    serviceCalls++;readOrder.push(rpc.params.name);
     if(['db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart','approval_request'].includes(rpc.params.name))writes.push(rpc.params.name);
     active++;maximum=Math.max(maximum,active);
     await new Promise(resolve=>setTimeout(resolve,30));
@@ -80,7 +80,7 @@ async function runScenario(failureKind,baselineCase,expansionCase){
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
-  const read=async args=>{observerCalls++;active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');if(expansionCase&&round===1){const e=observations(['i-one','i-two']);if(args.instanceId)return {instanceId:args.instanceId,connected:true};if(!args.kind)return {...e.deployment,...scope.application};return e[args.kind==='pgcatClients'?'metrics':args.kind];}if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
+  const read=async args=>{observerCalls++;readOrder.push('observation');active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');if(expansionCase&&round===1){const e=observations(['i-one','i-two']);if(args.instanceId)return {instanceId:args.instanceId,connected:true};if(!args.kind)return {...e.deployment,...scope.application};return e[args.kind==='pgcatClients'?'metrics':args.kind];}if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
    const ids=['i-one','i-two','new-a','new-b'],observedAt=new Date().toISOString();
    if(args.kind==='fleet')return {groupId:scope.groupId,observedAt,instances:ids.map(instanceId=>({instanceId,protectedFromScaleIn:true,lifecycleState:'Protected',healthStatus:'Healthy'}))};
    if(args.kind==='backend')return {serverGroupId:scope.serverGroupId,observedAt,nodes:ids.map(instanceId=>({instanceId,status:'Available',healthy:true,registered:true,privateIp:'10.0.0.1'}))};
@@ -102,6 +102,11 @@ async function runScenario(failureKind,baselineCase,expansionCase){
   if(postWrites[expansionCase]||['ready-batch','ready-scale-batch'].includes(expansionCase)){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(expansionCase==='ready-scale-batch')assert.ok(writes.length<=1&&writes.every(name=>name==='db_proxy_scale'),'reordered reads may block expansion; no subsequent write may reach MCP');else assert.deepEqual(writes,['db_proxy_scale'],'early post-expansion writes must never reach MCP');}
   else if(failureKind){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(failureKind==='observer'){assert.equal(observerCalls,1,'an observation failure must stop queued observations');assert.ok(serviceCalls<=1,'an observation failure must stop queued service calls');}else assert.equal(serviceCalls,1,'a failed MCP read must stop queued service calls');}
   else assert.equal(out.paused?.kind,'resource',JSON.stringify(out));
+  if(deadlineReplay){
+   assert.deepEqual(readOrder.slice(0,5),['request_get','environment_get','object_get','deployments_list','deployments_list']);
+   assert.equal(observerCalls,9);
+   assert.deepEqual(writes,[]);
+  }
   assert.equal(maximum,1,'first-turn reads must never overlap at their service boundary');
   assert.ok(visibleTools[0].includes('mcp__raptor__request_get'),'initial reads must remain available');
   assert.ok(!visibleTools[0].includes('mcp__infra__db_proxy_node_protection_set'),'a fresh session must not advertise protection before a fleet baseline');
@@ -125,6 +130,18 @@ async function runScenario(failureKind,baselineCase,expansionCase){
 }
 
 test('replacement queues simultaneous first reads across MCP and observation tools',()=>runScenario());
+test('replacement baseline queue does not consume the MCP request deadline',async t=>{
+ const originalSetTimeout=globalThis.setTimeout;
+ let mcpDeadlines=0;
+ // Compress the real SDK deadline in this offline replay. Each individual
+ // read finishes inside it, but the mixed observation batch takes longer.
+ t.mock.method(globalThis,'setTimeout',(callback,delay,...args)=>{
+  if(delay===25000){mcpDeadlines++;delay=120;}
+  return originalSetTimeout(callback,delay,...args);
+ });
+ await runScenario(undefined,undefined,undefined,true);
+ assert.ok(mcpDeadlines>=5,'exercise the actual SDK timeout');
+});
 test('replacement stops queued reads after an HTTP failure',()=>runScenario('http'));
 test('replacement stops queued reads after a malformed MCP response',()=>runScenario('malformed'));
 test('replacement stops queued reads after an observation failure',()=>runScenario('observer'));
