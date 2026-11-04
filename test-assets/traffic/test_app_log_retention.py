@@ -69,7 +69,7 @@ with (root / 'pids').open('a') as f:
     f.write(str(os.getpid()) + '\n')
 def stop(signum, frame):
     os.write(1, ('2026-11-04T00:00:01Z terminal-' + identity + '\n').encode())
-    sys.exit(0)
+    sys.exit(state.get('stop_exit', 0))
 signal.signal(signal.SIGTERM, stop)
 if state.get('descendant'):
     child = os.fork()
@@ -238,6 +238,27 @@ class AppLogRetentionTests(unittest.TestCase):
         self.assertEqual(result['status'], 'COMPLETED')
         for stream in result['streams']:
             self.assertIn('terminal-', (self.output / stream['file']).read_text())
+
+    def test_operator_stop_accepts_kubectl_exit_one_and_retains_raw_exit(self):
+        self.state['stop_exit'] = 1
+        self.write_state()
+        self.launch()
+        self.await_condition(lambda: self.manifest()['status'] == 'READY')
+        result = self.stop()
+        self.assertEqual(result['status'], 'COMPLETED')
+        self.assertEqual(self.process.returncode, 0)
+        self.assertEqual([s['exitCode'] for s in result['streams']], [1, 1])
+        self.assertEqual([s['exitCategory'] for s in result['streams']], ['operator_stop', 'operator_stop'])
+        for stream in result['streams']:
+            self.assertIn('terminal-', (self.output / stream['file']).read_text())
+
+    def test_exit_one_before_stop_remains_unexpected_failure(self):
+        self.state['exit_stream'] = 1
+        self.write_state()
+        self.launch()
+        self.process.communicate(timeout=8)
+        self.assertEqual(self.manifest()['status'], 'FAILED')
+        self.assertIn('unexpected_stream_exit', self.manifest()['problems'])
 
     def test_final_stop_never_signals_reused_retired_group_and_drains_active_stream(self):
         spec = importlib.util.spec_from_file_location('app_log_retention', HELPER)
@@ -511,6 +532,57 @@ class AppLogRetentionTests(unittest.TestCase):
         self.assertNotEqual(result, 0)
         self.assertIn('requires Linux with os.waitid(WNOWAIT)', output.getvalue())
         self.assertFalse(self.output.exists())
+
+
+class StopClassificationTests(unittest.TestCase):
+    """Classification boundary checks also run on non-Linux development hosts."""
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('app_log_retention', HELPER)
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = os.open(str(Path(temporary.name).resolve()), os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, directory)
+        self.recorder = self.module.Recorder(SimpleNamespace(max_bytes=1024, seconds=7200), directory)
+        self.addCleanup(self.recorder.selector.close)
+        self.recorder.stopped = True
+        self.stream = {'owned': True, 'process': SimpleNamespace(pid=123, returncode=None),
+                       'key': ('pod', 'container'), 'stopping': False, 'stopAt': None,
+                       'record': {'bytes': 1, 'exitCode': None, 'endedAt': None, 'exitCategory': None}}
+        self.recorder.streams.append(self.stream)
+
+    def observe_exit_one(self):
+        with patch.object(self.module, 'child_exited', return_value=True), patch.object(
+                self.module, 'release_process', return_value=1):
+            self.recorder.pump(0)
+
+    def request_live_stop(self):
+        with patch.object(self.module, 'child_exited', return_value=False), patch.object(self.module, 'terminate'):
+            self.recorder.stop_stream(self.stream, 'operator_stop')
+
+    def test_exit_one_after_intentional_live_stop_is_expected(self):
+        self.request_live_stop()
+        self.observe_exit_one()
+        self.assertFalse(self.recorder.failed)
+        self.assertEqual(self.recorder.document['problems'], [])
+        self.assertEqual(self.stream['record']['exitCode'], 1)
+        self.assertEqual(self.stream['record']['exitCategory'], 'operator_stop')
+
+    def test_exit_one_already_observed_at_stop_is_unexpected(self):
+        with patch.object(self.module, 'child_exited', return_value=True), patch.object(self.module, 'terminate'):
+            self.recorder.stop_stream(self.stream, 'operator_stop')
+        self.observe_exit_one()
+        self.assertTrue(self.recorder.failed)
+        self.assertEqual(self.stream['record']['exitCategory'], 'unexpected_stream_exit')
+        self.assertIn('unexpected_stream_exit', self.recorder.document['problems'])
+
+    def test_expected_stop_exit_cannot_erase_existing_disk_failure(self):
+        self.recorder.problem('disk_full')
+        self.request_live_stop()
+        self.observe_exit_one()
+        self.assertTrue(self.recorder.failed)
+        self.assertIn('disk_full', self.recorder.document['problems'])
 
 
 if __name__ == '__main__':

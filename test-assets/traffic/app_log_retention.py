@@ -296,7 +296,7 @@ class Recorder:
         self.selector.register(process.stderr, selectors.EVENT_READ, (stream, False))
 
     def stop_stream(self, stream, category):
-        if not stream['owned']:
+        if not stream['owned'] or child_exited(stream['process']):
             return
         stream['stopping'] = True
         stream['stopAt'] = time.monotonic()
@@ -340,7 +340,8 @@ class Recorder:
                 stream['record']['endedAt'] = utc_now()
                 if not stream['stopping']:
                     pending_exits.append(stream)
-                elif code not in (0, -signal.SIGTERM):
+                elif code not in (0, -signal.SIGTERM) and not (
+                        code == 1 and stream['record']['exitCategory'] == 'operator_stop'):
                     self.problem('stream_stop_failed')
             if stream['stopping'] and code is None:
                 if stream['stopAt'] is None:
