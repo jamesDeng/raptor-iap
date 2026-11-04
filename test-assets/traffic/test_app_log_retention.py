@@ -577,6 +577,20 @@ class StopClassificationTests(unittest.TestCase):
         self.assertEqual(self.stream['record']['exitCategory'], 'unexpected_stream_exit')
         self.assertIn('unexpected_stream_exit', self.recorder.document['problems'])
 
+    def test_finish_classifies_preexisting_exit_after_both_pipes_close(self):
+        self.recorder.ready = True
+        self.stream['fd'] = os.open('stream.log', os.O_WRONLY | os.O_CREAT, 0o600,
+                                    dir_fd=self.recorder.directory)
+        self.stream['process'].stdout = SimpleNamespace(closed=True)
+        self.stream['process'].stderr = SimpleNamespace(closed=True)
+        self.assertFalse(self.recorder.selector.get_map())
+        with patch.object(self.module, 'child_exited', return_value=True), patch.object(
+                self.module, 'release_process', return_value=1):
+            self.recorder.finish()
+        self.assertEqual(self.recorder.document['status'], 'FAILED')
+        self.assertEqual(self.stream['record']['exitCode'], 1)
+        self.assertEqual(self.stream['record']['exitCategory'], 'unexpected_stream_exit')
+
     def test_expected_stop_exit_cannot_erase_existing_disk_failure(self):
         self.recorder.problem('disk_full')
         self.request_live_stop()

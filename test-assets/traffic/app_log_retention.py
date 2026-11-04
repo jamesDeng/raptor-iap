@@ -379,9 +379,12 @@ class Recorder:
         # Read throughout graceful termination and then through EOF, rather than
         # polling file sizes or dropping already buffered stdout on STOP.
         deadline = time.monotonic() + 5
-        while self.selector.get_map() and time.monotonic() < deadline:
+        def draining():
+            return self.selector.get_map() or any(stream['owned'] for stream in self.streams)
+
+        while draining() and time.monotonic() < deadline:
             self.pump()
-        if self.selector.get_map():
+        if draining():
             self.problem('stream_drain_timeout')
         for stream in self.streams:
             process = stream['process']
