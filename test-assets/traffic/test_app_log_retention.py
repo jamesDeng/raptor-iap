@@ -148,7 +148,16 @@ class AppLogRetentionTests(unittest.TestCase):
         if self.process is not None:
             if self.process.poll() is None:
                 self.process.terminate()
-            self.process.communicate(timeout=8)
+            # Python3.6 communicate(timeout=...) tries to register already closed
+            # pipes on a repeated call. Keep only open pipes eligible for drain.
+            for name in ('stdout', 'stderr'):
+                stream = getattr(self.process, name)
+                if stream is not None and stream.closed:
+                    setattr(self.process, name, None)
+            if self.process.stdout is None and self.process.stderr is None:
+                self.process.wait(timeout=8)
+            else:
+                self.process.communicate(timeout=8)
 
     def manifest(self):
         return json.loads((self.output / 'manifest.json').read_text())
@@ -483,7 +492,10 @@ class AppLogRetentionTests(unittest.TestCase):
         self.assertFalse((self.root / 'calls').exists())
 
     def test_python36_syntax_and_cli_help(self):
-        ast.parse(HELPER.read_text(), feature_version=(3, 6))
+        if sys.version_info >= (3, 8):
+            ast.parse(HELPER.read_text(), feature_version=(3, 6))
+        else:
+            ast.parse(HELPER.read_text())
         result = subprocess.run([sys.executable, str(HELPER), '--help'], stdout=subprocess.PIPE)
         self.assertEqual(result.returncode, 0)
         self.assertIn(b'--deployment-uid', result.stdout)
