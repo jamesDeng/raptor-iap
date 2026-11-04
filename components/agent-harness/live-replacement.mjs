@@ -54,6 +54,9 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const loader=await createOperationResourceLoader({sdk,stateRoot,binding:b,skills,settingsManager:settings,extensionFactories:[mcp.extension,resourceWaitExtension(pause),...(observer?[observationExtension(tracedObserver)]:[])] ,systemPrompt:(qualification?QUALIFICATION_SYSTEM+RESOURCE_TRANSPORT_NOTICE+(decisionContext?.decision==='resume'?QUALIFICATION_RESUME:QUALIFICATION_FIRST):SYSTEM+EXPANSION_READINESS+pinnedInstructions+(trace.baseline()?'':INITIAL_READS))+readPlan+'\nTrusted selectors: '+JSON.stringify({binding:b,resource:{envCode:replacementScope.envCode,proxyCode:replacementScope.proxyCode,application:{appCode:replacementScope.application.appCode},targetDbCode:replacementScope.targetDbCode}})});
   const provider=b.providerId==='codex'?'openai-codex':'openai';const model=runtime.getModel(provider,b.model);if(!model||model.id!==b.model||model.provider!==provider)throw Error('InvalidJob');
   ({session}=await sdk.createAgentSession({cwd:stateRoot,agentDir:stateRoot,modelRuntime:runtime,model,thinkingLevel:'off',noTools:'all',tools,resourceLoader:loader,settingsManager:settings,sessionManager:manager}));
+  // Pi starts MCP deadlines before transport fetch. Run replacement tools in
+  // model order so observation work cannot consume a queued MCP call's budget.
+  if(!qualification)session.agent.toolExecution='sequential';
   await session.bindExtensions({mode:'sdk'});await mcp.ready(session);session.setActiveToolsByName(activeTools);
   // Pi awaits finishTurn after persisting the assistant and every tool result.
   // End cleanly here; abort() would append a synthetic aborted assistant entry.
