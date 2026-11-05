@@ -15,13 +15,15 @@ Keep the same request ID, definition, resolved scope and selected skill SHA acro
 
 ## Initial read rounds
 
-First discover the scoped application workloadKey through Raptor deployments_list and the exact two original IDs through cloud_read(fleet). With those selectors known, complete one read round containing every required receipt:
+Use two assistant responses. Sequential execution does not supply results while generating the same response.
 
-- Raptor request_get, environment_get, object_get and application deployments_list.
-- Infra proxy deployments_list and application deployment_status_get({envCode, appCode, workloadKey}).
-- Direct deployment_read({}); cloud_read for fleet, backend and capacity; db_connection_probe for both exact originals; metrics_read for trafficFailures, connections and pgcatClients.
+1. **Discovery round:** call scoped Raptor application deployments_list and cloud_read(fleet). End the response; wait for both successful results. Do not include deployment_status_get, SQL probes or mutations in this round.
+2. **Evidence round:** after receiving results, copy the exact workloadKey and original IDs into dependent calls. Never generate placeholders such as "unknown". Missing/ambiguous selectors require discovery or a stop. Required receipts:
+   - Raptor request_get, environment_get, object_get and application deployments_list.
+   - Infra proxy deployments_list and application deployment_status_get({envCode, appCode, workloadKey}).
+   - Direct deployment_read({}); cloud_read fleet/backend/capacity; db_connection_probe for both discovered originals; metrics_read trafficFailures/connections/pgcatClients last.
 
-Infra deployment_status_get and direct deployment_read are separate required slots. A native Kubernetes Deployment read does not fill the Infra MCP slot. Run metrics last in the round, then use its completed results before the first mutation. Batch these reads to avoid model-turn delays: current receipts must remain within the runtime's 30-second freshness window, with PgCat metric sources within 15 seconds. Refresh aged receipts before proceeding.
+Both Deployment reads are required. Batch only calls with already-known arguments. Wait for the complete evidence round before mutations. Refresh aged receipts: runtime freshness is 30 seconds, PgCat metric sources 15 seconds. After resume, repeat discovery and wait before generating dependent calls.
 
 After SQL succeeds, inspect the entire checklist. If only read tools remain available, complete or refresh missing/aged slots and continue reading; the baseline is not finished. Only a completed valid baseline unlocks the first protection or expansion call.
 
