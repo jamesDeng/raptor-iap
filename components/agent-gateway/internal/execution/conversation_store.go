@@ -19,6 +19,19 @@ func (s *Store) Conversation(ctx context.Context, id string) (ConversationCapabi
 	if !v.Enabled || x.RuntimeMode != "live" {
 		return v, nil
 	}
+	var definition struct {
+		Operations []struct{ Name string }
+	}
+	if json.Unmarshal(x.Input.Definition, &definition) == nil && len(definition.Operations) == 1 && definition.Operations[0].Name == "db-proxy.replace-nodes" {
+		if !x.RecoveryNeeded && x.Status == "running" && x.Stage == "running" {
+			e = s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway.conversation_sessions WHERE request_id=$1 AND attempt_id=$2 AND input_open)", id, x.AttemptID).Scan(&v.CanContinue)
+		}
+		v.Reason = "ConversationNotReady"
+		if v.CanContinue {
+			v.Reason = ""
+		}
+		return v, e
+	}
 	v.CanContinue = !x.RecoveryNeeded
 	switch x.Status {
 	case "queued", "preparing", "running", "waiting_for_permission", "waiting_for_pr_review":
@@ -68,9 +81,9 @@ func (s *Store) queueMessage(ctx context.Context, in ConversationInput, rejected
 		return out, e
 	}
 	defer tx.Rollback(ctx)
-	var status, mode, attempt, cleanup, checkpoint string
+	var status, mode, attempt, cleanup, checkpoint, operation, stage string
 	var recovery bool
-	e = tx.QueryRow(ctx, "SELECT status,runtime_mode,COALESCE(attempt_id::text,''),recovery_needed,cleanup,checkpoint_status FROM gateway.executions WHERE request_id=$1 FOR UPDATE", in.RequestID).Scan(&status, &mode, &attempt, &recovery, &cleanup, &checkpoint)
+	e = tx.QueryRow(ctx, "SELECT status,runtime_mode,COALESCE(attempt_id::text,''),recovery_needed,cleanup,checkpoint_status,COALESCE(input #>> '{definition,operations,0,name}',''),stage FROM gateway.executions WHERE request_id=$1 FOR UPDATE", in.RequestID).Scan(&status, &mode, &attempt, &recovery, &cleanup, &checkpoint, &operation, &stage)
 	if e != nil {
 		return out, ErrUnavailable
 	}
@@ -114,6 +127,19 @@ func (s *Store) queueMessage(ctx context.Context, in ConversationInput, rejected
 		out.Status = "rejected"
 		out.Reason = "ConversationNotReady"
 	}
+	if operation == "db-proxy.replace-nodes" {
+		var open bool
+		if status == "running" && stage == "running" {
+			e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM gateway.conversation_sessions s JOIN gateway.attempts a ON a.id=s.attempt_id
+				WHERE s.request_id=$1 AND s.attempt_id::text=$2 AND s.input_open AND a.started_at<=$3)`, in.RequestID, attempt, in.AcceptedAt).Scan(&open)
+			if e != nil {
+				return out, e
+			}
+		}
+		if !open {
+			out.Status, out.Reason = "rejected", "ConversationNotReady"
+		}
+	}
 	if containsSensitive(text, s.KnownSecrets) {
 		text = "[redacted sensitive content]"
 		out.Status = "rejected"
@@ -135,14 +161,18 @@ func (s *Store) queueMessage(ctx context.Context, in ConversationInput, rejected
 	if _, e = tx.Exec(ctx, "INSERT INTO gateway.conversation_sessions(request_id) VALUES($1) ON CONFLICT DO NOTHING", in.RequestID); e != nil {
 		return out, e
 	}
-	_, e = tx.Exec(ctx, "INSERT INTO gateway.conversation_messages(request_id,message_id,actor_id,input_sequence,text,text_hash,accepted_at,status,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", in.RequestID, in.MessageID, in.ActorID, in.InputSequence, text, hash, in.AcceptedAt, out.Status, out.Reason)
+	var boundAttempt string
+	if operation == "db-proxy.replace-nodes" && out.Status == "queued" {
+		boundAttempt = attempt
+	}
+	_, e = tx.Exec(ctx, "INSERT INTO gateway.conversation_messages(request_id,message_id,actor_id,input_sequence,text,text_hash,accepted_at,status,reason,attempt_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,'')::uuid)", in.RequestID, in.MessageID, in.ActorID, in.InputSequence, text, hash, in.AcceptedAt, out.Status, out.Reason, boundAttempt)
 	if e != nil {
 		return out, e
 	}
 	if e = messagePublicEvent(ctx, tx, in.RequestID, "", text, out); e != nil {
 		return out, e
 	}
-	if status == "completed" && out.Status == "queued" {
+	if operation != "db-proxy.replace-nodes" && status == "completed" && out.Status == "queued" {
 		if _, e = tx.Exec(ctx, queueContinuationSQL, in.RequestID); e != nil {
 			return out, e
 		}
@@ -163,8 +193,9 @@ func (s *Store) PendingMessage(ctx context.Context, id, attempt, owner string) (
 	}
 	var last int64
 	var open bool
-	var sessionAttempt string
-	e = tx.QueryRow(ctx, "SELECT last_input_sequence,input_open,COALESCE(attempt_id::text,'') FROM gateway.conversation_sessions WHERE request_id=$1 FOR UPDATE", id).Scan(&last, &open, &sessionAttempt)
+	var sessionAttempt, operation string
+	e = tx.QueryRow(ctx, `SELECT s.last_input_sequence,s.input_open,COALESCE(s.attempt_id::text,''),COALESCE(x.input #>> '{definition,operations,0,name}','')
+ FROM gateway.conversation_sessions s JOIN gateway.executions x USING (request_id) WHERE s.request_id=$1 FOR UPDATE OF s`, id).Scan(&last, &open, &sessionAttempt, &operation)
 	if e == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -176,8 +207,8 @@ func (s *Store) PendingMessage(ctx context.Context, id, attempt, owner string) (
 	}
 	for {
 		var in ConversationInput
-		var status string
-		e = tx.QueryRow(ctx, "SELECT request_id::text,message_id::text,actor_id::text,input_sequence,text,accepted_at,status FROM gateway.conversation_messages WHERE request_id=$1 AND input_sequence=$2", id, last+1).Scan(&in.RequestID, &in.MessageID, &in.ActorID, &in.InputSequence, &in.Text, &in.AcceptedAt, &status)
+		var status, bound string
+		e = tx.QueryRow(ctx, "SELECT request_id::text,message_id::text,actor_id::text,input_sequence,text,accepted_at,status,COALESCE(attempt_id::text,'') FROM gateway.conversation_messages WHERE request_id=$1 AND input_sequence=$2", id, last+1).Scan(&in.RequestID, &in.MessageID, &in.ActorID, &in.InputSequence, &in.Text, &in.AcceptedAt, &status, &bound)
 		if e == pgx.ErrNoRows {
 			return nil, tx.Commit(ctx)
 		}
@@ -193,6 +224,17 @@ func (s *Store) PendingMessage(ctx context.Context, id, attempt, owner string) (
 		}
 		if status != "queued" {
 			return nil, tx.Commit(ctx)
+		}
+		if operation == "db-proxy.replace-nodes" && bound != attempt {
+			// An outbox message from before the attempt was ready cannot be
+			// adopted by this attempt, even if it arrives during execution.
+			if _, e = tx.Exec(ctx, "UPDATE gateway.conversation_messages SET status='interrupted' WHERE request_id=$1 AND message_id=$2", id, in.MessageID); e != nil {
+				return nil, e
+			}
+			if e = messagePublicEvent(ctx, tx, id, attempt, in.Text, ConversationReceipt{MessageID: in.MessageID, InputSequence: in.InputSequence, Status: "interrupted", Reason: "ConversationNotReady"}); e != nil {
+				return nil, e
+			}
+			continue
 		}
 		tag, err := tx.Exec(ctx, "UPDATE gateway.conversation_messages SET attempt_id=$3 WHERE request_id=$1 AND message_id=$2 AND (attempt_id IS NULL OR attempt_id=$3)", id, in.MessageID, attempt)
 		if err != nil {

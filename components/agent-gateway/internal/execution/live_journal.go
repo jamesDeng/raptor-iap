@@ -151,7 +151,7 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 			return ErrInvalid
 		}
 		switch v.Kind {
-		case "status", "progress", "checkpoint", "cleanup", "session", "message", "turn", "settling":
+		case "status", "progress", "checkpoint", "cleanup", "session", "message", "reply", "turn", "settling":
 			if v.Tool != "" {
 				return ErrInvalid
 			}
@@ -168,7 +168,7 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 			return ErrInvalid
 		}
 		if v.Summary != "" {
-			if v.Kind != "progress" || v.Outcome != "running" || len(v.Summary) > 2048 || !utf8.ValidString(v.Summary) || strings.TrimSpace(v.Summary) == "" {
+			if !((v.Kind == "progress" && v.Outcome == "running") || (v.Kind == "reply" && v.Outcome == "succeeded")) || len(v.Summary) > 2048 || !utf8.ValidString(v.Summary) || strings.TrimSpace(v.Summary) == "" {
 				return ErrInvalid
 			}
 			if containsSensitive(v.Summary, s.KnownSecrets) {
@@ -179,6 +179,10 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 		switch v.Kind {
 		case "message":
 			if !conversationUUID.MatchString(v.MessageID) || v.InputSequence < 1 || v.Outcome != "delivered" || v.TurnID != "" || v.SessionID != "" || v.SessionFile != "" {
+				return ErrInvalid
+			}
+		case "reply":
+			if b.Operation != "db-proxy.replace-nodes" || !conversationUUID.MatchString(v.MessageID) || v.InputSequence < 1 || v.Outcome != "succeeded" || v.Summary == "" || v.TurnID != "" || v.SessionID != "" || v.SessionFile != "" {
 				return ErrInvalid
 			}
 		case "session":
@@ -242,6 +246,11 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 			}
 			continue
 		}
+		if v.Kind == "reply" {
+			if e = recordConversationReceipt(ctx, tx, id, attempt, ConversationReceipt{MessageID: v.MessageID, InputSequence: v.InputSequence, Status: "answered"}); e != nil {
+				return e
+			}
+		}
 		var n int64
 		if e = tx.QueryRow(ctx, "UPDATE gateway.executions SET next_sequence=next_sequence+1,updated_at=now() WHERE request_id=$1 RETURNING next_sequence", id).Scan(&n); e != nil {
 			return e
@@ -250,6 +259,11 @@ func (s *Store) AppendRuntimeEvents(ctx context.Context, attempt, owner string, 
 		event := ProgressEvent{EventID: fmt.Sprintf("%s:%d", attempt, v.RuntimeSequence), RequestID: id, AttemptID: attempt, Sequence: n, OccurredAt: v.OccurredAt, Kind: v.Kind, Summary: v.Kind + ": " + v.Outcome, Details: details, EvidenceMode: "live"}
 		if v.Summary != "" {
 			event.Summary = v.Summary
+		}
+		if v.Kind == "reply" {
+			event.Kind = "message"
+			event.EventID = "reply:" + v.MessageID
+			event.Details, _ = json.Marshal(map[string]any{"role": "assistant", "status": "answered", "messageId": "reply:" + v.MessageID})
 		}
 		payload, _ := json.Marshal(event)
 		if _, e = tx.Exec(ctx, "INSERT INTO gateway.runtime_events(attempt_id,runtime_sequence,payload) VALUES($1,$2,$3)", attempt, v.RuntimeSequence, raw); e != nil {

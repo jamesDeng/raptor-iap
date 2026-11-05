@@ -56,10 +56,13 @@ type ConversationView struct {
 }
 
 func conversationRequest(r domain.Request) bool {
-	return r.Definition.Type == "agent" && len(r.Definition.Operations) == 1 && r.Definition.Operations[0].Name == "application.question"
+	return r.Definition.Type == "agent" && len(r.Definition.Operations) == 1 && (r.Definition.Operations[0].Name == "application.question" || r.Definition.Operations[0].Name == "db-proxy.replace-nodes")
 }
-func messageAllowedStatus(status string) bool {
-	switch status {
+func messageAllowedStatus(r domain.Request) bool {
+	if r.Definition.Operations[0].Name == "db-proxy.replace-nodes" {
+		return r.Status == "running"
+	}
+	switch r.Status {
 	case "queued", "preparing", "running", "waiting_for_permission", "waiting_for_pr_review", "completed":
 		return true
 	}
@@ -111,7 +114,7 @@ func (s *Service) SubmitMessage(ctx context.Context, actor domain.User, requestI
 	if e != nil {
 		return out, e
 	}
-	if !cap.CanContinue || !messageAllowedStatus(r.Status) {
+	if !cap.CanContinue || !messageAllowedStatus(r) {
 		return out, domain.ErrConflict
 	}
 	var pending int
@@ -199,7 +202,7 @@ func (s *Service) conversationView(ctx context.Context, actor domain.User, r dom
 		v.Reason = "ConversationUnavailable"
 		return v
 	}
-	if !cap.CanContinue || !messageAllowedStatus(r.Status) {
+	if !cap.CanContinue || !messageAllowedStatus(r) {
 		v.Reason = cap.Reason
 		if v.Reason == "" {
 			v.Reason = "ConversationNotReady"
