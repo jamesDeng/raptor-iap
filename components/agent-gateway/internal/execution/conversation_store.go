@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const pgcatMessageLimit = 3
+
 func (s *Store) Conversation(ctx context.Context, id string) (ConversationCapability, error) {
 	v := ConversationCapability{Version: 1, Enabled: s.ConversationEnabled && s.ConversationRuntime, Reason: "ConversationDisabled"}
 	x, e := s.Get(ctx, id)
@@ -24,7 +26,7 @@ func (s *Store) Conversation(ctx context.Context, id string) (ConversationCapabi
 	}
 	if json.Unmarshal(x.Input.Definition, &definition) == nil && len(definition.Operations) == 1 && definition.Operations[0].Name == "db-proxy.replace-nodes" {
 		if !x.RecoveryNeeded && x.Status == "running" && x.Stage == "running" {
-			e = s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway.conversation_sessions WHERE request_id=$1 AND attempt_id=$2 AND input_open)", id, x.AttemptID).Scan(&v.CanContinue)
+			e = s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway.conversation_sessions WHERE request_id=$1 AND attempt_id=$2 AND input_open) AND (SELECT count(*) FROM gateway.conversation_messages WHERE request_id=$1 AND attempt_id=$2)<$3", id, x.AttemptID, pgcatMessageLimit).Scan(&v.CanContinue)
 		}
 		v.Reason = "ConversationNotReady"
 		if v.CanContinue {
@@ -138,6 +140,14 @@ func (s *Store) queueMessage(ctx context.Context, in ConversationInput, rejected
 		}
 		if !open {
 			out.Status, out.Reason = "rejected", "ConversationNotReady"
+		} else {
+			var messages int
+			if e = tx.QueryRow(ctx, "SELECT count(*) FROM gateway.conversation_messages WHERE request_id=$1 AND attempt_id=$2", in.RequestID, attempt).Scan(&messages); e != nil {
+				return out, e
+			}
+			if messages >= pgcatMessageLimit {
+				out.Status, out.Reason = "rejected", "MessageCapacity"
+			}
 		}
 	}
 	if containsSensitive(text, s.KnownSecrets) {

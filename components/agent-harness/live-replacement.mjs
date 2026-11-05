@@ -142,7 +142,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     ? 'Resuming PgCat replacement. I’ll recheck the fleet and application before taking the next step.'
     : 'Starting PgCat replacement. I’ll verify the current fleet and application before changing capacity.');
    if(conversation?.enabled===true&&!error){
-    inbox=startPgcatTroubleshooting({binding:b,privateRoot,model,stream,getProgress:()=>[phaseSummary,...publicStatus],onProgress:progress,onUsage:u=>replyUsage.push(u)});
+    inbox=startPgcatTroubleshooting({binding:b,privateRoot,model,stream,getProgress:()=>[phaseSummary,...publicStatus],onProgress,onUsage:u=>replyUsage.push(u)});
     inboxTimer=setInterval(()=>{void inbox.poll().catch(()=>{});},100);
    }
    if(!error)await session.prompt((qualification?'Execute read-only qualification using its pinned skill.':'Execute the selected request operation using its pinned skill.')+(decisionContext?'\nVerified continuation context: '+JSON.stringify(decisionContext):''));}
