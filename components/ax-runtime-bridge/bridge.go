@@ -449,7 +449,7 @@ func (s *Service) File(ctx context.Context, r Request) (Response, error) {
 		return out, e
 	}
 	if r.Action == "write" {
-		if _, started := v.Processes["inference"]; started && r.Path != "/tmp/raptor-private/attempt-cancel" && r.Path != "/tmp/raptor-private/model-refresh-ack.json" {
+		if _, started := v.Processes["inference"]; started && r.Path != "/tmp/raptor-private/attempt-cancel" && r.Path != "/tmp/raptor-private/model-refresh-ack.json" && r.Path != "/tmp/raptor-private/conversation-inbox.json" {
 			return out, ErrInvalid
 		}
 	}

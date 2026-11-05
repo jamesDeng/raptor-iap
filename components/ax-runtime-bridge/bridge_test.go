@@ -554,3 +554,39 @@ func TestBridgeUpgradeKeepsAttemptImageForCleanup(t *testing.T) {
 		t.Fatal("bridge image update broke owned cleanup", e)
 	}
 }
+
+func TestConversationInboxWritableDuringInference(t *testing.T) {
+	s := service(t, &fakeBackend{})
+	r := request()
+	if _, err := s.Ensure(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"prepare", "restore", "inference"} {
+		r.Phase = phase
+		if _, err := s.Start(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.Action = "write"
+	r.Data = []byte(`{"version":1,"messages":[]}`)
+	for _, tc := range []struct {
+		path    string
+		allowed bool
+	}{
+		{"/tmp/raptor-private/conversation-inbox.json", true},
+		{"/tmp/raptor-private/conversation-inbox.json.bak", false},
+		{"/tmp/raptor-private/attempt-job.json", false},
+		{"/tmp/raptor-private/model-credential.json", false},
+	} {
+		r.Path = tc.path
+		_, err := s.File(context.Background(), r)
+		if (err == nil) != tc.allowed {
+			t.Errorf("write %s: error=%v, allowed=%t", tc.path, err, tc.allowed)
+		}
+	}
+	r.Path = "/tmp/raptor-private/conversation-inbox.json"
+	r.Binding.RequestID = "cccccccc-cccc-4ccc-accc-cccccccccccc"
+	if _, err := s.File(context.Background(), r); err == nil {
+		t.Fatal("foreign request inbox write accepted")
+	}
+}
