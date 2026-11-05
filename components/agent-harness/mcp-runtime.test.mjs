@@ -154,3 +154,28 @@ test('question and repository catalogs retain legitimate current schemas includi
   assert.deepEqual(visible,tools);const status=visible.find(tool=>tool.name==='deployment_status_get');if(status){assert.deepEqual(status.inputSchema.required,['envCode','appCode']);assert.equal(status.inputSchema.properties.workloadKey.type,'string');}
  }
 });
+
+
+test('replacement object lookup schema rejects a mistyped request id before execution',async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');
+ const {validateToolArguments}=await import('@earendil-works/pi-ai');
+ const {operationCapabilities}=await import('./operation-profile.mjs');
+ const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'replacement'};
+ const scope={envCode:'rdev.ali',proxyCode:'DP00001',groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'D00002',application:{envCode:'rdev.ali',appCode:'A00003',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
+ for(const server of ['raptor','infra']){
+  const tools=operationCapabilities(b,scope)[server].map(name=>({name,inputSchema:operationToolSchema(server,name)}));
+  const guarded=createGuardedFetch({server,url:'https://'+server+'.example/mcp',binding:b,replacementScope:scope,fetch:async()=>Response.json({jsonrpc:'2.0',id:1,result:{tools}})});
+  const response=await guarded('https://'+server+'.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});
+  const visible=(await response.json()).result.tools;
+  for(const tool of visible.filter(t=>t.inputSchema.properties.requestId))assert.deepEqual(tool.inputSchema.properties.requestId.enum,[b.requestId],server+'.'+tool.name);
+  if(server==='raptor'){
+   const schema=visible.find(t=>t.name==='object_get').inputSchema;
+   const args={requestId:b.requestId,kind:'db-proxy',code:'DP00001'};
+   const validate=arguments_=>validateToolArguments({name:'mcp__raptor__object_get',parameters:schema},{type:'toolCall',id:'lookup',name:'mcp__raptor__object_get',arguments:arguments_});
+   assert.deepEqual(validate(args),args);
+   assert.throws(()=>validate({...args,requestId:'11111111-1111-4111-811-111111111111'}),/Validation failed/);
+   for(const ref of [{kind:'application',code:'A00003'},{kind:'database',code:'D00002'}])assert.deepEqual(validate({...args,...ref}),{...args,...ref});
+  }
+  for(const tool of tools.filter(t=>t.inputSchema.properties.requestId))assert.equal(tool.inputSchema.properties.requestId.enum,undefined);
+ }
+});

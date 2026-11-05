@@ -6,6 +6,7 @@ function normalizedReceipt(server,tool,data,binding){
  return binding.operation==='db-proxy.replace-nodes'&&server==='infra'&&submissionReceipts.has(tool)&&data?.outcome==='accepted'?{...data,outcome:'submitted'}:data;
 }
 function scopedToolSchema(server,tool,schema,b,scope){
+ if(schema.properties.requestId)schema={...schema,properties:{...schema.properties,requestId:{...schema.properties.requestId,enum:[b.requestId]}}};
  if(b.executionMode==='qualification'&&server==='raptor'&&tool==='request_pause')return {...schema,properties:{requestId:{...schema.properties.requestId,enum:[b.requestId]},reason:{...schema.properties.reason,enum:['waiting_approval']}},required:['requestId','reason'],additionalProperties:false};
  if(server==='raptor'&&tool==='approval_request')return {...schema,properties:{...schema.properties,
   requestId:{...schema.properties.requestId,enum:[b.requestId]},
