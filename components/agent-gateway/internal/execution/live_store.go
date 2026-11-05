@@ -177,7 +177,7 @@ func (s *Store) RejectLiveClaim(ctx context.Context, attempt, owner, code string
 	if n != 0 {
 		return ErrInvalid
 	}
-	if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET status='failed',runtime_mode='live',stage='finished',cleanup='confirmed',failure_code=$2,recovery_needed=false WHERE request_id=$1", id, code); e != nil {
+	if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET status='failed',runtime_mode='live',stage='finished',cleanup='confirmed',cleanup_status='{\"sandboxAbsent\":true,\"keyAbsent\":true,\"accessRevoked\":true}',failure_code=$2,recovery_needed=false WHERE request_id=$1", id, code); e != nil {
 		return e
 	}
 	if _, e = tx.Exec(ctx, "UPDATE gateway.attempts SET state='failed',ended_at=now() WHERE id=$1", attempt); e != nil {

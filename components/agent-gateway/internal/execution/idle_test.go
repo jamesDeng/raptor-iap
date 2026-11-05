@@ -37,3 +37,36 @@ func TestIdleCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestIdleLiveCancellationUsesConfirmedCleanupProof(t *testing.T) {
+	for _, missing := range []string{"", "sandboxAbsent", "keyAbsent", "accessRevoked"} {
+		t.Run(missing, func(t *testing.T) {
+			s := testStore(t)
+			ctx := context.Background()
+			id := NewID()
+			proof := `{"sandboxAbsent":true,"keyAbsent":true,"accessRevoked":true}`
+			if _, err := s.Pool.Exec(ctx, `INSERT INTO gateway.executions(request_id,status,runtime_mode,cleanup,cleanup_status) VALUES($1,'cancelled','live','pending',$2)`, id, proof); err != nil {
+				t.Fatal(err)
+			}
+			if missing != "" {
+				if _, err := s.Pool.Exec(ctx, `UPDATE gateway.executions SET cleanup_status=cleanup_status-$2 WHERE request_id=$1`, id, missing); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := s.CheckIdle(ctx); (got == nil) != (missing == "") {
+				t.Fatalf("cleanup proof %q: %v", missing, got)
+			}
+		})
+	}
+}
+
+func TestIdleAfterRejectedLiveClaim(t *testing.T) {
+	s, x, _ := liveAttempt(t)
+	ctx := context.Background()
+	if err := s.RejectLiveClaim(ctx, x.AttemptID, "owner", "InvalidResult"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckIdle(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

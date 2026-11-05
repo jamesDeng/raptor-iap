@@ -191,3 +191,46 @@ func TestLiveCompletionRejectsSimulatedContext(t *testing.T) {
 		t.Fatal("simulated context accepted for live success")
 	}
 }
+
+func TestCancelledRequestAcceptsCancellationSnapshotInsteadOfStaleRunning(t *testing.T) {
+	s, in, u := setup(t)
+	ctx := context.Background()
+	r, err := s.Create(ctx, u, "cancel-cache", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().UTC()
+	running := map[string]any{"requestId": r.ID, "attemptId": "attempt", "status": "running", "updatedAt": stamp.Format(time.RFC3339Nano)}
+	if _, _, _, err = s.syncExecution(ctx, r, running); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Pool.Exec(ctx, "UPDATE raptor.requests SET status='cancelled' WHERE id=$1", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := map[string]any{"requestId": r.ID, "attemptId": "attempt", "status": "cancelled", "updatedAt": stamp.Add(time.Second).Format(time.RFC3339Nano)}
+	got, _, accepted, err := s.syncExecution(ctx, r, cancelled)
+	if err != nil || !accepted || got["status"] != "cancelled" {
+		t.Fatalf("cancelled request retained active snapshot: %v %v %v", got, accepted, err)
+	}
+	late := map[string]any{"requestId": r.ID, "attemptId": "attempt", "status": "running", "updatedAt": stamp.Add(2 * time.Second).Format(time.RFC3339Nano)}
+	got, _, accepted, err = s.syncExecution(ctx, r, late)
+	if err != nil || accepted || got["status"] != "cancelled" {
+		t.Fatalf("late active snapshot reopened cancellation: %v %v %v", got, accepted, err)
+	}
+}
+
+func TestCancelledRequestWithoutSnapshotRejectsRunning(t *testing.T) {
+	s, in, u := setup(t)
+	ctx := context.Background()
+	r, err := s.Create(ctx, u, "cancel-no-cache", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Pool.Exec(ctx, "UPDATE raptor.requests SET status='cancelled' WHERE id=$1", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _, accepted, err := s.syncExecution(ctx, r, map[string]any{"status": "running", "updatedAt": time.Now().UTC().Format(time.RFC3339Nano)})
+	if err != nil || accepted || got != nil {
+		t.Fatalf("cancelled request accepted active snapshot: %v %v %v", got, accepted, err)
+	}
+}

@@ -12,7 +12,10 @@ func (s *Store) CheckIdle(ctx context.Context) error {
 	var busy bool
 	err := s.Pool.QueryRow(ctx, `SELECT
  EXISTS(SELECT 1 FROM gateway.attempts WHERE ended_at IS NULL) OR
- EXISTS(SELECT 1 FROM gateway.executions WHERE status IN ('queued','running','paused','waiting_approval','waiting_resource') OR recovery_needed OR cleanup <> 'confirmed') OR
+ EXISTS(SELECT 1 FROM gateway.executions WHERE status IN ('queued','running','paused','waiting_approval','waiting_resource') OR recovery_needed OR
+ CASE WHEN runtime_mode='live' THEN
+ NOT COALESCE(cleanup_status @> '{"sandboxAbsent":true,"keyAbsent":true,"accessRevoked":true}'::jsonb,false)
+ ELSE cleanup <> 'confirmed' END) OR
  EXISTS(SELECT 1 FROM gateway.runtime_slot WHERE request_id IS NOT NULL OR owner IS NOT NULL OR unresolved) OR
  NOT EXISTS(SELECT 1 FROM gateway.runtime_slot WHERE id=1)`).Scan(&busy)
 	if err != nil || busy {
