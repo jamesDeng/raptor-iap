@@ -208,6 +208,14 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 			return old, &oldSync, false, nil
 		}
 	}
+	// Cancellation may reach Raptor before its final Gateway snapshot.
+	// Accept cleanup progress, but never reopen a cancelled request.
+	if status == "cancelled" && candidate["status"] != "cancelled" {
+		if old == nil {
+			return nil, nil, false, nil
+		}
+		return old, &oldSync, false, nil
+	}
 	if old != nil {
 		stale := false
 		// A poll may race continuation dispatch and return the previous terminal
@@ -220,7 +228,7 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 			}
 			stale = pending || isQualification(r.Definition)
 		}
-		if status == "completed" || status == "cancelled" {
+		if status == "completed" {
 			stale = !reflect.DeepEqual(candidate, old)
 		}
 		oldStamp, _ := old["updatedAt"].(string)
