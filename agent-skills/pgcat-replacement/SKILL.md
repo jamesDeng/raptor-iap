@@ -7,15 +7,27 @@ description: Use when replacing or reconciling PgCat ECS nodes in the dedicated 
 
 replacement-contract: resource-v1
 
-Release candidate: skills-v0.5.1. Publish as a new immutable release; never move skills-v0.5.0 or skills-v0.4.0. The runtime selects this contract from verified content, not a tag name.
+Release candidate: skills-v0.5.2. Publish a new immutable release; preserve all earlier tags. The runtime selects this contract from verified content, not a tag name.
 
 Use the [runtime contracts](references/contracts.md) and [recovery rules](references/recovery.md). These instructions match the implementation under qualification; they do not establish live deployment or authorize enablement. Begin only after controller preflight enables this dedicated request.
 
 Keep the same request ID, definition, resolved scope and selected skill SHA across every resume. A fresh attempt is not a new request. Use only the supplied group, backend, database and application binding; never derive application dependencies from unrelated tags. Infra API independently enforces membership, exact approval and safety gates.
 
+## Initial read rounds
+
+First discover the scoped application workloadKey through Raptor deployments_list and the exact two original IDs through cloud_read(fleet). With those selectors known, complete one read round containing every required receipt:
+
+- Raptor request_get, environment_get, object_get and application deployments_list.
+- Infra proxy deployments_list and application deployment_status_get({envCode, appCode, workloadKey}).
+- Direct deployment_read({}); cloud_read for fleet, backend and capacity; db_connection_probe for both exact originals; metrics_read for trafficFailures, connections and pgcatClients.
+
+Infra deployment_status_get and direct deployment_read are separate required slots. A native Kubernetes Deployment read does not fill the Infra MCP slot. Run metrics last in the round, then use its completed results before the first mutation. Batch these reads to avoid model-turn delays: current receipts must remain within the runtime's 30-second freshness window, with PgCat metric sources within 15 seconds. Refresh aged receipts before proceeding.
+
+After SQL succeeds, inspect the entire checklist. If only read tools remain available, complete or refresh missing/aged slots and continue reading; the baseline is not finished. Only a completed valid baseline unlocks the first protection or expansion call.
+
 ## Direct two-node strategy
 
-1. Read request/environment/object, scoped Raptor application discovery and Infra proxy deployment/status. Read the bound application Deployment and cloud fleet, capacity and backend plus trafficFailures, connections and pgcatClients metrics. Require exact original desired/fleet two, healthy registration, complete fresh raw pool/user triplets, running correctness traffic and successful read-only SQL probes on both originals. If both originals are already protected, retain that fresh proof without a redundant write. Otherwise protect both and observe protection before expanding 2→4 once with a stable unique action ID.
+1. Complete the initial read rounds above, including both Infra deployment_status_get and direct deployment_read. Require exact original desired/fleet two, healthy registration, complete fresh raw pool/user triplets, running correctness traffic and successful read-only SQL probes on both originals. If both originals are already protected, retain that fresh proof without a redundant write. Otherwise protect both and observe protection before expanding 2→4 once with a stable unique action ID.
 2. Observe all four fleet/backend members, desired four and complete fresh PgCat client metrics. Each of the exact two new nodes must be healthy, registered and have at least one active or idle client connection across its raw pool/user triplets. Waiting connections alone do not qualify; a missing series is unknown and blocks readiness. Do not require SQL on the new pair. The runtime checkpoints resource_wait(seconds=60) in the completed expansion round, even when expansion uses turn ten. Stop there. On resume rediscover scoped workloads and inspect current state; during boot use resource_wait(seconds=60). A persisted readyFour witness defines the only replacement pair, not a substitute for fresh health and metrics on resume. Protect that pair and freshly observe both protected and healthy. Never replace the cohort with arbitrary IDs.
 3. At desired four, deregister both exact originals in one batch or two disjoint batches. Observe both absent from the backend while both replacements remain protected, healthy and registered. Perform a mandatory 60-second resource_wait and stop. On verified resume, rediscover the opaque application workloadKey and collect fresh fleet, backend, capacity, complete metrics with at least one active or idle client on each exact new node, and bound Deployment evidence. Only after the persisted wait completes and those checks succeed, rolling-restart the scope-bound client Deployment once.
 4. Read deployment_read until its actual observedGeneration reaches the restart receipt generation and replicas, updatedReplicas, readyReplicas and availableReplicas are all two. During the surge use resource_wait(seconds=60) and stop the completed round. Traffic client discovery requires exactly two Ready clients: do not query trafficFailures/connections during the surge or treat discovery refusal as successful traffic. After rollout, require fresh complete PgCat metrics whose TOTAL active+idle+waiting across BOTH originals and every pool/user is a combined integer 0 or 1; refuse 2 or more. This is one combined budget, never one per node. Exclude protected retained-node clients from that retiring budget. Missing series are not zero.
