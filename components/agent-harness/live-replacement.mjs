@@ -32,10 +32,10 @@ const WORK_UPDATES=new Map([
  ['mcp__infra__deployment_restart','I’ll request a restart of the bound application.']
 ]);
 export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:b,replacementScope,skills,limits,mcpConfig,fetch,onProgress=()=>{},signal,sessionReference,decisionContext,observer,conversation}){
- let session,mcp,manager,timer,error,inbox,inboxTimer,turns=0;const usage=[],replyUsage=[],toolDiagnostics=new Map(),publicStatus=[],announced=new Set();
+ let session,mcp,manager,error,inbox,inboxTimer,turns=0;const usage=[],replyUsage=[],toolDiagnostics=new Map(),publicStatus=[],announced=new Set();
  const stream=runtime.streamSimple.bind(runtime),pause=new ApprovalPause(b),profile=operationCapabilities(b,replacementScope);
  const tools=Object.entries(profile).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name)).concat(observer?OBSERVATION_TOOLS:[]).concat(['resource_wait']);
- if(limits?.model_seconds!==90||limits?.max_turns!==10||limits?.max_output_tokens!==1024)throw Error('InvalidJob');
+ if(limits?.max_turns!==10||limits?.max_output_tokens!==1024)throw Error('InvalidJob');
  const abort=()=>{error||='Cancelled';void session?.abort();};
  const progress=event=>{try{
   onProgress(event);
@@ -102,7 +102,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
      manager.appendCustomEntry('raptor-qualification-pause-v1',{version:1,wait:pause.endRound(),toolCall:outcome.toolCall,acknowledgement:qualificationPauseAck});
     }
     if(decisionContext?.decision==='resume'){
-     try{trace.complete();clearTimeout(timer);return {action:'end'};}catch(e){if(e.message!=='MissingEvidence')throw e;}
+     try{trace.complete();return {action:'end'};}catch(e){if(e.message!=='MissingEvidence')throw e;}
     }
    }
    if(!qualification&&!error&&!readFailure&&!signal?.aborted){
@@ -120,7 +120,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    }
    if(!qualification&&!error){const next=allowedTools();if(activeTools!==next){activeTools=next;session.setActiveToolsByName(activeTools);}}
    const wait=pause.endRound();
-   if(wait){if(!qualification)sequence.recordResourceWait(wait);clearTimeout(timer);return {action:'end'};}
+   if(wait){if(!qualification)sequence.recordResourceWait(wait);return {action:'end'};}
    return decision;
   };
   session.subscribe(event=>{
@@ -133,7 +133,6 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    if(event.type==='message_end'&&event.message.role==='assistant'){const message=event.message,u=message.usage;if(message.model!==b.model||message.provider!==model.provider||['error','aborted'].includes(message.stopReason)||!u||![u.input,u.output,u.totalTokens].every(n=>Number.isSafeInteger(n)&&n>=0)){error||='ModelFailed';void session.abort();}else usage.push({input:u.input,output:u.output,totalTokens:u.totalTokens});const summary=publicProgressFromMessage(message);if(summary)progress({kind:'progress',outcome:'running',summary});}
   });
   signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
-  timer=setTimeout(()=>{error||='Timeout';void session.abort();},90000);
   if(!error){if(!await runtime.getAuth(model,{signal:signal??AbortSignal.timeout(90000)}))throw Error('NeedsSignIn');narrate(qualification
    ? decisionContext?.decision==='resume'
     ? 'Resuming read-only PgCat qualification. I’ll verify the approval and repeat the baseline checks.'
@@ -170,5 +169,5 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const result={requestId:b.requestId,attemptId:b.attemptId,selectedModel:b.model,actualModel:session.model?.id,selectedProvider:b.providerId||'openai',actualProvider:session.model?.provider,answer:'Replacement converged; retained traffic and approval assessment is pending.',replacement,evidence:[],usage,generatedAt:new Date().toISOString()};
   return {passed:true,result,sessionReference:operationSessionReference(manager,b,stateRoot),usage};
  }catch(e){const allowed=['MissingEvidence','InvalidEvidence','MutationAlreadySubmitted','NeedsSignIn','Cancelled','Timeout','TurnLimit','McpUnavailable','ToolFailed','UnexpectedToolCatalog','InvalidProgress','InvalidApprovalPause','InvalidSessionReference','InvalidSkillsRelease','ResourceContractMigrationRequired'];return {passed:false,error:allowed.includes(e.message)?e.message:'ModelFailed',usage};}
- finally{clearInterval(inboxTimer);inbox?.close();clearTimeout(timer);signal?.removeEventListener('abort',abort);if(session){await session.abort();await session.extensionRunner.emit({type:'session_shutdown',reason:'exit'});session.dispose();}await mcp?.dispose();runtime.streamSimple=stream;}
+ finally{clearInterval(inboxTimer);inbox?.close();signal?.removeEventListener('abort',abort);if(session){await session.abort();await session.extensionRunner.emit({type:'session_shutdown',reason:'exit'});session.dispose();}await mcp?.dispose();runtime.streamSimple=stream;}
 }
