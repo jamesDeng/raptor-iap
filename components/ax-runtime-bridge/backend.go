@@ -269,6 +269,11 @@ func (b *SDKBackend) Run(ctx context.Context, n, phase string) (string, error) {
 	return v.GetProcessId(), nil
 }
 func processTimeout(phase, workspace string) time.Duration {
+	if phase == "inference" {
+		// Gateway owns the attempt lifecycle. Zero uses the guest watchdog
+		// (one hour), avoiding a shorter independent inference cutoff.
+		return 0
+	}
 	if phase == "prepare" && strings.HasPrefix(workspace, "raptor-repositories-") {
 		return 5 * time.Minute // Up to 32 public fetches in eight bounded workers.
 	}

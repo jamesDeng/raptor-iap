@@ -19,10 +19,10 @@ export function validateRepositoryJob({binding,question},manifest){
 }
 
 export async function runLiveRepository({stateRoot,privateRoot,runtime,limits,request,mcpConfig,fetch,skills,onProgress=()=>{},signal}){
- let session,mcp,timer,error,turns=0,answer='',attached=false;const usage=[];
+ let session,mcp,error,turns=0,answer='',attached=false;const usage=[];
  const manifest=JSON.parse(fs.readFileSync('/workspace/.raptor-repositories.json','utf8'));
  const input=validateRepositoryJob(request,manifest),b=input.binding;
- if(limits?.model_seconds!==90||limits?.max_turns!==10||limits?.max_output_tokens!==1024||stateRoot!=='/workspace/raptor-state'||privateRoot!=='/tmp/raptor-private')throw Error('InvalidJob');
+ if(limits?.max_turns!==10||limits?.max_output_tokens!==1024||stateRoot!=='/workspace/raptor-state'||privateRoot!=='/tmp/raptor-private')throw Error('InvalidJob');
  const stream=runtime.streamSimple.bind(runtime);
  runtime.streamSimple=(model,context,options)=>{if(++turns>10)throw Error('TurnLimit');return stream(model,context,{...options,maxTokens:1024,maxRetries:0});};
  const abort=()=>{error||='Cancelled';void session?.abort();};
@@ -46,11 +46,11 @@ export async function runLiveRepository({stateRoot,privateRoot,runtime,limits,re
    if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(event.isError&&terminalRepositoryToolFailure(event.toolName)){error||='ToolFailed';void session.abort();}}
    if(event.type==='message_end'&&event.message.role==='assistant'){const m=event.message,u=m.usage;if(m.model!==b.model||m.provider!==provider||['error','aborted'].includes(m.stopReason)||!u||![u.input,u.output,u.totalTokens].every(n=>Number.isSafeInteger(n)&&n>=0)){error||='ModelFailed';void session.abort();}else usage.push({input:u.input,output:u.output,totalTokens:u.totalTokens});const summary=publicProgressFromMessage(m);if(summary)progress({kind:'progress',outcome:'running',summary});answer=m.stopReason==='stop'?m.content.filter(c=>c.type==='text').map(c=>c.text).join('').trim():'';}
   });
-  signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();timer=setTimeout(()=>{error||='Timeout';void session.abort();},90000);
+  signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
   if(!error){if(!await runtime.getAuth(model,{signal:signal??AbortSignal.timeout(90000)}))throw Error('NeedsSignIn');await session.prompt(input.question,{expandPromptTemplates:false});}
   if(error)throw Error(error);
   if(!attached||!answer||Buffer.byteLength(answer)>16384)throw Error('InvalidResult');
   return {passed:true,result:{requestId:b.requestId,attemptId:b.attemptId,selectedModel:b.model,actualModel:session.model?.id,selectedProvider:b.providerId||'openai',actualProvider:session.model?.provider,answer,evidence:[],usage,generatedAt:new Date().toISOString()}};
  }catch(e){return {passed:false,error:['Cancelled','Timeout','TurnLimit','ToolFailed','NeedsSignIn','UnexpectedToolCatalog','InvalidProgress','InvalidResult','InvalidSkillsRelease'].includes(e.message)?e.message:'ModelFailed'};}
- finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);if(session){await session.abort();await session.extensionRunner.emit({type:'session_shutdown',reason:'exit'});session.dispose();}await mcp?.dispose();runtime.streamSimple=stream;}
+ finally{signal?.removeEventListener('abort',abort);if(session){await session.abort();await session.extensionRunner.emit({type:'session_shutdown',reason:'exit'});session.dispose();}await mcp?.dispose();runtime.streamSimple=stream;}
 }
