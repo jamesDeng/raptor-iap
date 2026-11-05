@@ -60,7 +60,12 @@ func (c HTTPRaptor) accessCall(ctx context.Context, method, route string, body [
 	}
 	r.SetBasicAuth(c.Username, c.Password)
 	r.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	timeout := 10 * time.Second
+	if method == http.MethodPost {
+		// Issuance waits for Raptor's fresh Infra proof, which can take 30 seconds.
+		timeout = 45 * time.Second
+	}
+	client := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, e := client.Do(r)
 	if e != nil {
 		log.Printf("raptor access transport failed method=%s class=%T", method, e)

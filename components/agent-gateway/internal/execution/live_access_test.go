@@ -49,3 +49,20 @@ func TestAttemptAccessRejectsBroadenedBindingAndRedirect(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentAccessIssuanceWaitsForFreshInfraProof(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/requests/proof/agent-access" {
+			t.Errorf("unexpected access request: %s %s", r.Method, r.URL.Path)
+		}
+		time.Sleep(11 * time.Second) // A fresh Infra proof may outlive the old 10-second client limit.
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"data":{}}`))
+	}))
+	defer s.Close()
+
+	c := HTTPRaptor{BaseURL: s.URL, Username: "service", Password: "fixture"}
+	if _, err := c.accessCall(context.Background(), http.MethodPost, "/v1/requests/proof/agent-access", []byte(`{}`)); err != nil {
+		t.Fatalf("fresh proof response was lost: %v", err)
+	}
+}
