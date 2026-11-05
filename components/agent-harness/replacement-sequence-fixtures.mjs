@@ -17,7 +17,7 @@ function observations(ids=old,{withdrawn=[],unprotected=[],zero=false,generation
  fleet:{groupId:'group',observedAt:at,instances:ids.map(instanceId=>({instanceId,protectedFromScaleIn:!unprotected.includes(instanceId),lifecycleState:unprotected.includes(instanceId)?'InService':'Protected',healthStatus:'Healthy'}))},
  backend:{serverGroupId:'backend',observedAt:at,nodes:ids.filter(id=>!withdrawn.includes(id)).map(instanceId=>({instanceId,registered:true,healthy:true,status:'Available'}))},
  capacity:{groupId:'group',desiredCapacity:ids.length,minSize:2,maxSize:4,observedAt:at},
- metrics:{observedAt:at,sourceAt:at,responseAt:at,latestSourceAt:at,latestResponseAt:at,pendingInstanceIds:[],nodes:ids.map(instanceId=>({instanceId,connectedClients:zero?0:3,pools:[{instanceId,pool:'db',user:'client',active:zero?0:1,idle:zero?0:2,waiting:0}]}))},
+ metrics:{observedAt:at,sourceAt:at,responseAt:at,latestSourceAt:at,latestResponseAt:at,pendingInstanceIds:[],nodes:ids.map(instanceId=>({instanceId,connectedClients:zero&&old.includes(instanceId)?0:3,pools:[{instanceId,pool:'db',user:'client',active:zero&&old.includes(instanceId)?0:1,idle:zero&&old.includes(instanceId)?0:2,waiting:0}]}))},
  deployment:{...scope.application,generation,observedGeneration:generation,replicas:2,readyReplicas:2,updatedReplicas:2,availableReplicas:2,observedAt:at},
  trafficFailures:{observedAt:at,samples:['a','b'].flatMap(instance=>['failure','timeout','ambiguous'].map(outcome=>({instance,outcome,value:0,timestamp:Date.now()/1000})))},
  connections:{observedAt:at,samples:['a','b'].map(instance=>({instance,value:10,timestamp:Date.now()/1000}))},

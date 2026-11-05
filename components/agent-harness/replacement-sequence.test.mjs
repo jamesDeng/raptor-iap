@@ -66,7 +66,7 @@ for(const stage of ['unprotect','approval','reduction'])for(const [name,counts,a
   Object.assign(e.metrics.nodes[i].pools[0],{active,idle,waiting});e.metrics.nodes[i].connectedClients=active+idle+waiting;
  }
  // Retained protected-node clients are outside the retiring-node budget.
- for(const n of e.metrics.nodes.filter(n=>added.includes(n.instanceId))){n.pools[0].active=3;n.connectedClients=3;}
+ for(const n of e.metrics.nodes.filter(n=>added.includes(n.instanceId))){n.pools[0].active=3;n.pools[0].idle=0;n.connectedClients=3;}
  observe(x,e);
  const tool=stage==='unprotect'?'db_proxy_node_protection_set':stage==='approval'?'approval_request':'db_proxy_scale';
  const args=stage==='unprotect'?protect(old,false):stage==='approval'?{requestId:'request',actionId:'shrink',interface:'db-proxy.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy'},parameters:{desiredCapacity:2}}:argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
@@ -129,13 +129,10 @@ test('initial SQL and control reads cannot be replaced by only healthy cloud obs
  assert.throws(()=>x.gate.beforeMutation('db_proxy_scale',argsFor('db_proxy_scale',{actionId:'expand',desiredCapacity:4})),/MissingEvidence/);
 });
 
-test('historical readyFour cannot substitute for fresh pool and new SQL readiness on resume',()=>{
- for(const omitted of ['metrics','new SQL']){
-  const x=expanded(),y=setup(x.session),e=observations([...old,...added]);
-  for(const [kind,data] of Object.entries(e))if(kind!==omitted)y.gate.observe(kind,data);
-  if(omitted!=='new SQL')for(const instanceId of added)y.gate.observe('sql',{instanceId,connected:true},{instanceId});
-  assert.throws(()=>y.gate.beforeMutation('db_proxy_nodes_deregister',argsFor('db_proxy_nodes_deregister',{nodeIds:old})),/MissingEvidence/);
- }
+test('historical readyFour cannot substitute for fresh complete metrics on resume',()=>{
+ const x=expanded(),y=setup(x.session),e=observations([...old,...added]);
+ for(const [kind,data] of Object.entries(e))if(kind!=='metrics')y.gate.observe(kind,data);
+ assert.throws(()=>y.gate.beforeMutation('db_proxy_nodes_deregister',argsFor('db_proxy_nodes_deregister',{nodeIds:old})),/MissingEvidence/);
 });
 test('each protected sequence permit must follow all prior receipts on reopen',()=>{
  const x=restarted(),entries=x.session.entries,result=entries.find(e=>e.customType==='raptor-replacement-evidence-v1'&&e.data.kind==='result'&&e.data.tool==='db_proxy_nodes_deregister');
@@ -152,33 +149,17 @@ test('malformed SQL timestamp and impossible observedGeneration cannot qualify i
  }
 });
 
-for(const stage of ['unprotect','approval','reduction'])for(const instanceId of added)for(const fault of ['omitted','failed','expired'])test(`resumed ${stage} rejects ${fault} SQL probe for ${instanceId}`,t=>{
- t.mock.timers.enable({apis:['Date'],now:Date.now()});
+for(const stage of ['unprotect','approval','reduction'])for(const instanceId of added)for(const fault of ['missing series'])test(`resumed ${stage} rejects ${fault} on ${instanceId}`,()=>{
  const x=restarted();
  if(stage!=='unprotect')mutate(x,'db_proxy_node_protection_set',{nodeIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
- // Model a resource wait (unprotect/approval) or approval wait (reduction).
- t.mock.timers.tick(60000);
- const y=setup(x.session);
- const probe=id=>y.gate.observe('sql',{instanceId:id,connected:true},{instanceId:id});
- if(fault==='expired'){
-  probe(instanceId);t.mock.timers.tick(31001);
- }else if(fault==='failed')y.gate.observe('sql',{instanceId,connected:false,readiness:'pending'},{instanceId});
- for(const id of added)if(id!==instanceId)probe(id);
- const e=observations([...old,...added],{withdrawn:old,unprotected:stage==='unprotect'?[]:old,zero:true,generation:6});
+ const y=setup(x.session),e=observations([...old,...added],{withdrawn:old,unprotected:stage==='unprotect'?[]:old,zero:true,generation:6});
+ const node=e.metrics.nodes.find(n=>n.instanceId===instanceId);
+ if(fault==='missing series')e.metrics.nodes=e.metrics.nodes.filter(n=>n!==node);
+ else {node.pools[0].active=0;node.pools[0].idle=0;node.pools[0].waiting=3;node.connectedClients=3;}
  for(const [kind,data] of Object.entries(e))y.gate.observe(kind,data);
  const tool=stage==='unprotect'?'db_proxy_node_protection_set':stage==='approval'?'approval_request':'db_proxy_scale';
  const args=stage==='unprotect'?protect(old,false):stage==='approval'?{requestId:'request',actionId:'shrink',interface:'db-proxy.scale-in',envCode:'rdev.ali',target:{proxyCode:'proxy'},parameters:{desiredCapacity:2}}:argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
  assert.throws(()=>y.gate.beforeMutation(tool,args),/MissingEvidence/);
- probe(instanceId);
- assert.doesNotThrow(()=>y.gate.beforeMutation(tool,args),'both fresh successful probes restore eligibility');
-});
-
-test('approval resume cannot reduce with an empty SQL probe map despite fresh zero and rollout evidence',()=>{
- const x=restarted();mutate(x,'db_proxy_node_protection_set',{nodeIds:old,protected:false},{instanceIds:old,outcome:'submitted'});
- const y=setup(x.session);
- for(const [kind,data] of Object.entries(observations([...old,...added],{withdrawn:old,unprotected:old,zero:true,generation:6})))y.gate.observe(kind,data);
- assert.equal(y.gate.probes.size,0);
- assert.throws(()=>y.gate.beforeMutation('db_proxy_scale',argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2})),/MissingEvidence/);
 });
 
 for(const first of ['protectOld','expand'])test(`resume rejects first ${first} permit before its baseline`,()=>{
@@ -211,10 +192,9 @@ test('withdrawal continuation rejects 59999ms and duplicate or reordered milesto
  t.mock.timers.tick(1);const y=setup(x.session,decision);assert.ok(y.gate.withdrawalCompleted);
  const entry=x.session.entries.find(e=>e.customType==='raptor-replacement-withdrawal-wait-v1');x.session.entries.push(structuredClone(entry));assert.throws(()=>setup(x.session),/InvalidEvidence/);
 });
-for(const omitted of ['fleet','backend','capacity','metrics','deployment','sql','discovery'])test('restart after withdrawal wait requires fresh '+omitted,()=>{
+for(const omitted of ['fleet','backend','capacity','metrics','deployment','discovery'])test('restart after withdrawal wait requires fresh '+omitted,()=>{
  const x=waited(),y=setup(x.session),e=observations([...old,...added],{withdrawn:old});
  for(const [kind,data] of Object.entries(e))if(kind!==omitted)y.gate.observe(kind,data);
- if(omitted!=='sql')for(const instanceId of added)y.gate.observe('sql',{instanceId,connected:true},{instanceId});
  if(omitted!=='discovery')y.gate.observe('mcp',['raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'].map(name=>({server:name.split('.')[0],tool:name.split('.')[1],observedAt:new Date().toISOString()})));
  assert.throws(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
 });

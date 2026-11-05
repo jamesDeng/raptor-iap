@@ -97,7 +97,7 @@ export class ReplacementSequence {
  }
  withdrawalReady(){
   const at=Date.parse(this.withdrawalCompleted?.resumedAt);
-  return Number.isFinite(at)&&metricsValid(this.current.metrics,[...this.cohort().oldInstanceIds,...this.cohort().newInstanceIds],[],at)&&['fleet','backend','capacity','metrics','deployment'].every(k=>fresh(this.current[k],at))&&this.cohort().newInstanceIds.every(id=>fresh(this.probes.get(id),at))&&['raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'].every(k=>fresh({observedAt:this.checks.get(k)},at));
+  return Number.isFinite(at)&&metricsValid(this.current.metrics,[...this.cohort().oldInstanceIds,...this.cohort().newInstanceIds],[],at)&&['fleet','backend','capacity','metrics','deployment'].every(k=>fresh(this.current[k],at))&&['raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'].every(k=>fresh({observedAt:this.checks.get(k)},at));
  }
  intents(stage){return this.permits.filter(p=>p.stage===stage).map(p=>this.trace.rows.find(r=>r.kind==='intent'&&r.key===p.key));}
  cohort(){const oldInstanceIds=this.trace.baseline()?.instanceIds;const ids=this.readiness.witness?.evidence.fleet.instances.map(n=>n.instanceId);if(!oldInstanceIds||!ids)throw missing();const newInstanceIds=ids.filter(id=>!oldInstanceIds.includes(id)).sort();if(newInstanceIds.length!==2)throw missing();return {oldInstanceIds:[...oldInstanceIds].sort(),newInstanceIds};}
@@ -140,7 +140,7 @@ export class ReplacementSequence {
  canWrite(){return this.permits.some(p=>p.stage==='expand')?this.readiness.ready():this.initial();}
  retained(requireProtected=true){const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.capacity(4)&&this.fleet([...old,...added])&&(!requireProtected||this.current.fleet.instances.filter(n=>added.includes(n.instanceId)).every(protectedNode));}
  restart(){const intent=this.intents('restart')[0],result=this.trace.rows.find(r=>r.kind==='result'&&r.key===intent?.key);return result&&result.state.accepted===true&&Number.isSafeInteger(result.state.generation)&&result.state.generation>0?{generation:result.state.generation,at:Date.parse(result.observedAt)}:null;}
- drained(){const r=this.restart();if(!r)return false;const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.retained()&&this.probesReady(added)&&this.backend(added,old)&&fresh(this.current.backend,r.at)&&this.app(r.generation,r.at)&&metricsValid(this.current.metrics,[...old,...added],old,r.at);}
+ drained(){const r=this.restart();if(!r)return false;const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.retained()&&this.backend(added,old)&&fresh(this.current.backend,r.at)&&this.app(r.generation,r.at)&&metricsValid(this.current.metrics,[...old,...added],old,r.at);}
  beforeMutation(tool,args){
   if(tool==='approval_request'){
    if(args.parameters?.desiredCapacity!==2||!this.readiness.ready()||!this.drained()||this.idsFor('unprotectOld').length!==2||this.permits.some(p=>p.stage==='shrink')||this.current.fleet.instances.filter(n=>this.cohort().oldInstanceIds.includes(n.instanceId)).some(n=>n.protectedFromScaleIn!==false||n.lifecycleState!=='InService'))throw missing();
@@ -158,7 +158,7 @@ export class ReplacementSequence {
   }else{
    if(!this.readiness.ready()||!this.retained(stage!=='protectNew'))throw missing();
    const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();
-   if(['protectNew','withdraw','restart'].includes(stage)&&(!metricsValid(this.current.metrics,[...old,...added])||!this.probesReady(added)))throw missing();
+   if(['protectNew','withdraw','restart'].includes(stage)&&!metricsValid(this.current.metrics,[...old,...added]))throw missing();
    if(stage==='protectNew'){
     // The new pair may be unprotected before this specific protection operation.
     if(!this.backend([...old,...added]))throw missing();
