@@ -37,7 +37,7 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
    round++;
   visibleTools.push(getCurrentTools(context.messages).map(tool=>tool.name));
   const readyCase=['ready','ready-unknown','ready-batch','ready-scale-batch'].includes(expansionCase);
-  const readinessCalls=[...['fleet','backend','capacity'].map(kind=>({name:'cloud_read',arguments:{kind}})),{name:'metrics_read',arguments:{kind:'pgcatClients'}},...['new-a','new-b'].map(instanceId=>({name:'db_connection_probe',arguments:{instanceId}}))];
+  const readinessCalls=[...['fleet','backend','capacity'].map(kind=>({name:'cloud_read',arguments:{kind}})),{name:'metrics_read',arguments:{kind:'pgcatClients'}}];
   const initialCalls=[
    {name:'mcp__raptor__request_get',arguments:{requestId:b.requestId}},
    {name:'mcp__raptor__environment_get',arguments:{requestId:b.requestId,envCode:b.envCode}},

@@ -37,8 +37,10 @@ function validEvidence(e,trace,expansion,at){
   }
   if(!Number.isSafeInteger(total)||node.connectedClients!==total)return false;
  }
- if(!exactIds(probes,added)||probes.some(p=>p.connected!==true||Object.hasOwn(p,'readiness')))return false;
- const times=[fleet,backend,capacity,metrics,...probes].map(r=>timestamp(r.observedAt));
+ // Older pinned sessions may contain SQL receipts. Validate them on reopen,
+ // but never require or write them for a new exact-cohort witness.
+ if(probes!==undefined&&(!exactIds(probes,added)||probes.some(p=>p.connected!==true||Object.hasOwn(p,'readiness'))))return false;
+ const times=[fleet,backend,capacity,metrics,...(probes??[])].map(r=>timestamp(r.observedAt));
  const sources=[timestamp(metrics.sourceAt),timestamp(metrics.latestSourceAt)],responses=[timestamp(metrics.responseAt),timestamp(metrics.latestResponseAt)],completed=timestamp(metrics.observedAt);
  if(sources.some(t=>!Number.isFinite(t)||Math.abs(completed-t)>15000)||responses.some(t=>!Number.isFinite(t)||Math.abs(completed-t)>30000)||sources[0]>sources[1]||responses[0]>responses[1])return false;
  times.push(...sources,...responses);
@@ -47,7 +49,7 @@ function validEvidence(e,trace,expansion,at){
 }
 export class ReplacementReadiness {
  constructor(manager,trace){
-  this.manager=manager;this.trace=trace;this.observations={};this.probes=new Map();
+  this.manager=manager;this.trace=trace;this.observations={};
   const entries=manager.getEntries(),rows=entries.filter(e=>e.type==='custom'&&e.customType===TYPE);
   if(rows.length>1)throw invalid();
   if(rows.length){
@@ -56,7 +58,8 @@ export class ReplacementReadiness {
    const resultIndex=entries.findIndex(e=>e.type==='custom'&&e.customType===TRACE_TYPE&&e.data.kind==='result'&&e.data.key===row.expansionKey);
    if(resultIndex<0||resultIndex>=entries.indexOf(rows[0]))throw invalid();
    // Require the same allowlisted shape as a newly created witness.
-   const clean={...Object.fromEntries(['fleet','backend','capacity','metrics'].map(k=>[k,sanitize(k,row.evidence[k])])),probes:row.evidence.probes.map(p=>sanitize('sql',p))};
+   const clean=Object.fromEntries(['fleet','backend','capacity','metrics'].map(k=>[k,sanitize(k,row.evidence[k])]));
+   if(Object.hasOwn(row.evidence,'probes'))clean.probes=Array.isArray(row.evidence.probes)?row.evidence.probes.map(p=>sanitize('sql',p)):null;
    if(canonical(clean)!==canonical(row.evidence))throw invalid();
    this.witness=row;
   }
@@ -66,23 +69,16 @@ export class ReplacementReadiness {
   if(intents.length!==1)return undefined;
   return {intent:intents[0],result:this.trace.rows.find(r=>r.kind==='result'&&r.key===intents[0].key)};
  }
- // This is a historical stage milestone, not a substitute for Infra's fresh
- // per-mutation gates. It survives approval and 60-second resource waits.
+ // This is a historical exact-cohort milestone, not the skill's active/idle
+ // readiness decision or a substitute for Infra's fresh per-mutation gates.
+ // It survives approval and 60-second resource waits.
  ready(){return Boolean(this.witness&&this.witness.expansionKey===this.expansion()?.intent.key);}
  blocked(){return this.trace.rows.some(r=>r.kind==='intent'&&r.tool==='db_proxy_scale'&&r.args.desiredCapacity===4)&&!this.ready();}
  observe(kind,data,args){
-  if(this.ready()||!this.expansion()?.result||!['fleet','backend','capacity','metrics','sql'].includes(kind))return;
+  if(this.ready()||!this.expansion()?.result||!['fleet','backend','capacity','metrics'].includes(kind))return;
   const clean=sanitize(kind,data);
-  if(kind==='sql'){
-   // SQL tools perform read-only SELECT 1 and currently return no timestamp.
-   // Bind receipt time to the exact requested instance; never accept another ID.
-   if(!id(args?.instanceId))return;
-   this.probes.delete(args.instanceId);
-   if(clean?.instanceId===args.instanceId)this.probes.set(args.instanceId,{...clean,observedAt:Object.hasOwn(clean,'observedAt')?clean.observedAt:new Date().toISOString()});
-  }else this.observations[kind]=clean;
-  const original=this.trace.baseline()?.instanceIds??[],fleetIds=this.observations.fleet?.instances?.map(n=>n.instanceId)??[];
-  const added=fleetIds.filter(instanceId=>!original.includes(instanceId));
-  const evidence={...this.observations,probes:[...this.probes.values()].filter(p=>added.includes(p.instanceId))},expansion=this.expansion(),observedAt=new Date().toISOString();
+  this.observations[kind]=clean;
+  const evidence={...this.observations},expansion=this.expansion(),observedAt=new Date().toISOString();
   if(!validEvidence(evidence,this.trace,expansion,Date.parse(observedAt)))return;
   const row={version:1,identity:structuredClone(this.trace.identity),kind:'readyFour',expansionKey:expansion.intent.key,evidence:structuredClone(evidence),observedAt};
   if(Buffer.byteLength(canonical(row))>32768)throw invalid();
