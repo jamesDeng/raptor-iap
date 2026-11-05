@@ -120,4 +120,4 @@ required or performed by this feature.
 
 PI upgrade rollout: deploy the gateway readers accepting checkpoints from both 0.99.2 and 1.3.0 before selecting the 1.3.0 guest image. Existing 0.99.2 bootstrap checkpoints remain supported. After 1.3.0 checkpoints are written, rollback must retain readers supporting 1.3.0; an old 0.99.2-only gateway or guest cannot safely resume them.
 
-The legacy `model_seconds` job field remains for rolling-version compatibility; current live harness paths ignore it. Authentication and individual transport calls still have deadlines. The legacy Native sandbox command transport also retains its three-minute stream deadline; AX execution uses the Gateway lifecycle deadline.
+The legacy `model_seconds` job field remains for rolling-version compatibility; current live harness paths ignore it. Authentication and individual transport calls still have deadlines. The legacy Native sandbox command transport also retains its three-minute stream deadline; AX inference does not set a shorter process timeout: it uses the guest default watchdog (one hour), with the Gateway lifecycle deadline and cleanup still governing the attempt.

@@ -590,3 +590,11 @@ func TestConversationInboxWritableDuringInference(t *testing.T) {
 		t.Fatal("foreign request inbox write accepted")
 	}
 }
+
+func TestInferenceDoesNotSetShorterProcessDeadline(t *testing.T) {
+	for _, workspace := range []string{"raptor-runtime", "raptor-repositories-fixture"} {
+		if got := processTimeout("inference", workspace); got != 0 {
+			t.Fatalf("inference must use the guest watchdog and Gateway lifecycle, got %v", got)
+		}
+	}
+}
