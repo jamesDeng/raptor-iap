@@ -161,3 +161,68 @@ func TestConversationPermanentRejectionSkipsSequence(t *testing.T) {
 		t.Fatal(status)
 	}
 }
+
+func TestPgcatTroubleshootingBindsToActiveAttempt(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	s.ConversationEnabled, s.ConversationRuntime, s.RuntimeMode = true, true, "live"
+	in := qualificationInput(t)
+	if _, err := s.Receive(ctx, in.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	x, err := s.ClaimNext(ctx, "owner")
+	if err != nil || x == nil {
+		t.Fatal(err, x)
+	}
+	b, _, err := ParseLiveOperation(in, x.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.BindLive(ctx, x.AttemptID, "owner", b, in.DefinitionSHA256); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SaveLiveInput(ctx, x.AttemptID, "owner", in); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.BeginConversationAttempt(ctx, x.AttemptID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+
+	first := conversationInput(in.RequestID, 1)
+	if receipt, err := s.QueueMessage(ctx, first); err != nil || receipt.Status != "rejected" {
+		t.Fatalf("preparing request accepted input: %+v, %v", receipt, err)
+	}
+	if err = s.SetLiveStage(ctx, x.AttemptID, "owner", "running"); err != nil {
+		t.Fatal(err)
+	}
+	if cap, err := s.Conversation(ctx, in.RequestID); err != nil || !cap.CanContinue {
+		t.Fatal(cap, err)
+	}
+	active := conversationInput(in.RequestID, 2)
+	if receipt, err := s.QueueMessage(ctx, active); err != nil || receipt.Status != "queued" {
+		t.Fatal(receipt, err)
+	}
+	if pending, err := s.PendingMessage(ctx, in.RequestID, x.AttemptID, "owner"); err != nil || pending == nil || pending.MessageID != active.MessageID {
+		t.Fatal(pending, err)
+	}
+	delivered := RuntimeEvent{RuntimeSequence: 1, Kind: "message", Outcome: "delivered", MessageID: active.MessageID, InputSequence: 2, OccurredAt: time.Now().UTC()}
+	reply := RuntimeEvent{RuntimeSequence: 2, Kind: "reply", Outcome: "succeeded", MessageID: active.MessageID, InputSequence: 2, Summary: "The baseline checks are running.", OccurredAt: time.Now().UTC()}
+	for i := 0; i < 2; i++ {
+		if err = s.AppendRuntimeEvents(ctx, x.AttemptID, "owner", []RuntimeEvent{delivered, reply}); err != nil {
+			t.Fatalf("journal pass %d: %v", i, err)
+		}
+	}
+	events, err := s.Events(ctx, in.RequestID, 0)
+	if err != nil || len(events) != 5 || events[4].Kind != "message" || events[4].Summary != reply.Summary {
+		t.Fatal(events, err)
+	}
+	if err = s.InterruptConversation(ctx, x.AttemptID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if cap, err := s.Conversation(ctx, in.RequestID); err != nil || cap.CanContinue {
+		t.Fatal(cap, err)
+	}
+	if receipt, err := s.QueueMessage(ctx, conversationInput(in.RequestID, 3)); err != nil || receipt.Status != "rejected" {
+		t.Fatal(receipt, err)
+	}
+}

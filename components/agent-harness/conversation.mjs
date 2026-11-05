@@ -20,3 +20,53 @@ export function createConversationInbox({privateRoot,binding,session,onProgress,
  function poll(){if(inFlight)return inFlight;inFlight=readInbox().finally(()=>{inFlight=null});return inFlight}
  return {poll,accept,get lastSequence(){return last},get pending(){return pending.length>0},close(){closed=true;unsubscribe?.()}};
 }
+
+// Troubleshooting is independent of the operation session. It can describe
+// recorded observations, but it has no tools, credentials in context, or way
+// to inject instructions into the PgCat workflow.
+export function startPgcatTroubleshooting({binding,privateRoot,model,stream,getProgress,onProgress,onUsage}){
+ const controller=new AbortController();
+ const file=path.join(privateRoot,'conversation-inbox.json');
+ let last=0,calls=0,inFlight;
+ async function read(){
+  if(controller.signal.aborted)return;
+  let input;
+  try{
+   const raw=fs.readFileSync(file);
+   if(raw.length>16384)return;
+   input=JSON.parse(raw.toString('utf8'));
+  }catch{return;}
+  const {requestId,attemptId,messageId,inputSequence,text}=input??{};
+  if(requestId!==binding.requestId||attemptId!==binding.attemptId||!UUID.test(messageId??'')||
+   !Number.isSafeInteger(inputSequence)||inputSequence<=last||typeof text!=='string'||!text.trim()||
+   [...text].length>2000||Buffer.byteLength(text)>8192||text.includes('\0'))return;
+  last=inputSequence;
+  onProgress({kind:'message',outcome:'delivered',messageId,inputSequence});
+  let summary='The agent could not generate a troubleshooting reply. Check the recorded progress for the latest state.';
+  if(calls++>=3){
+   summary='This attempt has reached its troubleshooting reply limit. Check the recorded progress for the latest state.';
+  }else{
+   try{
+    const response=await stream(model,{
+     systemPrompt:'Answer an operator’s troubleshooting question about this PgCat run. Use only the provided public status and tool outcomes. State what is unknown. You cannot approve, resume, stop or change any operation. Exclude secrets and private reasoning. Reply briefly.',
+     messages:[{role:'user',content:JSON.stringify({mode:binding.executionMode,progress:getProgress(),question:text}),timestamp:Date.now()}],
+     tools:[]
+    },{maxTokens:256,maxRetries:0,signal:AbortSignal.any([controller.signal,AbortSignal.timeout(8000)])}).result();
+    if(controller.signal.aborted)return;
+    const u=response.usage;
+    if(response.model===model.id&&response.provider===model.provider&&u&&[u.input,u.output,u.totalTokens].every(n=>Number.isSafeInteger(n)&&n>=0))
+     onUsage({input:u.input,output:u.output,totalTokens:u.totalTokens});
+    if(response.role==='assistant'&&response.model===model.id&&response.provider===model.provider&&response.stopReason==='stop'&&
+      response.content.every(part=>part.type==='text'||part.type==='thinking')){
+     const answer=response.content.filter(part=>part.type==='text').map(part=>part.text).join('').trim();
+     if(answer&&Buffer.byteLength(answer)<=2048)summary=answer;
+    }
+   }catch{/* Leave a public fallback without changing the operation outcome. */}
+  }
+  if(!controller.signal.aborted)onProgress({kind:'reply',outcome:'succeeded',messageId,inputSequence,summary});
+ }
+ return {
+  poll(){if(!inFlight)inFlight=read().finally(()=>{inFlight=null;});return inFlight;},
+  close(){controller.abort();}
+ };
+}

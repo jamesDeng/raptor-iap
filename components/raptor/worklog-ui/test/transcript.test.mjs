@@ -56,3 +56,18 @@ test('orphan results preserve their public details and provenance',()=>{
  assert.equal(item.event.details.result,'recorded observation');
  assert.equal(item.event.evidenceMode,'live');
 });
+
+test('PgCat troubleshooting messages render beside tool activity and saved progress',()=>{
+ const result=model.projectTranscript(snapshot,[
+  event(1,'progress','Checking the protected PgCat fleet'),
+  event(2,'tool_start','start',{tool:'cloud_read',status:'started'}),
+  event(3,'tool_result','done',{tool:'cloud_read',status:'succeeded'}),
+  event(4,'message','What is the agent checking?',{role:'user',messageId:'operator-question',status:'answered'}),
+  event(5,'message','The protected fleet check passed.',{role:'assistant',messageId:'reply:operator-question',status:'answered'}),
+ ]);
+ assert.equal(result.messages[0].content[0].text,'Checking the protected PgCat fleet');
+ assert.equal(result.messages[0].content[1].name,'tool-activity');
+ assert.deepEqual(result.messages.slice(1).map(m=>[m.role,m.content[0].text]),[
+  ['user','What is the agent checking?'],['assistant','The protected fleet check passed.'],
+ ]);
+});

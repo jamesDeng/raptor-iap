@@ -204,6 +204,12 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 		return w.finish(ctx, b, RuntimeHandle{RequestID: b.RequestID}, "failed", "CheckpointFailed")
 	}
 
+	conversationEnabled := w.Store.ConversationEnabled && w.Store.ConversationRuntime
+	if b.Operation == "db-proxy.replace-nodes" && conversationEnabled {
+		if e = w.Store.BeginConversationAttempt(ctx, b.AttemptID, w.Owner); e != nil {
+			return e
+		}
+	}
 	var conversation *ConversationSession
 	var initial *ConversationInput
 	if b.Operation == "application.question" && w.Store.ConversationEnabled && w.Store.ConversationRuntime {
@@ -262,7 +268,7 @@ func (w *LiveWorker) RunNext(ctx context.Context) error {
 	if e = w.authorized(ctx); e != nil {
 		return e
 	}
-	h, e := w.Runtime.Start(ctx, LiveStart{Repositories: repositories, Skills: in.Skills, DecisionContext: continuation, SessionCheckpoint: sessionCheckpoint, Binding: b, Question: question, Checkpoint: checkpoint, Access: access, Deadline: record.Deadline, ConversationEnabled: b.Operation == "application.question" && w.Store.ConversationEnabled && w.Store.ConversationRuntime, Conversation: conversation, InitialMessage: initial})
+	h, e := w.Runtime.Start(ctx, LiveStart{Repositories: repositories, Skills: in.Skills, DecisionContext: continuation, SessionCheckpoint: sessionCheckpoint, Binding: b, Question: question, Checkpoint: checkpoint, Access: access, Deadline: record.Deadline, ConversationEnabled: conversationEnabled && (b.Operation == "application.question" || b.Operation == "db-proxy.replace-nodes"), Conversation: conversation, InitialMessage: initial})
 	if e != nil {
 		if report := w.reportRepositoryFailure(ctx, b, e); report != nil {
 			return report
@@ -374,6 +380,11 @@ func (w *LiveWorker) pause(ctx context.Context, b AttemptBinding, h RuntimeHandl
 	}
 	if b.Operation != "db-proxy.replace-nodes" || !wait.Valid() {
 		return w.finish(ctx, b, h, "failed", "InvalidResult")
+	}
+	if w.Store.ConversationEnabled && w.Store.ConversationRuntime {
+		if e := w.Store.InterruptConversation(ctx, b.AttemptID, w.Owner); e != nil {
+			return e
+		}
 	}
 	checkpoint, e := w.Runtime.Checkpoint(ctx, h)
 	if e != nil {

@@ -282,3 +282,30 @@ func TestRejectedContinuationRestoresPreviousCompletion(t *testing.T) {
 		t.Fatal("rejected input left request queued", restored.Status, e)
 	}
 }
+
+func TestPgcatMessageAdmissionRequiresRunningRequest(t *testing.T) {
+	s, r, operator, _ := messageSetup(t)
+	ctx := context.Background()
+	for _, status := range []string{"running", "waiting_approval", "completed"} {
+		_, err := s.Pool.Exec(ctx, `UPDATE raptor.requests SET definition=jsonb_set(definition,'{operations,0,name}','"db-proxy.replace-nodes"'),status=$2 WHERE id=$1`, r.ID, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, err := s.Get(ctx, r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		view := s.conversationView(ctx, operator, request)
+		if view.CanSend != (status == "running") {
+			t.Fatalf("status=%s, view=%+v", status, view)
+		}
+		receipt, err := s.SubmitMessage(ctx, operator, r.ID, domain.NewID(), "What has the agent checked?")
+		if status == "running" {
+			if err != nil || receipt.MessageID == "" {
+				t.Fatal(receipt, err)
+			}
+		} else if !errors.Is(err, domain.ErrConflict) {
+			t.Fatal(status, err)
+		}
+	}
+}
