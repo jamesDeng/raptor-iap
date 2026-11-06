@@ -20,6 +20,10 @@ infraReader:
 agentAccess:
   secretName: raptor-agent-introspection
 
+# Four concurrent packaged observation processes share this container.
+gatewayResources:
+  requests: {cpu: 250m, memory: 64Mi}
+  limits: {cpu: 1000m, memory: 256Mi}
 gatewayLive:
   enabled: true
   serviceURL: https://api.rdev.raptor-iap.top

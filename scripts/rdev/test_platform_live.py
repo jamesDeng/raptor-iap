@@ -14,6 +14,16 @@ class LiveManifest(unittest.TestCase):
   args += ['--set','gatewayLive.observer.enabled='+str(observer).lower()]
   if ax:args += ["--set","gatewayLive.axTLSSecretName=gateway-ax-client-tls"]
   p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr);return list(yaml.safe_load_all(p.stdout))
+ def test_gateway_resource_override_is_scoped_to_gateway(self):
+  args=[os.environ.get('HELM') or shutil.which('helm'),'template','platform',str(ROOT/'helm-chart/raptor-platform'),'-f',str(ROOT/'infra-kubernetes/environments/rdev.ali/values.yaml'),'--set','gatewayResources.requests.cpu=275m','--set','gatewayResources.limits.cpu=1250m']
+  p=subprocess.run(args,capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stderr)
+  for d in yaml.safe_load_all(p.stdout):
+   if not d or d.get('kind')!='Deployment':continue
+   resources=d['spec']['template']['spec']['containers'][0]['resources']
+   if d['metadata']['name']=='agent-gateway':
+    self.assertEqual(resources['requests']['cpu'],'275m');self.assertEqual(resources['limits']['cpu'],'1250m')
+   else:
+    self.assertEqual(resources['requests']['cpu'],'40m');self.assertEqual(resources['limits']['cpu'],'300m')
  def test_observer_resources_are_permitted_by_owning_project(self):
   project=yaml.safe_load((ROOT/'infra-kubernetes/environments/rdev.ali/project.yaml').read_text())
   allowed={(v['group'],v['kind']) for v in project['spec']['namespaceResourceWhitelist']}

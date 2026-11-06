@@ -240,8 +240,12 @@ spec:
             capabilities:
               drop: [ALL]
           resources:
+            {{- if eq $service.name "agent-gateway" }}
+            {{- toYaml $.Values.gatewayResources | nindent 12 }}
+            {{- else }}
             requests: {cpu: 40m, memory: 64Mi}
             limits: {cpu: 300m, memory: 256Mi}
+            {{- end }}
           volumeMounts:
             - {name: temporary, mountPath: /tmp}
             {{ if and (eq $service.name "agent-gateway") $.Values.gatewayLive.enabled }}
