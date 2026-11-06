@@ -18,7 +18,7 @@ func (s *Server) RegisterService(user, password string) {
 	if s.ModelProviders != nil {
 		s.ModelProviders.RegisterPrivate(s.Mux, auth.Credentials{Username: user, Password: password})
 	}
-	access := &agentaccess.Service{Pool: s.Requests.Pool, RaptorMCPURL: os.Getenv("RAPTOR_AGENT_MCP_URL"), InfraMCPURL: os.Getenv("INFRA_AGENT_MCP_URL")}
+	access := &agentaccess.Service{PrepareIssue: s.Requests.PrepareAgentAttempt, Pool: s.Requests.Pool, RaptorMCPURL: os.Getenv("RAPTOR_AGENT_MCP_URL"), InfraMCPURL: os.Getenv("INFRA_AGENT_MCP_URL")}
 	if proofReader, ok := s.Catalog.Infra.(interface {
 		ResolutionProof(context.Context, string, string) (adapters.ResolutionProof, error)
 	}); ok {

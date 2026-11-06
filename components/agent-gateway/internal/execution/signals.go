@@ -104,7 +104,7 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 			return ErrInvalid
 		}
 	}
-	if mode == "live" && v.Kind == "continue" && binding.ExecutionMode == "qualification" {
+	if mode == "live" && v.Kind == "continue" && (binding.ExecutionMode == "qualification" || binding.ExecutionMode == "replacement") {
 		var hint struct {
 			AttemptID  string `json:"attemptId"`
 			ApprovalID string `json:"approvalId"`
@@ -128,7 +128,17 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 			}
 			clean := json.Unmarshal(cleanup, &confirmed) == nil && confirmed.SandboxAbsent && confirmed.KeyAbsent && confirmed.AccessRevoked
 			slotSafe := slot == nil && !unresolved || slot != nil && *slot != v.RequestID
-			if status == "failed" && attemptState == "failed" && attemptEnded && hint.AttemptID == attempt && hint.AttemptID != "" && clean && !recovery && slotSafe {
+			eligible := status == "failed" && attemptState == "failed" && attemptEnded && hint.AttemptID == attempt && hint.AttemptID != "" && clean && !recovery && slotSafe
+			if eligible && binding.ExecutionMode == "replacement" {
+				eligible, e = retryablePreparation(ctx, tx, binding)
+				if e != nil {
+					return ErrUnavailable
+				}
+			}
+			if binding.ExecutionMode == "replacement" && status == "failed" && hint.AttemptID == attempt && !eligible {
+				return ErrInvalid
+			}
+			if eligible {
 				if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now() WHERE request_id=$1", v.RequestID); e != nil {
 					return ErrUnavailable
 				}

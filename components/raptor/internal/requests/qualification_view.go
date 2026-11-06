@@ -33,8 +33,17 @@ func validQualificationView(v PublicExecution, r domain.Request) bool {
 		return false
 	}
 	q := v.Result.Qualification
-	if q == nil || (q.Version != 1 && q.Version != 2) || !q.Passed || !q.ReadOnly || q.TrafficAcceptance != "not_assessed" || q.ObservedAt.IsZero() || v.Result.GeneratedAt == nil || v.Result.GeneratedAt.IsZero() || v.Result.SelectedModel != r.Definition.Model || v.Result.ActualModel != r.Definition.Model || v.Result.Answer != "Native read-only qualification completed; replacement and traffic acceptance were not executed." || len(q.InstanceIDs) != 2 || len(q.ConnectedNodeIDs) != 2 || q.InstanceIDs[0] == q.InstanceIDs[1] || q.ApprovalID == "" || q.ActionID == "" || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(q.BindingDigest) {
+	if q == nil || (q.Version != 1 && q.Version != 2) || !q.Passed || !q.ReadOnly || q.TrafficAcceptance != "not_assessed" || q.ObservedAt.IsZero() || v.Result.GeneratedAt == nil || v.Result.GeneratedAt.IsZero() || v.Result.SelectedModel != r.Definition.Model || v.Result.ActualModel != r.Definition.Model || v.Result.Answer != "Native read-only qualification completed; replacement and traffic acceptance were not executed." || (len(q.InstanceIDs) != 2 && !(q.Version == 2 && len(q.InstanceIDs) == 4)) || len(q.ConnectedNodeIDs) != len(q.InstanceIDs) || q.ApprovalID == "" || q.ActionID == "" || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(q.BindingDigest) {
 		return false
+	}
+	for _, ids := range [][]string{q.InstanceIDs, q.ConnectedNodeIDs} {
+		seen := map[string]bool{}
+		for _, id := range ids {
+			if !regexp.MustCompile(`^[-A-Za-z0-9_.]{1,128}$`).MatchString(id) || seen[id] {
+				return false
+			}
+			seen[id] = true
+		}
 	}
 	b := agentaccess.Binding{Operation: "db-proxy.replace-nodes", ObjectKind: r.Definition.Object.Kind, ObjectCode: r.Definition.Object.Code, EnvCode: r.Definition.EnvCode, ClusterID: q.Scope.Application.ClusterID, ExecutionMode: "qualification"}
 	if !q.Scope.ValidFor(b) || (q.Version == 2 && (q.TransportContract != "raptor-resource-v1" || !q.Scope.ResourceValidFor(b))) {

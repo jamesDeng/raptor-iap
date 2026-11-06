@@ -45,3 +45,24 @@ func TestQualificationResultCannotMasqueradeAsReplacement(t *testing.T) {
 		}
 	}
 }
+
+func TestResourceQualificationCoversFourDistinctNodes(t *testing.T) {
+	b, r := qualificationResultFixture()
+	q := r.Qualification
+	q.Version = 2
+	q.TransportContract = "raptor-resource-v1"
+	q.Checks = qualificationChecksFor(2)
+	q.Scope = resourceTestScope(b)
+	q.InstanceIDs = []string{"i1", "i2", "i3", "i4"}
+	q.ConnectedNodeIDs = append([]string{}, q.InstanceIDs...)
+	if e := ValidateLiveResult(r, b); e != nil {
+		t.Fatal("four-node read-only qualification rejected", e)
+	}
+	for _, ids := range [][]string{{"i1", "i2", "i3"}, {"i1", "i2", "i3", "i3"}, {"i1", "i2", "i3", "bad id"}} {
+		q.InstanceIDs = ids
+		q.ConnectedNodeIDs = ids
+		if ValidateLiveResult(r, b) == nil {
+			t.Fatal("invalid baseline accepted", ids)
+		}
+	}
+}

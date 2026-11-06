@@ -126,7 +126,7 @@ func TestTerminalReplacementIsNotRetriedByQualificationContinue(t *testing.T) {
 		t.Fatal(e)
 	}
 	payload, _ := json.Marshal(map[string]string{"attemptId": x.AttemptID, "instructions": "retry"})
-	if e := s.DeliverSignal(ctx, Signal{ID: NewID(), RequestID: x.RequestID, Kind: "continue", Payload: payload}); e != nil {
+	if e := s.DeliverSignal(ctx, Signal{ID: NewID(), RequestID: x.RequestID, Kind: "continue", Payload: payload}); e != ErrInvalid {
 		t.Fatal(e)
 	}
 	state, e := s.Get(ctx, x.RequestID)

@@ -84,3 +84,35 @@ func TestResourceQualificationViewValidatesPrivateProofBeforeProjection(t *testi
 		t.Fatal("bad private proof accepted before projection")
 	}
 }
+
+func TestFourNodeResourceQualificationViewValidatesPrivateProofBeforeProjection(t *testing.T) {
+	r := domain.Request{ID: "r", Definition: domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: "p"}, EnvCode: "dev", Model: "gpt-5.6-luna", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "qualification"}}}}}
+	now := time.Now()
+	scope := agentaccess.ReplacementScope{EnvCode: "dev", ProxyCode: "p", GroupID: "g", ServerGroupID: "s", TargetDBCode: "d", AccountID: "123", Region: "ap-southeast-1", ListenerID: "listener", Port: 6432, DatabaseResourceID: "rds", Application: agentaccess.ApplicationScope{EnvCode: "dev", AppCode: "a", ClusterID: "c", Namespace: "n", Name: "x", UID: "u"}}
+	scope.ResolutionDigest = scope.Identity().Digest()
+	q := &PublicQualification{Version: 2, TransportContract: "raptor-resource-v1", Passed: true, ReadOnly: true, TrafficAcceptance: "not_assessed", Scope: scope, Checks: []string{"mcp.raptor.request_get", "mcp.raptor.environment_get", "mcp.raptor.object_get", "mcp.raptor.deployments_list", "mcp.infra.deployments_list", "mcp.infra.deployment_status_get", "cloud.fleet", "cloud.backend", "cloud.capacity", "deployment.status", "metrics.trafficFailures", "metrics.connections", "metrics.pgcatClients"}, InstanceIDs: []string{"i1", "i2", "i3", "i4"}, ConnectedNodeIDs: []string{"i1", "i2", "i3", "i4"}, ApprovalID: "approval", ActionID: "action", BindingDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ObservedAt: now}
+	v := PublicExecution{RequestID: "r", AttemptID: "a", RuntimeMode: "live", Status: "completed", CheckpointStatus: "verified", CleanupStatus: &PublicCleanup{true, true, true}, Result: &PublicResult{RequestID: "r", AttemptID: "a", ActualModel: r.Definition.Model, SelectedModel: r.Definition.Model, GeneratedAt: &now, Answer: "Native read-only qualification completed; replacement and traffic acceptance were not executed.", Qualification: q}}
+	wire := func() map[string]any {
+		raw, _ := json.Marshal(v)
+		var m map[string]any
+		json.Unmarshal(raw, &m)
+		return m
+	}
+	out, err := publicExecution(wire(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(out)
+	for _, key := range []string{"accountId", "region", "listenerId", "port", "databaseResourceId", "resolutionDigest"} {
+		if strings.Contains(string(raw), `"`+key+`"`) {
+			t.Fatal("private proof spread into public qualification", key)
+		}
+	}
+	if q.Scope.ResolutionDigest == "" {
+		t.Fatal("projection mutated private result")
+	}
+	q.Scope.ListenerID = "retargeted"
+	if _, err := publicExecution(wire(), r); err == nil {
+		t.Fatal("bad private proof accepted before projection")
+	}
+}

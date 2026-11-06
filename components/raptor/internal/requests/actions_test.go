@@ -237,3 +237,81 @@ func TestQualificationContinueKeepsRequestQueuedWhileOldAttemptIsVisible(t *test
 		t.Fatalf("new qualification attempt was not projected: %s %v", got.Status, e)
 	}
 }
+
+func TestReplacementContinueKeepsRequestQueuedWhileOldAttemptIsVisible(t *testing.T) {
+	s, _, u := setup(t)
+	ctx := context.Background()
+	o, e := s.Catalog.CreateObject(ctx, catalog.CreateObjectInput{Kind: "db-proxy", Name: "Retry projection proxy"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	s.ModelPolicy = &qualificationModel{enabled: true}
+	in := domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: o.Code}, EnvCode: "adev", Model: "gpt-6-luna", ProviderID: "codex", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "replacement"}}}}
+	r, e := s.Create(ctx, u, "qualification-projection-retry", in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	old := map[string]any{"requestId": r.ID, "attemptId": domain.NewID(), "status": "failed", "updatedAt": "2026-10-14T11:00:00Z"}
+	if _, _, _, e = s.syncExecution(ctx, r, old); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.Action(ctx, r.ID, "continue", "retry qualification"); e != nil {
+		t.Fatal(e)
+	}
+	reopened, e := s.Get(ctx, r.ID)
+	if e != nil || reopened.Status != "queued" {
+		t.Fatalf("qualification retry was not queued: %s %v", reopened.Status, e)
+	}
+	if _, _, _, e = s.syncExecution(ctx, reopened, old); e != nil {
+		t.Fatal(e)
+	}
+	got, e := s.Get(ctx, r.ID)
+	if e != nil || got.Status != "queued" {
+		t.Fatalf("old terminal view closed queued qualification before access issuance: %s %v", got.Status, e)
+	}
+	next := map[string]any{"requestId": r.ID, "attemptId": domain.NewID(), "status": "running", "updatedAt": "2026-10-14T11:01:00Z"}
+	if _, _, _, e = s.syncExecution(ctx, reopened, next); e != nil {
+		t.Fatal(e)
+	}
+	got, e = s.Get(ctx, r.ID)
+	if e != nil || got.Status != "running" {
+		t.Fatalf("new qualification attempt was not projected: %s %v", got.Status, e)
+	}
+}
+
+func TestRejectedReplacementRetryDoesNotPinQueuedProjection(t *testing.T) {
+	s, in, u := setup(t)
+	ctx := context.Background()
+	r, e := s.Create(ctx, u, "rejected-retry", in)
+	if e != nil {
+		t.Fatal(e)
+	}
+	attempt := domain.NewID()
+	old := map[string]any{"requestId": r.ID, "attemptId": attempt, "status": "failed", "updatedAt": "2026-10-14T11:00:00Z"}
+	if _, _, _, e = s.syncExecution(ctx, r, old); e != nil {
+		t.Fatal(e)
+	}
+	tx, e := s.Pool.Begin(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = QueueSignal(ctx, tx, r.ID, "continue", map[string]string{"attemptId": attempt}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = tx.Exec(ctx, "UPDATE raptor.requests SET status='queued' WHERE id=$1", r.ID); e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.Pool.Exec(ctx, "UPDATE raptor.outbox SET failed_reason='delivery rejected as invalid' WHERE entity_id=$1", r.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, _, e = s.syncExecution(ctx, r, old); e != nil {
+		t.Fatal(e)
+	}
+	got, e := s.Get(ctx, r.ID)
+	if e != nil || got.Status != "failed" {
+		t.Fatal("rejected retry stuck queued", got.Status, e)
+	}
+}

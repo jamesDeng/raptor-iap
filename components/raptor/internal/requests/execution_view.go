@@ -173,6 +173,10 @@ func (s *Service) savedExecution(ctx context.Context, id string) (map[string]any
 	return out, &synced, nil
 }
 func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate map[string]any) (map[string]any, *time.Time, bool, error) {
+	return s.syncExecutionForAttempt(ctx, r, candidate, "")
+}
+
+func (s *Service) syncExecutionForAttempt(ctx context.Context, r domain.Request, candidate map[string]any, attempt string) (map[string]any, *time.Time, bool, error) {
 	tx, e := s.Pool.Begin(ctx)
 	if e != nil {
 		return nil, nil, false, domain.ErrUnavailable
@@ -183,6 +187,11 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 	var approvalResumeAt *time.Time
 	if e = tx.QueryRow(ctx, "SELECT status,control_state,approval_resume_pending,approval_resume_at FROM raptor.requests WHERE id=$1 FOR UPDATE", r.ID).Scan(&status, &control, &approvalResumePending, &approvalResumeAt); e != nil {
 		return nil, nil, false, domain.ErrUnavailable
+	}
+	// A service handoff may only reconcile an authorized resource continuation.
+	// Recheck under the request lock so cancellation or blocking always wins.
+	if attempt != "" && (control != "" || (status != "waiting_resource" && status != "running") || candidate["attemptId"] != attempt || candidate["status"] != "running") {
+		return nil, nil, false, domain.ErrConflict
 	}
 	var oldBody []byte
 	var oldSync time.Time
@@ -226,7 +235,11 @@ func (s *Service) syncExecution(ctx context.Context, r domain.Request, candidate
 			if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.request_messages WHERE request_id=$1 AND status<>'rejected' AND continuation_attempt_id::text=$2)", r.ID, candidate["attemptId"]).Scan(&pending); e != nil {
 				return nil, nil, false, domain.ErrUnavailable
 			}
-			stale = pending || isQualification(r.Definition)
+			var exactRetry bool
+			if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM raptor.outbox WHERE entity_id=$1 AND topic='signal' AND failed_reason='' AND payload->>'kind'='continue' AND payload->'payload'->>'attemptId'=$2)", r.ID, candidate["attemptId"]).Scan(&exactRetry); e != nil {
+				return nil, nil, false, domain.ErrUnavailable
+			}
+			stale = pending || isQualification(r.Definition) || exactRetry
 		}
 		if status == "completed" {
 			stale = !reflect.DeepEqual(candidate, old)
