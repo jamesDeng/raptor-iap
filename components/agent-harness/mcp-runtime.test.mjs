@@ -224,3 +224,18 @@ test('queued read cancellation prevents its underlying tool from starting',async
  controller.abort();release();const outcomes=await Promise.allSettled([a,b]);
  assert.equal(calls,1);assert.equal(outcomes[1].status,'rejected');
 });
+
+test('distinguishes preflight evidence rejection from a foreign selector without forwarding either',async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');
+ const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'replacement'};
+ const scope={envCode:b.envCode,proxyCode:b.objectCode,groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'DB00001',application:{envCode:b.envCode,appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
+ const diagnostics=[];
+ let remoteCalls=0;
+ const guarded=createGuardedFetch({server:'infra',url:'https://infra.example/mcp',binding:b,replacementScope:scope,
+  onDiagnostic:d=>diagnostics.push(d),beforeTool:()=>{throw Error('MissingEvidence');},fetch:async()=>{remoteCalls++;throw Error('unexpected remote call');}});
+ const call=requestId=>guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'db_proxy_scale',arguments:{requestId,envCode:b.envCode,proxyCode:scope.proxyCode,actionId:'expand-test',desiredCapacity:4}}})});
+ await assert.rejects(()=>call('foreign'),/ScopeMismatch/);
+ await assert.rejects(()=>call(b.requestId),/MissingEvidence/);
+ assert.equal(remoteCalls,0);
+ assert.deepEqual(diagnostics.map(d=>d.category),['local-selector','local-precondition']);
+});

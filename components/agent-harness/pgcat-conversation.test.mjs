@@ -37,3 +37,20 @@ test('PgCat answers a bound operator question in a separate context without tool
   {kind:'reply',outcome:'succeeded',messageId:input.messageId,inputSequence:1,summary:'The fleet check passed.'}
  ]);
 });
+
+test('operator can close a held troubleshooting session without invoking the model',async t=>{
+ const privateRoot=fs.mkdtempSync(path.join(os.tmpdir(),'pgcat-hold-'));
+ t.after(()=>fs.rmSync(privateRoot,{recursive:true,force:true}));
+ const binding={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222'};
+ const events=[];
+ let finished=0;
+ const inbox=startPgcatTroubleshooting({binding,privateRoot,onProgress:e=>events.push(e),
+  onFinish:()=>{finished++;return true;},stream:()=>{throw Error('unexpected model call');}});
+ t.after(()=>inbox.close());
+ fs.writeFileSync(path.join(privateRoot,'conversation-inbox.json'),JSON.stringify({...binding,messageId:'33333333-3333-4333-8333-333333333333',inputSequence:1,text:'/finish'}));
+ await inbox.poll();
+ await inbox.poll();
+ assert.equal(finished,1);
+ assert.deepEqual(events.map(e=>e.outcome),['delivered','succeeded']);
+ assert.match(events[1].summary,/closing/i);
+});

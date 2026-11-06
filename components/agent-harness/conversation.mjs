@@ -24,7 +24,7 @@ export function createConversationInbox({privateRoot,binding,session,onProgress,
 // Troubleshooting is independent of the operation session. It can describe
 // recorded observations, but it has no tools, credentials in context, or way
 // to inject instructions into the PgCat workflow.
-export function startPgcatTroubleshooting({binding,privateRoot,model,stream,getProgress,onProgress,onUsage}){
+export function startPgcatTroubleshooting({binding,privateRoot,model,stream,getProgress,onProgress,onUsage,onFinish}){
  const controller=new AbortController();
  const file=path.join(privateRoot,'conversation-inbox.json');
  let last=0,calls=0,inFlight;
@@ -42,6 +42,10 @@ export function startPgcatTroubleshooting({binding,privateRoot,model,stream,getP
    [...text].length>2000||Buffer.byteLength(text)>8192||text.includes('\0'))return;
   last=inputSequence;
   onProgress({kind:'message',outcome:'delivered',messageId,inputSequence});
+  if(text.trim()==='/finish'&&onFinish?.()){
+   onProgress({kind:'reply',outcome:'succeeded',messageId,inputSequence,summary:'Closing the troubleshooting session and saving the failed operation result.'});
+   return;
+  }
   let summary='The agent could not generate a troubleshooting reply. Check the recorded progress for the latest state.';
   if(calls++>=3){
    summary='This attempt has reached its troubleshooting reply limit. Check the recorded progress for the latest state.';

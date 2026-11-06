@@ -75,6 +75,28 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
   const options={stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,skills:{tag:'skills-v99.0.0',commitSHA:b.skillsCommit,path:skillsPath},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,onProgress:event=>progress.push(event)};
+  const debugState=path.join(root,'debug-state'),debugPrivate=path.join(root,'debug-private');
+  fs.mkdirSync(debugState);
+  fs.copyFileSync(path.join(state,'auth.json'),path.join(debugState,'auth.json'));
+  const scaleArgs=scripts[0].at(-1)[0].arguments;
+  const actionID=scaleArgs.actionId;
+  scaleArgs.actionId=' ';
+  let held=false;
+  const debug=await runLiveReplacement({...options,stateRoot:debugState,privateRoot:debugPrivate,
+   signal:AbortSignal.timeout(3000),conversation:{enabled:true},onProgress:event=>{
+    progress.push(event);
+    if(!event.summary?.startsWith('Expansion was rejected locally'))return;
+    held=true;
+    fs.writeFileSync(path.join(debugPrivate,'conversation-inbox.json'),JSON.stringify({
+     requestId:b.requestId,attemptId:b.attemptId,messageId:'77777777-7777-4777-8777-777777777777',inputSequence:1,text:'/finish'
+    }));
+   }});
+  assert.equal(debug.error,'ToolFailed');
+  assert.equal(held,true);
+  assert.ok(progress.some(e=>e.kind==='reply'&&e.summary.startsWith('Closing the troubleshooting session')));
+  assert.deepEqual(writes,[]);
+  progress.length=0;
+  scaleArgs.actionId=actionID;
   let previous;
   const counts=[10,6,5,10,3];
   for(phase=0;phase<scripts.length;phase++){
