@@ -7,7 +7,7 @@ description: Use when replacing or reconciling PgCat ECS nodes in the dedicated 
 
 replacement-contract: resource-v1
 
-Release candidate: skills-v0.5.2. Publish a new immutable release; preserve all earlier tags. The runtime selects this contract from verified content, not a tag name.
+Release candidate: skills-v0.5.5. Publish a new immutable release; preserve all earlier tags. The runtime selects this contract from verified content, not a tag name.
 
 Use the [runtime contracts](references/contracts.md) and [recovery rules](references/recovery.md). These instructions match the implementation under qualification; they do not establish live deployment or authorize enablement. Begin only after controller preflight enables this dedicated request.
 
@@ -23,9 +23,9 @@ Use two assistant responses. Sequential execution does not supply results while 
    - Infra proxy deployments_list and application deployment_status_get({envCode, appCode, workloadKey}).
    - Direct deployment_read({}); cloud_read fleet/backend/capacity; db_connection_probe for both discovered originals; metrics_read trafficFailures/connections/pgcatClients last.
 
-Both Deployment reads are required. Batch only calls with already-known arguments. Wait for the complete evidence round before mutations. Refresh aged receipts: runtime freshness is 30 seconds, PgCat metric sources 15 seconds. After resume, repeat discovery and wait before generating dependent calls.
+Both Deployment reads are required. Batch independent reads with already-known arguments together; the runtime can run an all-read batch concurrently. Never mix a mutation or resource_wait into that evidence batch. Wait for the complete evidence round before mutations. Refresh aged receipts: runtime freshness is 30 seconds, PgCat metric sources 15 seconds. After resume, repeat discovery and wait before generating dependent calls.
 
-After SQL succeeds, inspect the entire checklist. If only read tools remain available, complete or refresh missing/aged slots and continue reading; the baseline is not finished. Only a completed valid baseline unlocks the first protection or expansion call.
+After SQL succeeds, inspect the entire checklist. If only read tools remain available, complete or refresh missing/aged slots and continue reading; the baseline is not finished. Only a completed valid baseline unlocks the first protection or expansion call. A missing write tool means required evidence is still missing, stale or invalid; refresh the needed reads. Do not call resource_wait to wait for an expansion that has not been invoked.
 
 ## Direct two-node strategy
 

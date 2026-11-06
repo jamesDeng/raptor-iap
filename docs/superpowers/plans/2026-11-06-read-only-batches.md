@@ -1,0 +1,15 @@
+# Read-only tool batches
+
+Evidence: approved c5846144 checkpoint contains 15 successful baseline reads over 45.628 seconds, no mutation intent or scale call, then resource_wait. At final baseline completion the request receipt is 44.17 seconds old and the Deployment receipt 36.32 seconds old; initial() requires all receipts within 30 seconds. Pi supports parallel batches but replacement sets sequential and shares a serial transport/observation gate. Removing total attempt timeout cannot make this baseline fresh.
+
+Design: preserve the user's evidence freshness and generic runtime boundary. Use Pi's supported per-tool executionMode: audited read-only tools may run in parallel; every other tool is sequential (Pi serializes the entire mixed batch). A shared four-slot scheduler wraps tool execution before MCP starts its request timer; queued cancellation prevents dispatch. Gateway observer capacity also becomes four and rejects overflow; its auth/lease/cancel/output checks remain unchanged. Shared gate permits explicitly classified reads to overlap; writes wait for all pending reads, and any failure prevents subsequent work. Unknown tools default sequential. No infrastructure procedure goes into generic scheduler. Discovery dependencies remain separate assistant responses. Qualification retains current behavior unless specifically tested.
+
+Steps:
+1. Add failing generic gate tests for overlapping reads, write barrier, failure blocking; add Pi tool-policy tests. Implement generic scheduler/policy.
+2. Integrate policy and gate at existing runtime call sites, removing blanket replacement sequential mode. Update actual Pi integration fixtures to use discovery before dependent arguments. Verify mixed read/write safety, no write after failure, no deadline queue regression and full evidence freshness.
+3. Update skill recovery guidance: intent narration is not a submitted action; only tool invocation and trusted receipt/intent establish submitted/unknown. Refresh missing evidence when writes absent; never wait for an unsubmitted expansion. Run scenario review and full harness tests.
+4. Independent whole-branch review, CI, merge, immutable skill/image publication and deployment pins. User has authorized merge/deploy. Recheck live state, daily budget and time window; keep replacement disabled for read-only qualification and messaging; full acceptance only afterward with exact scale-in approval.
+
+No credential or private reasoning retained. Sanitized timing evidence lives in working/evidence/2026-11-06-pgcat-baseline/c584-tool-timing.json in the recovery workspace. Private archive/checksum deleted immediately after diagnostic.
+
+Validation ledger: actual Pi timing replay red with forced sequential (baseline write tool missing), green with concurrency; generic gate/wrapper red→green; Gateway four-read test red429→green. Full396harness and Gateway go test -race ./... passed before final queued-cancellation regression, which reproduced two executions vs expectedone. Final full rerun pending.

@@ -36,7 +36,7 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
     [cloud('fleet')],
     [call('mcp__infra__db_proxy_nodes_deregister',{...target,nodeIds:old})],
     reads(added),[call('resource_wait',{seconds:60})]],
-   [[control[3],control[4],control[5]],reads(added),
+   [[control[3],control[4]],[control[5]],reads(added),
     [call('mcp__infra__deployment_restart',{requestId:b.requestId,envCode:b.envCode,appCode:'client',workloadKey:'opaque-app'})],
     [deployment,call('resource_wait',{seconds:60})]],
    [[control[3],control[4]],[control[5]],[cloud('fleet')],[cloud('backend'),cloud('capacity')],
@@ -76,7 +76,7 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
   };
   const options={stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,skills:{tag:'skills-v99.0.0',commitSHA:b.skillsCommit,path:skillsPath},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,onProgress:event=>progress.push(event)};
   let previous;
-  const counts=[10,6,4,10,3];
+  const counts=[10,6,5,10,3];
   for(phase=0;phase<scripts.length;phase++){
    round=0;if(phase===3)surge=false;
    const continuation=previous?.paused?{decision:'resume',approvalId:previous.paused.approvalId,actionId:previous.paused.actionId,bindingDigest:previous.paused.bindingDigest}:undefined;

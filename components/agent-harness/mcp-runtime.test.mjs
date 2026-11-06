@@ -179,3 +179,48 @@ test('replacement object lookup schema rejects a mistyped request id before exec
   for(const tool of tools.filter(t=>t.inputSchema.properties.requestId))assert.equal(tool.inputSchema.properties.requestId.enum,undefined);
  }
 });
+
+test('read-only gate overlaps reads but waits before writes',async()=>{
+ const {createToolCallGate}=await import('./mcp-runtime.mjs');
+ const gate=createToolCallGate(()=>false,{parallelReads:true});
+ let release;const latch=new Promise(r=>release=r);const started=[];
+ const a=gate(async()=>{started.push('a');await latch;},{readOnly:true});
+ const b=gate(async()=>{started.push('b');await latch;},{readOnly:true});
+ const w=gate(async()=>{started.push('write');});
+ await new Promise(r=>setImmediate(r));
+ try{assert.deepEqual(started,['a','b']);}finally{release();await Promise.allSettled([a,b,w]);}
+ assert.deepEqual(started,['a','b','write']);
+});
+test('parallel read failure blocks pending write and subsequent reads',async()=>{
+ const {createToolCallGate}=await import('./mcp-runtime.mjs');
+ const gate=createToolCallGate(()=>false,{parallelReads:true});let writes=0;
+ const results=await Promise.allSettled([gate(async()=>{throw Error('ReadFailed')},{readOnly:true}),gate(async()=>{writes++;})]);
+ assert.equal(results[0].status,'rejected');assert.equal(results[1].status,'rejected');assert.equal(writes,0);
+ await assert.rejects(gate(async()=>{}, {readOnly:true}),/PriorToolFailed/);
+});
+
+test('tool execution policy marks unknown and write tools sequential',async()=>{
+ const {withReadOnlyToolPolicy}=await import('./mcp-runtime.mjs');const definitions=[];
+ const extension=pi=>{for(const name of ['lookup','update','unknown'])pi.registerTool({name,execute:async()=>name});};
+ await withReadOnlyToolPolicy(extension,name=>name==='lookup')({registerTool:d=>definitions.push(d)});
+ assert.deepEqual(definitions.map(d=>[d.name,d.executionMode]),[['lookup','parallel'],['update','sequential'],['unknown','sequential']]);
+ assert.equal(await definitions[0].execute(),'lookup');
+});
+
+test('bounded read scheduler starts four calls before admitting queued work',async()=>{
+ const {createReadConcurrency}=await import('./mcp-runtime.mjs');const schedule=createReadConcurrency(4);
+ let release;const latch=new Promise(r=>release=r);let active=0,maximum=0,started=0;
+ const pending=Array.from({length:9},()=>schedule(async()=>{started++;active++;maximum=Math.max(maximum,active);await latch;active--;}));
+ await new Promise(r=>setImmediate(r));
+ try{assert.equal(started,4);}finally{release();await Promise.all(pending);}
+ assert.equal(maximum,4);assert.equal(started,9);
+});
+
+test('queued read cancellation prevents its underlying tool from starting',async()=>{
+ const {createReadConcurrency,withReadOnlyToolPolicy}=await import('./mcp-runtime.mjs');
+ const schedule=createReadConcurrency(1);let release;const latch=new Promise(r=>release=r);let calls=0;let tool;
+ await withReadOnlyToolPolicy(pi=>pi.registerTool({name:'read',execute:async()=>{calls++;await latch;}}),()=>true,schedule)({registerTool:d=>tool=d});
+ const controller=new AbortController();const a=tool.execute('a',{},undefined);const b=tool.execute('b',{},controller.signal);
+ controller.abort();release();const outcomes=await Promise.allSettled([a,b]);
+ assert.equal(calls,1);assert.equal(outcomes[1].status,'rejected');
+});

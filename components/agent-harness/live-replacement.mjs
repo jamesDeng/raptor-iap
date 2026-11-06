@@ -11,7 +11,7 @@ import {ApprovalPause,resourceWaitExtension} from './approval-pause.mjs';
 import {createOperationResourceLoader} from './live-operation.mjs';
 import {openOperationSession,operationSessionReference} from './operation-session.mjs';
 import {operationCapabilities,validateResourceScope} from './operation-profile.mjs';
-import {createScopedMcpRuntime,createToolCallGate} from './mcp-runtime.mjs';
+import {createScopedMcpRuntime,createToolCallGate,withReadOnlyToolPolicy,createReadConcurrency} from './mcp-runtime.mjs';
 import {publicProgressFromMessage} from './progress.mjs';
 import {toolFailureDiagnostic} from './tool-failure-diagnostic.mjs';
 import {pinnedReplacementInstructions,pinnedReplacementProfile} from './pinned-replacement-skill.mjs';
@@ -52,11 +52,14 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   fs.mkdirSync(privateRoot,{recursive:true,mode:0o700});const sdk=await import('@earendil-works/pi-coding-agent');
   const settings=sdk.SettingsManager.inMemory({cacheWarming:'off',compaction:{enabled:false},retry:{enabled:false,provider:{maxRetries:0}}});
   manager=openOperationSession({sdk,stateRoot,binding:b,sessionReference});
-  let readFailure=false,qualificationPauseAck;const toolCallGate=createToolCallGate(()=>readFailure);const serializedRead=work=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}});
+  let readFailure=false,qualificationPauseAck;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:!qualification});const serializedRead=work=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly:true});
   const trace=qualification?new QualificationTrace(manager,b,replacementScope,decisionContext):new ReplacementTrace(manager,b,replacementScope);
   const readiness=qualification?undefined:new ReplacementReadiness(manager,trace);
   const sequence=qualification?undefined:new ReplacementSequence(manager,trace,readiness,selectedProfile,decisionContext);
   const readTools=tools.filter(name=>!REPLACEMENT_WRITES.has(name));
+  const readOnlyNames=new Set(readTools.filter(name=>name!=='resource_wait'));
+  const isReadOnlyTool=name=>readOnlyNames.has(name);
+  const scheduleRead=createReadConcurrency(4);
   const allowedTools=()=>qualification||(sequence.canWrite()&&!readiness.blocked())?tools:readTools;
   let activeTools=allowedTools();
   const tracedObserver=observer?{...observer,
@@ -75,22 +78,22 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     if(qualification)trace.sql(data);else sequence.observe('sql',data,args);
     return data;
    })}:undefined;
-  mcp=await createScopedMcpRuntime({sdk,stateRoot,privateRoot,servers:mcpConfig,binding:b,replacementScope,fetch,toolCallGate,onEvidence:rows=>{if(qualification)trace.mcp(rows);else sequence.observe('mcp',rows)},beforeTool:(server,tool,args)=>{pause.beforeTool(server,tool);if(!qualification&&REPLACEMENT_WRITES.has('mcp__'+server+'__'+tool)&&(readiness.blocked()||activeTools!==tools))throw Error('MissingEvidence');if(qualification){if(server==='raptor'&&tool==='approval_request')trace.requireApprovalReady();else if(!(server==='raptor'&&tool==='request_pause'))trace.beforeRead('mcp.'+server+'.'+tool,args);}if(!qualification&&server==='raptor'&&tool==='approval_request')sequence.beforeMutation(tool,args);if(server==='infra'&&!qualification){sequence.beforeMutation(tool,args);trace.beforeMutation(tool,args);if(readiness.blocked()){activeTools=readTools;session.setActiveToolsByName(readTools);}}},onToolResult:(server,tool,args,data)=>{if(server==='infra'&&!qualification){trace.mutation(tool,args,data);sequence.onMutationResult(tool,args,data);}if(qualification&&server==='raptor'&&tool==='approval_get')trace.approvalRead(data);if(server==='raptor'&&tool==='approval_request')pause.requested(args,data);if(server==='raptor'&&tool==='request_pause'){if(data?.accepted!==true)throw Error('InvalidApprovalPause');if(qualification){qualificationPauseAck={accepted:data.accepted};}pause.paused(args);}},onDiagnostic:({server,tool,category})=>{readFailure=true;const diagnostic=toolFailureDiagnostic('mcp__'+server+'__'+tool,profile,category);if(diagnostic){toolDiagnostics.set('mcp__'+server+'__'+tool,diagnostic.category);progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});}}});
+  mcp=await createScopedMcpRuntime({sdk,stateRoot,privateRoot,servers:mcpConfig,binding:b,replacementScope,fetch,toolCallGate,isReadOnlyTool,onEvidence:rows=>{if(qualification)trace.mcp(rows);else sequence.observe('mcp',rows)},beforeTool:(server,tool,args)=>{pause.beforeTool(server,tool);if(!qualification&&REPLACEMENT_WRITES.has('mcp__'+server+'__'+tool)&&(readiness.blocked()||activeTools!==tools))throw Error('MissingEvidence');if(qualification){if(server==='raptor'&&tool==='approval_request')trace.requireApprovalReady();else if(!(server==='raptor'&&tool==='request_pause'))trace.beforeRead('mcp.'+server+'.'+tool,args);}if(!qualification&&server==='raptor'&&tool==='approval_request')sequence.beforeMutation(tool,args);if(server==='infra'&&!qualification){sequence.beforeMutation(tool,args);trace.beforeMutation(tool,args);if(readiness.blocked()){activeTools=readTools;session.setActiveToolsByName(readTools);}}},onToolResult:(server,tool,args,data)=>{if(server==='infra'&&!qualification){trace.mutation(tool,args,data);sequence.onMutationResult(tool,args,data);}if(qualification&&server==='raptor'&&tool==='approval_get')trace.approvalRead(data);if(server==='raptor'&&tool==='approval_request')pause.requested(args,data);if(server==='raptor'&&tool==='request_pause'){if(data?.accepted!==true)throw Error('InvalidApprovalPause');if(qualification){qualificationPauseAck={accepted:data.accepted};}pause.paused(args);}},onDiagnostic:({server,tool,category})=>{readFailure=true;const diagnostic=toolFailureDiagnostic('mcp__'+server+'__'+tool,profile,category);if(diagnostic){toolDiagnostics.set('mcp__'+server+'__'+tool,diagnostic.category);progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});}}});
   const afterReads=decisionContext?.decision==='resume'?'\nAfter all listed batches succeed, call db_connection_probe for each of the two exact saved baseline instance IDs in one batch. The runtime executes these calls serially; finish only after both fresh probes succeed. Do not request another approval.':'\nAfter all listed batches succeed, call db_connection_probe for each of the two exact instance IDs returned by the validated fleet read in one batch. The runtime executes these calls serially. Wait for both successful probes before requesting human continuation approval in a separate tool round. Never request approval in a batch with reads.';
   const readPlan=qualification?'\nRead batches in this order, waiting for each whole batch to succeed before starting the next. Use exactly these arguments; do not guess alternative proxy or application codes: '+JSON.stringify(qualificationReadBatches(b,replacementScope,decisionContext))+afterReads+' Stop on any failed read.': '';
   const pinnedInstructions=qualification?'':pinnedReplacementInstructions(skills);
-  const loader=await createOperationResourceLoader({sdk,stateRoot,binding:b,skills,settingsManager:settings,extensionFactories:[mcp.extension,resourceWaitExtension(pause),...(observer?[observationExtension(tracedObserver)]:[])] ,systemPrompt:(qualification?QUALIFICATION_SYSTEM+RESOURCE_TRANSPORT_NOTICE+(decisionContext?.decision==='resume'?QUALIFICATION_RESUME:QUALIFICATION_FIRST):SYSTEM+EXPANSION_READINESS+pinnedInstructions+(trace.baseline()?'':INITIAL_READS))+readPlan+'\nTrusted selectors: '+JSON.stringify({binding:b,resource:{envCode:replacementScope.envCode,proxyCode:replacementScope.proxyCode,application:{appCode:replacementScope.application.appCode},targetDbCode:replacementScope.targetDbCode}})});
+  const loader=await createOperationResourceLoader({sdk,stateRoot,binding:b,skills,settingsManager:settings,extensionFactories:[mcp.extension,resourceWaitExtension(pause),...(observer?[observationExtension(tracedObserver)]:[])].map(extension=>qualification?extension:withReadOnlyToolPolicy(extension,isReadOnlyTool,scheduleRead)) ,systemPrompt:(qualification?QUALIFICATION_SYSTEM+RESOURCE_TRANSPORT_NOTICE+(decisionContext?.decision==='resume'?QUALIFICATION_RESUME:QUALIFICATION_FIRST):SYSTEM+EXPANSION_READINESS+pinnedInstructions+(trace.baseline()?'':INITIAL_READS))+readPlan+'\nTrusted selectors: '+JSON.stringify({binding:b,resource:{envCode:replacementScope.envCode,proxyCode:replacementScope.proxyCode,application:{appCode:replacementScope.application.appCode},targetDbCode:replacementScope.targetDbCode}})});
   const provider=b.providerId==='codex'?'openai-codex':'openai';const model=runtime.getModel(provider,b.model);if(!model||model.id!==b.model||model.provider!==provider)throw Error('InvalidJob');
   ({session}=await sdk.createAgentSession({cwd:stateRoot,agentDir:stateRoot,modelRuntime:runtime,model,thinkingLevel:'off',noTools:'all',tools,resourceLoader:loader,settingsManager:settings,sessionManager:manager}));
-  // Pi starts MCP deadlines before transport fetch. Run replacement tools in
-  // model order so observation work cannot consume a queued MCP call's budget.
-  if(!qualification)session.agent.toolExecution='sequential';
+  // Pi runs all-read batches concurrently. A non-read tool marks the entire
+  // mixed batch sequential before any execution, preserving mutation ordering.
   await session.bindExtensions({mode:'sdk'});await mcp.ready(session);session.setActiveToolsByName(activeTools);
   // Pi awaits finishTurn after persisting the assistant and every tool result.
   // End cleanly here; abort() would append a synthetic aborted assistant entry.
   const finishTurn=session.agent.finishTurn;
   session.agent.finishTurn=async(turn,signal)=>{
    const decision=await finishTurn?.(turn,signal);
+   if(error||readFailure||signal?.aborted)return {action:'end'};
    if(qualification&&!error&&!readFailure&&!signal?.aborted){
     // Approval is already validated and journaled. Settle the real Raptor pause
     // through Pi's nested-tool pipeline without spending another model call.
