@@ -33,7 +33,7 @@ const WORK_UPDATES=new Map([
  ['mcp__infra__deployment_restart','I’ll request a restart of the bound application.']
 ]);
 export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:b,replacementScope,skills,limits,mcpConfig,fetch,onProgress=()=>{},signal,sessionReference,decisionContext,observer,conversation}){
- let session,mcp,manager,error,inbox,inboxTimer,turns=0;const usage=[],replyUsage=[],toolDiagnostics=new Map(),publicStatus=[],announced=new Set();
+ let session,mcp,manager,error,inbox,inboxTimer,finishTroubleshooting,turns=0;const usage=[],replyUsage=[],toolDiagnostics=new Map(),publicStatus=[],announced=new Set();
  const stream=runtime.streamSimple.bind(runtime),pause=new ApprovalPause(b),profile=operationCapabilities(b,replacementScope);
  const tools=Object.entries(profile).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name)).concat(observer?OBSERVATION_TOOLS:[]).concat(['resource_wait']);
  if(limits?.max_turns!==10||limits?.max_output_tokens!==1024)throw Error('InvalidJob');
@@ -148,10 +148,22 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     ? 'Resuming PgCat replacement. I’ll recheck the fleet and application before taking the next step.'
     : 'Starting PgCat replacement. I’ll verify the current fleet and application before changing capacity.');
    if(conversation?.enabled===true&&!error){
-    inbox=startPgcatTroubleshooting({binding:b,privateRoot,model,stream,getProgress:()=>[phaseSummary,...publicStatus],onProgress,onUsage:u=>replyUsage.push(u)});
+    inbox=startPgcatTroubleshooting({binding:b,privateRoot,model,stream,getProgress:()=>[phaseSummary,...publicStatus],onProgress,onUsage:u=>replyUsage.push(u),onFinish:()=>{if(!finishTroubleshooting)return false;finishTroubleshooting();return true;}});
     inboxTimer=setInterval(()=>{void inbox.poll().catch(()=>{});},100);
    }
    if(!error)await session.prompt((qualification?'Execute read-only qualification using its pinned skill.':'Execute the selected request operation using its pinned skill.')+(decisionContext?'\nVerified continuation context: '+JSON.stringify(decisionContext):''));}
+  // A local rejection before any recorded mutation leaves only a read-only
+  // troubleshooting inbox. Never hold a request with possible provider effects.
+  const scaleRejection=toolDiagnostics.get('mcp__infra__db_proxy_scale');
+  if(!qualification&&error==='ToolFailed'&&inbox&&signal&&!signal.aborted&&
+    ['local-selector','local-precondition'].includes(scaleRejection)&&!trace.rows.some(row=>row.kind==='intent')){
+   await new Promise(resolve=>{
+    const finish=()=>{signal.removeEventListener('abort',finish);finishTroubleshooting=undefined;resolve();};
+    finishTroubleshooting=finish;
+    signal.addEventListener('abort',finish,{once:true});
+    narrate(`Expansion was rejected locally before any change (${scaleRejection}). Troubleshooting is open. Send /finish or cancel to close this session.`);
+   });
+  }
   clearInterval(inboxTimer);inbox?.close();
   for(const reply of replyUsage){
    if(!usage.length)usage.push(reply);

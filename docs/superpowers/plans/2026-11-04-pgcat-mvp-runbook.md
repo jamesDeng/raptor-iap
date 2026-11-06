@@ -24,8 +24,9 @@ Workbench CLI for ACK/worker operations; read the project's ACK Workbench skill.
 
 Check the day's cost/balance/forecast once, including the four-node peak and
 cleanup within the current CNY3,000 net POC ceiling (owner confirmed November2); reuse that observation that
-day. Keep the 21:30 Shanghai start cutoff and 22:30 reconciliation/stop cutoff,
-and the existing resource shutdown. Recording must leave time for assessment and
+day. There is no fixed start cutoff (owner confirmed November 6). Start only
+when the run and its cleanup fit before the 22:30 Shanghai reconciliation and
+stop cutoff. Keep the existing resource shutdown. Recording must leave time for assessment and
 cleanup. A 7,200-second utility ceiling is not permission to exceed those cutoffs
 or any existing operation/approval timeout.
 

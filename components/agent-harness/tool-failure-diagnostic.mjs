@@ -1,4 +1,4 @@
-const categories=new Set(['local-selector','transport-error','remote-rpc-error','remote-tool-error','local-evidence','remote-ScopeMismatch','remote-ProviderUnavailable','remote-InvalidInput','remote-IdentityChanged','remote-NotConfigured','remote-Unauthenticated']);
+const categories=new Set(['local-selector','local-precondition','transport-error','remote-rpc-error','remote-tool-error','local-evidence','remote-ScopeMismatch','remote-ProviderUnavailable','remote-InvalidInput','remote-IdentityChanged','remote-NotConfigured','remote-Unauthenticated']);
 
 // Only a known tool identity and a fixed category cross the public progress boundary.
 // Inspect just the SDK validation prefix; never copy its argument-bearing result text.
