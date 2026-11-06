@@ -1,6 +1,7 @@
 import {withResourceProof} from './replacement-sequence-fixtures.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {loadPiRuntime} from './pi-adapter.mjs';import {runLiveReplacement} from './live-replacement.mjs';import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 const cases=[
+ {name:"skipped resource wait",split:false,resourceWait:false,firstError:"ToolFailed",pauseCount:0},
  {name:"four-node resource continuation",split:false,resourceWait:true,nodeCount:4},
  {name:'batched initial reads',split:false},
  {name:'chat journal failure',split:false,chatWriteFails:true},
@@ -20,7 +21,7 @@ const cases=[
  {name:'completed resumed probes with failed sibling',split:true,fault:'resumed-sibling-failure',resumeError:'ToolFailed'},
  {name:'completed reads with model error',split:true,fault:'resumed-model-error',resumeError:'ModelFailed'},
 ];
-for(const {name,split,explicit=false,fault,firstError,pauseCount,resumeError,chatWriteFails=false,resourceWait=false,nodeCount=2} of cases)test(`pinned Pi qualification ${name} settles safely within ten model calls`,async()=>{
+for(const {name,split,explicit=false,fault,firstError,pauseCount,resumeError,chatWriteFails=false,resourceWait=true,nodeCount=2} of cases)test(`pinned Pi qualification ${name} settles safely within ten model calls`,async()=>{
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qual-pi-')));try{
  const state=path.join(root,'state'),skills=path.join(root,'skills');fs.mkdirSync(state);fs.mkdirSync(path.join(skills,'pgcat-qualification'),{recursive:true});fs.writeFileSync(path.join(skills,'pgcat-qualification','SKILL.md'),'---\nname: pgcat-qualification\ndescription: Qualify read-only runtime.\n---\nNo infrastructure changes.\n');fs.writeFileSync(path.join(state,'auth.json'),JSON.stringify({'openai-codex':{type:'oauth',access:'synthetic',refresh:'synthetic',expires:Date.now()+999999}}));
  const b={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',definitionSha256:'a'.repeat(64),skillsCommit:'b'.repeat(40),operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'proxy',envCode:'dev',clusterId:'cluster',model:'gpt-6-luna',providerId:'codex',connectionVersion:3,executionMode:'qualification'};
@@ -50,10 +51,10 @@ for(const {name,split,explicit=false,fault,firstError,pauseCount,resumeError,cha
   if(chatWriteFails&&e.kind==='reply')throw Error('ProgressLimit');
   events.push(e);
   if(withChat&&events.length===1)fs.writeFileSync(path.join(root,'private','conversation-inbox.json'),JSON.stringify({requestId:b.requestId,attemptId:b.attemptId,messageId:'77777777-7777-4777-8777-777777777777',inputSequence:1,text:'What checks are running?'}));
- },stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:skills},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher};let first=await runLiveReplacement(args);
- if(resourceWait){
+ },stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:skills},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher};let first=await runLiveReplacement(args);let resourceUsage=[];
+ if(resourceWait&&!first.error){
   assert.equal(first.error,undefined,JSON.stringify(first));assert.equal(first.paused?.kind,'resource');assert.equal(pauseCalls,0);
-  resourceResumed=true;n=0;runtime.streamSimple=stream;
+  resourceUsage=first.usage;resourceResumed=true;n=0;runtime.streamSimple=stream;
   first=await runLiveReplacement({...args,binding:{...b,attemptId:'88888888-8888-4888-8888-888888888888'},privateRoot:path.join(root,'private-resource'),sessionReference:first.sessionReference,decisionContext:{approvalId:'',actionId:first.paused.actionId,bindingDigest:first.paused.bindingDigest,decision:'resume'}});
  }
 
@@ -64,7 +65,7 @@ for(const {name,split,explicit=false,fault,firstError,pauseCount,resumeError,cha
  if(withChat){
   assert.equal(chatCalls,1);
   assert.equal(events.some(e=>e.kind==='reply'&&e.summary==='The read-only checks are running.'),!chatWriteFails);
-  assert.equal(first.usage.reduce((sum,u)=>sum+u.totalTokens,0),n*5+9);
+  assert.equal([...resourceUsage,...first.usage].reduce((sum,u)=>sum+u.totalTokens,0),(resourceUsage.length+first.usage.length)*5+9);
  }
  const beforeResume=events.length;
  const pauseEvents=events.filter(e=>e.kind==='tool_result'&&e.tool==='mcp__raptor__request_pause');assert.deepEqual(pauseEvents,[{kind:'tool_result',tool:'mcp__raptor__request_pause',outcome:'succeeded'}]);
