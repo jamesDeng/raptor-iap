@@ -1,5 +1,19 @@
 import {createDirectProgressController,progressConnectionStatus} from './direct-progress.js?v=connection-status-2';
 const {updateWorklog,resetWorklog}=typeof document==='undefined'?{updateWorklog:()=>false,resetWorklog:()=>{}}:await import('./worklog.js?v=request-conversation-1');
+export function createConversationRefresh({current,refresh,renew,onError=()=>{}}){
+ let pending=false;
+ return async()=>{
+  const view=current();
+  if(!view.authenticated||!view.id||pending)return;
+  pending=true;
+  try{
+   await refresh(view.id);
+   const next=current();
+   if(next.authenticated&&next.id===view.id&&next.mode==='complete'&&['queued','preparing','running'].includes(next.status))await renew(view.id);
+  }catch(error){if(current().id===view.id)onError(error);}
+  finally{pending=false;}
+ };
+}
 export function operationModelChoices(operation,mode,choices) {
  return operation==='db-proxy.replace-nodes'&&mode!=='qualification'?choices.filter(m=>m.providerId==='codex'&&['gpt-6-luna','gpt-6.1-sol'].includes(m.modelId)):choices;
 }
@@ -216,7 +230,8 @@ async function start(){
  $('new-request').onclick=()=>openNewRequest(selectedObject);
  $('cancel-new-request').onclick=()=>{if(!requestOrigin)return;const origin=requestOrigin;$('environment').value=origin.environment;openObject(origin.object,origin.tab).catch(showError);};
  $('new-request-environment').onchange=()=>{$('environment').value=$('new-request-environment').value;setRoute({'new-request':requestResource.id,env:$('environment').value,mode:'agent'});};
- const conversationRefresh=setInterval(()=>{if(csrf&&requestId&&progress.state.mode==='complete')void refreshRequest(requestId).then(()=>{if(requestView?.execution&&['queued','preparing','running'].includes(requestView.execution.status))return progress.renew(requestId)}).catch(showError)},3000);
+ const refreshConversation=createConversationRefresh({current:()=>({authenticated:!!csrf,id:requestId,mode:progress.state.mode,status:requestView?.execution?.status}),refresh:refreshRequest,renew:id=>progress.renew(id),onError:showError});
+ const conversationRefresh=setInterval(refreshConversation,3000);
  window.addEventListener('pagehide',()=>{clearInterval(conversationRefresh);progress.close();resetWorklog($('t3-worklog'))},{once:true});
  window.addEventListener('hashchange',()=>{if(csrf&&location.hash.slice(1)!==activeRoute)restoreRoute().catch(showError);});
  $('create-object').onsubmit=async e=>{e.preventDefault();try{const object=await api('/objects',{method:'POST',body:Object.fromEntries(new FormData(e.target))});await refreshCatalog();await openObject(object);}catch(err){showError(err);}};

@@ -7,6 +7,7 @@ import {loadPiRuntime} from './pi-adapter.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 import {observations,withResourceProof} from './replacement-sequence-fixtures.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
+import {createRemoteObservationTools} from './observation-proxy.mjs';
 
 async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay=false,wrongProbe,advanceClock){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'replacement-read-queue-')));
@@ -98,7 +99,7 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
-  const read=async args=>{if(args.instanceId)probedIds.push(args.instanceId);if(wrongProbe&&args.instanceId==='i-foreign')throw Error('FixtureGateway503');const observationIndex=++observerCalls;readOrder.push('observation');active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));advanceClock?.();active--;if(failureKind==='observer'&&observationIndex===1)throw Error('FixtureObserverUnavailable');if(((expansionCase||deadlineReplay)&&round<=1)||(wrongProbe==='recover'&&round===2)){const e=observations(['i-one','i-two']);if(args.instanceId)return {instanceId:args.instanceId,connected:true};if(!args.kind)return {...e.deployment,...scope.application};return e[args.kind==='pgcatClients'?'metrics':args.kind];}if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
+  const read=async args=>{if(args.instanceId)probedIds.push(args.instanceId);if(wrongProbe&&args.instanceId==='i-foreign')throw Error('FixtureGateway503');const observationIndex=++observerCalls;readOrder.push('observation');active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,50));advanceClock?.();active--;if(failureKind==='observer'&&observationIndex===1)throw Error('FixtureObserverUnavailable');if(((expansionCase||deadlineReplay)&&round<=1)||(wrongProbe==='recover'&&round===2)){const e=observations(['i-one','i-two']);if(args.instanceId)return {instanceId:args.instanceId,connected:true};if(!args.kind)return {...e.deployment,...scope.application};return e[args.kind==='pgcatClients'?'metrics':args.kind];}if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
    const ids=['i-one','i-two','new-a','new-b'],observedAt=new Date().toISOString();
    if(args.kind==='fleet')return {groupId:scope.groupId,observedAt,instances:ids.map(instanceId=>({instanceId,protectedFromScaleIn:true,lifecycleState:'Protected',healthStatus:'Healthy'}))};
    if(args.kind==='backend')return {serverGroupId:scope.serverGroupId,observedAt,nodes:ids.map(instanceId=>({instanceId,status:'Available',healthy:true,registered:true,privateIp:'10.0.0.1'}))};
@@ -106,7 +107,7 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
    if(args.kind==='pgcatClients')return {observedAt,responseAt:observedAt,sourceAt:observedAt,latestSourceAt:observedAt,latestResponseAt:observedAt,pendingInstanceIds:[],nodes:ids.map(instanceId=>({instanceId,connectedClients:3,pools:[{instanceId,pool:'db',user:'client',active:1,idle:2,waiting:0}]}))};
    if(args.instanceId)return {instanceId:args.instanceId,connected:true};
   }if(args?.kind==='fleet')return {groupId:scope.groupId,observedAt:new Date().toISOString(),instances:(baselineCase==='valid'?['i-one','i-two']:['i-one']).map(instanceId=>({instanceId,protectedFromScaleIn:true,lifecycleState:'Protected',healthStatus:'Healthy'}))};return {observedAt:new Date().toISOString()};};
-  const observer={cloudRead:read,metricsRead:read,deploymentRead:read,dbConnectionProbe:read};
+  const observer=createRemoteObservationTools({binding:b,replacementScope:scope,config:{version:1,transport:'gateway',url:'https://api.rdev.raptor-iap.top/v1/gateway-observations',token:'a'.repeat(64),binding:b,scope,expiresAt:new Date(Date.now()+600000).toISOString()},fetch:async(_url,init)=>new Response(JSON.stringify({data:await read(JSON.parse(init.body).arguments)}))});
   const options={stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:skills},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,observer};
   let out=await runLiveReplacement(options);
   if(['accepted','unknown','ready','ready-unknown','ready-batch'].includes(expansionCase)){

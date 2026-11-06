@@ -26,13 +26,13 @@ test('remote observation failure reports only a bounded tool and category',async
  assert.deepEqual(diagnostics,[{tool:'cloud_read',category:'http-503'},{tool:'deployment_read',category:'invalid-response'},{tool:'cloud_read',category:'local-input'}]);
  assert.equal(JSON.stringify(diagnostics).includes(secret),false);
 });
-test('remote observation calls are serialized for the single-flight Gateway proxy',async()=>{
+test('remote observation transport overlaps reads up to Gateway capacity',async()=>{
  let active=0,peak=0;const seen=[];
  const tools=createObservationTools({binding,config:config(),replacementScope:scope,fetch:async(_url,options)=>{
   active++;peak=Math.max(peak,active);const tool=JSON.parse(options.body).tool;seen.push(tool);
   await new Promise(resolve=>setTimeout(resolve,5));active--;
-  return active>0?new Response('busy',{status:429}):new Response(JSON.stringify({data:{tool}}));
+  return new Response(JSON.stringify({data:{tool}}));
  }});
- const result=await Promise.all([tools.cloudRead({kind:'fleet'}),tools.deploymentRead({}),tools.metricsRead({kind:'connections'})]);
- assert.equal(peak,1);assert.deepEqual(seen,['cloud_read','deployment_read','metrics_read']);assert.deepEqual(result.map(x=>x.tool),seen);
+ const result=await Promise.all([tools.cloudRead({kind:'fleet'}),tools.deploymentRead({}),tools.metricsRead({kind:'connections'}),tools.cloudRead({kind:'backend'}),tools.cloudRead({kind:'capacity'}),tools.dbConnectionProbe({instanceId:'i-one'})]);
+ assert.equal(peak,4);assert.equal(seen.length,6);assert.deepEqual(result.map(x=>x.tool),seen);
 });
