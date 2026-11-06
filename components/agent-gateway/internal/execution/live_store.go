@@ -233,15 +233,23 @@ func (s *Store) SaveIssuedScope(ctx context.Context, attempt, owner string, scop
 	if !scope.ResourceValidFor(b) {
 		return ErrInvalid
 	}
-	rows, e := tx.Query(ctx, "SELECT id::text,binding FROM gateway.attempts WHERE request_id=$1 ORDER BY started_at,id", id)
+	rows, e := tx.Query(ctx, `SELECT a.id::text,a.binding,
+ a.state='failed' AND a.runtime_id='' AND a.ended_at IS NOT NULL
+ AND EXISTS(SELECT 1 FROM gateway.runtime_intents i WHERE i.attempt_id=a.id AND i.kind='access')
+ AND NOT EXISTS(SELECT 1 FROM gateway.runtime_intents i WHERE i.attempt_id=a.id AND i.kind<>'access')
+ AND NOT EXISTS(SELECT 1 FROM gateway.runtime_events v WHERE v.attempt_id=a.id)
+ AND EXISTS(SELECT 1 FROM gateway.signals s WHERE s.request_id=a.request_id AND s.kind='continue' AND s.consumed AND s.payload->>'attemptId'=a.id::text)
+ FROM gateway.attempts a WHERE a.request_id=$1 ORDER BY a.started_at,a.id`, id)
 	if e != nil {
 		return e
 	}
 	var current map[string]json.RawMessage
+	priorScope := false
 	for rows.Next() {
 		var other string
 		var raw []byte
-		if e = rows.Scan(&other, &raw); e != nil {
+		var retriedPreparation bool
+		if e = rows.Scan(&other, &raw, &retriedPreparation); e != nil {
 			rows.Close()
 			return e
 		}
@@ -266,12 +274,22 @@ func (s *Store) SaveIssuedScope(ctx context.Context, attempt, owner string, scop
 				return ErrInvalid
 			}
 		} else if saved.ReplacementScope == nil {
-			rows.Close()
-			return ErrInvalid
+			// Continue already verified cleanup and the intact resource session.
+			// Only an exact consumed retry of an untouched preparation can lack
+			// a scope. It must follow an earlier, matching issued scope.
+			comparable := binding
+			comparable.AttemptID = b.AttemptID
+			if !priorScope || !retriedPreparation || comparable != b {
+				rows.Close()
+				return ErrInvalid
+			}
 		}
 		if saved.ReplacementScope != nil && (!saved.ReplacementScope.ResourceValidFor(binding) || *saved.ReplacementScope != scope || binding.DefinitionSHA256 != b.DefinitionSHA256 || binding.SkillsCommit != b.SkillsCommit || binding.Model != b.Model) {
 			rows.Close()
 			return ErrInvalid
+		}
+		if other != attempt && saved.ReplacementScope != nil {
+			priorScope = true
 		}
 	}
 	e = rows.Err()
