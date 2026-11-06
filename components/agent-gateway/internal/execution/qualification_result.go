@@ -28,15 +28,19 @@ type QualificationResult struct {
 
 func validateQualificationResult(r LiveResult, b AttemptBinding) error {
 	q := r.Qualification
-	if q == nil || r.Replacement != nil || b.ExecutionMode != "qualification" || (q.Version != 1 && q.Version != 2) || !q.Passed || !q.ReadOnly || q.TrafficAcceptance != "not_assessed" || !q.Scope.ValidFor(b) || r.Answer != QualificationAnswer || !journalName.MatchString(q.ApprovalID) || !journalName.MatchString(q.ActionID) || !shaPattern.MatchString(q.BindingDigest) || q.ObservedAt.IsZero() || time.Since(q.ObservedAt) > 120*time.Second || q.ObservedAt.After(time.Now().Add(2*time.Second)) || len(q.InstanceIDs) != 2 || len(q.ConnectedNodeIDs) != 2 || len(r.Evidence) != 0 {
+	if q == nil || r.Replacement != nil || b.ExecutionMode != "qualification" || (q.Version != 1 && q.Version != 2) || !q.Passed || !q.ReadOnly || q.TrafficAcceptance != "not_assessed" || !q.Scope.ValidFor(b) || r.Answer != QualificationAnswer || !journalName.MatchString(q.ApprovalID) || !journalName.MatchString(q.ActionID) || !shaPattern.MatchString(q.BindingDigest) || q.ObservedAt.IsZero() || time.Since(q.ObservedAt) > 120*time.Second || q.ObservedAt.After(time.Now().Add(2*time.Second)) || (len(q.InstanceIDs) != 2 && !(q.Version == 2 && len(q.InstanceIDs) == 4)) || len(q.ConnectedNodeIDs) != len(q.InstanceIDs) || len(r.Evidence) != 0 {
 		return ErrInvalid
 	}
 	if q.Version == 2 && (q.TransportContract != "raptor-resource-v1" || !q.Scope.ResourceValidFor(b)) {
 		return ErrInvalid
 	}
 	for _, ids := range [][]string{q.InstanceIDs, q.ConnectedNodeIDs} {
-		if !journalName.MatchString(ids[0]) || !journalName.MatchString(ids[1]) || ids[0] == ids[1] {
-			return ErrInvalid
+		seen := map[string]bool{}
+		for _, id := range ids {
+			if !journalName.MatchString(id) || seen[id] {
+				return ErrInvalid
+			}
+			seen[id] = true
 		}
 	}
 	sorted := func(s []string) []string { v := append([]string{}, s...); sort.Strings(v); return v }

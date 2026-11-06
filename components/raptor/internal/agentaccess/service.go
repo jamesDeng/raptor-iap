@@ -19,6 +19,7 @@ import (
 )
 
 type Service struct {
+	PrepareIssue              func(context.Context, string, string, string) error
 	Pool                      *pgxpool.Pool
 	RaptorMCPURL, InfraMCPURL string
 	Now                       func() time.Time
@@ -263,6 +264,11 @@ func (s *Service) Issue(ctx context.Context, id string, in IssueInput) (Issued, 
 	}
 	if !validURL(s.RaptorMCPURL) || !validURL(s.InfraMCPURL) {
 		return out, domain.ErrUnavailable
+	}
+	if s.PrepareIssue != nil {
+		if e := s.PrepareIssue(ctx, id, in.AttemptID, in.DefinitionSHA256); e != nil {
+			return out, e
+		}
 	}
 	// Phase A: finish every SQL read before catalog/provider resolution. Both
 	// resolver callbacks may themselves borrow this same pool, even at MaxConns=1.

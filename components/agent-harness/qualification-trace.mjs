@@ -6,15 +6,15 @@ const READ_STAGES=[QUALIFICATION_CHECKS.slice(0,3),QUALIFICATION_CHECKS.slice(3,
 const canonical=v=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
 const invalid=()=>Error('InvalidEvidence');
 const fresh=t=>typeof t==='string'&&Number.isFinite(Date.parse(t))&&Math.abs(Date.now()-Date.parse(t))<=120000;
-const validIds=ids=>Array.isArray(ids)&&ids.length===2&&ids.every(id=>typeof id==='string'&&/^[-A-Za-z0-9_.]{1,128}$/.test(id))&&new Set(ids).size===2;
+const validIds=ids=>Array.isArray(ids)&&[2,4].includes(ids.length)&&ids.every(id=>typeof id==='string'&&/^[-A-Za-z0-9_.]{1,128}$/.test(id))&&new Set(ids).size===ids.length;
 export class QualificationTrace {
  constructor(manager,b,scope,continuation){
   if(b.executionMode!=='qualification')throw invalid();this.manager=manager;this.scope=scope;this.continuation=continuation;this.identity={requestId:b.requestId,definitionSha256:b.definitionSha256,skillsCommit:b.skillsCommit,model:b.model,scope};this.checks=new Map();this.probes=new Map();
-  const saved=manager.getEntries().filter(e=>e.type==='custom'&&e.customType===TYPE);if(saved.length>1)throw invalid();if(saved.length){const d=saved[0].data;if(d?.version!==1||canonical(d.identity)!==canonical(this.identity)||!validIds(d.instanceIds))throw invalid();this.baseline=d.instanceIds.slice().sort();}if(continuation&&!this.baseline)throw invalid();
+  const saved=manager.getEntries().filter(e=>e.type==='custom'&&e.customType===TYPE);if(saved.length>1)throw invalid();if(saved.length){const d=saved[0].data;if(d?.version!==1||canonical(d.identity)!==canonical(this.identity)||!validIds(d.instanceIds))throw invalid();this.baseline=d.instanceIds.slice().sort();}if(continuation&&!this.baseline)throw invalid();if(continuation&&!continuation.approvalId&&(continuation.decision!=='resume'||continuation.bindingDigest!==b.definitionSha256||!continuation.actionId))throw invalid();
  }
  beforeRead(name,args){
   if(name==='mcp.raptor.approval_get'){if(!this.continuation||this.approvalGetRead||this.checks.size||canonical(args)!==canonical({requestId:this.identity.requestId,approvalId:this.continuation.approvalId}))throw Error('MissingEvidence');return;}
-  if(this.continuation&&!this.approvalGetRead)throw Error('MissingEvidence');
+  if(this.continuation?.approvalId&&!this.approvalGetRead)throw Error('MissingEvidence');
   const stage=READ_STAGES.findIndex(group=>group.includes(name));if(stage<0)throw Error('MissingEvidence');
   if(READ_STAGES.slice(0,stage).flat().some(prior=>!fresh(this.checks.get(prior))))throw Error('MissingEvidence');
   if(stage>3&&canonical(this.fleet)!==canonical(this.baseline))throw Error('MissingEvidence');
@@ -24,18 +24,18 @@ export class QualificationTrace {
  mcp(rows){for(const row of rows){const name='mcp.'+row.server+'.'+row.tool;if(QUALIFICATION_CHECKS.includes(name))this.observation(name,row);}}
  cloud(kind,data){
   if(kind==='fleet'){
-   if(data?.groupId!==this.scope.groupId||!Array.isArray(data.instances)||data.instances.length!==2||data.instances.some(n=>n.healthStatus!=='Healthy'||!['Protected','InService'].includes(n.lifecycleState)||n.protectedFromScaleIn!==true))throw invalid();
+   if(data?.groupId!==this.scope.groupId||!Array.isArray(data.instances)||![2,4].includes(data.instances.length)||data.instances.some(n=>n.healthStatus!=='Healthy'||!['Protected','InService'].includes(n.lifecycleState)||typeof n.protectedFromScaleIn!=='boolean'||(data.instances.length===2&&n.protectedFromScaleIn!==true)))throw invalid();
    const ids=data.instances.map(n=>n.instanceId).sort();if(!validIds(ids)||(this.baseline&&canonical(ids)!==canonical(this.baseline)))throw invalid();
    if(!this.baseline){this.baseline=ids;this.manager.appendCustomEntry(TYPE,{version:1,identity:this.identity,instanceIds:ids});}
    this.fleet=ids;
   }else if(kind==='backend'){
-   if(data?.serverGroupId!==this.scope.serverGroupId||!Array.isArray(data.nodes)||data.nodes.length!==2||data.nodes.some(n=>!n.healthy||!n.registered))throw invalid();this.backend=data.nodes.map(n=>n.instanceId).sort();if(!validIds(this.backend))throw invalid();
-  }else if(kind==='capacity'){if(data?.groupId!==this.scope.groupId||data.desiredCapacity!==2)throw invalid();}else throw invalid();
+   if(data?.serverGroupId!==this.scope.serverGroupId||!Array.isArray(data.nodes)||data.nodes.length!==this.baseline?.length||data.nodes.some(n=>!n.healthy||!n.registered))throw invalid();this.backend=data.nodes.map(n=>n.instanceId).sort();if(!validIds(this.backend))throw invalid();
+  }else if(kind==='capacity'){if(data?.groupId!==this.scope.groupId||data.desiredCapacity!==this.baseline?.length)throw invalid();}else throw invalid();
   this.observation('cloud.'+kind,data);
  }
  sql(data){if(data?.connected!==true||!this.baseline?.includes(data.instanceId))throw invalid();this.probes.set(data.instanceId,new Date().toISOString());}
  requireBaselineNode(instanceId){if(!this.baseline?.includes(instanceId)||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(name=>!fresh(this.checks.get(name))))throw Error('MissingEvidence');}
- requireApprovalReady(){if(!this.baseline||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(n=>!fresh(this.checks.get(n)))||this.probes.size!==2||[...this.probes.values()].some(t=>!fresh(t)))throw Error('MissingEvidence');}
+ requireApprovalReady(){if(!this.baseline||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(n=>!fresh(this.checks.get(n)))||this.probes.size!==this.baseline.length||[...this.probes.values()].some(t=>!fresh(t)))throw Error('MissingEvidence');}
  complete(){const c=this.continuation;this.requireApprovalReady();if(!this.approvalGetRead||c?.decision!=='resume'||!c.approvalId||!c.actionId||!/^[a-f0-9]{64}$/.test(c.bindingDigest??''))throw Error('MissingEvidence');
   return {version:2,transportContract:'raptor-resource-v1',passed:true,readOnly:true,trafficAcceptance:'not_assessed',scope:this.scope,checks:[...QUALIFICATION_CHECKS],instanceIds:this.baseline,connectedNodeIds:[...this.probes.keys()].sort(),approvalId:c.approvalId,actionId:c.actionId,bindingDigest:c.bindingDigest,observedAt:new Date().toISOString()};
  }

@@ -80,7 +80,7 @@ func (s *Service) Action(ctx context.Context, id, action, instructions string) e
 		return tx.Commit(ctx)
 	}
 	payload := map[string]string{"instructions": instructions}
-	if action == "continue" && isQualification(input) {
+	if action == "continue" && (isQualification(input) || (status == "failed" && input.Object.Kind == "db-proxy" && len(input.Operations) == 1 && input.Operations[0].Name == "db-proxy.replace-nodes")) {
 		if status != "failed" {
 			return domain.ErrConflict
 		}
