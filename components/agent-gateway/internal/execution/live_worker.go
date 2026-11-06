@@ -398,7 +398,8 @@ func (w *LiveWorker) pause(ctx context.Context, b AttemptBinding, h RuntimeHandl
 		return e
 	}
 	if e = w.Store.SaveLiveWait(ctx, b.AttemptID, w.Owner, wait, *cp); e != nil {
-		return e
+		logLiveSetupError("save_wait", e)
+		return w.finish(ctx, b, h, "failed", "InvalidApprovalPause")
 	}
 	cleanup, stopErr := w.Runtime.Stop(ctx, h)
 	if e = w.authorized(ctx); e != nil {

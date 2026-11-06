@@ -449,7 +449,13 @@ func (s *Store) SaveLiveCheckpoint(ctx context.Context, attempt, owner string, c
 	}
 	if len(old) > 0 {
 		var previous VerifiedCheckpoint
-		if json.Unmarshal(old, &previous) != nil || previous != c {
+		if json.Unmarshal(old, &previous) != nil {
+			return ErrInvalid
+		}
+		// Re-verifying the same immutable archive yields a new receipt time.
+		// Preserve the first stored receipt while rejecting any content change.
+		c.VerifiedAt = previous.VerifiedAt
+		if previous != c {
 			return ErrInvalid
 		}
 		return tx.Commit(ctx)

@@ -54,3 +54,10 @@ test('qualification rejects out-of-order reads before tool access',()=>{
  resumed.approvalRead(approved);
  assert.doesNotThrow(()=>resumed.beforeRead('mcp.raptor.request_get'));
 });
+test('new approval cannot reuse the resumed resource action identity',()=>{
+ const m=manager();reads(new QualificationTrace(m,b,scope));const t=new QualificationTrace(m,b,scope,resourceResume);reads(t);
+ assert.throws(()=>t.requireApprovalReady({actionId:resourceResume.actionId}),/InvalidApprovalPause/);
+ assert.doesNotThrow(()=>t.requireApprovalReady({actionId:'qualification-fresh-action'}));
+ const reopened=new QualificationTrace(m,b,scope,resourceResume);reads(reopened);
+ assert.throws(()=>reopened.requireApprovalReady({actionId:resourceResume.actionId}),/InvalidApprovalPause/);
+});
