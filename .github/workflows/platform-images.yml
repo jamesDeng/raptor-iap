@@ -230,6 +230,9 @@ jobs:
           git diff --exit-code -- dist
       - name: Browser acceptance with synthetic API fixtures
         run: |
+          # The runner's Azure Ubuntu mirror can stall while downloading fonts.
+          # Keep the same signed Ubuntu packages and browser tests on the primary mirror.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
           pnpm exec playwright install --with-deps chromium
           pnpm test:e2e
           PLAYWRIGHT_MODULE="$PWD/node_modules/@playwright/test" node ../platform-frontend/test/session-entry.cjs

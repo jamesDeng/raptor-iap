@@ -12,11 +12,13 @@ func failedResourcePreparation(t *testing.T) (*Store, *Execution, AttemptBinding
 	t.Helper()
 	s, x, b := liveAttempt(t)
 	ctx := context.Background()
-	b.Operation = "db-proxy.replace-nodes"
-	b.ObjectKind = "db-proxy"
-	b.ExecutionMode = "replacement"
-	b.ClusterID = "cluster"
-	b.DefinitionSHA256 = strings.Repeat("a", 64)
+	in := resourceReplacementInput(t)
+	in.RequestID = x.RequestID
+	var parseErr error
+	b, _, parseErr = ParseLiveOperation(in, x.AttemptID)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
 	raw, _ := json.Marshal(b)
 	must := func(e error) {
 		t.Helper()
@@ -26,6 +28,7 @@ func failedResourcePreparation(t *testing.T) (*Store, *Execution, AttemptBinding
 	}
 	_, e := s.Pool.Exec(ctx, "UPDATE gateway.attempts SET binding=$2,definition_sha256=$3 WHERE id=$1", x.AttemptID, raw, b.DefinitionSHA256)
 	must(e)
+	must(s.SaveIssuedScope(ctx, b.AttemptID, "owner", resourceTestScope(b, "original")))
 	cp := SessionCheckpoint{RequestID: b.RequestID, DefinitionSHA256: b.DefinitionSHA256, SkillsCommit: b.SkillsCommit, Model: b.Model, SessionID: "session", SessionFile: "session.jsonl", SessionSHA256: strings.Repeat("b", 64), Archive: verifiedCheckpoint()}
 	wait := LiveWait{Kind: "resource", ActionID: "resource-ready", BindingDigest: b.DefinitionSHA256, WakeAfterSeconds: 60, StartedAt: time.Now().Add(-time.Minute)}
 	must(s.SaveLiveWait(ctx, x.AttemptID, "owner", wait, cp))
@@ -142,5 +145,140 @@ func TestFailedResourcePreparationRejectsUnsafeRetry(t *testing.T) {
 				t.Fatal("unsafe attempt reopened", scenario, state.Status, e)
 			}
 		})
+	}
+}
+
+func TestRecoveredPreparationCanPersistFreshScope(t *testing.T) {
+	s, x, b := failedResourcePreparation(t)
+	ctx := context.Background()
+	payload, _ := json.Marshal(map[string]string{"attemptId": x.AttemptID, "instructions": "resume saved session"})
+	if e := s.DeliverSignal(ctx, Signal{ID: NewID(), RequestID: x.RequestID, Kind: "continue", Payload: payload}); e != nil {
+		t.Fatal(e)
+	}
+	next, e := s.ClaimLiveNext(ctx, "retry")
+	if e != nil || next == nil {
+		t.Fatal("retry not claimed", e)
+	}
+	b.AttemptID = next.AttemptID
+	if e = s.BindLive(ctx, b.AttemptID, "retry", b, b.DefinitionSHA256); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.SaveIssuedScope(ctx, b.AttemptID, "retry", resourceTestScope(b, "original")); e != nil {
+		t.Fatal("clean failed preparation must not prevent fresh scope persistence", e)
+	}
+}
+
+func TestRecoveredPreparationScopeRejectsUnsafeHistory(t *testing.T) {
+	for _, scenario := range []string{"runtime-id", "runtime-intent", "runtime-event", "wrong-binding", "unconsumed-retry", "missing-access", "not-failed", "missing-anchor", "scope-drift"} {
+		t.Run(scenario, func(t *testing.T) {
+			s, x, b := failedResourcePreparation(t)
+			ctx := context.Background()
+			payload, _ := json.Marshal(map[string]string{"attemptId": x.AttemptID, "instructions": "resume saved session"})
+			if e := s.DeliverSignal(ctx, Signal{ID: NewID(), RequestID: x.RequestID, Kind: "continue", Payload: payload}); e != nil {
+				t.Fatal(e)
+			}
+			next, e := s.ClaimLiveNext(ctx, "retry")
+			if e != nil || next == nil {
+				t.Fatal(e)
+			}
+			b.AttemptID = next.AttemptID
+			if e = s.BindLive(ctx, b.AttemptID, "retry", b, b.DefinitionSHA256); e != nil {
+				t.Fatal(e)
+			}
+			query := ""
+			switch scenario {
+			case "runtime-id":
+				query = "UPDATE gateway.attempts SET runtime_id='uncertain' WHERE id=$1"
+			case "runtime-intent":
+				query = "INSERT INTO gateway.runtime_intents(attempt_id,kind,name) VALUES($1,'sandbox','uncertain')"
+			case "runtime-event":
+				query = "INSERT INTO gateway.runtime_events(attempt_id,runtime_sequence,payload) VALUES($1,1,'{}')"
+			case "wrong-binding":
+				query = `UPDATE gateway.attempts SET binding=jsonb_set(binding,'{objectCode}','"foreign"') WHERE id=$1`
+			case "unconsumed-retry":
+				query = "UPDATE gateway.signals SET consumed=false WHERE payload->>'attemptId'=$1::text"
+			case "missing-access":
+				query = "DELETE FROM gateway.runtime_intents WHERE attempt_id=$1"
+			case "not-failed":
+				query = "UPDATE gateway.attempts SET state='running' WHERE id=$1"
+			case "missing-anchor":
+				query = "UPDATE gateway.attempts SET binding=binding-'replacementScope' WHERE request_id=(SELECT request_id FROM gateway.attempts WHERE id=$1) AND state='waiting_resource'"
+			}
+			if query != "" {
+				if _, e = s.Pool.Exec(ctx, query, x.AttemptID); e != nil {
+					t.Fatal(e)
+				}
+			}
+			scope := resourceTestScope(b, "original")
+			if scenario == "scope-drift" {
+				scope = resourceTestScope(b, "foreign")
+			}
+			if e = s.SaveIssuedScope(ctx, b.AttemptID, "retry", scope); e == nil {
+				t.Fatal("unsafe historical attempt admitted")
+			}
+		})
+	}
+}
+
+type resumedPreparationDriver struct {
+	liveDriver
+	start LiveStart
+}
+
+func (r *resumedPreparationDriver) Start(ctx context.Context, s LiveStart) (RuntimeHandle, error) {
+	r.start = s
+	return r.liveDriver.Start(ctx, s)
+}
+func TestRecoveredPreparationWorkerStartsAfterTwoFailedAttempts(t *testing.T) {
+	s, x, b := failedResourcePreparation(t)
+	ctx := context.Background()
+	before, e := s.OperationSession(ctx, b)
+	if e != nil || before == nil {
+		t.Fatal(e)
+	}
+	decision, e := s.LiveContinuationContext(ctx, b)
+	if e != nil {
+		t.Fatal(e)
+	}
+	retry := func(attempt string) {
+		t.Helper()
+		payload, _ := json.Marshal(map[string]string{"attemptId": attempt, "instructions": "resume saved session"})
+		if e := s.DeliverSignal(ctx, Signal{ID: NewID(), RequestID: x.RequestID, Kind: "continue", Payload: payload}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	retry(b.AttemptID)
+	next, e := s.ClaimLiveNext(ctx, "second")
+	if e != nil || next == nil {
+		t.Fatal(e)
+	}
+	b.AttemptID = next.AttemptID
+	if e = s.BindLive(ctx, b.AttemptID, "second", b, b.DefinitionSHA256); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.RecordIntent(ctx, b.AttemptID, "second", RuntimeIntent{Kind: "access", Name: b.AttemptID}); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.FinalizeLive(ctx, b.AttemptID, "second", LiveOutcome{Status: "failed", FailureCode: "ProviderUnavailable", SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}); e != nil {
+		t.Fatal(e)
+	}
+	retry(b.AttemptID)
+	in := resourceReplacementInput(t)
+	in.RequestID = x.RequestID
+	driver := &resumedPreparationDriver{liveDriver: liveDriver{cleanup: true}}
+	scope := resourceTestScope(b, "original")
+	w := &LiveWorker{Store: s, Owner: "retry", Lease: &fixtureLease{valid: true}, Runtime: driver, Access: &replacementAccessFixture{scope: scope}, Raptor: questionRaptor{in}, Bootstrap: verifiedCheckpoint(), ReplacementEnabled: true, ReplacementScope: &scope}
+	if e = w.RunNext(ctx); e != nil {
+		t.Fatal(e)
+	}
+	got, e := s.Get(ctx, x.RequestID)
+	if e != nil || got.Status != "running" || driver.startCount != 1 {
+		t.Fatalf("recovery failed: status=%s code=%s starts=%d err=%v", got.Status, got.FailureCode, driver.startCount, e)
+	}
+	if driver.start.SessionCheckpoint == nil || *driver.start.SessionCheckpoint != *before || driver.start.DecisionContext == nil || decision == nil || *driver.start.DecisionContext != *decision {
+		t.Fatal("saved operation session or continuation changed")
+	}
+	if e = w.RunNext(ctx); e != nil || driver.startCount != 1 {
+		t.Fatal("runtime started twice", e)
 	}
 }
