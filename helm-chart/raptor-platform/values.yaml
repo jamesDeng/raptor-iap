@@ -23,6 +23,9 @@ agentAccess:
   secretName: ''
   raptorMcpURL: https://api.rdev.raptor-iap.top/mcp
   infraMcpURL: https://infra-api.raptor-iap.top/mcp
+gatewayResources:
+  requests: {cpu: 40m, memory: 64Mi}
+  limits: {cpu: 300m, memory: 256Mi}
 gatewayLive:
   enabled: false
   serviceURL: ''
