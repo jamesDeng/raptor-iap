@@ -37,7 +37,7 @@ func NewObservationProxy(origin string, execute ObservationExecutor) (*Observati
 	if origin != "https://api.rdev.raptor-iap.top"+observationRoute || execute == nil {
 		return nil, ErrConfiguration
 	}
-	return &ObservationProxy{origin: origin, execute: execute, entries: map[[32]byte]observationEntry{}, busy: make(chan struct{}, 1)}, nil
+	return &ObservationProxy{origin: origin, execute: execute, entries: map[[32]byte]observationEntry{}, busy: make(chan struct{}, 4)}, nil
 }
 func (p *ObservationProxy) Register(in execution.LiveStart, m ObservationMaterial, check func(context.Context) error) (ObservationMaterial, error) {
 	if in.Binding.Operation != "db-proxy.replace-nodes" || in.Access.Binding != in.Binding || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ResourceValidFor(in.Binding) || check == nil {

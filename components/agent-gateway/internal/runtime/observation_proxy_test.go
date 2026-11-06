@@ -283,8 +283,14 @@ func TestObservationPreflightSharesExecutionGuards(t *testing.T) {
 			}
 			switch mode {
 			case "busy":
-				p.busy <- struct{}{}
-				defer func() { <-p.busy }()
+				for i := 0; i < cap(p.busy); i++ {
+					p.busy <- struct{}{}
+				}
+				defer func() {
+					for len(p.busy) > 0 {
+						<-p.busy
+					}
+				}()
 			case "expired":
 				p.mu.Lock()
 				for k, e := range p.entries {
@@ -391,5 +397,44 @@ func TestObservationPreflightRejectsEveryRegisteredSecret(t *testing.T) {
 				t.Fatal("registered secret accepted")
 			}
 		})
+	}
+}
+
+func TestObservationProxyAllowsFourBoundedReads(t *testing.T) {
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	defer close(release)
+	p, _ := NewObservationProxy("https://api.rdev.raptor-iap.top/v1/gateway-observations", func(context.Context, execution.LiveStart, ObservationMaterial, string, json.RawMessage) (json.RawMessage, error) {
+		entered <- struct{}{}
+		<-release
+		return json.RawMessage(`{"ready":true}`), nil
+	})
+	m, err := p.Register(proxyStart(), ObservationMaterial{}, func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c map[string]any
+	json.Unmarshal(m.Config, &c)
+	hash := sha256.Sum256([]byte(c["token"].(string)))
+	entry := p.entries[hash]
+	results := make(chan int, 4)
+	for i := 0; i < 4; i++ {
+		go func() {
+			_, status := p.guardedExecute(context.Background(), hash, entry, "deployment_read", json.RawMessage(`{}`))
+			results <- status
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		select {
+		case <-entered:
+		case status := <-results:
+			t.Fatalf("read refused before four active: %d", status)
+		case <-time.After(time.Second):
+			t.Fatal("reads did not overlap")
+		}
+	}
+	_, status := p.guardedExecute(context.Background(), hash, entry, "deployment_read", json.RawMessage(`{}`))
+	if status != 429 {
+		t.Fatalf("overflow status %d", status)
 	}
 }

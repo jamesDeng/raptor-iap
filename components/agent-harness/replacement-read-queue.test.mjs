@@ -8,7 +8,7 @@ import {operationCapabilities,operationToolSchema} from './operation-profile.mjs
 import {observations,withResourceProof} from './replacement-sequence-fixtures.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
 
-async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay=false,wrongProbe){
+async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay=false,wrongProbe,advanceClock){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'replacement-read-queue-')));
  try{
   const state=path.join(root,'state'),skills=path.join(root,'skills');
@@ -23,7 +23,7 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
   const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
  const {getCurrentTools}=await import('@earendil-works/pi-ai');
   const {runtime}=await loadPiRuntime({stateRoot:state});runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
- let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[],writes=[],readOrder=[],probedIds=[];let probeAdvice;
+ let discoveryDone=false;let round=0,active=0,maximum=0,serviceCalls=0,observerCalls=0;const visibleTools=[],writes=[],readOrder=[],probedIds=[];let probeAdvice;
  const target={requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode};
  const expand={name:'mcp__infra__db_proxy_scale',arguments:{...target,actionId:'expand',desiredCapacity:4}};
  const postWrites={
@@ -34,6 +34,13 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
  approval:{name:'mcp__raptor__approval_request',arguments:{requestId:b.requestId,envCode:b.envCode,actionId:'shrink',interface:'db-proxy.scale-in',target:{proxyCode:scope.proxyCode},parameters:{desiredCapacity:3}}}
  };
  runtime.streamSimple=(model,context)=>{
+  if(!discoveryDone&&(expansionCase||deadlineReplay)){
+   discoveryDone=true;
+   const calls=[{name:'mcp__raptor__deployments_list',arguments:{requestId:b.requestId,envCode:b.envCode,kind:'application',code:'client'}},{name:'cloud_read',arguments:{kind:'fleet'}}];
+   const stream=createAssistantMessageEventStream();
+   const message={role:'assistant',content:calls.map((call,i)=>({type:'toolCall',id:'discovery-'+i,...call})),api:model.api,provider:model.provider,model:model.id,usage:{input:3,output:2,totalTokens:5,cacheRead:0,cacheWrite:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},stopReason:'toolUse',timestamp:Date.now()};
+   stream.push({type:'done',reason:'toolUse',message});return stream;
+  }
    round++;
   visibleTools.push(getCurrentTools(context.messages).map(tool=>tool.name));
   const readyCase=['ready','ready-unknown','ready-batch','ready-scale-batch'].includes(expansionCase);
@@ -78,20 +85,20 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
    if(rpc.method==='initialize')result={protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:server,version:'1'}};
    else if(rpc.method==='tools/list')result={tools:operationCapabilities(b,scope)[server].map(name=>({name,description:'Scoped operation',inputSchema:operationToolSchema(server,name)}))};
    else if(rpc.method==='tools/call'){
-    serviceCalls++;readOrder.push(rpc.params.name);
+    const callIndex=++serviceCalls;readOrder.push(rpc.params.name);
     if(['db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart','approval_request'].includes(rpc.params.name))writes.push(rpc.params.name);
     active++;maximum=Math.max(maximum,active);
-    await new Promise(resolve=>setTimeout(resolve,30));
+    await new Promise(resolve=>setTimeout(resolve,30));advanceClock?.();
     active--;
-    if(failureKind==='http'&&serviceCalls===1)return new Response('Unavailable',{status:503});
-    if(failureKind==='malformed'&&serviceCalls===1)return new Response('{bad json',{headers:{'Content-Type':'application/json'}});
+    if(failureKind==='http'&&callIndex===1)return new Response('Unavailable',{status:503});
+    if(failureKind==='malformed'&&callIndex===1)return new Response('{bad json',{headers:{'Content-Type':'application/json'}});
     const args=rpc.params.arguments;
     const data=rpc.params.name==='deployments_list'?(server==='raptor'?{resource:{kind:'application',code:'client'},envCode:'dev',deployments:[{workloadKey:'opaque-app',resourceId:'uid',kind:'application',objectCode:'client',envCode:'dev',...scope.application,state:'Running',evidenceMode:'live'}]}:{resource:{envCode:'dev',kind:'db-proxy',code:'proxy'},pgproxyWorkload:{type:'ess',code:'proxy',workloadKey:'opaque-proxy',state:'Running',targetDbCode:'db'}}):rpc.params.name==='deployment_status_get'?{resource:{envCode:'dev',kind:'application',code:'client'},applicationWorkload:{type:'kubernetes',workloadKey:'opaque-app',...scope.application,state:'Running'},status:{...scope.application,generation:5,observedGeneration:5,replicas:2,updatedReplicas:2,readyReplicas:2,evidenceMode:'live',observedAt:new Date().toISOString()}}:rpc.params.name==='deployment_restart'?{evidenceMode:'live',accepted:true,generation:2,target:{requestId:b.requestId,...scope.application}}:rpc.params.name==='db_proxy_scale'?{evidenceMode:'live',groupId:scope.groupId,previousDesiredCapacity:args.desiredCapacity===4?2:4,desiredCapacity:args.desiredCapacity,outcome:['unknown','ready-unknown'].includes(expansionCase)?'unknown':'accepted'}:rpc.params.name==='db_proxy_node_protection_set'||rpc.params.name==='db_proxy_nodes_deregister'?{evidenceMode:'live',instanceIds:args.nodeIds,outcome:'submitted'}:rpc.params.name==='approval_request'?{requestId:b.requestId,approvalId:'approval',actionId:args.actionId,binding:args,state:'pending'}:server==='raptor'?{requestId:b.requestId,relatedResources:[{kind:'application',code:'client'},{kind:'database',code:'db'}],definition:{envCode:b.envCode,object:{kind:b.objectKind,code:b.objectCode},operations:[{name:b.operation,parameters:{mode:'replacement'}}]}}:{envCode:b.envCode,accountMatches:true,evidenceMode:'live',observedAt:new Date().toISOString()};
     result={structuredContent:{data},content:[{type:'text',text:JSON.stringify({data})}]};
    }else throw Error('UnexpectedRPC');
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
-  const read=async args=>{if(args.instanceId)probedIds.push(args.instanceId);if(wrongProbe&&args.instanceId==='i-foreign')throw Error('FixtureGateway503');observerCalls++;readOrder.push('observation');active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));active--;if(failureKind==='observer'&&observerCalls===1)throw Error('FixtureObserverUnavailable');if(((expansionCase||deadlineReplay)&&round===1)||(wrongProbe==='recover'&&round===2)){const e=observations(['i-one','i-two']);if(args.instanceId)return {instanceId:args.instanceId,connected:true};if(!args.kind)return {...e.deployment,...scope.application};return e[args.kind==='pgcatClients'?'metrics':args.kind];}if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
+  const read=async args=>{if(args.instanceId)probedIds.push(args.instanceId);if(wrongProbe&&args.instanceId==='i-foreign')throw Error('FixtureGateway503');const observationIndex=++observerCalls;readOrder.push('observation');active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,30));advanceClock?.();active--;if(failureKind==='observer'&&observationIndex===1)throw Error('FixtureObserverUnavailable');if(((expansionCase||deadlineReplay)&&round<=1)||(wrongProbe==='recover'&&round===2)){const e=observations(['i-one','i-two']);if(args.instanceId)return {instanceId:args.instanceId,connected:true};if(!args.kind)return {...e.deployment,...scope.application};return e[args.kind==='pgcatClients'?'metrics':args.kind];}if(expansionCase&&(round>=3||(round===2&&expansionCase==='ready-scale-batch'))){
    const ids=['i-one','i-two','new-a','new-b'],observedAt=new Date().toISOString();
    if(args.kind==='fleet')return {groupId:scope.groupId,observedAt,instances:ids.map(instanceId=>({instanceId,protectedFromScaleIn:true,lifecycleState:'Protected',healthStatus:'Healthy'}))};
    if(args.kind==='backend')return {serverGroupId:scope.serverGroupId,observedAt,nodes:ids.map(instanceId=>({instanceId,status:'Available',healthy:true,registered:true,privateIp:'10.0.0.1'}))};
@@ -111,11 +118,11 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
    out=await runLiveReplacement({...options,sessionReference:out.sessionReference,decisionContext:{decision:'resume'}});
   }
   if(postWrites[expansionCase]||['ready-batch','ready-scale-batch'].includes(expansionCase)){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(expansionCase==='ready-scale-batch')assert.ok(writes.length<=1&&writes.every(name=>name==='db_proxy_scale'),'reordered reads may block expansion; no subsequent write may reach MCP');else assert.deepEqual(writes,['db_proxy_scale'],'early post-expansion writes must never reach MCP');}
-  else if(failureKind){assert.equal(out.error,'ToolFailed',JSON.stringify(out));if(failureKind==='observer'){assert.equal(observerCalls,1,'an observation failure must stop queued observations');assert.ok(serviceCalls<=1,'an observation failure must stop queued service calls');}else assert.equal(serviceCalls,1,'a failed MCP read must stop queued service calls');}
+  else if(failureKind){assert.equal(out.error,'ToolFailed',JSON.stringify(out));assert.deepEqual(writes,[],'read failures must not permit writes');assert.equal(round,1,'failed read batch must stop before another model turn');}
   else assert.equal(out.paused?.kind,'resource',JSON.stringify(out));
   if(deadlineReplay){
-   assert.deepEqual(readOrder.slice(0,6),['request_get','environment_get','object_get','deployments_list','deployments_list','deployment_status_get']);
-   assert.equal(observerCalls,wrongProbe==='only'?7:9);
+   assert.deepEqual(readOrder.filter(name=>name!=='observation').slice(1,7),['request_get','environment_get','object_get','deployments_list','deployments_list','deployment_status_get']);
+   assert.equal(observerCalls,wrongProbe==='only'?8:10);
    assert.equal(visibleTools[1].includes('mcp__infra__db_proxy_scale'),!wrongProbe,'only a complete fresh baseline may unlock writes on the next turn');
    if(wrongProbe==='recover')assert.ok(visibleTools[2].includes('mcp__infra__db_proxy_scale'),'reissued exact probes must unlock scale only on the following turn');
    if(wrongProbe){
@@ -124,7 +131,7 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
    }
    assert.deepEqual(writes,[]);
   }
-  assert.equal(maximum,1,'first-turn reads must never overlap at their service boundary');
+  if(!failureKind&&!baselineCase)assert.ok(maximum>1,'independent read-only calls must overlap at their service boundary');
   assert.ok(visibleTools[0].includes('mcp__raptor__request_get'),'initial reads must remain available');
   assert.ok(!visibleTools[0].includes('mcp__infra__db_proxy_node_protection_set'),'a fresh session must not advertise protection before a fleet baseline');
   assert.ok(!visibleTools[0].includes('mcp__raptor__approval_request'),'a fresh session must not advertise approval writes before a fleet baseline');
@@ -146,7 +153,7 @@ async function runScenario(failureKind,baselineCase,expansionCase,deadlineReplay
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 }
 
-test('replacement queues simultaneous first reads across MCP and observation tools',()=>runScenario());
+test('replacement overlaps independent first reads across MCP and observation tools',()=>runScenario());
 test('replacement baseline queue does not consume the MCP request deadline',async t=>{
  const originalSetTimeout=globalThis.setTimeout;
  let mcpDeadlines=0;
@@ -161,9 +168,9 @@ test('replacement baseline queue does not consume the MCP request deadline',asyn
 });
 test('foreign initial probe is corrected locally and cannot count as SQL evidence',()=>runScenario(undefined,undefined,undefined,true,'only'));
 test('the exact original probes can still complete the baseline after a foreign selector',()=>runScenario(undefined,undefined,undefined,true,'recover'));
-test('replacement stops queued reads after an HTTP failure',()=>runScenario('http'));
-test('replacement stops queued reads after a malformed MCP response',()=>runScenario('malformed'));
-test('replacement stops queued reads after an observation failure',()=>runScenario('observer'));
+test('replacement stops after in-flight reads settle on an HTTP failure',()=>runScenario('http'));
+test('replacement stops after in-flight reads settle on a malformed MCP response',()=>runScenario('malformed'));
+test('replacement stops after in-flight reads settle on an observation failure',()=>runScenario('observer'));
 test('replacement keeps writes hidden after fleet-only valid baseline',()=>runScenario(undefined,'valid'));
 test('replacement keeps mutations unavailable after an invalid fleet baseline',()=>runScenario(undefined,'invalid'));
 
@@ -174,3 +181,10 @@ for(const name of ['ready','ready-unknown'])test('replacement unlocks fresh exac
 test('replacement cannot use a newly collected witness for a write in the same read round',()=>runScenario(undefined,'valid','ready-batch'));
 
 test('replacement cannot expand, gather readiness and write in the same formerly unlocked round',()=>runScenario(undefined,'valid','ready-scale-batch'));
+
+test('concurrent baseline remains fresh when serial read latency would exceed thirty seconds',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ let last=performance.now();
+ const advance=()=>{const now=performance.now();t.mock.timers.tick(Math.floor((now-last)*100));last=now;};
+ await runScenario(undefined,undefined,undefined,true,undefined,advance);
+});
