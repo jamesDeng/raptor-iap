@@ -57,6 +57,13 @@ test('Gateway reports registered new nodes awaiting their first scrape only in r
  const out=await runGatewayObservation(args,{fetch:fixture({damage}).fetch,probe:noProbe});
  assert.deepEqual(out,{readiness:'metrics-warming',instanceIds:ids.slice().sort(),missingInstanceIds:['i-new-a','i-new-b'],observedAt:out.observedAt});
  await assert.rejects(runGatewayObservation({...args,binding:{...binding,executionMode:'qualification'}},{fetch:fixture({damage}).fetch,probe:noProbe}),/InvalidObservation/);
+ const staggered=await runGatewayObservation(args,{fetch:fixture({damage:data=>{
+  const bundle=damage(data).pgproxyWorkload.metrics;
+  bundle.fleet.instances[3].lifecycleState='Pending:Wait';
+  bundle.backend.nodes.pop();
+  return data;
+ }}).fetch,probe:noProbe});
+ assert.deepEqual(staggered,{readiness:'metrics-warming',instanceIds:ids.slice().sort(),missingInstanceIds:['i-new-a'],observedAt:staggered.observedAt});
 });
 for(const mode of ['wrong-series','foreign-row','missing-rows','stale-response','stale-source','extra-bundle','missing-sample','extra-sample','non-array','stale-fleet','stale-backend','foreign-fleet','foreign-backend','missing-pool'])test(`clients bundle ${mode} rejects the entire observation`,async()=>{
  const f=fixture({damage:data=>{

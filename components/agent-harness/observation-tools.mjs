@@ -65,7 +65,7 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
       if(seen.has(key))throw invalid();seen.add(key);
      }
     };
-    const allowIncomplete=binding.executionMode==='replacement'&&nodeIds.length===4&&backendIds.size===4;
+    const allowIncomplete=binding.executionMode==='replacement'&&fleetIds.size===4&&nodeIds.length>2&&nodeIds.every(v=>backendIds.has(v));
     const metrics=await readPgcatClients({scope:replacementScope,nodeIds,pool:config.private?.sql?.database,user:config.private?.sql?.user,allowIncomplete,query:async promql=>{
      try{
       let rows;
@@ -80,7 +80,7 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
       if(!Array.isArray(rows))throw invalid();validatePendingRows(rows,promql);return rows.filter(row=>!pending.has(row.metric?.ecs_instance_id));
      }catch{throw invalid();}
     }});
-    if(metrics.readiness==='metrics-warming')return metrics;
+    if(metrics.readiness==='metrics-warming')return {...metrics,instanceIds:[...fleetIds].sort()};
     return {...metrics,pendingInstanceIds};
    }
    const targets=await discoverClientTargets(config.application,async(kind,selector)=>execute('kubectl',['--kubeconfig',config.private?.kubeconfig,'--namespace',config.application.namespace,'get',kind,...(kind==='deployment'?[config.application.name]:['--selector',selector]),'--output','json'],{}));
