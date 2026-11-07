@@ -42,6 +42,17 @@ test('submitted or unknown scale locks immediately, including an unresolved subm
  const {session,trace}=setup('unknown');const gate=new ReplacementReadiness(session,trace);observe(gate);assert.equal(gate.ready(),true);
  assert.throws(()=>trace.beforeMutation('db_proxy_scale',{actionId:'expand',desiredCapacity:4}),/MutationAlreadySubmitted/);
 });
+test('a first scrape wait requires a recorded expansion and only missing new nodes',()=>{
+ const data={readiness:'metrics-warming',instanceIds:ids,missingInstanceIds:['new-a'],observedAt:new Date().toISOString()};
+ const {gate}=setup();
+ data.observedAt=new Date().toISOString();
+ assert.equal(gate.canWaitForMetrics(data),true);
+ for(const change of [{missingInstanceIds:['old-a']},{missingInstanceIds:['foreign']},{instanceIds:ids.slice(1)},{nodes:[]},{observedAt:new Date(0).toISOString()}])
+  assert.equal(gate.canWaitForMetrics({...data,...change}),false);
+ assert.equal(setup(null).gate.canWaitForMetrics(data),false);
+ observe(gate);
+ assert.equal(gate.canWaitForMetrics(data),false);
+});
 for(const [name,change] of [
  ['pending metric IDs',e=>e.metrics.pendingInstanceIds=['new-a']],
  ['pending fleet node',e=>e.fleet.instances[2].lifecycleState='Pending:Wait'],

@@ -53,7 +53,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   fs.mkdirSync(privateRoot,{recursive:true,mode:0o700});const sdk=await import('@earendil-works/pi-coding-agent');
   const settings=sdk.SettingsManager.inMemory({cacheWarming:'off',compaction:{enabled:false},retry:{enabled:false,provider:{maxRetries:0}}});
   manager=openOperationSession({sdk,stateRoot,binding:b,sessionReference});
-  let readFailure=false,qualificationPauseAck;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:true});const serializedRead=work=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly:true});
+  let readFailure=false,qualificationPauseAck,waitingForMetrics=false;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:true});const serializedRead=work=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly:true});
   const trace=qualification?new QualificationTrace(manager,b,replacementScope,decisionContext):new ReplacementTrace(manager,b,replacementScope);
   const readiness=qualification?undefined:new ReplacementReadiness(manager,trace);
   const sequence=qualification?undefined:new ReplacementSequence(manager,trace,readiness,selectedProfile,decisionContext);
@@ -66,7 +66,16 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const tracedObserver=observer?{...observer,
    cloudRead:args=>serializedRead(async()=>{if(qualification)trace.beforeRead('cloud.'+args?.kind);const data=await observer.cloudRead(args);if(qualification)trace.cloud(args.kind,data);else sequence.observe(args.kind,data);return data;}),
    deploymentRead:args=>serializedRead(async()=>{if(qualification)trace.beforeRead('deployment.status');const data=await observer.deploymentRead(args);if(qualification)trace.observation('deployment.status',data);else sequence.observe('deployment',data);return data;}),
-   metricsRead:args=>serializedRead(async()=>{if(qualification)trace.beforeRead('metrics.'+args?.kind);const data=await observer.metricsRead(args);if(qualification)trace.observation('metrics.'+args.kind,data);else sequence.observe(args.kind==='pgcatClients'?'metrics':args.kind,data);return data;}),
+   metricsRead:args=>serializedRead(async()=>{
+    if(qualification)trace.beforeRead('metrics.'+args?.kind);
+    const data=await observer.metricsRead(args);
+    if(data?.readiness==='metrics-warming'){
+     if(qualification||args.kind!=='pgcatClients'||!readiness.canWaitForMetrics(data))throw Error('InvalidObservation');
+     waitingForMetrics=true;
+    }else if(qualification)trace.observation('metrics.'+args.kind,data);
+    else sequence.observe(args.kind==='pgcatClients'?'metrics':args.kind,data);
+    return data;
+   }),
    dbConnectionProbe:args=>serializedRead(async()=>{
     if(qualification)trace.requireBaselineNode(args?.instanceId);
     else{
@@ -114,8 +123,12 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    }
    if(!qualification&&!error&&!readFailure&&!signal?.aborted){
     const expansion=turn.message.content.find(part=>part.type==='toolCall'&&part.name==='mcp__infra__db_proxy_scale'&&part.arguments?.desiredCapacity===4);
-    if(expansion&&!pause.candidate&&sequence.intents('expand').some(intent=>trace.rows.some(row=>row.kind==='result'&&row.key===intent.key))){
-     const outcome=await session.extensionRunner.createToolContext(expansion.id,signal).executeTool('resource_wait',{seconds:60});
+    const submittedExpansion=expansion&&readiness.expansion()?.result;
+    const warmupRead=waitingForMetrics&&turn.message.content.find(part=>part.type==='toolCall'&&part.name==='metrics_read'&&part.arguments?.kind==='pgcatClients');
+    const waitTrigger=warmupRead||(submittedExpansion&&expansion);
+    if(waitTrigger&&!pause.candidate){
+     if(waitingForMetrics)narrate('Waiting for the first complete PgCat metrics from the new nodes. I’ll recheck in 60 seconds.');
+     const outcome=await session.extensionRunner.createToolContext(waitTrigger.id,signal).executeTool('resource_wait',{seconds:60});
      if(outcome.isError||error||readFailure||!pause.pending)throw Error('ToolFailed');
     }
 

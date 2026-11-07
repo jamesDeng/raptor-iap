@@ -13,6 +13,20 @@ test('missing pool metrics stale source foreign node duplicate or down scrape re
  }
 });
 
+test('opted-in first scrapes report missing nodes without publishing partial evidence',async()=>{
+ const nodeIds=['node-a','node-b','node-c','node-d'];
+ const pending=await readPgcatClients({scope,nodeIds,pool:'test',user:'poc_app',allowIncomplete:true,query:async q=>rows(q)});
+ assert.deepEqual(pending,{readiness:'metrics-warming',instanceIds:nodeIds,missingInstanceIds:['node-c','node-d'],observedAt:pending.observedAt});
+ const partial=await readPgcatClients({scope,nodeIds,pool:'test',user:'poc_app',allowIncomplete:true,query:async q=>{
+  const result=rows(q);return [...result,...result.filter(()=>!q.includes('cl_waiting')).map((r,i)=>({...r,metric:{...r.metric,ecs_instance_id:nodeIds[i+2]}}))];
+ }});
+ assert.deepEqual(partial.missingInstanceIds,['node-c','node-d']);
+ assert.equal(partial.nodes,undefined);
+ await assert.rejects(()=>readPgcatClients({scope,nodeIds,pool:'test',user:'poc_app',allowIncomplete:true,query:async q=>{
+  const result=rows(q);if(q.startsWith('timestamp('))result[0].value[1]='0';return result;
+ }}),/InvalidObservation/);
+});
+
 test('slow sequential queries cannot refresh old scrape or response ages at completion',async t=>{
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  await assert.rejects(()=>readPgcatClients({scope,nodeIds:['node-a','node-b'],pool:'test',user:'poc_app',query:async q=>{t.mock.timers.tick(6000);return rows(q);}}),/InvalidObservation/);
