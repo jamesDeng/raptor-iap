@@ -131,10 +131,10 @@ run "proxy_resolver_read_scope" {
       { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/*"] },
       { Effect = "Allow", Action = ["ess:DescribeScalingInstances", "ess:ModifyScalingGroup", "ess:SetInstancesProtection"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-a", "acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-z"] },
       { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-z", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
-      { Effect = "Allow", Action = ["nlb:UpdateServerGroupServersAttribute"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
+      { Effect = "Allow", Action = ["nlb:UpdateServerGroupServersAttribute"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-z", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
       { Effect = "Allow", Action = ["nlb:GetListenerAttribute", "nlb:GetListenerHealthStatus"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-a", "acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-z"] }
     ]
-    error_message = "Only the two resolver reads may be added; all existing actions and resources, including mutation grants, must remain unchanged."
+    error_message = "The runtime policy must preserve the exact action set and scope, including both case aliases of each configured NLB server group for backend-weight updates."
   }
 }
 

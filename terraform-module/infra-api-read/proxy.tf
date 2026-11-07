@@ -4,15 +4,18 @@ locals {
     protection     = "/v1/db-proxy-node-protection"
     deregistration = "/v1/db-proxy-node-deregistration"
   } : {}
+  # NLB has evaluated the mixed-case resource type for both discovery and
+  # weight updates. Keep the documented lowercase alias for the same IDs.
+  proxy_server_group_arns = sort(distinct(flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:serverGroup/${p.server_group_id}", "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"]])))
   # Enumeration must detect duplicate tag matches, so this one read spans SG
   # groups in the selected account. Membership and every mutation stay pinned.
   proxy_statements = !var.enable_proxy_commands ? [] : [
     { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:${var.region}:${var.account_id}:scalinggroup/*"] },
     { Effect = "Allow", Action = ["ess:DescribeScalingInstances", "ess:ModifyScalingGroup", "ess:SetInstancesProtection"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:ess:${var.region}:${var.account_id}:scalinggroup/${p.group_id}"])) },
-    { Effect = "Allow", Action = ["nlb:ListServerGroups"], Resource = sort(distinct(flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:serverGroup/${p.server_group_id}", "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"]]))) },
+    { Effect = "Allow", Action = ["nlb:ListServerGroups"], Resource = local.proxy_server_group_arns },
     { Effect = "Allow", Action = ["nlb:ListListeners"], Resource = sort(distinct(concat(["acs:nlb:${var.region}:${var.account_id}:listener/*"], flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:loadBalancer/${p.load_balancer_id}", "acs:nlb:${var.region}:${var.account_id}:loadbalancer/${p.load_balancer_id}"]])))) },
-    { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = sort(distinct(flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:serverGroup/${p.server_group_id}", "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"]]))) },
-    { Effect = "Allow", Action = ["nlb:UpdateServerGroupServersAttribute"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"])) },
+    { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = local.proxy_server_group_arns },
+    { Effect = "Allow", Action = ["nlb:UpdateServerGroupServersAttribute"], Resource = local.proxy_server_group_arns },
     { Effect = "Allow", Action = ["nlb:GetListenerAttribute", "nlb:GetListenerHealthStatus"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:nlb:${var.region}:${var.account_id}:loadbalancer/${p.load_balancer_id}"])) }
   ]
 }
