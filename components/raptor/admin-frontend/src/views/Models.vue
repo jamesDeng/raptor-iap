@@ -76,8 +76,12 @@ async function action(path: string, method = "POST", body: unknown = {}) {
   }
 }
 async function connect(browser: boolean) {
+  // Reserve the page during the click so delayed API responses do not trigger popup blocking.
+  const loginPage = browser ? window.open("about:blank", "_blank") : null;
+  if (loginPage) loginPage.opener = null;
   busy.value = true;
   error.value = "";
+  notice.value = "";
   stopPolling();
   try {
     const next = await api(
@@ -86,10 +90,19 @@ async function connect(browser: boolean) {
       "POST",
       {},
     );
-    if (!active) return;
+    if (!active) { loginPage?.close(); return; }
     challenge.value = { ...next, browser };
+    if (browser) {
+      const destination = safeLink(next.authorizationUrl);
+      if (loginPage && destination) loginPage.location.replace(destination);
+      else {
+        loginPage?.close();
+        notice.value = "Your browser blocked the sign-in page. Use Open OpenAI sign-in below to open it.";
+      }
+    }
     poll(generation, next.sessionId);
   } catch (e) {
+    loginPage?.close();
     error.value = connectErrorMessage((e as Error).message);
   } finally {
     busy.value = false;
@@ -233,7 +246,8 @@ function safeLink(value: unknown) {
         :href="
           safeLink(challenge.authorizationUrl || challenge.verificationUrl)
         "
-        rel="noreferrer"
+        target="_blank"
+        rel="noopener noreferrer"
         >{{
           challenge.browser ? "Open OpenAI sign-in" : "Open verification page"
         }}</a

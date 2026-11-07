@@ -261,14 +261,20 @@ test("stops polling when leaving AI models and preserves legacy hashes", async (
   expect(writes.length).toBe(1);
 });
 
-test("recovers browser sign-in after reload and opens in the current tab", async ({ page }) => {
+test("automatically opens browser sign-in in a new page and recovers after reload", async ({ page }) => {
   await fixture(page);
   await page.goto("/ai-models");
+  await page.context().route("https://auth.openai.com/fixture", route => route.fulfill({ body: "Sign-in fixture" }));
+  const opened = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Connect in browser" }).click();
+  const login = await opened;
+  await expect(login).toHaveURL("https://auth.openai.com/fixture");
+  await expect(page).toHaveURL(/\/ai-models$/);
+  await login.close();
   await expect(page.getByRole("link", { name: "Open OpenAI sign-in" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("link", { name: "Open OpenAI sign-in" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open OpenAI sign-in" })).not.toHaveAttribute("target", "_blank");
+  await expect(page.getByRole("link", { name: "Open OpenAI sign-in" })).toHaveAttribute("target", "_blank");
   await page.getByRole("button", { name: "Cancel sign-in" }).click();
   await expect(page.getByRole("button", { name: "Connect in browser" })).toBeEnabled();
 });
