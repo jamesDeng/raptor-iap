@@ -74,6 +74,16 @@ export class ReplacementReadiness {
  // It survives approval and 60-second resource waits.
  ready(){return Boolean(this.witness&&this.witness.expansionKey===this.expansion()?.intent.key);}
  blocked(){return this.trace.rows.some(r=>r.kind==='intent'&&r.tool==='db_proxy_scale'&&r.args.desiredCapacity===4)&&!this.ready();}
+ canWaitForMetrics(data){
+  const expansion=this.expansion(),state=expansion?.result?.state;
+  const original=this.trace.baseline()?.instanceIds,ids=data.instanceIds,missing=data.missingInstanceIds;
+  const observed=timestamp(data.observedAt);
+  return this.blocked()&&state?.previousDesiredCapacity===2&&state.desiredCapacity===4&&['submitted','unknown'].includes(state.outcome)
+   &&Object.keys(data).sort().join(',')==='instanceIds,missingInstanceIds,observedAt,readiness'
+   &&Math.abs(Date.now()-observed)<=30000&&observed>=timestamp(expansion.intent.observedAt)
+   &&original?.length===2&&Array.isArray(ids)&&ids.length===4&&new Set(ids).size===4&&ids.every(id)&&original.every(v=>ids.includes(v))
+   &&Array.isArray(missing)&&missing.length>=1&&missing.length<=2&&new Set(missing).size===missing.length&&missing.every(v=>ids.includes(v)&&!original.includes(v));
+ }
  observe(kind,data,args){
   if(this.ready()||!this.expansion()?.result||!['fleet','backend','capacity','metrics'].includes(kind))return;
   const clean=sanitize(kind,data);

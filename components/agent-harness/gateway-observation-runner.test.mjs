@@ -44,6 +44,20 @@ test('PgCat metrics makes exactly one clients RPC on the initialized session',as
  assert.deepEqual(f.calls.filter(r=>r.method==='tools/call').map(r=>[r.params.name,r.params.arguments]),[['proxy_pgcat_metrics_get',{requestId:'request',envCode:'rdev.ali',proxyCode:'proxy',series:'clients'}]]);
  for(const k of ['observedAt','responseAt','sourceAt','latestResponseAt','latestSourceAt'])assert.ok(Date.parse(out[k])>0);
 });
+test('Gateway reports registered new nodes awaiting their first scrape only in replacement',async()=>{
+ const ids=['i-one','i-two','i-new-a','i-new-b'];
+ const damage=data=>{
+  const m=data.pgproxyWorkload.metrics;
+  m.fleet.instances=ids.map(instanceId=>({...m.fleet.instances[0],instanceId}));
+  m.backend.nodes=ids.map((instanceId,i)=>({...m.backend.nodes[0],instanceId,privateIp:`10.70.1.${30+i}`}));
+  for(const rows of Object.values(m.samples))rows.push({...rows[0],metric:{...rows[0].metric,ecs_instance_id:'i-two'}});
+  return data;
+ };
+ const args=input('metrics_read',{kind:'pgcatClients'});
+ const out=await runGatewayObservation(args,{fetch:fixture({damage}).fetch,probe:noProbe});
+ assert.deepEqual(out,{readiness:'metrics-warming',instanceIds:ids.slice().sort(),missingInstanceIds:['i-new-a','i-new-b'],observedAt:out.observedAt});
+ await assert.rejects(runGatewayObservation({...args,binding:{...binding,executionMode:'qualification'}},{fetch:fixture({damage}).fetch,probe:noProbe}),/InvalidObservation/);
+});
 for(const mode of ['wrong-series','foreign-row','missing-rows','stale-response','stale-source','extra-bundle','missing-sample','extra-sample','non-array','stale-fleet','stale-backend','foreign-fleet','foreign-backend','missing-pool'])test(`clients bundle ${mode} rejects the entire observation`,async()=>{
  const f=fixture({damage:data=>{
   const m=data.pgproxyWorkload.metrics;

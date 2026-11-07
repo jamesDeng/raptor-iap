@@ -31,6 +31,8 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
     [deployment,metric('pgcatClients'),metric('trafficFailures'),metric('connections')],
     old.map(instanceId=>call('db_connection_probe',{instanceId})),
     [call('mcp__infra__db_proxy_scale',{...target,actionId:'expand',desiredCapacity:4})]],
+   [reads(added)],
+   [reads(added)],
    [reads(added),
     [call('mcp__infra__db_proxy_node_protection_set',{...target,nodeIds:added,protected:true})],
     [cloud('fleet')],
@@ -52,7 +54,11 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
    const stream=createAssistantMessageEventStream();stream.push({type:'done',reason:message.stopReason,message});return stream;
   };
   const current=()=>observations(expanded?(desired===2?added:[...old,...added]):old,{withdrawn:withdrawn?old:[],unprotected:[...(!newProtected?added:[]),...(oldUnprotected?old:[])],zero:restarted,generation:restarted?6:5});
-  const observer={cloudRead:async({kind})=>current()[kind],deploymentRead:async()=>{const app=current().deployment;return surge?{...app,observedGeneration:5,readyReplicas:3,updatedReplicas:1}:app;},metricsRead:async({kind})=>{if(surge&&kind!=='pgcatClients'){trafficDuringSurge.push(kind);throw Error('InvalidObservation');}return current()[kind==='pgcatClients'?'metrics':kind];},dbConnectionProbe:async({instanceId})=>({instanceId,connected:!(withdrawn&&old.includes(instanceId))})};
+  const observer={cloudRead:async({kind})=>current()[kind],deploymentRead:async()=>{const app=current().deployment;return surge?{...app,observedGeneration:5,readyReplicas:3,updatedReplicas:1}:app;},metricsRead:async({kind})=>{
+   if(surge&&kind!=='pgcatClients'){trafficDuringSurge.push(kind);throw Error('InvalidObservation');}
+   if(kind==='pgcatClients'&&[1,2].includes(phase))return {readiness:'metrics-warming',instanceIds:[...old,...added],missingInstanceIds:phase===1?added:added.slice(1),observedAt:new Date().toISOString()};
+   return current()[kind==='pgcatClients'?'metrics':kind];
+  },dbConnectionProbe:async({instanceId})=>({instanceId,connected:!(withdrawn&&old.includes(instanceId))})};
   const fetcher=async(url,init)=>{
    const rpc=JSON.parse(init.body),server=String(url).includes('raptor')?'raptor':'infra';
    if(rpc.method==='notifications/initialized')return new Response(null,{status:202});let result;
@@ -115,22 +121,23 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
   progress.length=0;
   scaleArgs.actionId=actionID;
   let previous;
-  const counts=[10,6,5,10,3];
+  const counts=[10,1,1,6,5,10,3];
   for(phase=0;phase<scripts.length;phase++){
-   round=0;if(phase===3)surge=false;
+   round=0;if(phase===5)surge=false;
    const continuation=previous?.paused?{decision:'resume',approvalId:previous.paused.approvalId,actionId:previous.paused.actionId,bindingDigest:previous.paused.bindingDigest}:undefined;
    if(previous?.paused)t.mock.timers.tick(60000);
    const out=await runLiveReplacement({...options,binding:{...b,attemptId:`${phase+2}2222222-2222-4222-8222-222222222222`},sessionReference:previous?.sessionReference,decisionContext:continuation});
    assert.equal(round,counts[phase],JSON.stringify(out));assert.equal(out.usage.length,counts[phase]);
-   if(phase<4){assert.equal(out.paused?.kind,phase===3?'approval':'resource',JSON.stringify(out));assert.ok(out.sessionReference);}
+   if(phase<6){assert.equal(out.paused?.kind,phase===5?'approval':'resource',JSON.stringify(out));assert.ok(out.sessionReference);}
    else{assert.equal(out.passed,true,JSON.stringify(out));assert.equal(out.result.replacement.version,2);assert.equal(out.result.replacement.restartGeneration,6);assert.deepEqual(out.result.replacement.newInstanceIds,added);assert.equal(out.result.replacement.acceptance,'pending');}
+   if([1,2].includes(phase))assert.deepEqual(writes,[['db_proxy_scale',4]]);
    previous=out;
   }
   assert.deepEqual(trafficDuringSurge,[]);
   const entries=fs.readFileSync(path.join(state,'sessions',previous.sessionReference.file),'utf8').trim().split('\n').map(JSON.parse);
   assert.deepEqual(entries.filter(e=>e.customType==='raptor-replacement-withdrawal-wait-v1').map(e=>e.data.kind),['requested','completed']);
-  assert.equal(progress.filter(e=>e.kind==='tool_start'&&e.tool==='resource_wait').length,3);
-  assert.equal(progress.filter(e=>e.kind==='tool_result'&&e.tool==='resource_wait'&&e.outcome==='succeeded').length,3);
+  assert.equal(progress.filter(e=>e.kind==='tool_start'&&e.tool==='resource_wait').length,5);
+  assert.equal(progress.filter(e=>e.kind==='tool_result'&&e.tool==='resource_wait'&&e.outcome==='succeeded').length,5);
   assert.equal(progress.filter(e=>e.kind==='tool_start'&&e.tool==='mcp__raptor__request_pause').length,1);
   assert.ok(!entries.some(e=>e.message?.role==='assistant'&&e.message.stopReason==='aborted'));
   assert.deepEqual(writes.filter(w=>w[0]==='db_proxy_scale'),[['db_proxy_scale',4],['db_proxy_scale',2]]);
