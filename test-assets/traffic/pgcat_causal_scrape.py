@@ -239,7 +239,7 @@ class _Insufficient(ValueError):
 def _samples(watermark_ms,matrix,*,nodes,metric_groups,now,max_combined):
     addresses=_nodes(nodes)
     _check(type(watermark_ms) is int and 0<watermark_ms<2**53 and _number(now))
-    _check(max_combined is None or type(max_combined) is int and max_combined==1)
+    _check(max_combined is None or type(max_combined) is int and max_combined in (0,1))
     _check(type(metric_groups) is list and 2<=len(metric_groups)<=256)
     baseline=set()
     for row in metric_groups:

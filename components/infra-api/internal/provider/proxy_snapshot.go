@@ -273,6 +273,7 @@ func (p *ProxyBackend) Snapshot(ctx context.Context, env domain.Environment, cod
 		members[n.ID] = true
 		weight, exists := backends[n.ID]
 		n.Registered = exists
+		n.Drained = exists && !weight
 		n.Healthy = n.Healthy && exists && weight && !bad[n.ID]
 	}
 	for id := range backends {

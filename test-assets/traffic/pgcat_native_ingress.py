@@ -658,8 +658,8 @@ def _collect_ingress(chain,selector,*,gate,kube_read,http_get,now):
             try:
                 candidate=read_frame(frame_fd,state['progress']['latest'])
                 try:
-                    if wait_before['status']=='waiting_resource':_withdrawal_state(chain,candidate)
-                    else:_retirement_state(chain,candidate)
+                    if wait_before['status']=='waiting_resource':_withdrawal_state(chain,candidate,allow_detached=False)
+                    else:_retirement_state(chain,candidate,allow_detached=False)
                 except ValueError:pass
                 else:wait_frame=detached(state['progress']['latest'])
             finally:os.close(frame_fd)
@@ -672,7 +672,7 @@ def _collect_ingress(chain,selector,*,gate,kube_read,http_get,now):
             require(len(approvals)==1 and approvals[0]['state']=='pending')
             record.update(context=ctx,events=events,approvals=approvals,execution=first)
             binding=_causal_binding(chain,record,candidate,wait=wait_before)
-            record['causalRead']=_causal_pass(chain,gate,binding,wait_frame,now)
+            record['causalRead']=_causal_pass(chain,gate,binding,wait_frame,now,_retiring_limit(chain,candidate))
             response=get('openapi','/v1/approvals/'+approvals[0]['approvalId']);exact(response,{'data'})
             require(_pending_scale_approval(response['data'],approvals[0]['approvalId'],chain.plan,request_id)==approvals[0])
         response=get('gateway',prefix);exact(response,{'data'});last=_execution(response['data'],chain.plan,ctx)
@@ -1039,14 +1039,30 @@ def validate_withdrawal_witness(record,chain):
     return detached(witness),pair
 
 
-def _withdrawal_state(chain,frame):
+def _withdrawal_state(chain,frame,*,allow_detached=True):
     from capture_window import clean,seconds
     require(clean(frame)==frame);inventory=frame['inventory'];originals=set(chain.plan['target']['originalInstanceIds'])
     pair=_replacement_pair(inventory,originals);require(pair is not None)
-    require(not originals.intersection(r['id'] for r in inventory['backendStates']))
-    require({r['id'] for r in inventory['backendStates']}==set(pair))
+    backends=inventory['backendStates']
+    # Current runs retain zero-weight originals until ESS releases them.
+    # Historical evidence can contain only the two serving backends.
+    require({r['id'] for r in backends if r['weight']>0}==set(pair))
+    attached={r['id'] for r in backends}.intersection(originals)
+    require(attached==originals or (allow_detached and not attached))
+    require(all(r['id'] in pair or
+                (r['id'] in originals and r['weight']==0 and r['status']=='Available')
+                for r in backends))
     require(inventory['feedSession']==chain.context['feedSession'] and 0<=seconds(frame['at'])-seconds(inventory['observedAt'])<30)
     return pair
+
+
+def _retiring_limit(chain,frame):
+    if chain.plan['executionKind']!='native-replacement':
+        return None
+    originals=set(chain.plan['target']['originalInstanceIds'])
+    # Older retained artifacts removed the original backends and used a limit
+    # of one. Weight-zero evidence identifies the current zero-client contract.
+    return 0 if originals.intersection(r['id'] for r in frame['inventory']['backendStates']) else 1
 
 
 def _pending_scale_approval(value,approval_id,plan,request_id):
@@ -1070,8 +1086,8 @@ def _rollout_state(chain,frame):
     return sorted([pod_identity(p) for p in frame['pods']],key=lambda p:p['uid'])
 
 
-def _retirement_state(chain,frame):
-    pair=_withdrawal_state(chain,frame);_rollout_state(chain,frame);return pair
+def _retirement_state(chain,frame,*,allow_detached=True):
+    pair=_withdrawal_state(chain,frame,allow_detached=allow_detached);_rollout_state(chain,frame);return pair
 
 
 def validate_retirement_witness(record,chain):
@@ -1167,7 +1183,7 @@ def _validate_causal_record(record,chain,previous):
         diagnostic=record['diagnostic']
         require(_diagnostic(chain,dict(config=diagnostic['gatewayConfiguration'],inventory=diagnostic['inventory']))==diagnostic)
     require(binding==_causal_binding(chain,record,frame,wait=wait))
-    require(evidence['nodes']==binding['nodes'] and evidence['maxCombined']==(1 if native else None))
+    require(evidence['nodes']==binding['nodes'] and evidence['maxCombined']==_retiring_limit(chain,frame))
     baseline={(g['node'],g['pool'],g['user']) for g in binding['metricGroups']};groups={(g['node'],g['pool'],g['user']) for g in evidence['metricGroups']}
     require(baseline<=groups)
     if previous is None:require(evidence['passes']==1)
@@ -1203,7 +1219,7 @@ def _causal_continuation(gate,run,binding):
     finally:chain.close()
 
 
-def _causal_pass(chain,gate,binding,frame,now):
+def _causal_pass(chain,gate,binding,frame,now,max_combined=None):
     import time
     from pgcat_causal_scrape import collect_causal_scrapes,restore_ingress_pending,pending_evidence,issued_evidence
     reads=_causal_owner(gate,chain)
@@ -1211,7 +1227,7 @@ def _causal_pass(chain,gate,binding,frame,now):
     pending=restore_ingress_pending(gate=gate,run=chain.run,binding=binding) if previous is not None else None
     deadline=previous['evidence']['deadlineMonotonic'] if previous is not None else time.monotonic()+30.
     result=collect_causal_scrapes(source_read=reads.metrics_source,prometheus_get=reads.prometheus_get,nodes=binding['nodes'],metric_groups=binding['metricGroups'],
-        max_combined=1 if binding['kind']=='native-replacement' else None,now=now,deadline=deadline,pending=pending)
+        max_combined=max_combined,now=now,deadline=deadline,pending=pending)
     evidence=issued_evidence(result['receipt']) if result['status']=='VERIFIED' else pending_evidence(result['pending'])
     if result['status']=='VERIFIED':
         groups={(r['node'],r['pool'],r['user']) for r in evidence['samples']['metricGroups']}

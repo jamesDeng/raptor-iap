@@ -16,7 +16,7 @@ MCP names have prefixes `mcp__raptor__` and `mcp__infra__`.
 | Infra deployments_list | envCode, kind=db-proxy, code=proxyCode |
 | Infra db_proxy_scale | requestId, envCode, proxyCode, actionId, desiredCapacity |
 | Infra db_proxy_node_protection_set | requestId, envCode, proxyCode, nodeIds, protected |
-| Infra db_proxy_nodes_deregister | requestId, envCode, proxyCode, nodeIds |
+| Infra db_proxy_nodes_deregister | requestId, envCode, proxyCode, nodeIds. Set routing weight to zero while keeping the backends attached. |
 | Infra deployment_restart | requestId, envCode, appCode, workloadKey |
 | Infra deployment_status_get | envCode, appCode, workloadKey |
 
@@ -26,11 +26,11 @@ Direct read-only tools:
 
 - `cloud_read({kind:"fleet"|"capacity"|"backend"})`: exact ESS/NLB observations; capacity is provider desired capacity, not inferred member count. Fleet nodes expose instanceId, protectedFromScaleIn, lifecycleState and healthStatus; require protectedFromScaleIn=true and lifecycleState=Protected on every retained node.
 - `deployment_read({})`: bound client Deployment readiness, actual metadata generation and status observedGeneration. The latter must reach the recorded restart generation; all four replica counts must be two.
-- `metrics_read({kind:"trafficFailures"|"connections"|"pgcatClients"})`: fixed scoped queries. PgCat client reads require successful scrapes and complete raw active/idle/waiting triplets, source age ≤15 seconds, every current node and configured workload pool/user. Counts include all reported pools/users. After the rolling restart, for each exact replacement node require active+idle ≥1; waiting alone is insufficient and a missing series is unknown. For resource-v1 unprotection, exact reduction approval and the single 4→2 reduction, require a combined integer TOTAL active+idle+waiting of 0 or 1 across BOTH originals, never one per node; refuse 2 or more. Protected retained-node clients are excluded from that budget. Keep complete fresh triplets and after-restart source/response evidence on every node. The accepted one-connection exposure and arrivals after observation do not establish zero loss; historical staged results retain their zero policy.
+- `metrics_read({kind:"trafficFailures"|"connections"|"pgcatClients"})`: fixed scoped queries. PgCat client reads require successful scrapes and complete raw active/idle/waiting triplets, source age ≤15 seconds, every current node and configured workload pool/user. Counts include all reported pools/users. After the rolling restart, for each exact replacement node require active+idle ≥1; waiting alone is insufficient and a missing series is unknown. Before unprotection, exact reduction approval and the single 4→2 reduction, require zero active, idle and waiting clients on each original across all pools and users. Keep complete fresh triplets and after-restart source/response evidence on every node.
 - `db_connection_probe({instanceId})`: fixed read-only SELECT 1 for the two exact original nodes in the initial baseline. Before withdrawal, new-node readiness uses health, registration, and complete PgCat client metrics. Client counts may be zero until traffic moves.
 - `resource_wait({seconds:60})`: checkpoint and stop the completed round, without approval. Automatic waits are capped at ten per request and fresh control/credentials are checked by Gateway on resume. If the runtime refuses further waits, report the unresolved condition and stop; do not create a new request to reset the cap.
 
-After both original backends are observed absent, the mandatory 60-second resource_wait is required even if draining appears complete. Only its matching verified continuation can unlock restart after fresh reads. The runtime settles the successful expansion and exact approval pause through registered tools at the completed round; this does not add model turns or manufacture approval.
+After both original backends are observed at zero routing weight, the mandatory 60-second resource_wait is required even if draining appears complete. Only its matching verified continuation can unlock restart after fresh reads. The runtime settles the successful expansion and exact approval pause through registered tools at the completed round; this does not add model turns or manufacture approval.
 
 For incomplete readiness/draining use resource_wait, not a fabricated generic request_pause reason. For an unrecoverable identity/gate mismatch, explain the concrete blocker and stop; runtime refuses completion without evidence.
 

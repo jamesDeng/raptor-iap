@@ -84,7 +84,7 @@ run "proxy_permissions_and_routes" {
     error_message = "ESS mutation must be pinned to the POC group."
   }
   assert {
-    condition     = length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "ess:ModifyScalingGroup")]) == 1 && length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:RemoveServersFromServerGroup")]) == 1
+    condition     = length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "ess:ModifyScalingGroup")]) == 1 && length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "nlb:UpdateServerGroupServersAttribute")]) == 1
     error_message = "Required runtime capabilities must exist exactly once."
   }
   assert {
@@ -131,7 +131,7 @@ run "proxy_resolver_read_scope" {
       { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/*"] },
       { Effect = "Allow", Action = ["ess:DescribeScalingInstances", "ess:ModifyScalingGroup", "ess:SetInstancesProtection"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-a", "acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-z"] },
       { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-z", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
-      { Effect = "Allow", Action = ["nlb:RemoveServersFromServerGroup"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
+      { Effect = "Allow", Action = ["nlb:UpdateServerGroupServersAttribute"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
       { Effect = "Allow", Action = ["nlb:GetListenerAttribute", "nlb:GetListenerHealthStatus"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-a", "acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-z"] }
     ]
     error_message = "Only the two resolver reads may be added; all existing actions and resources, including mutation grants, must remain unchanged."

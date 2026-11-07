@@ -35,6 +35,32 @@ test('restart requires both old withdrawals, observed absence, and the completed
  assert.throws(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
  observe(y,observations([...old,...added],{withdrawn:old}));assert.doesNotThrow(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')));
 });
+test('weight-zero old rows satisfy the completed drain without hiding unrelated backends',t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ const x=expanded();
+ const observeDrained=(run,drained)=>{
+  const e=observations([...old,...added],{withdrawn:drained});
+  observe(run,e);
+  return e;
+ };
+ mutate(x,'db_proxy_nodes_deregister',{nodeIds:['old-a']},{instanceIds:['old-a'],outcome:'submitted'});
+ observeDrained(x,['old-a']);
+ mutate(x,'db_proxy_nodes_deregister',{nodeIds:['old-b']},{instanceIds:['old-b'],outcome:'submitted'});
+ observeDrained(x,old);
+ const decision=requestWithdrawalWait(x);
+ t.mock.timers.tick(60000);
+ const y=setup(x.session,decision);
+ const e=observeDrained(y,old);
+ e.backend.nodes.push({instanceId:'foreign',registered:false,healthy:false,status:'Available'});
+ observe(y,e);
+ assert.throws(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
+ const absent=observations([...old,...added],{withdrawn:old});
+ absent.backend.nodes=absent.backend.nodes.filter(n=>n.registered);
+ observe(y,absent);
+ assert.throws(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
+ observeDrained(y,old);
+ assert.doesNotThrow(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')));
+});
 for(const [name,change] of [
  ['over budget',e=>{e.metrics.nodes[0].pools[0].idle=2;e.metrics.nodes[0].connectedClients=2;}],
  ['missing triplet',e=>delete e.metrics.nodes[0].pools[0].waiting],
@@ -46,6 +72,8 @@ for(const [name,change] of [
  ['unready rollout',e=>e.deployment.updatedReplicas=1],
  ['old still registered',e=>e.backend.nodes.push({instanceId:'old-a',registered:true,healthy:true,status:'Available'})],
  ['replacement cohort changed',e=>e.fleet.instances[2].instanceId='other-new'],
+ ['replacement only has another pool client',e=>{const n=e.metrics.nodes.find(n=>n.instanceId===added[0]);n.pools[0].user='other-client';}],
+ ['replacement has no active or idle client',e=>{const n=e.metrics.nodes.find(n=>n.instanceId===added[0]);Object.assign(n.pools[0],{active:0,idle:0,waiting:1});n.connectedClients=1;}],
 ])test('unprotect and scale reject '+name,()=>{
  const x=restarted(),e=observations([...old,...added],{withdrawn:old,zero:true,generation:6});change(e);observe(x,e);
  assert.throws(()=>x.gate.beforeMutation('db_proxy_node_protection_set',protect(old,false)),/MissingEvidence/);
@@ -53,9 +81,9 @@ for(const [name,change] of [
 });
 for(const stage of ['unprotect','approval','reduction'])for(const [name,counts,allowed] of [
  ['zero total',[[0,0,0],[0,0,0]],true],
- ['0+1 active',[[0,0,0],[1,0,0]],true],
- ['1+0 idle',[[0,1,0],[0,0,0]],true],
- ['0+1 waiting',[[0,0,0],[0,0,1]],true],
+ ['0+1 active',[[0,0,0],[1,0,0]],false],
+ ['1+0 idle',[[0,1,0],[0,0,0]],false],
+ ['0+1 waiting',[[0,0,0],[0,0,1]],false],
  ['1+1 active',[[1,0,0],[1,0,0]],false],
  ['idle plus waiting',[[0,1,0],[0,0,1]],false],
 ])test(`${stage} enforces combined old-node budget: ${name}`,()=>{
@@ -97,7 +125,6 @@ test('resume retains ordering and generation but requires fresh current reads; o
  const y=setup(x.session),scale=argsFor('db_proxy_scale',{actionId:'shrink',desiredCapacity:2});
  assert.throws(()=>y.gate.beforeMutation('db_proxy_scale',scale),/MissingEvidence/);
  const e=observations([...old,...added],{withdrawn:old,unprotected:old,zero:true,generation:6});
- e.metrics.nodes[1].pools[0].waiting=1;e.metrics.nodes[1].connectedClients=1;
  observe(y,e);
  mutate(y,'db_proxy_scale',{actionId:'shrink',desiredCapacity:2},{previousDesiredCapacity:4,desiredCapacity:2,outcome:'unknown'});
  assert.throws(()=>y.gate.beforeMutation('db_proxy_scale',{...scale,actionId:'renamed'}),/MutationAlreadySubmitted|MissingEvidence/);
@@ -175,7 +202,7 @@ for(const first of ['protectOld','expand'])test(`resume rejects first ${first} p
 for(const [label,change] of [
  ['identity',r=>r.identity.model='other-model'],['cohort',r=>r.cohort.newInstanceIds[0]='other'],
  ['duration',r=>r.wait.wakeAfterSeconds=59],['binding',r=>r.wait.bindingDigest='f'.repeat(64)],
- ['registered original',r=>r.evidence.backend.nodes[0].instanceId='old-a'],
+ ['registered original',r=>r.evidence.backend.nodes.find(n=>n.instanceId==='old-a').registered=true],
  ['unprotected replacement',r=>r.evidence.fleet.instances[2].protectedFromScaleIn=false],
  ['stale prewait read',r=>r.evidence.capacity.observedAt=new Date(Date.parse(r.wait.startedAt)-30001).toISOString()],
  ['unknown field',r=>r.approved=true],

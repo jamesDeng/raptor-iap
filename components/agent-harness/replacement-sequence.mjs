@@ -12,7 +12,9 @@ const exact=(rows,ids)=>Array.isArray(rows)&&rows.length===ids.length&&new Set(r
 const subset=(ids,allowed)=>Array.isArray(ids)&&ids.length>0&&ids.length<=2&&new Set(ids).size===ids.length&&ids.every(id=>allowed.includes(id));
 const healthy=n=>n.healthStatus==='Healthy'&&['InService','Protected'].includes(n.lifecycleState);
 const protectedNode=n=>healthy(n)&&n.protectedFromScaleIn===true&&n.lifecycleState==='Protected';
-const registered=n=>n.registered===true&&n.healthy===true&&n.status==='Available';
+const registered=n=>n?.registered===true&&n.healthy===true&&n.status==='Available';
+const backendMatches=(rows,receiving,drained)=>exact(rows,[...receiving,...drained])&&rows.every(n=>
+ receiving.includes(n.instanceId)?registered(n):n.registered===false&&n.status==='Available');
 const mcpChecks=['raptor.request_get','raptor.environment_get','raptor.object_get','raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'];
 function metricsValid(m,ids,budgeted=[],after=0){
  if(!fresh(m,after)||!Array.isArray(m.pendingInstanceIds)||m.pendingInstanceIds.length||!exact(m.nodes,ids))return false;
@@ -26,7 +28,7 @@ function metricsValid(m,ids,budgeted=[],after=0){
   if(!Number.isSafeInteger(total)||total!==n.connectedClients)return false;
   if(budgeted.includes(n.instanceId))retiringTotal+=total;
  }
- return Number.isSafeInteger(retiringTotal)&&retiringTotal<=1;
+ return Number.isSafeInteger(retiringTotal)&&retiringTotal===0;
 }
 export class ReplacementSequence {
  constructor(manager,trace,readiness,profile,decisionContext){
@@ -61,7 +63,7 @@ export class ReplacementSequence {
   if(saved.length>2)throw invalid();
   if(!saved.length){if(this.intents('restart').length)throw invalid();return;}
   const requested=saved[0].data,at=entries.indexOf(saved[0]),wait=requested?.wait;
-  if(!requested||Object.keys(requested).sort().join(',')!=='cohort,evidence,identity,kind,observedAt,version,wait,withdrawalKeys'||requested.version!==1||requested.kind!=='requested'||!same(requested.identity,this.trace.identity)||!same(requested.cohort,this.cohort())||Buffer.byteLength(canonical(requested))>32768)throw invalid();
+  if(!requested||Object.keys(requested).sort().join(',')!=='cohort,evidence,identity,kind,observedAt,version,wait,withdrawalKeys'||![1,2].includes(requested.version)||requested.kind!=='requested'||!same(requested.identity,this.trace.identity)||!same(requested.cohort,this.cohort())||Buffer.byteLength(canonical(requested))>32768)throw invalid();
   const withdrawals=this.intents('withdraw');
   if(this.idsFor('withdraw').length!==2||!same(requested.withdrawalKeys,withdrawals.map(i=>i.key))||!wait||Object.keys(wait).sort().join(',')!=='actionId,approvalId,bindingDigest,definitionSha256,kind,requestId,startedAt,wakeAfterSeconds'||wait.kind!=='resource'||wait.approvalId!==''||!/^capacity-[a-f0-9-]{36}$/.test(wait.actionId)||wait.requestId!==this.trace.identity.requestId||wait.definitionSha256!==this.trace.identity.definitionSha256||wait.bindingDigest!==wait.definitionSha256||wait.wakeAfterSeconds!==60||!Number.isFinite(Date.parse(wait.startedAt)))throw invalid();
   const begun=Date.parse(wait.startedAt),e=requested.evidence,c=requested.cohort;
@@ -69,7 +71,7 @@ export class ReplacementSequence {
   const resultAts=withdrawals.map(i=>entries.findIndex(e=>e.type==='custom'&&e.customType===TRACE&&e.data.kind==='result'&&e.data.key===i.key));
   if(resultAts.some(i=>i<0||i>=at))throw invalid();
   const lastResult=Math.max(...resultAts.map(i=>Date.parse(entries[i].data.observedAt)));
-  if(!e||Object.keys(e).sort().join(',')!=='backend,capacity,fleet'||Object.values(e).some(r=>!r||!Number.isFinite(Date.parse(r.observedAt))||Date.parse(r.observedAt)<lastResult||Date.parse(r.observedAt)>begun||begun-Date.parse(r.observedAt)>30000)||Object.keys(e.capacity).sort().join(',')!=='desiredCapacity,groupId,maxSize,minSize,observedAt'||Object.keys(e.fleet).sort().join(',')!=='groupId,instances,observedAt'||Object.keys(e.backend).sort().join(',')!=='nodes,observedAt,serverGroupId'||e.capacity.groupId!==this.trace.identity.scope.groupId||e.capacity.desiredCapacity!==4||e.capacity.minSize!==2||e.capacity.maxSize!==4||e.fleet.groupId!==this.trace.identity.scope.groupId||!exact(e.fleet.instances,[...c.oldInstanceIds,...c.newInstanceIds])||!e.fleet.instances.every(n=>Object.keys(n).sort().join(',')==='healthStatus,instanceId,lifecycleState,protectedFromScaleIn'&&protectedNode(n))||e.backend.serverGroupId!==this.trace.identity.scope.serverGroupId||!exact(e.backend.nodes,c.newInstanceIds)||!e.backend.nodes.every(n=>Object.keys(n).sort().join(',')==='healthy,instanceId,registered,status'&&registered(n)))throw invalid();
+  if(!e||Object.keys(e).sort().join(',')!=='backend,capacity,fleet'||Object.values(e).some(r=>!r||!Number.isFinite(Date.parse(r.observedAt))||Date.parse(r.observedAt)<lastResult||Date.parse(r.observedAt)>begun||begun-Date.parse(r.observedAt)>30000)||Object.keys(e.capacity).sort().join(',')!=='desiredCapacity,groupId,maxSize,minSize,observedAt'||Object.keys(e.fleet).sort().join(',')!=='groupId,instances,observedAt'||Object.keys(e.backend).sort().join(',')!=='nodes,observedAt,serverGroupId'||e.capacity.groupId!==this.trace.identity.scope.groupId||e.capacity.desiredCapacity!==4||e.capacity.minSize!==2||e.capacity.maxSize!==4||e.fleet.groupId!==this.trace.identity.scope.groupId||!exact(e.fleet.instances,[...c.oldInstanceIds,...c.newInstanceIds])||!e.fleet.instances.every(n=>Object.keys(n).sort().join(',')==='healthStatus,instanceId,lifecycleState,protectedFromScaleIn'&&protectedNode(n))||e.backend.serverGroupId!==this.trace.identity.scope.serverGroupId||!backendMatches(e.backend.nodes,c.newInstanceIds,requested.version===2?c.oldInstanceIds:[])||!e.backend.nodes.every(n=>Object.keys(n).sort().join(',')==='healthy,instanceId,registered,status'))throw invalid();
   this.withdrawalRequested=requested;
   if(saved.length===2){
    const completed=saved[1].data;
@@ -91,7 +93,7 @@ export class ReplacementSequence {
   const pick=(value,keys)=>Object.fromEntries(keys.map(k=>[k,value[k]]));
   const f=this.current.fleet,b=this.current.backend,c=this.current.capacity;
   const evidence={fleet:{...pick(f,['observedAt','groupId']),instances:f.instances.map(n=>pick(n,['instanceId','lifecycleState','healthStatus','protectedFromScaleIn']))},backend:{...pick(b,['observedAt','serverGroupId']),nodes:b.nodes.map(n=>pick(n,['instanceId','status','registered','healthy']))},capacity:pick(c,['observedAt','groupId','desiredCapacity','minSize','maxSize'])};
-  const row={version:1,kind:'requested',identity:structuredClone(this.trace.identity),cohort:this.cohort(),withdrawalKeys:this.intents('withdraw').map(i=>i.key),evidence,wait:structuredClone(wait),observedAt:new Date().toISOString()};
+  const row={version:2,kind:'requested',identity:structuredClone(this.trace.identity),cohort:this.cohort(),withdrawalKeys:this.intents('withdraw').map(i=>i.key),evidence,wait:structuredClone(wait),observedAt:new Date().toISOString()};
   if(Buffer.byteLength(canonical(row))>32768)throw invalid();
   this.manager.appendCustomEntry(WAIT,row);this.withdrawalRequested=row;
  }
@@ -132,7 +134,10 @@ export class ReplacementSequence {
  }
  capacity(desired){const c=this.current.capacity;return fresh(c)&&c.groupId===this.trace.identity.scope.groupId&&c.desiredCapacity===desired&&c.minSize===2&&c.maxSize===4;}
  fleet(ids){const f=this.current.fleet;return fresh(f)&&f.groupId===this.trace.identity.scope.groupId&&exact(f.instances,ids)&&f.instances.every(healthy);}
- backend(ids,absent=[]){const b=this.current.backend;return fresh(b)&&b.serverGroupId===this.trace.identity.scope.serverGroupId&&exact(b.nodes,ids)&&b.nodes.every(registered)&&b.nodes.every(n=>!absent.includes(n.instanceId));}
+ backend(ids,drained=[]){
+  const b=this.current.backend;
+  return fresh(b)&&b.serverGroupId===this.trace.identity.scope.serverGroupId&&backendMatches(b.nodes,ids,drained);
+ }
  app(minGeneration=1,after=0){const a=this.current.deployment,s=this.trace.identity.scope.application;return fresh(a,after)&&['clusterId','namespace','name','uid'].every(k=>a[k]===s[k])&&['replicas','readyReplicas','updatedReplicas','availableReplicas'].every(k=>a[k]===2)&&Number.isSafeInteger(a.generation)&&a.generation>=minGeneration&&Number.isSafeInteger(a.observedGeneration)&&a.observedGeneration===a.generation;}
  traffic(kind){const row=this.current[kind];if(!fresh(row)||!Array.isArray(row.samples)||!row.samples.length)return false;const seen=new Set();for(const s of row.samples){const key=s.instance+'|'+(s.outcome??'');if(typeof s.instance!=='string'||!s.instance||seen.has(key)||!Number.isFinite(s.timestamp)||Math.abs(Date.now()/1000-s.timestamp)>30||!Number.isFinite(s.value)||(kind==='connections'?s.value<=0:s.value!==0))return false;seen.add(key);}const ids=[...new Set(row.samples.map(s=>s.instance))];return ids.length===2&&(kind==='connections'?row.samples.length===2:row.samples.length===6&&ids.every(id=>['failure','timeout','ambiguous'].every(outcome=>seen.has(id+'|'+outcome))));}
  probesReady(ids){return ids.every(id=>{const p=this.probes.get(id);return fresh(p)&&p.connected===true&&!Object.hasOwn(p,'readiness');});}
@@ -140,7 +145,15 @@ export class ReplacementSequence {
  canWrite(){return this.permits.some(p=>p.stage==='expand')?this.readiness.ready():this.initial();}
  retained(requireProtected=true){const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.capacity(4)&&this.fleet([...old,...added])&&(!requireProtected||this.current.fleet.instances.filter(n=>added.includes(n.instanceId)).every(protectedNode));}
  restart(){const intent=this.intents('restart')[0],result=this.trace.rows.find(r=>r.kind==='result'&&r.key===intent?.key);return result&&result.state.accepted===true&&Number.isSafeInteger(result.state.generation)&&result.state.generation>0?{generation:result.state.generation,at:Date.parse(result.observedAt)}:null;}
- drained(){const r=this.restart();if(!r)return false;const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.retained()&&this.backend(added,old)&&fresh(this.current.backend,r.at)&&this.app(r.generation,r.at)&&metricsValid(this.current.metrics,[...old,...added],old,r.at);}
+ drained(){
+  const r=this.restart();
+  if(!r)return false;
+  const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();
+  const metrics=this.current.metrics;
+  return this.retained()&&this.backend(added,old)&&fresh(this.current.backend,r.at)&&this.app(r.generation,r.at)&&
+   metricsValid(metrics,[...old,...added],old,r.at)&&
+   metrics.nodes.filter(n=>added.includes(n.instanceId)).every(n=>n.pools.some(p=>p.pool==='test'&&p.user==='poc_app'&&(p.active>0||p.idle>0)));
+ }
  beforeMutation(tool,args){
   if(tool==='approval_request'){
    if(args.parameters?.desiredCapacity!==2||!this.readiness.ready()||!this.drained()||this.idsFor('unprotectOld').length!==2||this.permits.some(p=>p.stage==='shrink')||this.current.fleet.instances.filter(n=>this.cohort().oldInstanceIds.includes(n.instanceId)).some(n=>n.protectedFromScaleIn!==false||n.lifecycleState!=='InService'))throw missing();
@@ -163,7 +176,7 @@ export class ReplacementSequence {
     // The new pair may be unprotected before this specific protection operation.
     if(!this.backend([...old,...added]))throw missing();
    }else if(stage==='withdraw'){
-    const withdrawn=this.idsFor('withdraw');if(!this.backend([...old,...added].filter(id=>!withdrawn.includes(id))))throw missing();
+    const withdrawn=this.idsFor('withdraw');if(!this.backend([...old,...added].filter(id=>!withdrawn.includes(id)),withdrawn))throw missing();
    }else if(stage==='restart'){
     if(!this.withdrawalReady()||!this.backend(added,old)||!this.app())throw missing();
    }else if(!this.drained()||(stage==='shrink'&&this.current.fleet.instances.filter(n=>old.includes(n.instanceId)).some(n=>n.protectedFromScaleIn!==false||n.lifecycleState!=='InService')))throw missing();

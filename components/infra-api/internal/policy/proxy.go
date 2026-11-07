@@ -12,6 +12,7 @@ import (
 type Node struct {
 	ID                             string
 	Protected, Registered, Healthy bool
+	Drained                        bool // still attached with zero routing weight
 }
 type ProxySnapshot struct {
 	EnvCode, ProxyCode, GroupID, ServerGroupID string
@@ -79,6 +80,9 @@ func DeregistrationAllowed(s ProxySnapshot, backend string, ids []string) error 
 	}
 	remaining, protectedRemaining := 0, 0
 	for _, n := range s.Nodes {
+		if removed[n.ID] && !n.Registered {
+			return refuse("ScopeMismatch")
+		}
 		if n.Registered && n.Healthy && !removed[n.ID] {
 			remaining++
 			if n.Protected {
@@ -101,11 +105,15 @@ func DeregistrationAllowed(s ProxySnapshot, backend string, ids []string) error 
 	return refuse("InsufficientHealthyCapacity")
 }
 
+func directReplacementScaleIn(s ProxySnapshot, desired int) bool {
+	return s.Desired == 4 && s.Min == 2 && s.Max == 4 && desired == 2
+}
+
 // DirectReplacementScaleInAllowed constrains only the dedicated four-to-two
 // reduction. Metrics, approval and fresh unchanged snapshots remain separate
 // requirements; this generic snapshot cannot establish replacement lineage.
 func DirectReplacementScaleInAllowed(s ProxySnapshot, desired int) error {
-	if s.Desired != 4 || s.Min != 2 || s.Max != 4 || desired != 2 {
+	if !directReplacementScaleIn(s, desired) {
 		return nil
 	}
 	if len(s.Nodes) != 4 {
@@ -124,7 +132,7 @@ func DirectReplacementScaleInAllowed(s ProxySnapshot, desired int) error {
 			}
 			retained++
 		} else {
-			if n.Registered {
+			if !n.Registered || !n.Drained {
 				return refuse("InsufficientHealthyCapacity")
 			}
 			withdrawn++
@@ -135,7 +143,7 @@ func DirectReplacementScaleInAllowed(s ProxySnapshot, desired int) error {
 	}
 	return nil
 }
-func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.Time) error {
+func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.Time, desired int) error {
 	observed := map[string]ClientObservation{}
 	for _, r := range rows {
 		if _, exists := observed[r.InstanceID]; exists {
@@ -164,8 +172,13 @@ func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.T
 	if eligible == 0 {
 		return refuse("NoEligibleNodes")
 	}
-	// The one-client budget is shared across all eligible retiring nodes.
-	if totalClients > 1 {
+	// The dedicated replacement retires its old cohort only once every
+	// connection has closed. Keep the existing budget for other scale-ins.
+	budget := 1.0
+	if directReplacementScaleIn(s, desired) {
+		budget = 0
+	}
+	if totalClients > budget {
 		return refuse("ConnectedClientsPresent")
 	}
 	return nil

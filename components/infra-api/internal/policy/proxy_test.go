@@ -121,7 +121,7 @@ func TestScaleInRequiresFreshCombinedClientBudgetOnEveryUnprotectedNode(t *testi
 		{"infinite", []ClientObservation{{"a", math.Inf(1), now}, {"b", 0, now}}, "MetricsInvalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if e := ScaleInClientsAllowed(s, tc.rows, now); code(e) != tc.want {
+			if e := ScaleInClientsAllowed(s, tc.rows, now, 2); code(e) != tc.want {
 				t.Fatalf("want %q, got %v", tc.want, e)
 			}
 		})
@@ -141,7 +141,7 @@ func TestScaleInRejectsMissingEligibleNodesAndMalformedMembership(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Unix(1000, 0)
-			if e := ScaleInClientsAllowed(ProxySnapshot{Nodes: tc.nodes}, []ClientObservation{{"a", 0, now}}, now); code(e) != tc.want {
+			if e := ScaleInClientsAllowed(ProxySnapshot{Nodes: tc.nodes}, []ClientObservation{{"a", 0, now}}, now, 2); code(e) != tc.want {
 				t.Fatalf("want %q, got %v", tc.want, e)
 			}
 		})

@@ -130,7 +130,7 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 		if r.Now != nil {
 			now = r.Now()
 		}
-		if e = policy.ScaleInClientsAllowed(s, rows, now); e != nil {
+		if e = policy.ScaleInClientsAllowed(s, rows, now, in.DesiredCapacity); e != nil {
 			return domain.ScaleReceipt{}, e
 		}
 	}
@@ -148,7 +148,7 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 		if r.Now != nil {
 			now = r.Now()
 		}
-		if checkErr := policy.ScaleInClientsAllowed(s, observations, now); checkErr != nil {
+		if checkErr := policy.ScaleInClientsAllowed(s, observations, now, in.DesiredCapacity); checkErr != nil {
 			receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			recordErr := r.Claims.Record(receiptCtx, binding, "not_submitted", "")
 			cancel()
