@@ -75,6 +75,23 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
    return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
   };
   const options={stateRoot:state,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,skills:{tag:'skills-v99.0.0',commitSHA:b.skillsCommit,path:skillsPath},limits:{model_seconds:90,max_turns:10,max_output_tokens:1024},mcpConfig:{raptor:{url:'https://raptor.fixture/mcp',headers:{Authorization:'Bearer synthetic'}},infra:{url:'https://infra.fixture/mcp',headers:{'X-Infra-Authorization':'Bearer synthetic'}}},fetch:fetcher,onProgress:event=>progress.push(event)};
+  const operationStream=runtime.streamSimple;
+  const authState=path.join(root,'auth-error-state');
+  fs.mkdirSync(authState);
+  fs.copyFileSync(path.join(state,'auth.json'),path.join(authState,'auth.json'));
+  runtime.streamSimple=model=>{
+   const message={role:'assistant',content:[],api:model.api,provider:model.provider,model:model.id,
+    usage:{input:0,output:0,totalTokens:0},stopReason:'error',errorMessage:'Your access token has expired. synthetic-private-token',timestamp:Date.now()};
+   const stream=createAssistantMessageEventStream();stream.push({type:'error',reason:'error',error:message});return stream;
+  };
+  const authFailure=await runLiveReplacement({...options,stateRoot:authState,privateRoot:path.join(root,'auth-error-private')});
+  assert.equal(authFailure.error,'NeedsSignIn');
+  assert.ok(progress.some(e=>e.summary==='Model authentication'));
+  assert.ok(progress.some(e=>e.summary?.includes('Contact the platform administrator')));
+  assert.ok(!JSON.stringify(progress).includes('synthetic-private-token'));
+  assert.deepEqual(writes,[]);
+  progress.length=0;
+  runtime.streamSimple=operationStream;
   const debugState=path.join(root,'debug-state'),debugPrivate=path.join(root,'debug-private');
   fs.mkdirSync(debugState);
   fs.copyFileSync(path.join(state,'auth.json'),path.join(debugState,'auth.json'));
