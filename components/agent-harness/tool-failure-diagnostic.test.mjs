@@ -12,3 +12,16 @@ test('failed tool endings produce bounded categories without copying result cont
  assert.equal(toolFailureDiagnostic('mcp__infra__unlisted',profile,undefined,{content:[{type:'text',text:secret}]}),undefined);
  assert.equal(toolFailureDiagnostic('cloud_read',profile,undefined,{content:[{type:'text',text:secret}]}),undefined);
 });
+
+test('model errors expose only fixed categories and identify sign-in failures',async()=>{
+ const {modelFailureDiagnostic}=await import('./tool-failure-diagnostic.mjs');
+ const model={id:'gpt-6-luna',provider:'openai-codex'};
+ const base={role:'assistant',model:model.id,provider:model.provider,stopReason:'error'};
+ for(const errorMessage of ['Your access token has expired. private-token','invalid_grant private-token','HTTP 401 private-token','Your authentication token has been invalidated. Please sign in again.']){
+  assert.deepEqual(modelFailureDiagnostic({...base,errorMessage},model),{category:'authentication',failureCode:'NeedsSignIn'});
+ }
+ assert.deepEqual(modelFailureDiagnostic({...base,errorMessage:'HTTP 429 private-token'},model),{category:'usage-limit',failureCode:'ModelFailed'});
+ assert.deepEqual(modelFailureDiagnostic({...base,errorMessage:'Something private'},model),{category:'provider-error',failureCode:'ModelFailed'});
+ assert.deepEqual(modelFailureDiagnostic({...base,model:'foreign',errorMessage:'expired token'},model),{category:'response-identity',failureCode:'ModelFailed'});
+ assert.equal(modelFailureDiagnostic({...base,stopReason:'stop'},model),undefined);
+});
