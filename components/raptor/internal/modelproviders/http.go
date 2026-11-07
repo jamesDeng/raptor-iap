@@ -29,6 +29,14 @@ func sessionOwner(r *http.Request) string {
 	return auth.UserFrom(r).ID + ":" + hex.EncodeToString(h[:])
 }
 
+func writeConnectStartError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrBusy) {
+		httpx.Error(w, 409, "ProviderAuthorizationBusy")
+		return
+	}
+	httpx.Error(w, 503, "ProviderAuthorizationUnavailable")
+}
+
 func (s *HTTPService) Register(m *http.ServeMux, a *auth.Service) {
 	m.Handle("GET /api/v1/model-providers", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		models, err := s.Policy.ListEnabled(r.Context())
@@ -42,17 +50,28 @@ func (s *HTTPService) Register(m *http.ServeMux, a *auth.Service) {
 	m.Handle("POST /api/v1/admin/model-providers/codex/connect", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		challenge, err := s.Connect.StartCodexConnect(r.Context(), sessionOwner(r))
 		if err != nil {
-			httpx.Error(w, 503, "ProviderAuthorizationUnavailable")
+			writeConnectStartError(w, err)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-store")
 		httpx.Write(w, 202, challenge)
+	})))
+	m.Handle("GET /api/v1/admin/model-providers/codex/connect", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		challenge, err := s.Connect.CurrentCodexConnect(sessionOwner(r))
+		if err != nil {
+			httpx.Error(w, 404, "NotFound")
+			return
+		}
+		httpx.Write(w, 200, challenge)
 	})))
 	m.Handle("POST /api/v1/admin/model-providers/codex/browser-connect", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		challenge, err := s.Connect.StartCodexBrowserConnect(r.Context(), sessionOwner(r))
 		if err != nil {
-			httpx.Error(w, 503, "ProviderAuthorizationUnavailable")
+			writeConnectStartError(w, err)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-store")
 		httpx.Write(w, 202, challenge)
 	})))
 	m.Handle("POST /api/v1/admin/model-providers/codex/connect/{sessionId}/complete", a.Admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

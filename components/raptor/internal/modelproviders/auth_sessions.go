@@ -28,8 +28,11 @@ type SaveCredential func(context.Context, string, []byte) error
 
 type connectSession struct {
 	owner     string
+	challenge ConnectChallenge
+	browser   bool
 	status    ConnectStatus
 	cancel    context.CancelFunc
+	done      chan struct{}
 	attempt   BrowserAttempt
 	submitted bool
 }
@@ -61,16 +64,38 @@ func (s *Service) start(ctx context.Context, adminID string, browser bool) (Conn
 		s.mu.Unlock()
 		return ConnectChallenge{}, ErrBusy
 	}
+	var closing []<-chan struct{}
 	for _, v := range s.sessions {
 		if v.status.Status == StatusPending {
+			if !time.Now().Before(v.status.ExpiresAt) {
+				v.status.Status = StatusExpired
+				v.cancel()
+				closing = append(closing, v.done)
+				continue
+			}
+			if v.owner == adminID && v.browser == browser {
+				challenge := v.challenge
+				s.mu.Unlock()
+				return challenge, nil
+			}
 			s.mu.Unlock()
 			return ConnectChallenge{}, ErrBusy
+		}
+		if v.status.Status == StatusCancelled || v.status.Status == StatusExpired {
+			closing = append(closing, v.done)
 		}
 	}
 	s.starting = true
 	startEpoch := s.epoch
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.starting = false; s.mu.Unlock() }()
+	for _, done := range closing {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ConnectChallenge{}, ctx.Err()
+		}
+	}
 	var attempt DeviceAttempt
 	var browserAttempt BrowserAttempt
 	var e error
@@ -97,18 +122,39 @@ func (s *Service) start(ctx context.Context, adminID string, browser bool) (Conn
 	}
 	challenge.SessionID = hex.EncodeToString(id[:])
 	runCtx, cancel := context.WithDeadline(context.Background(), challenge.ExpiresAt)
-	v := &connectSession{owner: adminID, status: ConnectStatus{SessionID: challenge.SessionID, Status: StatusPending, ExpiresAt: challenge.ExpiresAt}, cancel: cancel, attempt: browserAttempt}
+	v := &connectSession{owner: adminID, challenge: challenge, browser: browser, status: ConnectStatus{SessionID: challenge.SessionID, Status: StatusPending, ExpiresAt: challenge.ExpiresAt}, cancel: cancel, done: make(chan struct{}), attempt: browserAttempt}
 	s.mu.Lock()
 	if s.epoch != startEpoch {
 		s.mu.Unlock()
 		cancel()
-		go attempt.Await(runCtx)
+		_, _ = attempt.Await(runCtx)
 		return ConnectChallenge{}, ErrClosed
 	}
 	s.sessions[challenge.SessionID] = v
 	s.mu.Unlock()
 	go s.await(runCtx, v, attempt)
 	return challenge, nil
+}
+func (s *Service) CurrentCodexConnect(adminID string) (ConnectChallenge, error) {
+	if adminID == "" {
+		return ConnectChallenge{}, ErrForbidden
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.sessions {
+		if v.status.Status != StatusPending {
+			continue
+		}
+		if !time.Now().Before(v.status.ExpiresAt) {
+			v.status.Status = StatusExpired
+			v.cancel()
+			continue
+		}
+		if v.owner == adminID {
+			return v.challenge, nil
+		}
+	}
+	return ConnectChallenge{}, ErrNotFound
 }
 func (s *Service) SubmitCodexBrowserRedirect(adminID, sessionID, redirect string) error {
 	s.mu.Lock()
@@ -136,7 +182,7 @@ func (s *Service) SubmitCodexBrowserRedirect(adminID, sessionID, redirect string
 func (s *Service) await(ctx context.Context, v *connectSession, attempt DeviceAttempt) {
 	credential, e := attempt.Await(ctx)
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() { s.mu.Unlock(); close(v.done) }()
 	if v.status.Status != StatusPending {
 		return
 	}
