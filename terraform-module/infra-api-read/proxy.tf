@@ -12,7 +12,7 @@ locals {
     { Effect = "Allow", Action = ["nlb:ListServerGroups"], Resource = sort(distinct(flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:serverGroup/${p.server_group_id}", "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"]]))) },
     { Effect = "Allow", Action = ["nlb:ListListeners"], Resource = sort(distinct(concat(["acs:nlb:${var.region}:${var.account_id}:listener/*"], flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:loadBalancer/${p.load_balancer_id}", "acs:nlb:${var.region}:${var.account_id}:loadbalancer/${p.load_balancer_id}"]])))) },
     { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = sort(distinct(flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:serverGroup/${p.server_group_id}", "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"]]))) },
-    { Effect = "Allow", Action = ["nlb:RemoveServersFromServerGroup"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"])) },
+    { Effect = "Allow", Action = ["nlb:UpdateServerGroupServersAttribute"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:nlb:${var.region}:${var.account_id}:servergroup/${p.server_group_id}"])) },
     { Effect = "Allow", Action = ["nlb:GetListenerAttribute", "nlb:GetListenerHealthStatus"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:nlb:${var.region}:${var.account_id}:loadbalancer/${p.load_balancer_id}"])) }
   ]
 }

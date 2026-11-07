@@ -18,7 +18,7 @@ import (
 
 func directSnapshot() policy.ProxySnapshot {
 	return policy.ProxySnapshot{EnvCode: "dev", ProxyCode: "p", GroupID: "g", ServerGroupID: "backend", Desired: 4, Min: 2, Max: 4, Nodes: []policy.Node{
-		{ID: "old-a"}, {ID: "old-b"},
+		{ID: "old-a", Registered: true, Drained: true}, {ID: "old-b", Registered: true, Drained: true},
 		{ID: "new-a", Protected: true, Registered: true, Healthy: true}, {ID: "new-b", Protected: true, Registered: true, Healthy: true},
 	}}
 }
@@ -75,7 +75,8 @@ func TestDirectReplacementScaleInRequiresRetainedPairAndWithdrawnPair(t *testing
 		want   string
 	}{
 		{name: "complete drained pair"},
-		{name: "registered original", change: func(s *policy.ProxySnapshot) { s.Nodes[0].Registered = true }, want: "InsufficientHealthyCapacity"},
+		{name: "positive weight original", change: func(s *policy.ProxySnapshot) { s.Nodes[0].Drained = false }, want: "InsufficientHealthyCapacity"},
+		{name: "detached original", change: func(s *policy.ProxySnapshot) { s.Nodes[0].Registered = false }, want: "InsufficientHealthyCapacity"},
 		{name: "protected original", change: func(s *policy.ProxySnapshot) { s.Nodes[0].Protected = true }, want: "InsufficientHealthyCapacity"},
 		{name: "extra eligible node", change: func(s *policy.ProxySnapshot) { s.Nodes[2].Protected = false }, want: "InsufficientHealthyCapacity"},
 		{name: "unhealthy replacement", change: func(s *policy.ProxySnapshot) { s.Nodes[2].Healthy = false }, want: "InsufficientHealthyCapacity"},
@@ -126,9 +127,10 @@ func TestDirectReplacementScaleInClientBudgetAndMinimumBoundary(t *testing.T) {
 		want          string
 	}{
 		{"zero at minimum", 0, 0, 2, ""},
-		{"one on first at minimum", 1, 0, 2, ""},
-		{"one on second at minimum", 0, 1, 2, ""},
+		{"one on first at minimum", 1, 0, 2, "ConnectedClientsPresent"},
+		{"one on second at minimum", 0, 1, 2, "ConnectedClientsPresent"},
 		{"one each exceeds budget", 1, 1, 2, "ConnectedClientsPresent"},
+		{"nonreplacement reduction preserves budget", 1, 0, 3, ""},
 		{"below minimum", 1, 0, 1, "InvalidCapacity"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,6 +141,7 @@ func TestDirectReplacementScaleInClientBudgetAndMinimumBoundary(t *testing.T) {
 			r := Runtime{Backend: b, Metrics: rows, Approval: a, Claims: a, Now: func() time.Time { return now }}
 			in := directCommand()
 			in.DesiredCapacity = tc.desired
+			a.binding.DesiredCapacity = tc.desired
 			out, err := r.Scale(context.Background(), domain.Environment{Code: "dev"}, in)
 			got := ""
 			if err != nil {
@@ -153,7 +156,7 @@ func TestDirectReplacementScaleInClientBudgetAndMinimumBoundary(t *testing.T) {
 				}
 				return
 			}
-			if out.Outcome != "accepted" || out.DesiredCapacity != 2 || b.calls != 1 || a.claims != 1 || a.outcome != "submitted" {
+			if out.Outcome != "accepted" || out.DesiredCapacity != tc.desired || b.calls != 1 || a.claims != 1 || a.outcome != "submitted" {
 				t.Fatalf("out=%+v mutations=%d authority=%+v", out, b.calls, a)
 			}
 			if _, err = r.Scale(context.Background(), domain.Environment{Code: "dev"}, in); err == nil || err.Error() != "ApprovalRequired" || b.calls != 1 {
@@ -171,9 +174,9 @@ func TestDirectReplacementBudgetUsesAllPoolActiveIdleAndWaitingTotals(t *testing
 		active, idle, waiting, extraPool, second int
 		want                                     string
 	}{
-		{"active one", 1, 0, 0, 0, 0, ""},
-		{"idle one", 0, 1, 0, 0, 0, ""},
-		{"waiting one", 0, 0, 1, 0, 0, ""},
+		{"active one", 1, 0, 0, 0, 0, "ConnectedClientsPresent"},
+		{"idle one", 0, 1, 0, 0, 0, "ConnectedClientsPresent"},
+		{"waiting one", 0, 0, 1, 0, 0, "ConnectedClientsPresent"},
 		{"idle and waiting", 0, 1, 1, 0, 0, "ConnectedClientsPresent"},
 		{"another pool and user", 1, 0, 0, 1, 0, "ConnectedClientsPresent"},
 		{"both retirees", 0, 1, 0, 0, 1, "ConnectedClientsPresent"},
@@ -259,7 +262,7 @@ func TestDirectReplacementScaleInPreservesExistingGates(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			b := &backendFixture{s: directSnapshot(), change: mode == "changed"}
 			a := directApproval()
-			rows := directMetrics{{InstanceID: "old-a", Clients: 1, ObservedAt: time.Unix(1000, 0)}, {InstanceID: "old-b", ObservedAt: time.Unix(1000, 0)}}
+			rows := directMetrics{{InstanceID: "old-a", ObservedAt: time.Unix(1000, 0)}, {InstanceID: "old-b", ObservedAt: time.Unix(1000, 0)}}
 			want := "ApprovalRequired"
 			switch mode {
 			case "connected-first":
@@ -341,7 +344,7 @@ func TestDirectReplacementUnknownSubmissionIsNotReplayed(t *testing.T) {
 			} else {
 				b.scaleErr = errors.New("ack unavailable")
 			}
-			rows := directMetrics{{InstanceID: "old-a", Clients: 1, ObservedAt: time.Unix(1000, 0)}, {InstanceID: "old-b", ObservedAt: time.Unix(1000, 0)}}
+			rows := directMetrics{{InstanceID: "old-a", ObservedAt: time.Unix(1000, 0)}, {InstanceID: "old-b", ObservedAt: time.Unix(1000, 0)}}
 			r := Runtime{Backend: b, Metrics: rows, Approval: a, Claims: a, Now: func() time.Time { return time.Unix(1000, 0) }}
 			_, err := r.Scale(context.Background(), domain.Environment{Code: "dev"}, directCommand())
 			if err == nil || err.Error() != "SubmissionUnknown" || b.calls != 1 {
@@ -415,6 +418,7 @@ func TestDirectReplacementDeregistrationPreservesFleetSerialization(t *testing.T
 	b := &fleetBackend{s: directSnapshot()}
 	b.s.Nodes[0].Registered, b.s.Nodes[1].Registered = true, true
 	b.s.Nodes[0].Healthy, b.s.Nodes[1].Healthy = true, true
+	b.s.Nodes[0].Drained, b.s.Nodes[1].Drained = false, false
 	f := &fleetFixture{}
 	r := Runtime{Backend: b, Fleet: f, EvidenceMode: "live"}
 	in := domain.DeregisterCommand{ProxyTarget: directCommand().ProxyTarget, ServerGroupID: "backend", InstanceIDs: []string{"old-a"}}
@@ -425,7 +429,7 @@ func TestDirectReplacementDeregistrationPreservesFleetSerialization(t *testing.T
 	if _, err := r.Deregister(context.Background(), domain.Environment{Code: "dev"}, in); err == nil || err.Error() != "FleetBusy" || b.calls.Load() != 1 {
 		t.Fatalf("pending withdrawal bypass: %v", err)
 	}
-	b.s.Nodes[0].Registered = false
+	b.s.Nodes[0].Drained, b.s.Nodes[0].Healthy = true, false
 	if _, err := r.Deregister(context.Background(), domain.Environment{Code: "dev"}, in); err != nil || b.calls.Load() != 2 {
 		t.Fatalf("second withdrawal rejected: %v calls=%d", err, b.calls.Load())
 	}

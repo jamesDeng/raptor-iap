@@ -82,6 +82,10 @@ class CausalSamplesTests(unittest.TestCase):
         result=self.validate(matrix(totals={'old-a':(1,0,0),'old-b':(0,0,0)}))
         self.assertEqual(result['combinedMaximum'],1)
         self.assertEqual(result['nodes'][0]['samples'][0]['total'],1)
+    def test_zero_budget_rejects_a_single_existing_client(self):
+        self.assertEqual(self.validate(maximum=0)['combinedMaximum'],0)
+        with self.assertRaises(ValueError):
+            self.validate(matrix(totals={'old-a':(1,0,0),'old-b':(0,0,0)}),maximum=0)
     def test_replay_future_and_age_boundary(self):
         self.validate(matrix((101.,102.,103.)),now=116.)
         for timestamps,now in [((100.,101.,102.),104.),((99.,100.,101.),104.),((101.,102.,103.),116.0001),((101.,102.,105.),104.)]:

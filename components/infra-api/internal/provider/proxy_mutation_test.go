@@ -59,9 +59,9 @@ func TestProxyScaleAcknowledgementAndUncertainty(t *testing.T) {
 		})
 	}
 }
-func TestProxyProtectAndDeregisterUsePinnedTargets(t *testing.T) {
+func TestProxyProtectAndDrainUsePinnedTargets(t *testing.T) {
 	p, env, _, _, _, _ := proxyFixture(t)
-	protected, removed := 0, 0
+	protected, drained := 0, 0
 	p.sdk.protect = func(_ context.Context, r *ess.SetInstancesProtectionRequest, o *dara.RuntimeOptions) (*ess.SetInstancesProtectionResponse, error) {
 		protected++
 		if tea.StringValue(r.ScalingGroupId) != "asg-test" || len(r.InstanceIds) != 1 || tea.StringValue(r.InstanceIds[0]) != "i-two" || r.ProtectedFromScaleIn == nil || *r.ProtectedFromScaleIn || o.Autoretry == nil || *o.Autoretry {
@@ -69,12 +69,12 @@ func TestProxyProtectAndDeregisterUsePinnedTargets(t *testing.T) {
 		}
 		return &ess.SetInstancesProtectionResponse{Body: &ess.SetInstancesProtectionResponseBody{RequestId: tea.String("protect-1")}}, nil
 	}
-	p.sdk.remove = func(_ context.Context, r *nlb.RemoveServersFromServerGroupRequest, o *dara.RuntimeOptions) (*nlb.RemoveServersFromServerGroupResponse, error) {
-		removed++
-		if tea.StringValue(r.RegionId) != "ap-southeast-1" || tea.StringValue(r.ServerGroupId) != "sgp-test" || len(r.Servers) != 1 || tea.StringValue(r.Servers[0].ServerId) != "i-two" || tea.StringValue(r.Servers[0].ServerType) != "Ecs" || r.Servers[0].Port == nil || *r.Servers[0].Port != 6432 || o.Autoretry == nil || *o.Autoretry {
-			t.Fatal("unsafe deregistration request")
+	p.sdk.updateWeights = func(_ context.Context, r *nlb.UpdateServerGroupServersAttributeRequest, o *dara.RuntimeOptions) (*nlb.UpdateServerGroupServersAttributeResponse, error) {
+		drained++
+		if tea.StringValue(r.RegionId) != "ap-southeast-1" || tea.StringValue(r.ServerGroupId) != "sgp-test" || len(r.Servers) != 1 || tea.StringValue(r.Servers[0].ServerId) != "i-two" || tea.StringValue(r.Servers[0].ServerType) != "Ecs" || r.Servers[0].Port == nil || *r.Servers[0].Port != 6432 || r.Servers[0].Weight == nil || *r.Servers[0].Weight != 0 || o.Autoretry == nil || *o.Autoretry {
+			t.Fatal("unsafe drain request")
 		}
-		return &nlb.RemoveServersFromServerGroupResponse{Body: &nlb.RemoveServersFromServerGroupResponseBody{RequestId: tea.String("remove-1"), JobId: tea.String("job-1"), ServerGroupId: tea.String("sgp-test")}}, nil
+		return &nlb.UpdateServerGroupServersAttributeResponse{Body: &nlb.UpdateServerGroupServersAttributeResponseBody{RequestId: tea.String("drain-1"), JobId: tea.String("job-1"), ServerGroupId: tea.String("sgp-test")}}, nil
 	}
 	if e := p.Protect(context.Background(), env, "asg-test", []string{"i-two"}, false); e != nil {
 		t.Fatal(e)
@@ -87,10 +87,10 @@ func TestProxyProtectAndDeregisterUsePinnedTargets(t *testing.T) {
 			t.Fatal("unsafe protection accepted")
 		}
 		if e := p.Deregister(context.Background(), env, "sgp-test", ids); e == nil {
-			t.Fatal("unsafe removal accepted")
+			t.Fatal("unsafe drain accepted")
 		}
 	}
-	if protected != 1 || removed != 1 {
-		t.Fatalf("unexpected mutations: %d/%d", protected, removed)
+	if protected != 1 || drained != 1 {
+		t.Fatalf("unexpected mutations: %d/%d", protected, drained)
 	}
 }

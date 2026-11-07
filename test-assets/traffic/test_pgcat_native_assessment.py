@@ -144,7 +144,7 @@ class CausalWitnessTests(unittest.TestCase):
         value=copy.deepcopy(self.f.frame)
         value['inventory'].update(desired=4,members=['a','b','c','d'],healthyRegistered=['c','d'],
             memberStates=[dict(id=n,lifecycle='Protected',health='Healthy',addressKnown=True) for n in ('a','b','c','d')],
-            backendStates=[dict(id=n,status='Available',weight=100,listenerHealth='Normal') for n in ('c','d')])
+            backendStates=[dict(id=n,status='Available',weight=0 if n in ('a','b') else 100,listenerHealth='Normal') for n in ('a','b','c','d')])
         self.f.append(2,value)
         self.f.execution.update(status='waiting_resource',stage='waiting_resource',cleanupStatus=dict(sandboxAbsent=True,keyAbsent=True,accessRevoked=True))
         self.f.events=[]
@@ -202,9 +202,9 @@ def native_complete_fixture(test,guest_skew=0):
     def append(n,value=None):
         value=copy.deepcopy(value or f.frame);met=copy.deepcopy(f.frame['metrics'])
         ids=['a','b','c','d'] if n<5 else ['c','d'];met['nodes']=ids
-        met['raw']=[dict(node=node,pool='test',user='poc_app',kind=k,value=int(node=='a' and k=='idle'),sourceAt=START+n) for node in ids for k in ('active','idle','waiting')]
+        met['raw']=[dict(node=node,pool='test',user='poc_app',kind=k,value=int(n<4 and node=='a' and k=='idle'),sourceAt=START+n) for node in ids for k in ('active','idle','waiting')]
         value['metrics']=met
-        if n in (2,3,4):value['inventory'].update(desired=4,members=['a','b','c','d'],healthyRegistered=['c','d'],memberStates=[dict(id=node,lifecycle='Protected',health='Healthy',addressKnown=True) for node in ('a','b','c','d')],backendStates=[dict(id=node,status='Available',weight=100,listenerHealth='Normal') for node in ('c','d')])
+        if n in (2,3,4):value['inventory'].update(desired=4,members=['a','b','c','d'],healthyRegistered=['c','d'],memberStates=[dict(id=node,lifecycle='Protected',health='Healthy',addressKnown=True) for node in ('a','b','c','d')],backendStates=[dict(id=node,status='Available',weight=0 if node in ('a','b') else 100,listenerHealth='Normal') for node in ('a','b','c','d')])
         original(n,value)
     f.append=append;append(2)
     def event(n,tool,kind,status,at,attempt='attempt-1'):

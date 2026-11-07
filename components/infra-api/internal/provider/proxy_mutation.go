@@ -84,12 +84,15 @@ func (p *ProxyBackend) Protect(ctx context.Context, env domain.Environment, grou
 	}
 	return nil
 }
+
+// Deregister retains the existing command name. Withdrawal changes the routing
+// weight only. ESS removes the backend after the approved scale-in.
 func (p *ProxyBackend) Deregister(ctx context.Context, env domain.Environment, serverGroupID string, ids []string) error {
 	m, e := p.target(ctx, env, serverGroupID, true)
 	if e != nil {
 		return e
 	}
-	if p.sdk.remove == nil {
+	if p.sdk.updateWeights == nil {
 		return domain.ErrNotConfigured
 	}
 	nodes, e := p.members(ctx, env, m)
@@ -103,17 +106,24 @@ func (p *ProxyBackend) Deregister(ctx context.Context, env domain.Environment, s
 	if e != nil {
 		return e
 	}
-	servers := make([]*nlb.RemoveServersFromServerGroupRequestServers, 0, len(ids))
+	servers := make([]*nlb.UpdateServerGroupServersAttributeRequestServers, 0, len(ids))
 	for _, id := range ids {
-		if _, ok := backends[id]; !ok {
+		receivesNewConnections, ok := backends[id]
+		if !ok {
 			return domain.ErrScope
 		}
-		servers = append(servers, &nlb.RemoveServersFromServerGroupRequestServers{ServerId: tea.String(id), ServerType: tea.String("Ecs"), Port: tea.Int32(int32(m.Port))})
+		if !receivesNewConnections {
+			continue
+		}
+		servers = append(servers, &nlb.UpdateServerGroupServersAttributeRequestServers{ServerId: tea.String(id), ServerType: tea.String("Ecs"), Port: tea.Int32(int32(m.Port)), Weight: tea.Int32(0)})
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	r, e := p.sdk.remove(ctx, &nlb.RemoveServersFromServerGroupRequest{RegionId: tea.String(env.Region), ServerGroupId: tea.String(serverGroupID), Servers: servers}, noRetry())
+	if len(servers) == 0 {
+		return nil
+	}
+	r, e := p.sdk.updateWeights(ctx, &nlb.UpdateServerGroupServersAttributeRequest{RegionId: tea.String(env.Region), ServerGroupId: tea.String(serverGroupID), Servers: servers}, noRetry())
 	if e != nil || r == nil || r.Body == nil || tea.StringValue(r.Body.RequestId) == "" || tea.StringValue(r.Body.JobId) == "" || tea.StringValue(r.Body.ServerGroupId) != serverGroupID {
 		return &domain.CommandError{Code: "SubmissionUnknown"}
 	}

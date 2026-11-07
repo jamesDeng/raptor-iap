@@ -583,6 +583,29 @@ class ProjectionSafetyTests(unittest.TestCase):
         inv['memberStates'][-1]['health']='Unhealthy'
         self.assertIsNone(ingress._replacement_pair(inv,{'a','b'}))
 
+    def test_withdrawal_accepts_attached_zero_weight_originals(self):
+        import json
+        from types import SimpleNamespace
+        complete_native(self.f)
+        path=self.f.run/'native-capture'/'segment-0001.jsonl'
+        frame=json.loads(path.read_bytes().splitlines()[2])
+        inv=frame['inventory'];inv['healthyRegistered']=['c','d']
+        for row in inv['backendStates']:
+            if row['id'] in ('a','b'):row['weight']=0
+        chain=SimpleNamespace(plan=self.f.plan,context=self.f.context)
+        self.assertEqual(ingress._withdrawal_state(chain,frame,allow_detached=False),['c','d'])
+        self.assertEqual(ingress._retiring_limit(chain,frame),0)
+        partial=copy.deepcopy(frame)
+        partial['inventory']['backendStates']=partial['inventory']['backendStates'][1:]
+        with self.assertRaises(ValueError):ingress._withdrawal_state(chain,partial)
+        detached=copy.deepcopy(frame)
+        detached['inventory']['backendStates']=[r for r in inv['backendStates'] if r['id'] in ('c','d')]
+        self.assertEqual(ingress._withdrawal_state(chain,detached),['c','d'])
+        with self.assertRaises(ValueError):ingress._withdrawal_state(chain,detached,allow_detached=False)
+        inv['backendStates'][0]['weight']=1
+        inv['healthyRegistered']=['a','c','d']
+        with self.assertRaises(ValueError):ingress._withdrawal_state(chain,frame)
+
 
 class CollectionSealRaceTests(unittest.TestCase):
     setUp=IngressTests.setUp

@@ -87,7 +87,7 @@ func effectObserved(s policy.ProxySnapshot, in approval.FleetIntent) bool {
 	switch in.Kind {
 	case "scale":
 		return s.Desired == in.Desired && len(s.Nodes) == in.Desired
-	case "protect", "deregister":
+	case "protect", "deregister", "drain":
 		if len(in.InstanceIDs) == 0 {
 			return false
 		}
@@ -99,6 +99,10 @@ func effectObserved(s policy.ProxySnapshot, in approval.FleetIntent) bool {
 			n, exists := nodes[id]
 			if in.Kind == "protect" {
 				if !exists || n.Protected != in.Protected {
+					return false
+				}
+			} else if in.Kind == "drain" {
+				if !exists || !n.Registered || !n.Drained {
 					return false
 				}
 			} else if exists && n.Registered {
@@ -136,6 +140,6 @@ func (r Runtime) SetProtection(ctx context.Context, env domain.Environment, in d
 	return
 }
 func (r Runtime) Deregister(ctx context.Context, env domain.Environment, in domain.DeregisterCommand) (out domain.NodeReceipt, e error) {
-	e = r.guarded(ctx, env, approval.FleetIntent{EnvCode: in.EnvCode, ProxyCode: in.ProxyCode, GroupID: in.GroupID, Kind: "deregister", InstanceIDs: in.InstanceIDs}, func(inner Runtime) error { var err error; out, err = inner.deregister(ctx, env, in); return err })
+	e = r.guarded(ctx, env, approval.FleetIntent{EnvCode: in.EnvCode, ProxyCode: in.ProxyCode, GroupID: in.GroupID, Kind: "drain", InstanceIDs: in.InstanceIDs}, func(inner Runtime) error { var err error; out, err = inner.deregister(ctx, env, in); return err })
 	return
 }

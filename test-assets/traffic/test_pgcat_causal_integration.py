@@ -162,7 +162,7 @@ class NativeContinuationTests(unittest.TestCase):
         root=Path(self.tmp.name).resolve();root.chmod(0o700);f=Fixture(root);self.f=f
         for n in (2,3,4):
             value=copy.deepcopy(f.frame if n==2 else rolling(n-1))
-            value['inventory'].update(desired=4,members=['a','b','c','d'],healthyRegistered=['c','d'],memberStates=[dict(id=node,lifecycle='Protected',health='Healthy',addressKnown=True) for node in ('a','b','c','d')],backendStates=[dict(id=node,status='Available',weight=100,listenerHealth='Normal') for node in ('c','d')])
+            value['inventory'].update(desired=4,members=['a','b','c','d'],healthyRegistered=['c','d'],memberStates=[dict(id=node,lifecycle='Protected',health='Healthy',addressKnown=True) for node in ('a','b','c','d')],backendStates=[dict(id=node,status='Available',weight=0 if node in ('a','b') else 100,listenerHealth='Normal') for node in ('a','b','c','d')])
             value['metrics']=copy.deepcopy(f.frame['metrics']);f.append(n,value)
         f.live=kubernetes(3)
         f.execution.update(status='waiting_approval',stage='waiting_approval',attemptId='attempt-2',cleanupStatus=dict(sandboxAbsent=True,keyAbsent=True,accessRevoked=True))
@@ -200,7 +200,7 @@ class NativeContinuationTests(unittest.TestCase):
         self.approval['state']='pending';second=self.read()
         self.assertIsNotNone(second['record']['retirementWitness'])
     def test_threshold_and_missing_sample_age_do_not_issue_witness(self):
-        self.f.causal_totals={'old-a':(1,0,0),'old-b':(0,1,0)}
+        self.f.causal_totals={'old-a':(1,0,0),'old-b':(0,0,0)}
         with self.assertRaises(ValueError):self.read()
         del self.f.causal_totals;self.f.causal_times=(self.f.now-16,self.f.now-.2,self.f.now-.1)
         result=self.read()['record'];self.assertIsNone(result['retirementWitness'])
