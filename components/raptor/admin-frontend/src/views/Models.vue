@@ -23,6 +23,13 @@ function stopPolling() {
   if (timer) clearTimeout(timer);
   timer = undefined;
 }
+function connectErrorMessage(code: string) {
+  if (code === "ProviderAuthorizationBusy")
+    return "Another sign-in is already in progress. Return to its browser tab, or retry after it is cancelled or expires.";
+  if (code === "ProviderAuthorizationUnavailable")
+    return "Could not start OpenAI sign-in. Please retry; if it keeps failing, contact the administrator.";
+  return code;
+}
 async function load() {
   const result = await api("admin/model-providers");
   if (!active) return;
@@ -35,6 +42,15 @@ async function load() {
 onMounted(async () => {
   try {
     await load();
+    try {
+      const pending = await api("admin/model-providers/codex/connect");
+      if (active) {
+        challenge.value = { ...pending, browser: !!pending.authorizationUrl };
+        poll(generation, pending.sessionId);
+      }
+    } catch (e) {
+      if ((e as Error).message !== "NotFound") throw e;
+    }
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -74,7 +90,7 @@ async function connect(browser: boolean) {
     challenge.value = { ...next, browser };
     poll(generation, next.sessionId);
   } catch (e) {
-    error.value = (e as Error).message;
+    error.value = connectErrorMessage((e as Error).message);
   } finally {
     busy.value = false;
   }
@@ -217,8 +233,7 @@ function safeLink(value: unknown) {
         :href="
           safeLink(challenge.authorizationUrl || challenge.verificationUrl)
         "
-        target="_blank"
-        rel="noopener noreferrer"
+        rel="noreferrer"
         >{{
           challenge.browser ? "Open OpenAI sign-in" : "Open verification page"
         }}</a

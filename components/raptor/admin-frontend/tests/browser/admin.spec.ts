@@ -40,6 +40,7 @@ async function fixture(page: Page, role = "admin") {
     defaultModelId: "fixture-model",
     policyVersion: 7,
   };
+  let pendingChallenge: any = null;
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request(),
       path = new URL(request.url()).pathname.replace("/api/v1/", ""),
@@ -85,25 +86,31 @@ async function fixture(page: Page, role = "admin") {
       expect(body.expectedVersion).toBe(7);
       provider.enabled = body.enabled;
       provider.defaultModelId = body.defaultModelId;
-    } else if (path.endsWith("/browser-connect"))
-      data = {
+    } else if (path === "admin/model-providers/codex/connect" && method === "GET") {
+      if (pendingChallenge) data = pendingChallenge;
+      else status = 404;
+    } else if (path.endsWith("/browser-connect")) {
+      data = pendingChallenge = {
         sessionId: "fixture-connect",
         authorizationUrl: "https://auth.openai.com/fixture",
-        expiresAt: "2026-10-18T12:00:00Z",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
       };
-    else if (path.endsWith("/connect") && method === "POST")
-      data = {
+    } else if (path.endsWith("/connect") && method === "POST") {
+      data = pendingChallenge = {
         sessionId: "fixture-connect",
         verificationUrl: "https://auth.openai.com/fixture",
         userCode: "ABCD-EFGH",
-        expiresAt: "2026-10-18T12:00:00Z",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
       };
-    else if (path.includes("/connect/")) data = { status: "pending" };
+    } else if (path.includes("/connect/") && method === "DELETE") {
+      pendingChallenge = null;
+      data = { cancelled: true };
+    } else if (path.includes("/connect/")) data = { status: "pending" };
     await route.fulfill({
       status,
       contentType: "application/json",
       body: JSON.stringify(
-        status === 401 ? { error: { code: "Unauthorized" } } : { data },
+        status === 401 ? { error: { code: "Unauthorized" } } : status === 404 ? { error: { code: "NotFound" } } : { data },
       ),
     });
   });
@@ -252,6 +259,28 @@ test("stops polling when leaving AI models and preserves legacy hashes", async (
   await page.goto("/#groups-section");
   await expect(page).toHaveURL(/environment-groups$/);
   expect(writes.length).toBe(1);
+});
+
+test("recovers browser sign-in after reload and opens in the current tab", async ({ page }) => {
+  await fixture(page);
+  await page.goto("/ai-models");
+  await page.getByRole("button", { name: "Connect in browser" }).click();
+  await expect(page.getByRole("link", { name: "Open OpenAI sign-in" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("link", { name: "Open OpenAI sign-in" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open OpenAI sign-in" })).not.toHaveAttribute("target", "_blank");
+  await page.getByRole("button", { name: "Cancel sign-in" }).click();
+  await expect(page.getByRole("button", { name: "Connect in browser" })).toBeEnabled();
+});
+
+test("explains a concurrent sign-in without exposing provider details", async ({ page }) => {
+  await fixture(page);
+  await page.route("**/api/v1/admin/model-providers/codex/browser-connect", async route => {
+    await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: { code: "ProviderAuthorizationBusy" } }) });
+  });
+  await page.goto("/ai-models");
+  await page.getByRole("button", { name: "Connect in browser" }).click();
+  await expect(page.getByText(/Another sign-in is already in progress/)).toBeVisible();
 });
 
 test("clears the token even when the backend rejects it", async ({ page }) => {

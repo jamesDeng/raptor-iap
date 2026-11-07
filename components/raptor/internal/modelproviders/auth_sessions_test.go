@@ -166,3 +166,110 @@ func TestBrowserConnectRequiresOwnerAndSingleSubmission(t *testing.T) {
 		t.Fatal("browser credential not saved")
 	}
 }
+
+func TestBrowserConnectCanResumeAfterPageReload(t *testing.T) {
+	a := &fakeBrowserAttempt{fakeAttempt: fakeAttempt{challenge: ConnectChallenge{AuthorizationURL: "https://auth.openai.com/oauth/authorize?state=resume", ExpiresAt: time.Now().Add(time.Minute)}, result: make(chan []byte, 1)}}
+	s := NewService(fakeBrowserFlow{a}, nil)
+	first, err := s.StartCodexBrowserConnect(context.Background(), "admin:session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := s.CurrentCodexConnect("admin:session")
+	if err != nil || current.SessionID != first.SessionID || current.AuthorizationURL != first.AuthorizationURL {
+		t.Fatalf("reload lost pending challenge: %+v %v", current, err)
+	}
+	retried, err := s.StartCodexBrowserConnect(context.Background(), "admin:session")
+	if err != nil || retried.SessionID != first.SessionID {
+		t.Fatalf("retry started another flow: %+v %v", retried, err)
+	}
+	if _, err := s.CurrentCodexConnect("admin:other-session"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other session recovered challenge: %v", err)
+	}
+	if _, err := s.StartCodexBrowserConnect(context.Background(), "admin:other-session"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("other session bypassed pending flow: %v", err)
+	}
+}
+
+func TestBrowserConnectCanRestartAfterExpiry(t *testing.T) {
+	a := &fakeBrowserAttempt{fakeAttempt: fakeAttempt{challenge: ConnectChallenge{AuthorizationURL: "https://auth.openai.com/oauth/authorize?state=expired", ExpiresAt: time.Now().Add(-time.Second)}, result: make(chan []byte, 1)}}
+	b := &fakeBrowserAttempt{fakeAttempt: fakeAttempt{challenge: ConnectChallenge{AuthorizationURL: "https://auth.openai.com/oauth/authorize?state=fresh", ExpiresAt: time.Now().Add(time.Minute)}, result: make(chan []byte, 1)}}
+	s := NewService(&sequentialBrowserFlow{first: a, second: b, starts: make(chan struct{})}, nil)
+	first, err := s.StartCodexBrowserConnect(context.Background(), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CurrentCodexConnect("admin"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired challenge still recoverable: %v", err)
+	}
+	if err := s.CancelCodexConnect(context.Background(), "admin", first.SessionID); !errors.Is(err, ErrClosed) {
+		t.Fatalf("expired challenge cancellable: %v", err)
+	}
+	fresh, err := s.StartCodexBrowserConnect(context.Background(), "admin")
+	if err != nil || fresh.SessionID == first.SessionID || fresh.AuthorizationURL != b.challenge.AuthorizationURL {
+		t.Fatalf("expired challenge blocked retry: %+v %v", fresh, err)
+	}
+}
+
+type delayedStopAttempt struct {
+	challenge ConnectChallenge
+	release   chan struct{}
+	stopping  chan struct{}
+}
+
+func (a *delayedStopAttempt) Challenge() ConnectChallenge { return a.challenge }
+func (a *delayedStopAttempt) SubmitRedirect(string) error { return nil }
+func (a *delayedStopAttempt) Await(ctx context.Context) ([]byte, error) {
+	<-ctx.Done()
+	close(a.stopping)
+	<-a.release
+	return nil, ctx.Err()
+}
+
+type sequentialBrowserFlow struct {
+	first  BrowserAttempt
+	second BrowserAttempt
+	starts chan struct{}
+	count  int
+}
+
+func (f *sequentialBrowserFlow) Start(context.Context) (DeviceAttempt, error) {
+	return nil, errors.New("device unused")
+}
+func (f *sequentialBrowserFlow) StartBrowser(context.Context) (BrowserAttempt, error) {
+	f.count++
+	if f.count == 1 {
+		return f.first, nil
+	}
+	close(f.starts)
+	return f.second, nil
+}
+func TestBrowserConnectWaitsForCancelledHelperBeforeRetry(t *testing.T) {
+	first := &delayedStopAttempt{challenge: ConnectChallenge{AuthorizationURL: "https://auth.openai.com/oauth/authorize?state=first", ExpiresAt: time.Now().Add(time.Minute)}, release: make(chan struct{}), stopping: make(chan struct{})}
+	second := &fakeBrowserAttempt{fakeAttempt: fakeAttempt{challenge: ConnectChallenge{AuthorizationURL: "https://auth.openai.com/oauth/authorize?state=second", ExpiresAt: time.Now().Add(time.Minute)}, result: make(chan []byte)}}
+	flow := &sequentialBrowserFlow{first: first, second: second, starts: make(chan struct{})}
+	s := NewService(flow, nil)
+	c, err := s.StartCodexBrowserConnect(context.Background(), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CancelCodexConnect(context.Background(), "admin", c.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	<-first.stopping
+	done := make(chan error, 1)
+	go func() { _, err := s.StartCodexBrowserConnect(context.Background(), "admin"); done <- err }()
+	select {
+	case <-flow.starts:
+		t.Fatal("new helper started before cancelled helper exited")
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(first.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry did not start after helper exit")
+	}
+}
