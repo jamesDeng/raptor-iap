@@ -156,6 +156,35 @@ test('initial SQL and control reads cannot be replaced by only healthy cloud obs
  assert.throws(()=>x.gate.beforeMutation('db_proxy_scale',argsFor('db_proxy_scale',{actionId:'expand',desiredCapacity:4})),/MissingEvidence/);
 });
 
+test('a resumed grant needs fresh request, environment and object reads before expansion',()=>{
+ const {session}=setup();
+ const grantBinding={...binding,approvalProtocol:'request-grants-v1'};
+ const initialTrace=new ReplacementTrace(session,grantBinding,scope);
+ initialTrace.observe('fleet',observations().fleet);
+ const trace=new ReplacementTrace(session,grantBinding,scope);
+ const gate=new ReplacementSequence(session,trace,new ReplacementReadiness(session,trace),'resource-v1');
+ for(const [kind,data] of Object.entries(observations()))gate.observe(kind,data);
+ for(const instanceId of old)gate.observe('sql',{instanceId,connected:true},{instanceId});
+ const at=new Date().toISOString();
+ gate.observe('mcp',[
+  {server:'raptor',tool:'request_get',observedAt:at},
+  {server:'raptor',tool:'deployments_list',observedAt:at},
+  {server:'infra',tool:'deployments_list',observedAt:at},
+  {server:'infra',tool:'deployment_status_get',observedAt:at},
+ ]);
+ gate.observeContinuity({phase:'hold'},{
+  requestId:binding.requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',
+  observedAt:new Date().toISOString(),sockets:Object.fromEntries(old.map(id=>[id,{id}]))
+ });
+ const args=argsFor('db_proxy_scale',{actionId:'expand',desiredCapacity:4});
+ assert.throws(()=>gate.beforeMutation('db_proxy_scale',args),/MissingEvidence/);
+ observe({gate});
+ gate.observe('mcp',[{server:'raptor',tool:'request_get',observedAt:new Date(Date.now()-43000).toISOString()}]);
+ assert.throws(()=>gate.beforeMutation('db_proxy_scale',args),/MissingEvidence/);
+ observe({gate});
+ assert.doesNotThrow(()=>gate.beforeMutation('db_proxy_scale',args));
+});
+
 test('historical readyFour cannot substitute for fresh complete metrics on resume',()=>{
  const x=expanded(),y=setup(x.session),e=observations([...old,...added]);
  for(const [kind,data] of Object.entries(e))if(kind!=='metrics')y.gate.observe(kind,data);
