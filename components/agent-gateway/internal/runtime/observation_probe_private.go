@@ -41,41 +41,17 @@ func observerKubeRead(ctx context.Context, in ObserverProbeInput) (json.RawMessa
 	} else {
 		return nil, ErrConfiguration
 	}
-	var kube struct {
-		Clusters []struct {
-			Cluster struct {
-				Server string
-				CA     string `json:"certificate-authority-data"`
-			}
-		}
-		Users []struct{ User struct{ Token string } }
+	session, err := observerKubeConnection(in.Kubeconfig, 15*time.Second)
+	if err != nil {
+		return nil, err
 	}
-	if json.Unmarshal(in.Kubeconfig, &kube) != nil || len(kube.Clusters) != 1 || len(kube.Users) != 1 {
-		return nil, ErrConfiguration
-	}
-	cluster := kube.Clusters[0].Cluster
-	u, e := url.Parse(cluster.Server)
-	if e != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || !net.ParseIP(u.Hostname()).IsPrivate() {
-		return nil, ErrConfiguration
-	}
-	ca, e := base64.StdEncoding.DecodeString(cluster.CA)
-	roots := x509.NewCertPool()
-	if e != nil || !roots.AppendCertsFromPEM(ca) {
-		return nil, ErrConfiguration
-	}
-	token := kube.Users[0].User.Token
-	if token == "" || strings.ContainsAny(token, "\r\n") {
-		return nil, ErrConfiguration
-	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, TLSHandshakeTimeout: 5 * time.Second}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	r, e := http.NewRequestWithContext(ctx, "GET", strings.TrimSuffix(cluster.Server, "/")+path+query, nil)
+	defer session.client.CloseIdleConnections()
+	r, e := http.NewRequestWithContext(ctx, "GET", session.origin+path+query, nil)
 	if e != nil {
 		return nil, ErrConfiguration
 	}
-	r.Header.Set("Authorization", "Bearer "+token)
-	response, e := client.Do(r)
+	r.Header.Set("Authorization", "Bearer "+session.token)
+	response, e := session.client.Do(r)
 	if e != nil {
 		return nil, ErrRuntimeUnavailable
 	}
@@ -89,6 +65,44 @@ func observerKubeRead(ctx context.Context, in ObserverProbeInput) (json.RawMessa
 	}
 	return raw, nil
 }
+
+type observerKubeSession struct {
+	origin, token string
+	client        *http.Client
+}
+
+func observerKubeConnection(raw []byte, timeout time.Duration) (observerKubeSession, error) {
+	var kube struct {
+		Clusters []struct {
+			Cluster struct {
+				Server string
+				CA     string `json:"certificate-authority-data"`
+			}
+		}
+		Users []struct{ User struct{ Token string } }
+	}
+	if json.Unmarshal(raw, &kube) != nil || len(kube.Clusters) != 1 || len(kube.Users) != 1 {
+		return observerKubeSession{}, ErrConfiguration
+	}
+	cluster := kube.Clusters[0].Cluster
+	u, e := url.Parse(cluster.Server)
+	if e != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || !net.ParseIP(u.Hostname()).IsPrivate() {
+		return observerKubeSession{}, ErrConfiguration
+	}
+	ca, e := base64.StdEncoding.DecodeString(cluster.CA)
+	roots := x509.NewCertPool()
+	if e != nil || !roots.AppendCertsFromPEM(ca) {
+		return observerKubeSession{}, ErrConfiguration
+	}
+	token := kube.Users[0].User.Token
+	if token == "" || strings.ContainsAny(token, "\r\n") {
+		return observerKubeSession{}, ErrConfiguration
+	}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 10 * time.Second}
+	client := &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return observerKubeSession{origin: strings.TrimSuffix(cluster.Server, "/"), token: token, client: client}, nil
+}
+
 func observerSQLRead(ctx context.Context, in ObserverProbeInput) (json.RawMessage, error) {
 	fixed := []string{"--no-psqlrc", "--no-password", "--tuples-only", "--no-align", "--command", "SELECT 1"}
 	c, e := observerConfigFrom(in)

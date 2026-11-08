@@ -5,6 +5,10 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "approvalProtocol": {
+      "type": "string",
+      "enum": ["request-grants-v1"]
+    },
     "mode": {
       "type": "string",
       "enum": [

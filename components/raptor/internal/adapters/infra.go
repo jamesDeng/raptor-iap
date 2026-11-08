@@ -65,3 +65,15 @@ func (i ResolutionIdentity) Digest() string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
+
+type ApprovalVariant struct {
+	Capability            string `json:"capability"`
+	TargetKind            string `json:"targetKind"`
+	Condition             string `json:"condition"`
+	RequiresHumanApproval bool   `json:"requiresHumanApproval"`
+}
+
+type ToolApprovalPolicy struct {
+	Version  int               `json:"version"`
+	Variants []ApprovalVariant `json:"variants"`
+}

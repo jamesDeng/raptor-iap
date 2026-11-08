@@ -112,6 +112,18 @@ type LiveWorker struct {
 	Bootstrap            VerifiedCheckpoint
 }
 
+func (w *LiveWorker) saveVerifiedLiveResult(ctx context.Context, binding AttemptBinding, result LiveResult) error {
+	if binding.ApprovalProtocol == "request-grants-v1" {
+		verifier, ok := w.Raptor.(interface {
+			VerifyPgcatCompletion(context.Context, AttemptBinding, LiveResult) error
+		})
+		if !ok || verifier.VerifyPgcatCompletion(ctx, binding, result) != nil {
+			return ErrInvalid
+		}
+	}
+	return w.Store.SaveLiveResult(ctx, binding.AttemptID, w.Owner, result)
+}
+
 func (w *LiveWorker) authorized(ctx context.Context) error {
 	if w.Lease == nil || !w.Lease.Valid(ctx) {
 		return ErrUnavailable
@@ -362,7 +374,7 @@ func (w *LiveWorker) RunActive(ctx context.Context) error {
 		status, code = "cancelled", "Cancelled"
 	}
 	if o.Result != nil {
-		if e = w.Store.SaveLiveResult(ctx, x.AttemptID, w.Owner, *o.Result); e != nil {
+		if e = w.saveVerifiedLiveResult(ctx, b, *o.Result); e != nil {
 			status, code = "failed", "InvalidResult"
 		}
 	} else if status == "completed" {
@@ -504,7 +516,7 @@ func (w *LiveWorker) Reconcile(ctx context.Context) error {
 	}
 	status, code := "failed", "Interrupted"
 	if recovered.Result != nil && recovered.Checkpoint.valid() && (record.Binding.Operation != "db-proxy.replace-nodes" || (record.ReplacementScope != nil && record.ReplacementScope.ResourceValidFor(record.Binding) && resultScope(recovered.Result) != nil && *resultScope(recovered.Result) == *record.ReplacementScope)) {
-		if e = w.Store.SaveLiveResult(ctx, x.AttemptID, w.Owner, *recovered.Result); e == nil {
+		if e = w.saveVerifiedLiveResult(ctx, record.Binding, *recovered.Result); e == nil {
 			status, code = "completed", ""
 		}
 	}

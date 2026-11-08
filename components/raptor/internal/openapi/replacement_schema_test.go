@@ -11,12 +11,25 @@ import (
 )
 
 func TestReplacementRaptorSchemasMatchHarness(t *testing.T) {
+	checkRaptorToolSchemas(t, NewMCP(Client{}), map[string]bool{
+		"request_get": true, "environment_get": true, "object_get": true,
+		"approval_request": true, "approval_get": true, "request_pause": true,
+	})
+}
+
+func TestRequestGrantRaptorSchemasMatchHarness(t *testing.T) {
+	server := newAgentMCP(agentPrincipal{})
+	addRequestGrantAgentTools(server, agentPrincipal{})
+	checkRaptorToolSchemas(t, server, map[string]bool{"request_grant_request": true, "request_grant_get": true, "request_grant_action_get": true, "request_grant_actions_list": true})
+}
+
+func checkRaptorToolSchemas(t *testing.T, server *mcp.Server, names map[string]bool) {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node required for producer/consumer contract test")
 	}
 	ctx := context.Background()
-	server := NewMCP(Client{})
 	ct, st := mcp.NewInMemoryTransports()
 	ss, err := server.Connect(ctx, st, nil)
 	if err != nil {
@@ -33,7 +46,6 @@ func TestReplacementRaptorSchemasMatchHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := map[string]bool{"request_get": true, "environment_get": true, "object_get": true, "approval_request": true, "approval_get": true, "request_pause": true}
 	schemas := map[string]any{}
 	for _, tool := range list.Tools {
 		if names[tool.Name] {

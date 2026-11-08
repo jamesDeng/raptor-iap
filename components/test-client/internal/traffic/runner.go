@@ -4,6 +4,7 @@ package traffic
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -25,9 +26,15 @@ type Event struct {
 	Outcome         Outcome   `json:"outcome,omitempty"`
 	OperationID     string    `json:"operationId,omitempty"`
 	DurationSeconds float64   `json:"durationSeconds,omitempty"`
+	ProxyIP         string    `json:"proxyIp,omitempty"`
 }
+type OperationResult struct {
+	Outcome Outcome
+	ProxyIP netip.Addr
+}
+
 type Session interface {
-	Operate(context.Context, string) Outcome
+	Operate(context.Context, string) OperationResult
 	Close()
 }
 type Config struct {
@@ -111,13 +118,17 @@ func (r Runner) Run(ctx context.Context) error {
 				if s == nil {
 					s = dial(opctx)
 				}
-				out := Failure
+				result := OperationResult{Outcome: Failure}
 				if s != nil {
-					out = s.Operate(opctx, id)
+					result = s.Operate(opctx, id)
 				}
 				cancel()
-				emit(Event{Kind: "operation", OperationID: id, Outcome: out, DurationSeconds: time.Since(start).Seconds()})
-				if out != Success && s != nil {
+				event := Event{Kind: "operation", OperationID: id, Outcome: result.Outcome, DurationSeconds: time.Since(start).Seconds()}
+				if result.Outcome == Success && result.ProxyIP.Is4() && result.ProxyIP.IsPrivate() {
+					event.ProxyIP = result.ProxyIP.String()
+				}
+				emit(event)
+				if result.Outcome != Success && s != nil {
 					s.Close()
 					s = nil
 					emit(Event{Kind: "disconnected"})

@@ -16,7 +16,13 @@ export async function qualifyReplacementConvergence(trace,observer,scope,sequenc
  if(sequence&&(JSON.stringify([...cohort.oldInstanceIds].sort())!==JSON.stringify([...original].sort())||JSON.stringify([...cohort.newInstanceIds].sort())!==JSON.stringify(ids)))throw missing();
  const backend=await observer.cloudRead({kind:'backend'});
  if(!fresh(backend)||backend.serverGroupId!==scope.serverGroupId||!Array.isArray(backend.nodes)||backend.nodes.length!==2||new Set(backend.nodes.map(n=>n.instanceId)).size!==2||backend.nodes.some(n=>!ids.includes(n.instanceId)||n.registered!==true||n.healthy!==true))throw missing();
- for(const instanceId of ids){const probe=await observer.dbConnectionProbe({instanceId});if(probe.instanceId!==instanceId||probe.connected!==true)throw missing();}
+ if(trace.versioned){
+  const retirement=await observer.cloudRead({kind:'retirement'});
+  if(!fresh(retirement)||retirement.status!=='Successful')throw missing();
+  await observer.metricsRead({kind:'pgcatClients'});
+ }else{
+  for(const instanceId of ids){const probe=await observer.dbConnectionProbe({instanceId});if(probe.instanceId!==instanceId||probe.connected!==true)throw missing();}
+ }
  const app=await observer.deploymentRead({});
  if(!fresh(app)||['clusterId','namespace','name','uid'].some(k=>app[k]!==scope.application[k])||app.replicas!==2||['readyReplicas','updatedReplicas','availableReplicas'].some(k=>app[k]!==2))throw missing();
  // Recheck capacity after sequential reads; no successful mutation ack substitutes
@@ -25,5 +31,8 @@ export async function qualifyReplacementConvergence(trace,observer,scope,sequenc
  if(!fresh(final)||final.groupId!==scope.groupId||final.desiredCapacity!==2||final.minSize!==2||final.maxSize!==4)throw missing();
  const evidence=sequence?.completionEvidence();
  if(sequence&&(!Number.isSafeInteger(evidence.restartGeneration)||evidence.restartGeneration<1||!Number.isSafeInteger(app.generation)||app.generation<evidence.restartGeneration||!Number.isSafeInteger(app.observedGeneration)||app.observedGeneration!==app.generation||JSON.stringify(evidence.newInstanceIds)!==JSON.stringify(cohort.newInstanceIds)))throw missing();
- return {version:sequence?2:1,...(sequence?{restartGeneration:evidence.restartGeneration}:{}),converged:true,acceptance:'pending',scope:structuredClone(scope),oldInstanceIds:[...original].sort(),newInstanceIds:ids,desiredCapacity:2,actions,observedAt:new Date().toISOString()};
+ return {version:trace.versioned?3:sequence?2:1,...(sequence?{restartGeneration:evidence.restartGeneration}:{}),
+  converged:true,acceptance:trace.versioned?'verified':'pending',scope:structuredClone(scope),oldInstanceIds:[...original].sort(),
+  newInstanceIds:ids,desiredCapacity:2,actions,observedAt:new Date().toISOString(),
+  ...(trace.versioned?{traffic:evidence.traffic,finalTraffic:evidence.finalTraffic,retirement:evidence.retirement}:{})};
 }

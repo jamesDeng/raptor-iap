@@ -2,6 +2,9 @@ import {createHash} from 'node:crypto';
 // Only trusted observation callbacks populate current evidence. Protected session
 // permits retain ordering, never current health, across approval/resource waits.
 const WAIT='raptor-replacement-withdrawal-wait-v1';
+const TRAFFIC='raptor-pgcat-traffic-v1';
+const FINAL_TRAFFIC='raptor-pgcat-final-traffic-v1';
+const INVENTORY='raptor-pgcat-inventory-v1';
 const digest=v=>createHash('sha256').update(canonical(v)).digest('hex');
 const TYPE='raptor-replacement-sequence-v2',TRACE='raptor-replacement-evidence-v1';
 const missing=()=>Error('MissingEvidence'),invalid=()=>Error('InvalidEvidence');
@@ -36,6 +39,11 @@ export class ReplacementSequence {
   this.manager=manager;this.trace=trace;this.readiness=readiness;this.current={};this.probes=new Map();this.checks=new Map();
   const entries=manager.getEntries(),saved=entries.filter(e=>e.type==='custom'&&e.customType===TYPE);
   this.permits=[];
+  if(trace.versioned){
+   this.trafficProof=entries.findLast(e=>e.type==='custom'&&e.customType===TRAFFIC)?.data;
+   this.finalTraffic=entries.findLast(e=>e.type==='custom'&&e.customType===FINAL_TRAFFIC)?.data;
+   this.inventory=entries.findLast(e=>e.type==='custom'&&e.customType===INVENTORY)?.data;
+  }
   if(saved.length>16)throw invalid();
   const intents=trace.rows.filter(r=>r.kind==='intent');
   if(saved.length!==intents.length)throw invalid();
@@ -109,18 +117,61 @@ export class ReplacementSequence {
   if(shrunk)throw Error('MutationAlreadySubmitted');
   if(tool==='db_proxy_scale'){
    if(args.desiredCapacity===4&&!expanded)return 'expand';
-   if(args.desiredCapacity===2&&expanded&&restarted&&this.idsFor('unprotectOld').length===2)return 'shrink';
+   if(args.desiredCapacity===2&&expanded&&restarted&&(this.trace.versioned||this.idsFor('unprotectOld').length===2))return 'shrink';
    throw missing();
   }
   if(tool==='db_proxy_node_protection_set'){
    const stage=args.protected===true?(!expanded?'protectOld':'protectNew'):args.protected===false?'unprotectOld':null;
    const allowed=stage==='protectNew'?added:old;
-   if(!stage||!subset(args.nodeIds,allowed)||(stage==='protectNew'&&(restarted||this.idsFor('withdraw').length))||(stage==='unprotectOld'&&!restarted)||args.nodeIds.some(id=>this.idsFor(stage).includes(id)))throw missing();
+   if(!stage||(this.trace.versioned&&(stage!=='protectNew'||args.nodeIds.length!==2))||!subset(args.nodeIds,allowed)||(stage==='protectNew'&&(restarted||this.idsFor('withdraw').length))||(stage==='unprotectOld'&&!restarted)||args.nodeIds.some(id=>this.idsFor(stage).includes(id)))throw missing();
    return stage;
   }
-  if(tool==='db_proxy_nodes_deregister'&&expanded&&!restarted&&subset(args.nodeIds,old)&&args.nodeIds.every(id=>!this.idsFor('withdraw').includes(id)))return 'withdraw';
+  if(tool==='db_proxy_nodes_deregister'&&expanded&&!restarted&&(!this.trace.versioned||args.nodeIds.length===2)&&subset(args.nodeIds,old)&&args.nodeIds.every(id=>!this.idsFor('withdraw').includes(id)))return 'withdraw';
   if(tool==='deployment_restart'&&expanded&&!restarted&&this.idsFor('withdraw').length===2)return 'restart';
   throw missing();
+ }
+ canSyncInventory(){
+  if(!this.trace.versioned||!this.readiness.expansion()?.result)return false;
+  const ids=this.current.fleet?.instances?.map(node=>node.instanceId)??[];
+  if(this.intents('shrink').length)return this.capacity(2)&&this.fleet(ids)&&this.backend(ids)&&same([...ids].sort(),this.cohort().newInstanceIds);
+  const original=this.trace.baseline()?.instanceIds??[];
+  const added=ids.filter(id=>!original.includes(id));
+  const activity=this.current.expansion, scale=this.trace.scaleActions().find(action=>action.desiredCapacity===4);
+  return this.capacity(4)&&this.fleet(ids)&&this.backend(ids)&&original.every(id=>ids.includes(id))&&added.length===2&&this.probesReady(added)&&
+   fresh(activity)&&activity.status==='Successful'&&activity.actionId===scale?.actionId&&activity.scalingActivityId===scale?.scalingActivityId&&same([...activity.createdIds].sort(),[...added].sort());
+ }
+ observeInventory(receipt){
+  if(!this.canSyncInventory()||!Array.isArray(receipt?.instanceIds)||
+    !same([...receipt.instanceIds].sort(),this.current.fleet.instances.map(node=>node.instanceId).sort()))throw invalid();
+  this.inventory={instanceIds:[...receipt.instanceIds].sort(),observedAt:new Date().toISOString()};
+  this.manager.appendCustomEntry(INVENTORY,this.inventory);
+ }
+ observeContinuity(args,result){
+  if(!this.trace.versioned||!result||result.readiness==='traffic-warming')return;
+  if(args.phase==='hold'||args.phase==='verify-drain'){
+   const ids=this.trace.baseline()?.instanceIds;
+   if(!ids||result.requestId!==this.trace.identity.requestId||result.scopeDigest!==this.trace.identity.scope.resolutionDigest||
+    !fresh(result)||!same(Object.keys(result.sockets??{}).sort(),[...ids].sort()))throw invalid();
+   if(args.phase==='hold')this.current.hold=result;
+   else{
+    if(result.observationId!==args.observationId||result.drainActionId!==args.drainActionId||
+      !same(Object.keys(result.freshConnections??{}).sort(),this.cohort().newInstanceIds))throw invalid();
+    this.current.drainProof=result;
+   }
+  }else if(['verify-traffic','verify-final-traffic'].includes(args.phase)){
+   const r=this.restart(),scope=this.trace.identity.scope;
+   if(!r||!result.noErrors||!fresh(result,r.at)||result.generation!==r.generation||result.restartActionId!==r.actionId||
+    result.applicationUid!==scope.application.uid||!same(Object.keys(result.nodes??{}).sort(),this.cohort().newInstanceIds)||
+    Object.values(result.nodes).some(node=>node.queries<=0||node.transactions<=0))throw invalid();
+   if(args.phase==='verify-final-traffic'){
+    if(!this.intents('shrink').length)throw invalid();
+    this.finalTraffic=structuredClone(result);
+    this.manager.appendCustomEntry(FINAL_TRAFFIC,this.finalTraffic);
+   }else{
+    this.trafficProof=structuredClone(result);
+    this.manager.appendCustomEntry(TRAFFIC,this.trafficProof);
+   }
+  }
  }
  idsFor(stage){return this.intents(stage).flatMap(i=>i.args.nodeIds??[]);}
  observe(kind,data,args){
@@ -129,7 +180,7 @@ export class ReplacementSequence {
    if(typeof args?.instanceId!=='string')return;
    this.probes.delete(args.instanceId);
    if(data?.instanceId===args.instanceId)this.probes.set(args.instanceId,{...data,observedAt:Object.hasOwn(data,'observedAt')?data.observedAt:new Date().toISOString()});
-  }else if(['fleet','backend','capacity','metrics','deployment','trafficFailures','connections'].includes(kind))this.current[kind]=structuredClone(data);
+  }else if(['fleet','backend','capacity','metrics','deployment','trafficFailures','connections','expansion','retirement'].includes(kind))this.current[kind]=structuredClone(data);
   this.trace.observe(kind,data);this.readiness.observe(kind,data,args);
  }
  capacity(desired){const c=this.current.capacity;return fresh(c)&&c.groupId===this.trace.identity.scope.groupId&&c.desiredCapacity===desired&&c.minSize===2&&c.maxSize===4;}
@@ -144,7 +195,7 @@ export class ReplacementSequence {
  initial(){const ids=this.trace.baseline()?.instanceIds;if(!ids)return false;return this.capacity(2)&&this.fleet(ids)&&this.backend(ids)&&metricsValid(this.current.metrics,ids)&&this.app()&&this.traffic('trafficFailures')&&this.traffic('connections')&&mcpChecks.every(k=>fresh({observedAt:this.checks.get(k)}))&&this.probesReady(ids);}
  canWrite(){return this.permits.some(p=>p.stage==='expand')?this.readiness.ready():this.initial();}
  retained(requireProtected=true){const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();return this.capacity(4)&&this.fleet([...old,...added])&&(!requireProtected||this.current.fleet.instances.filter(n=>added.includes(n.instanceId)).every(protectedNode));}
- restart(){const intent=this.intents('restart')[0],result=this.trace.rows.find(r=>r.kind==='result'&&r.key===intent?.key);return result&&result.state.accepted===true&&Number.isSafeInteger(result.state.generation)&&result.state.generation>0?{generation:result.state.generation,at:Date.parse(result.observedAt)}:null;}
+ restart(){const intent=this.intents('restart')[0],result=this.trace.rows.find(r=>r.kind==='result'&&r.key===intent?.key);return result&&result.state.accepted===true&&Number.isSafeInteger(result.state.generation)&&result.state.generation>0?{generation:result.state.generation,at:Date.parse(result.observedAt),...(result.state.actionId?{actionId:result.state.actionId}:{})}:null;}
  drained(){
   const r=this.restart();
   if(!r)return false;
@@ -167,7 +218,7 @@ export class ReplacementSequence {
   if(tool==='deployment_restart'){if(args.appCode!==s.application.appCode||typeof args.workloadKey!=='string'||!args.workloadKey)throw missing();}
   else if(args.proxyCode!==s.proxyCode)throw missing();
   if(['protectOld','expand'].includes(stage)){
-   if(!this.initial()||(stage==='expand'&&!this.current.fleet.instances.every(protectedNode)))throw missing();
+   if(!this.initial()||(stage==='expand'&&(!this.current.fleet.instances.every(protectedNode)||(this.trace.versioned&&!fresh(this.current.hold)))))throw missing();
   }else{
    if(!this.readiness.ready()||!this.retained(stage!=='protectNew'))throw missing();
    const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();
@@ -178,8 +229,10 @@ export class ReplacementSequence {
    }else if(stage==='withdraw'){
     const withdrawn=this.idsFor('withdraw');if(!this.backend([...old,...added].filter(id=>!withdrawn.includes(id)),withdrawn))throw missing();
    }else if(stage==='restart'){
-    if(!this.withdrawalReady()||!this.backend(added,old)||!this.app())throw missing();
-   }else if(!this.drained()||(stage==='shrink'&&this.current.fleet.instances.filter(n=>old.includes(n.instanceId)).some(n=>n.protectedFromScaleIn!==false||n.lifecycleState!=='InService')))throw missing();
+    if(!this.withdrawalReady()||!this.backend(added,old)||!this.app()||(this.trace.versioned&&!fresh(this.current.drainProof)))throw missing();
+   }else if(!this.drained()||(stage==='shrink'&&(this.trace.versioned
+    ?!fresh(this.trafficProof,this.restart()?.at)
+    :this.current.fleet.instances.filter(n=>old.includes(n.instanceId)).some(n=>n.protectedFromScaleIn!==false||n.lifecycleState!=='InService'))))throw missing();
   }
   const row={version:2,identity:structuredClone(this.trace.identity),key,stage,observedAt:new Date().toISOString()};this.manager.appendCustomEntry(TYPE,row);this.permits.push(row);
  }
@@ -199,6 +252,15 @@ export class ReplacementSequence {
  completionEvidence(){
   const cohort=this.cohort(),r=this.restart();
   if(this.trace.unresolved()||this.intents('shrink').length!==1||!r||!this.capacity(2)||!this.fleet(cohort.newInstanceIds)||!this.current.fleet.instances.every(protectedNode)||!this.backend(cohort.newInstanceIds)||!this.app(r.generation,r.at))throw missing();
+  if(this.trace.versioned){
+   const retirement=this.current.retirement,shrink=this.trace.scaleActions().find(action=>action.desiredCapacity===2);
+   if(!this.trafficProof?.noErrors||!this.finalTraffic?.noErrors||!fresh(this.finalTraffic)||
+    !same(this.inventory?.instanceIds,cohort.newInstanceIds)||!fresh(retirement)||retirement.status!=='Successful'||
+    retirement.actionId!==shrink?.actionId||retirement.scalingActivityId!==shrink.scalingActivityId||
+    !same([...retirement.destroyedIds].sort(),cohort.oldInstanceIds)||
+    !metricsValid(this.current.metrics,cohort.newInstanceIds))throw missing();
+   return {...cohort,restartGeneration:r.generation,traffic:this.trafficProof,finalTraffic:this.finalTraffic,retirement};
+  }
   return {...cohort,restartGeneration:r.generation};
  }
 }

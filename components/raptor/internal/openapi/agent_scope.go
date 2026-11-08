@@ -126,7 +126,11 @@ func agentHandler(backend, inspector Client, credential string) http.Handler {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		server := newAgentMCP(principal)
 		if binding.Operation == "db-proxy.replace-nodes" {
-			addReplacementAgentTools(server, principal)
+			if binding.ApprovalProtocol == "request-grants-v1" {
+				addRequestGrantAgentTools(server, principal)
+			} else {
+				addReplacementAgentTools(server, principal)
+			}
 		} else if binding.Operation == "repository.change" {
 			addRepositoryAgentTools(server, principal)
 		}
@@ -166,6 +170,15 @@ func newAgentMCP(p agentPrincipal) *mcp.Server {
 		related := []domain.ObjectRef{}
 		if scope := identity.ReplacementScope; scope != nil {
 			related = append(related, domain.ObjectRef{Kind: "application", Code: scope.Application.AppCode}, domain.ObjectRef{Kind: "database", Code: scope.TargetDBCode})
+			if b.ApprovalProtocol == "request-grants-v1" {
+				policies, ok := data["approvalPolicies"].(map[string]any)
+				if !ok || len(policies) == 0 {
+					return nil, nil, errors.New("Unavailable")
+				}
+				out["approvalPolicies"] = policies
+				out["scopeDigest"] = scope.ResolutionDigest
+				out["operationPrompt"] = "Use the pinned pgcat-replacement skill. Complete read-only preflight, then request one bundle for the high-risk capabilities and their bound targets."
+			}
 		}
 		out["relatedResources"] = related
 		stamp(out, b)

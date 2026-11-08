@@ -48,6 +48,7 @@ type ScaleReceipt struct {
 	PreviousDesiredCapacity int    `json:"previousDesiredCapacity"`
 	DesiredCapacity         int    `json:"desiredCapacity"`
 	ProviderRequestID       string `json:"providerRequestId,omitempty"`
+	ScalingActivityID       string `json:"scalingActivityId,omitempty"`
 	EvidenceMode            string `json:"evidenceMode"`
 }
 type NodeReceipt struct {
@@ -60,3 +61,15 @@ type NodeReceipt struct {
 type CommandError struct{ Code string }
 
 func (e *CommandError) Error() string { return e.Code }
+
+type PgcatRetirement struct {
+	ProxyTarget
+	ActionID       string
+	OriginalIDs    []string
+	ReplacementIDs []string
+}
+
+type PgcatScalingReceipt struct {
+	ProviderRequestID string
+	ScalingActivityID string
+}

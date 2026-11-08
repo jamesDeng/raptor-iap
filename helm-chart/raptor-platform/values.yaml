@@ -27,6 +27,7 @@ gatewayResources:
   requests: {cpu: 40m, memory: 64Mi}
   limits: {cpu: 300m, memory: 256Mi}
 gatewayLive:
+  pgcatLoadBalancerHost: ''
   enabled: false
   serviceURL: ''
   configSecretName: ''

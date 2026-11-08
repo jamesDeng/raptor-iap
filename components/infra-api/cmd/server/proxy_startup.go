@@ -19,6 +19,7 @@ type runtimeDependencies struct {
 	Approval   commands.Approval
 	Claims     commands.Claims
 	Fleet      commands.Fleet
+	Grants     api.RequestGrantClient
 }
 
 func absent(v any) bool {
@@ -52,7 +53,7 @@ func liveDependencies(resolver api.ResourceResolver, opts runtimeOptions, origin
 	if e != nil {
 		return runtimeDependencies{}, domain.ErrNotConfigured
 	}
-	return runtimeDependencies{Backend: b, Metrics: m, Approval: a, Claims: a, Fleet: a}, nil
+	return runtimeDependencies{Backend: b, Metrics: m, Approval: a, Claims: a, Fleet: a, Grants: a}, nil
 }
 func buildRuntimeHandler(reader api.Reader, scopes map[string]domain.Environment, user, password, header string, opts runtimeOptions, deps runtimeDependencies) (http.Handler, error) {
 	if !opts.Proxy {
@@ -100,6 +101,9 @@ func buildResourceRuntimeHandler(reader api.Reader, resolver api.ResourceResolve
 		}
 		runtime := commands.Runtime{Backend: deps.Backend, Metrics: deps.Metrics, Approval: deps.Approval, Claims: deps.Claims, Fleet: deps.Fleet, EvidenceMode: "live"}
 		paths = append(paths, "/v1/db-proxy-scale", "/v1/db-proxy-node-protection", "/v1/db-proxy-node-deregistration")
+		if !absent(deps.Grants) {
+			paths = append(paths, "/v1/pgcat-monitoring-sync")
+		}
 		if opts.Restart {
 			r, ok := reader.(restarter)
 			if !ok || absent(r) {
@@ -117,5 +121,5 @@ func buildResourceRuntimeHandler(reader api.Reader, resolver api.ResourceResolve
 		commander = restartOnly{r}
 		paths = append(paths, "/v1/deployment-restart")
 	}
-	return api.NewResourceServer(reader, resolver, user, password, header, commander, api.NewServiceAuthorizer(user, paths...), deps.AgentCheck)
+	return api.NewResourceServer(reader, resolver, user, password, header, commander, api.NewServiceAuthorizer(user, paths...), deps.AgentCheck, deps.Grants)
 }

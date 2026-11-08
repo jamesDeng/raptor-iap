@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"raptor-iap/infra-api/internal/policy"
 	"time"
 )
 
@@ -36,7 +37,11 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 		if field != "" {
 			props[field].(map[string]any)["enum"] = options
 		}
-		server.AddTool(&mcp.Tool{Name: spec.name, Description: "Read a logical catalog resource workload", InputSchema: map[string]any{"type": "object", "properties": props, "required": spec.fields, "additionalProperties": false}}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tool, ok := resourceMCPTool(spec.name, map[string]any{"type": "object", "properties": props, "required": spec.fields, "additionalProperties": false})
+		if !ok {
+			continue
+		}
+		server.AddTool(tool, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args, e := decodeSelectors(r.Params.Arguments)
 			if e != nil {
 				return mcpFailure("InvalidInput"), nil
@@ -67,6 +72,10 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 		})
 	}
 	if op.commander != nil && op.authorizer != nil {
+		protocol := ""
+		if op.identity != nil && op.identity.Binding != nil {
+			protocol = op.identity.Binding.ApprovalProtocol
+		}
 		for _, spec := range resourceCommandSpecs {
 			if !op.visible(spec.path) {
 				continue
@@ -74,7 +83,17 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 			if op.identity != nil && (op.identity.Binding == nil || op.identity.Binding.Operation != "db-proxy.replace-nodes" || op.identity.Binding.ExecutionMode == "qualification") {
 				continue
 			}
-			server.AddTool(&mcp.Tool{Name: spec.name, Description: "Execute a request-authorized logical resource command", InputSchema: commandSchema(spec.sample)}, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			catalogProtocol := protocol
+			// For tools/call the resource binding is verified after parsing
+			// selectors. Register the handler without advertising it to legacy catalogs.
+			if spec.name == "pgcat_monitoring_sync" && op.identity == nil && op.principal == "agent" {
+				catalogProtocol = policy.RequestGrantProtocol
+			}
+			tool, ok := resourceMCPTool(spec.name, commandSchema(spec.sample), catalogProtocol)
+			if !ok {
+				continue
+			}
+			server.AddTool(tool, func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				data, e := op.command(ctx, spec.path, r.Params.Arguments)
 				return resourceMCPResult(data, e)
 			})
@@ -82,6 +101,17 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 	}
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	return boundClientsMCPResponse(handler)
+}
+
+func resourceMCPTool(name string, schema any, protocol ...string) (*mcp.Tool, bool) {
+	approval, ok := policy.ApprovalPolicyForTool(name, protocol...)
+	if !ok {
+		return nil, false
+	}
+	return &mcp.Tool{
+		Name: name, Description: approval.Description(), InputSchema: schema,
+		Meta: mcp.Meta{policy.ApprovalPolicyMetaKey: approval},
+	}, true
 }
 
 const clientsMCPResponseLimit = 262144

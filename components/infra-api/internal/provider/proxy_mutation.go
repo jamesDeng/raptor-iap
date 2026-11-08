@@ -61,56 +61,69 @@ func (p *ProxyBackend) Scale(ctx context.Context, env domain.Environment, groupI
 	return *r.Body.RequestId, nil
 }
 func (p *ProxyBackend) Protect(ctx context.Context, env domain.Environment, groupID string, ids []string, protected bool) error {
+	_, err := p.ProtectWithReceipt(ctx, env, groupID, ids, protected, nil)
+	return err
+}
+func (p *ProxyBackend) ProtectWithReceipt(ctx context.Context, env domain.Environment, groupID string, ids []string, protected bool, admit func(context.Context) error) (string, error) {
 	m, e := p.target(ctx, env, groupID, false)
 	if e != nil {
-		return e
+		return "", e
 	}
 	if p.sdk.protect == nil {
-		return domain.ErrNotConfigured
+		return "", domain.ErrNotConfigured
 	}
 	nodes, e := p.members(ctx, env, m)
 	if e != nil {
-		return e
+		return "", e
 	}
 	if e = policy.Membership(policy.ProxySnapshot{Nodes: nodes}, ids); e != nil {
-		return e
+		return "", e
 	}
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return "", ctx.Err()
+	}
+	if admit != nil {
+		if err := admit(ctx); err != nil {
+			return "", err
+		}
 	}
 	r, e := p.sdk.protect(ctx, &ess.SetInstancesProtectionRequest{ScalingGroupId: tea.String(groupID), InstanceIds: tea.StringSlice(ids), ProtectedFromScaleIn: tea.Bool(protected)}, noRetry())
 	if e != nil || r == nil || r.Body == nil || tea.StringValue(r.Body.RequestId) == "" {
-		return &domain.CommandError{Code: "SubmissionUnknown"}
+		return "", &domain.CommandError{Code: "SubmissionUnknown"}
 	}
-	return nil
+	return *r.Body.RequestId, nil
 }
 
 // Deregister retains the existing command name. Withdrawal changes the routing
 // weight only. ESS removes the backend after the approved scale-in.
 func (p *ProxyBackend) Deregister(ctx context.Context, env domain.Environment, serverGroupID string, ids []string) error {
+	_, err := p.DrainWithReceipt(ctx, env, serverGroupID, ids, nil)
+	return err
+}
+func (p *ProxyBackend) DrainWithReceipt(ctx context.Context, env domain.Environment, serverGroupID string, ids []string, admit func(context.Context) error) (string, error) {
 	m, e := p.target(ctx, env, serverGroupID, true)
 	if e != nil {
-		return e
+		return "", e
 	}
 	if p.sdk.updateWeights == nil {
-		return domain.ErrNotConfigured
+		return "", domain.ErrNotConfigured
 	}
 	nodes, e := p.members(ctx, env, m)
 	if e != nil {
-		return e
+		return "", e
 	}
 	if e = policy.Membership(policy.ProxySnapshot{Nodes: nodes}, ids); e != nil {
-		return e
+		return "", e
 	}
 	backends, e := p.backends(ctx, env, m)
 	if e != nil {
-		return e
+		return "", e
 	}
 	servers := make([]*nlb.UpdateServerGroupServersAttributeRequestServers, 0, len(ids))
 	for _, id := range ids {
 		receivesNewConnections, ok := backends[id]
 		if !ok {
-			return domain.ErrScope
+			return "", domain.ErrScope
 		}
 		if !receivesNewConnections {
 			continue
@@ -118,16 +131,21 @@ func (p *ProxyBackend) Deregister(ctx context.Context, env domain.Environment, s
 		servers = append(servers, &nlb.UpdateServerGroupServersAttributeRequestServers{ServerId: tea.String(id), ServerType: tea.String("Ecs"), Port: tea.Int32(int32(m.Port)), Weight: tea.Int32(0)})
 	}
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return "", ctx.Err()
 	}
 	if len(servers) == 0 {
-		return nil
+		return "", nil
+	}
+	if admit != nil {
+		if err := admit(ctx); err != nil {
+			return "", err
+		}
 	}
 	r, e := p.sdk.updateWeights(ctx, &nlb.UpdateServerGroupServersAttributeRequest{RegionId: tea.String(env.Region), ServerGroupId: tea.String(serverGroupID), Servers: servers}, noRetry())
 	if e != nil || r == nil || r.Body == nil || tea.StringValue(r.Body.RequestId) == "" || tea.StringValue(r.Body.JobId) == "" || tea.StringValue(r.Body.ServerGroupId) != serverGroupID {
-		return &domain.CommandError{Code: "SubmissionUnknown"}
+		return "", &domain.CommandError{Code: "SubmissionUnknown"}
 	}
 	// This acknowledges the provider job. Runtime receipts say submitted; only
 	// subsequent reads can establish completion.
-	return nil
+	return *r.Body.RequestId, nil
 }

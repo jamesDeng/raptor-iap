@@ -61,3 +61,15 @@ func TestObserverKubeconfigRejectsOperatorCredentialsAndExecutables(t *testing.T
 		t.Fatal("exec credential accepted")
 	}
 }
+
+func TestReplacementCannotStartWithoutPrivateObservationProxy(t *testing.T) {
+	in := proxyStart()
+	prepared := false
+	n := NativeLive{Observe: func(context.Context, execution.LiveStart) (ObservationMaterial, error) {
+		prepared = true
+		return ObservationMaterial{}, ErrConfiguration
+	}}
+	if _, err := n.prepareObservation(context.Background(), in); err != ErrConfiguration || prepared {
+		t.Fatalf("missing proxy must be rejected before observation credentials are prepared: %v", err)
+	}
+}

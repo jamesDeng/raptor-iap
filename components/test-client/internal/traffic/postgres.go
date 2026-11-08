@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"net/netip"
 	"time"
 )
 
@@ -40,10 +41,10 @@ func commitOutcome(err error) Outcome {
 	}
 	return Ambiguous
 }
-func (s *PostgresSession) Operate(ctx context.Context, id string) Outcome {
+func (s *PostgresSession) Operate(ctx context.Context, id string) OperationResult {
 	tx, e := s.conn.Begin(ctx)
 	if e != nil {
-		return statementOutcome(e)
+		return OperationResult{Outcome: statementOutcome(e)}
 	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -51,16 +52,21 @@ func (s *PostgresSession) Operate(ctx context.Context, id string) Outcome {
 		_ = tx.Rollback(cleanup)
 	}()
 	if _, e = tx.Exec(ctx, "INSERT INTO infra_test_operations(id) VALUES($1)", id); e != nil {
-		return statementOutcome(e)
+		return OperationResult{Outcome: statementOutcome(e)}
 	}
-	var actual string
-	if e = tx.QueryRow(ctx, "SELECT id FROM infra_test_operations WHERE id=$1", id).Scan(&actual); e != nil {
-		return statementOutcome(e)
+	var actual, proxy string
+	if e = tx.QueryRow(ctx, "SELECT id, COALESCE(host(inet_client_addr()), '') FROM infra_test_operations WHERE id=$1", id).Scan(&actual, &proxy); e != nil {
+		return OperationResult{Outcome: statementOutcome(e)}
 	}
 	if actual != id {
-		return Failure
+		return OperationResult{Outcome: Failure}
 	}
-	return commitOutcome(tx.Commit(ctx))
+	outcome := commitOutcome(tx.Commit(ctx))
+	result := OperationResult{Outcome: outcome}
+	if outcome == Success {
+		result.ProxyIP, _ = netip.ParseAddr(proxy)
+	}
+	return result
 }
 func (s *PostgresSession) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

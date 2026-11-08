@@ -25,6 +25,7 @@ gatewayResources:
   requests: {cpu: 250m, memory: 64Mi}
   limits: {cpu: 1000m, memory: 256Mi}
 gatewayLive:
+  pgcatLoadBalancerHost: 'nlb-jqbxi42nurq0qkb7e9.ap-southeast-1.nlb.aliyuncsslbintl.com'
   enabled: true
   serviceURL: https://api.rdev.raptor-iap.top
   configSecretName: gateway-live-config

@@ -81,3 +81,26 @@ type PrometheusSample struct {
 	Metric map[string]string `json:"metric"`
 	Value  []json.RawMessage `json:"value"`
 }
+
+type PgcatInventoryReceipt struct {
+	UID             string   `json:"uid"`
+	ResourceVersion string   `json:"resourceVersion"`
+	InstanceIDs     []string `json:"instanceIds"`
+	Changed         bool     `json:"changed"`
+}
+
+type PgcatRetirementObservation struct {
+	ActionID          string    `json:"actionId"`
+	ScalingActivityID string    `json:"scalingActivityId"`
+	Status            string    `json:"status"`
+	DestroyedIDs      []string  `json:"destroyedIds"`
+	ObservedAt        time.Time `json:"observedAt"`
+}
+
+type PgcatExpansionObservation struct {
+	ActionID          string    `json:"actionId"`
+	ScalingActivityID string    `json:"scalingActivityId"`
+	Status            string    `json:"status"`
+	ObservedAt        time.Time `json:"observedAt"`
+	CreatedIDs        []string  `json:"createdIds"`
+}

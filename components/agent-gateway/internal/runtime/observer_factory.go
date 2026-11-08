@@ -15,15 +15,16 @@ import (
 // ReplacementObserverConfig is controller deployment material. It enables
 // preparation only, not replacement admission, and carries no credentials.
 type ReplacementObserverConfig struct {
-	Scope          execution.ReplacementScope `json:"scope"`
-	ClusterServer  string                     `json:"clusterServer"`
-	DBInstanceID   string                     `json:"dbInstanceId"`
-	LoadBalancerID string                     `json:"loadBalancerId"`
-	ListenerID     string                     `json:"listenerId"`
-	PrometheusURL  string                     `json:"prometheusUrl"`
-	ClientTargets  []string                   `json:"clientTargets"`
-	SQLBucket      string                     `json:"sqlBucket"`
-	SQLKey         string                     `json:"sqlKey"`
+	Scope            execution.ReplacementScope `json:"scope"`
+	ClusterServer    string                     `json:"clusterServer"`
+	DBInstanceID     string                     `json:"dbInstanceId"`
+	LoadBalancerID   string                     `json:"loadBalancerId"`
+	LoadBalancerHost string                     `json:"loadBalancerHost,omitempty"`
+	ListenerID       string                     `json:"listenerId"`
+	PrometheusURL    string                     `json:"prometheusUrl"`
+	ClientTargets    []string                   `json:"clientTargets"`
+	SQLBucket        string                     `json:"sqlBucket"`
+	SQLKey           string                     `json:"sqlKey"`
 }
 
 func readProjectedObserverFile(name string, limit int64) ([]byte, error) {
@@ -55,6 +56,12 @@ func buildObservationPreparer(c LiveConfig, m Management, mount func(string, int
 		return nil, nil
 	}
 	cfg := *c.ReplacementObserver
+	if cfg.LoadBalancerHost == "" {
+		cfg.LoadBalancerHost = os.Getenv("GATEWAY_PGCAT_LOAD_BALANCER_HOST")
+	}
+	if cfg.LoadBalancerHost != "" && !validPgcatHost(cfg.LoadBalancerHost) {
+		return nil, ErrConfiguration
+	}
 	scope := cfg.Scope
 	binding := execution.AttemptBinding{Operation: "db-proxy.replace-nodes", ObjectKind: "db-proxy", ObjectCode: scope.ProxyCode, EnvCode: scope.EnvCode, ClusterID: scope.Application.ClusterID}
 	validID := regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
@@ -93,12 +100,15 @@ func buildObservationPreparer(c LiveConfig, m Management, mount func(string, int
 		return nil, ErrConfiguration
 	}
 	sql := ObserverSQLSource{Objects: OSSObjects{Client: client, Bucket: bucket, BucketName: cfg.SQLBucket}, Key: cfg.SQLKey, EnvCode: scope.EnvCode, DBCode: scope.TargetDBCode, DBInstanceID: cfg.DBInstanceID}
-	preparation := ObserverPreparation{Server: cfg.ClusterServer, CA: ca, DBInstanceID: cfg.DBInstanceID, ListenerID: cfg.ListenerID, PrometheusURL: cfg.PrometheusURL, ClientTargets: append([]string(nil), cfg.ClientTargets...), Cloud: func(ctx context.Context, in execution.LiveStart) (ObserverCredential, error) {
+	preparation := ObserverPreparation{Server: cfg.ClusterServer, PgcatHost: cfg.LoadBalancerHost, CA: ca, DBInstanceID: cfg.DBInstanceID, ListenerID: cfg.ListenerID, PrometheusURL: cfg.PrometheusURL, ClientTargets: append([]string(nil), cfg.ClientTargets...), Cloud: func(ctx context.Context, in execution.LiveStart) (ObserverCredential, error) {
 		return issuer.Issue(ctx, scope.GroupID, in.Binding.AttemptID)
 	}, Kube: func(ctx context.Context, in execution.LiveStart) (ObserverKubeCredential, error) {
 		return kube.Issue(ctx)
 	}, SQL: sql.Load}
 	return func(ctx context.Context, in execution.LiveStart) (ObservationMaterial, error) {
+		if in.Binding.ApprovalProtocol == "request-grants-v1" && !validPgcatHost(cfg.LoadBalancerHost) {
+			return ObservationMaterial{}, ErrConfiguration
+		}
 		if in.Access.ReplacementScope == nil || !observerResourceFence(c, cfg, in.Binding, *in.Access.ReplacementScope) {
 			return ObservationMaterial{}, ErrConfiguration
 		}

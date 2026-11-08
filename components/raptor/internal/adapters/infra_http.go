@@ -341,3 +341,28 @@ func (p HTTPInfra) submitRestart(ctx context.Context, env domain.Environment, bo
 	}
 	return nil
 }
+
+func (p HTTPInfra) OperationApprovalPolicies(ctx context.Context, envCode string) (map[string]ToolApprovalPolicy, error) {
+	if p.ResolveEnvironment == nil {
+		return nil, domain.ErrUnavailable
+	}
+	env, err := p.ResolveEnvironment(ctx, envCode)
+	if err != nil || env.Code != envCode {
+		return nil, domain.ErrUnavailable
+	}
+	var policies map[string]ToolApprovalPolicy
+	if err := p.read(ctx, env, "/v1/approval-policy", url.Values{"protocol": {"request-grants-v1"}}, &policies); err != nil || len(policies) == 0 {
+		return nil, domain.ErrUnavailable
+	}
+	for _, policy := range policies {
+		if policy.Version != 1 || len(policy.Variants) == 0 {
+			return nil, domain.ErrUnavailable
+		}
+		for _, v := range policy.Variants {
+			if v.Capability == "" || v.TargetKind == "" || v.Condition == "" {
+				return nil, domain.ErrUnavailable
+			}
+		}
+	}
+	return policies, nil
+}

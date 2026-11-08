@@ -25,3 +25,20 @@ test('reopened trace rejects malformed or orphaned retained entries',()=>{
   assert.throws(()=>new ReplacementTrace(session,binding,scope),/InvalidEvidence/);
  }
 });
+
+test('a lost write response reconciles only an exact submitted receipt from the approved request grant',()=>{
+ const bound={...scope,envCode:'dev',proxyCode:'proxy',resolutionDigest:'scope-digest'};
+ const trace=new ReplacementTrace(manager(),{...binding,approvalProtocol:'request-grants-v1'},bound);
+ trace.observe('fleet',fleet(['old-a','old-b']));
+ const args={requestId:'request',envCode:'dev',proxyCode:'proxy',actionId:'expand',desiredCapacity:4};
+ trace.beforeMutation('db_proxy_scale',args);
+ const row={requestId:'request',envCode:'dev',scopeDigest:'scope-digest',grantId:'approved',actionId:'expand',state:'submitted',
+  arguments:args,providerRequestId:'provider:asa-one',capability:{capability:'db-proxy.scale-out',target:{kind:'db-proxy',code:'proxy'}}};
+ for(const bad of [{...row,state:'unknown'},{...row,grantId:'foreign'},{...row,arguments:{...args,desiredCapacity:2}}]){
+  assert.equal(trace.reconcileSubmitted([bad],'approved'),undefined);
+  assert.equal(trace.unresolved(),true);
+ }
+ assert.equal(trace.reconcileSubmitted([row],'approved')?.receipt.scalingActivityId,'asa-one');
+ assert.equal(trace.unresolved(),false);
+ assert.throws(()=>trace.beforeMutation('db_proxy_scale',args),/MutationAlreadySubmitted/);
+});

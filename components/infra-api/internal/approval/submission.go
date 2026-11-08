@@ -15,6 +15,10 @@ func validBinding(b Binding) bool {
 	return b.RequestID != "" && b.ActionID != "" && b.EnvCode != "" && b.ProxyCode != "" && b.GroupID != "" && b.DesiredCapacity >= 0
 }
 func (c *Client) submissionCall(ctx context.Context, path string, in any, out any) error {
+	return c.submissionCallLimit(ctx, path, in, out, 8192)
+}
+
+func (c *Client) submissionCallLimit(ctx context.Context, path string, in any, out any, responseLimit int) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	b, e := json.Marshal(in)
@@ -35,8 +39,8 @@ func (c *Client) submissionCall(ctx context.Context, path string, in any, out an
 	if response.StatusCode != 200 {
 		return errors.New("submission unavailable")
 	}
-	raw, e := io.ReadAll(io.LimitReader(response.Body, 8193))
-	if e != nil || len(raw) > 8192 || jsoninput.Decode(raw, out) != nil {
+	raw, e := io.ReadAll(io.LimitReader(response.Body, int64(responseLimit)+1))
+	if e != nil || len(raw) > responseLimit || jsoninput.Decode(raw, out) != nil {
 		return errors.New("submission unavailable")
 	}
 	return nil

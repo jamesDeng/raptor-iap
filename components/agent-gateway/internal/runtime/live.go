@@ -247,7 +247,7 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 			return h, ErrConfiguration
 		}
 		if b.ExecutionMode != "qualification" {
-			if e = resourceReplacementContract(skillsBundle); e != nil {
+			if e = resourceReplacementContract(skillsBundle, in.Binding.ApprovalProtocol); e != nil {
 				return h, e
 			}
 		}
@@ -344,7 +344,7 @@ const privatePermissionsCommand = `set -eu; umask 077; for file in /tmp/raptor-p
 
 const prepareCommand = "umask 077; test \"$(node --version)\" = v22.23.3 && python3 --version >/dev/null && test ! -e /tmp/raptor-state && mkdir -p /tmp/raptor-harness /tmp/raptor-private && chmod 700 /tmp/raptor-harness /tmp/raptor-private"
 
-var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "live-repository.mjs", "mcp-runtime.mjs", "conversation.mjs", "operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "pinned-replacement-skill.mjs", "tool-failure-diagnostic.mjs", "skills-bundle.mjs", "client-targets.mjs", "replacement-trace.mjs", "replacement-readiness.mjs", "replacement-sequence.mjs", "qualification-trace.mjs", "qualification-read-plan.mjs", "pgcat-metrics.mjs", "replacement-completion.mjs", "observation-tools.mjs", "observation-extension.mjs", "observation-config.mjs", "observation-proxy.mjs"}
+var harnessFiles = []string{"package.json", "package-lock.json", "archive.py", "application-context.mjs", "app-question.mjs", "checkpoint.mjs", "pi-adapter.mjs", "runner.mjs", "progress.mjs", "live-contract.mjs", "live-runner.mjs", "live-question.mjs", "live-repository.mjs", "mcp-runtime.mjs", "conversation.mjs", "operation-profile.mjs", "replacement-evidence.mjs", "operation-session.mjs", "skills-loader.mjs", "live-operation.mjs", "approval-pause.mjs", "live-replacement.mjs", "request-grant-runtime.mjs", "pinned-replacement-skill.mjs", "tool-failure-diagnostic.mjs", "skills-bundle.mjs", "client-targets.mjs", "replacement-trace.mjs", "replacement-readiness.mjs", "replacement-sequence.mjs", "qualification-trace.mjs", "qualification-read-plan.mjs", "pgcat-metrics.mjs", "replacement-completion.mjs", "observation-tools.mjs", "observation-extension.mjs", "observation-config.mjs", "observation-proxy.mjs"}
 
 func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	b := r.start.Binding
@@ -420,11 +420,6 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 	if len(r.observation.Config) > 0 {
 		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/observation.json", r.observation.Config); e != nil {
 			return e
-		}
-		if len(r.observation.Kubeconfig) > 0 {
-			if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/kubeconfig", r.observation.Kubeconfig); e != nil {
-				return e
-			}
 		}
 	}
 	job, e := liveJob(n.Config, r.start)

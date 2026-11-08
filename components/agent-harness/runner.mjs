@@ -1,4 +1,4 @@
-import {OBSERVATION_TOOLS} from './observation-extension.mjs';
+import {operationObservationTools} from './observation-extension.mjs';
 import fs from 'node:fs';import path from 'node:path';import {pathToFileURL} from 'node:url';
 import {loadPiRuntime,refreshCredentials,runReadProbe} from './pi-adapter.mjs';import {createCheckpoint,restoreCheckpoint} from './checkpoint.mjs';
 import {runAppQuestion} from './app-question.mjs';
@@ -28,7 +28,7 @@ export function terminalExitCode(result){return result.passed===true||(!result.e
 export function progressToolsForJob(job){
  const binding=job.request.binding;
  return Object.entries(operationCapabilities(binding,job.replacement_scope)).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name))
-  .concat(job.observation_config_path&&binding.operation==='db-proxy.replace-nodes'?OBSERVATION_TOOLS:[])
+  .concat(job.observation_config_path&&binding.operation==='db-proxy.replace-nodes'?operationObservationTools(binding):[])
   .concat(binding.operation==='db-proxy.replace-nodes'?['resource_wait']:[])
   .concat(binding.operation==='repository.change'?GIT_TOOLS:[]);
 }

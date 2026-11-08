@@ -128,7 +128,7 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 			return h, ErrConfiguration
 		}
 		if in.Binding.ExecutionMode != "qualification" {
-			if e = resourceReplacementContract(skillsBundle); e != nil {
+			if e = resourceReplacementContract(skillsBundle, in.Binding.ApprovalProtocol); e != nil {
 				return h, e
 			}
 		}
@@ -145,6 +145,9 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	}
 	observation, e := a.prepareObservation(ctx, in)
 	if e != nil {
+		if in.Binding.Operation == "db-proxy.replace-nodes" && in.Binding.ExecutionMode == "qualification" {
+			log.Print("AX qualification preflight category=failed phase=observation_preparation")
+		}
 		return h, e
 	}
 	cp, e := a.Verifier.VerifyCheckpoint(ctx, in.Checkpoint)
@@ -276,11 +279,6 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	if len(observation.Config) > 0 {
 		if e = a.write(ctx, in, "/tmp/raptor-private/observation.json", observation.Config); e != nil {
 			return h, e
-		}
-		if len(observation.Kubeconfig) > 0 {
-			if e = a.write(ctx, in, "/tmp/raptor-private/kubeconfig", observation.Kubeconfig); e != nil {
-				return h, e
-			}
 		}
 	}
 	job, e := liveJob(a.Config, in)

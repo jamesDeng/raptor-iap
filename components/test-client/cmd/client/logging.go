@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -29,6 +30,7 @@ type trafficLogRecord struct {
 	OperationID     string              `json:"operationId,omitempty"`
 	Outcome         traffic.Outcome     `json:"outcome,omitempty"`
 	DurationSeconds *float64            `json:"durationSeconds,omitempty"`
+	ProxyIP         string              `json:"proxyIp,omitempty"`
 	Snapshot        *trafficLogSnapshot `json:"snapshot,omitempty"`
 }
 
@@ -68,7 +70,12 @@ func (l *trafficLog) emit(record func(traffic.Event)) func(traffic.Event) {
 			line.Kind, line.OperationID = "operation", e.OperationID
 			line.DurationSeconds = &e.DurationSeconds
 			switch e.Outcome {
-			case traffic.Success, traffic.Failure, traffic.Timeout, traffic.Ambiguous:
+			case traffic.Success:
+				line.Outcome = e.Outcome
+				if addr, err := netip.ParseAddr(e.ProxyIP); err == nil && addr.Is4() && addr.IsPrivate() {
+					line.ProxyIP = addr.String()
+				}
+			case traffic.Failure, traffic.Timeout, traffic.Ambiguous:
 				line.Outcome = e.Outcome
 			default:
 				line.Outcome = "unknown"

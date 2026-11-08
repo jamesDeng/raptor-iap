@@ -8,7 +8,7 @@ const FILES=[
 ];
 const MAX_BYTES=16384;
 
-export function pinnedReplacementInstructions(skills){
+export function pinnedReplacementInstructions(skills,{requestGrants=false}={}){
  try{
   if(!skills||typeof skills.path!=='string'||!/^skills-v[0-9]+\.[0-9]+\.[0-9]+$/.test(skills.tag)||!/^[a-f0-9]{40}$/.test(skills.commitSHA))throw Error();
   const root=path.resolve(skills.path);
@@ -19,14 +19,21 @@ export function pinnedReplacementInstructions(skills){
   }
   let total=0;
   const decoder=new TextDecoder('utf-8',{fatal:true});
-  const sections=FILES.map(name=>{
+  const files=requestGrants?['SKILL.md','references/request-grants.md']:FILES;
+  const sections=files.map(name=>{
    const file=path.join(selected,name);
    if(path.dirname(file)!==selected&&fs.lstatSync(path.dirname(file)).isSymbolicLink())throw Error();
    const stat=fs.lstatSync(file);
    if(!stat.isFile()||stat.isSymbolicLink()||stat.size<1||stat.size>MAX_BYTES)throw Error();
    total+=stat.size;
    if(total>MAX_BYTES)throw Error();
-   const content=decoder.decode(fs.readFileSync(file));
+   let content=decoder.decode(fs.readFileSync(file));
+   if(requestGrants&&name==='SKILL.md'){
+    const legacy=content.indexOf('## Legacy resource-v1 workflow');
+    if(legacy<0)throw Error();
+    content=content.slice(0,legacy);
+   }
+   if(requestGrants&&name.endsWith('request-grants.md')&&!content.split('\n').includes('request-grants-contract: v1'))throw Error();
    if(!content.trim()||content.includes('\0'))throw Error();
    return `--- ${name} ---\n${content}`;
   });

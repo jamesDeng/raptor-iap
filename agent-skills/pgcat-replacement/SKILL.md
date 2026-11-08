@@ -9,9 +9,13 @@ replacement-contract: resource-v1
 
 Release candidate: skills-v0.5.5. Publish a new immutable release; preserve all earlier tags. The runtime selects this contract from verified content, not a tag name.
 
-Use the [runtime contracts](references/contracts.md) and [recovery rules](references/recovery.md). These instructions match the implementation under qualification; they do not establish live deployment or authorize enablement. Begin only after controller preflight enables this dedicated request.
+Begin only after controller preflight enables this dedicated request.
 
 Keep the same request ID, definition, resolved scope and selected skill SHA across every resume. A fresh attempt is not a new request. Use only the supplied group, backend, database and application binding; never derive application dependencies from unrelated tags. Infra API independently enforces membership, exact approval and safety gates.
+
+For requests with approvalProtocol request-grants-v1, use the [Request grant workflow](references/request-grants.md). It defines the full approval, observation and traffic sequence. For the original single-action protocol, use the legacy procedure below with the [runtime contracts](references/contracts.md) and [recovery rules](references/recovery.md).
+
+## Legacy resource-v1 workflow
 
 ## Initial read rounds
 

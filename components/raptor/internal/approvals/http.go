@@ -7,6 +7,17 @@ import (
 )
 
 func (s *Service) RegisterBrowser(m *http.ServeMux, a *auth.Service) {
+	m.Handle("POST /api/v1/requests/{requestId}/grants/{id}/decision", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Decision string `json:"decision"`
+		}
+		if !httpx.DecodePrivate(w, r, &in) {
+			return
+		}
+		out, err := s.DecideRequestGrant(r.Context(), auth.UserFrom(r), r.PathValue("requestId"), r.PathValue("id"), in.Decision)
+		httpx.Result(w, 200, out, err)
+	})))
+
 	m.Handle("POST /api/v1/requests/{requestId}/approvals/{id}/decision", a.Browser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		existing, e := s.Get(r.Context(), r.PathValue("id"))
 		if e != nil {

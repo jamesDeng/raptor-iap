@@ -6,15 +6,31 @@ export function replacementEvidence(server,tool,data,b,scope,args,discovered=new
  if(server==='raptor'){
   if(tool==='request_get'){
    const d=data?.definition;
-   if(data?.requestId!==b.requestId||d?.envCode!==b.envCode||d?.object?.kind!==b.objectKind||d?.object?.code!==b.objectCode||d?.operations?.length!==1||d.operations[0].name!==b.operation||(d.operations[0].parameters?.mode??'')!==(b.executionMode??''))throw Error('ScopeMismatch');
+   if(data?.requestId!==b.requestId||d?.envCode!==b.envCode||d?.object?.kind!==b.objectKind||d?.object?.code!==b.objectCode||d?.operations?.length!==1||d.operations[0].name!==b.operation||(d.operations[0].parameters?.mode??'')!==(b.executionMode??'')||(d.operations[0].parameters?.approvalProtocol??'')!==(b.approvalProtocol??''))throw Error('ScopeMismatch');
    const refs=data.relatedResources;const expected=new Set(['application:'+scope.application.appCode,'database:'+scope.targetDbCode]);
    if(!Array.isArray(refs)||refs.length!==2||refs.some(ref=>!ref||Object.keys(ref).sort().join(',')!=='code,kind'||!expected.delete(ref.kind+':'+ref.code))||expected.size)throw Error('IdentityChanged');
+  }
+  if(tool==='request_grant_actions_list'){
+   if(!Array.isArray(data)||data.length>32||data.some(row=>row?.requestId!==b.requestId||row?.envCode!==b.envCode||
+    row?.scopeDigest!==scope.resolutionDigest||typeof row.actionId!=='string'||!['claimed','dispatching','submitted','not_submitted','unknown'].includes(row.state)))throw Error('IdentityChanged');
+   return record({count:data.length});
+  }
+  if(tool==='request_grant_action_get'){
+   if(data?.requestId!==b.requestId||data?.envCode!==b.envCode||data?.scopeDigest!==scope.resolutionDigest||data?.actionId!==args.actionId||
+    !['claimed','dispatching','submitted','not_submitted','unknown'].includes(data.state))throw Error('IdentityChanged');
+   return record({actionId:data.actionId,state:data.state});
   }
   if(tool==='approval_request'||tool==='approval_get'){
    if(data?.requestId!==b.requestId||typeof data.approvalId!=='string'||!data.approvalId||(tool==='approval_get'&&data.approvalId!==args.approvalId))throw Error('IdentityChanged');
    return record({approvalId:data.approvalId,state:String(data.state??'unknown').slice(0,64)});
   }
   return record({available:true});
+ }
+ if(tool==='pgcat_monitoring_sync'){
+  if(typeof data?.uid!=='string'||!data.uid||typeof data.resourceVersion!=='string'||!data.resourceVersion||
+   typeof data.changed!=='boolean'||!Array.isArray(data.instanceIds)||![2,4].includes(data.instanceIds.length)||
+   new Set(data.instanceIds).size!==data.instanceIds.length||data.instanceIds.some(id=>typeof id!=='string'||!id))throw Error('InvalidEvidence');
+  return record({changed:data.changed,instanceIds:data.instanceIds},{resourceId:scope.groupId,kind:'db-proxy'});
  }
  if(data?.evidenceMode!=='live')throw Error('InvalidEvidence');
  if(tool==='db_proxy_scale'){

@@ -198,3 +198,26 @@ func ScaleDirection(s ProxySnapshot, desired int) (string, error) {
 	}
 	return "in", nil
 }
+
+// TargetedPgcatRetirement checks an exact four-node partition. The caller must
+// establish request lineage and zero clients before invoking it.
+func TargetedPgcatRetirement(s ProxySnapshot, originals, replacements []string) error {
+	if s.Desired != 4 || s.Min != 2 || s.Max != 4 || len(s.Nodes) != 4 || len(originals) != 2 || len(replacements) != 2 {
+		return refuse("InvalidCapacity")
+	}
+	if err := Membership(s, append(append([]string{}, originals...), replacements...)); err != nil {
+		return err
+	}
+	for _, node := range s.Nodes {
+		if node.ID == originals[0] || node.ID == originals[1] {
+			if !node.Registered || !node.Drained {
+				return refuse("TargetChanged")
+			}
+			continue
+		}
+		if !node.Registered || !node.Healthy || !node.Protected {
+			return refuse("InsufficientHealthyCapacity")
+		}
+	}
+	return nil
+}

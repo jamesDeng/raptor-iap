@@ -31,7 +31,11 @@ func (s *Server) RegisterService(user, password string) {
 		}
 	}
 
-	s.registerInfraApprovals(access, auth.Credentials{Username: user, Password: password})
+	credentials := auth.Credentials{Username: user, Password: password}
+	s.registerInfraApprovals(access, credentials)
+	s.registerInfraRequestGrants(access, credentials)
+	s.registerRequestGrants(access, credentials)
+	s.registerPgcatObservations(credentials)
 	access.Register(s.Mux, auth.Credentials{Username: user, Password: password}, auth.Credentials{Username: os.Getenv("AGENT_INTROSPECTION_USERNAME"), Password: os.Getenv("AGENT_INTROSPECTION_PASSWORD")})
 	wrap := func(pattern string, h http.HandlerFunc) {
 		s.Mux.Handle(pattern, auth.BasicAuth(h, auth.Credentials{Username: user, Password: password}))
@@ -81,7 +85,11 @@ func (s *Server) RegisterService(user, password string) {
 			return
 		}
 		env, e := s.Catalog.GetEnvironment(r.Context(), v.Definition.EnvCode)
-		httpx.Result(w, 200, map[string]any{"requestId": v.ID, "definition": v.Definition, "environment": env, "skills": v.Definition.Skills, "definitionSha256": fingerprint}, e)
+		out := map[string]any{"requestId": v.ID, "definition": v.Definition, "environment": env, "skills": v.Definition.Skills, "definitionSha256": fingerprint}
+		if e == nil && agentaccess.RequestGrantProtocol(v.Definition) == "request-grants-v1" {
+			out["approvalPolicies"], e = s.requestApprovalPolicies(r.Context(), v.Definition.EnvCode)
+		}
+		httpx.Result(w, 200, out, e)
 	})
 	wrap("GET /v1/environments/{code}", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Catalog.GetEnvironment(r.Context(), r.PathValue("code"))

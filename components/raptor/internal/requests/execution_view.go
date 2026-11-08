@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/jackc/pgx/v5"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/agentaccess"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
 	"reflect"
 	"time"
@@ -188,9 +189,12 @@ func (s *Service) syncExecutionForAttempt(ctx context.Context, r domain.Request,
 	if e = tx.QueryRow(ctx, "SELECT status,control_state,approval_resume_pending,approval_resume_at FROM raptor.requests WHERE id=$1 FOR UPDATE", r.ID).Scan(&status, &control, &approvalResumePending, &approvalResumeAt); e != nil {
 		return nil, nil, false, domain.ErrUnavailable
 	}
-	// A service handoff may only reconcile an authorized resource continuation.
 	// Recheck under the request lock so cancellation or blocking always wins.
-	if attempt != "" && (control != "" || (status != "waiting_resource" && status != "running") || candidate["attemptId"] != attempt || candidate["status"] != "running") {
+	handoffState := status == "waiting_resource" || status == "running"
+	if agentaccess.RequestGrantProtocol(r.Definition) != "" && status == "queued" {
+		handoffState = true
+	}
+	if attempt != "" && (control != "" || !handoffState || candidate["attemptId"] != attempt || candidate["status"] != "running") {
 		return nil, nil, false, domain.ErrConflict
 	}
 	var oldBody []byte

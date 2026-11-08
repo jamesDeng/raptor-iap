@@ -1,6 +1,6 @@
 import {createRemoteObservationTools} from './observation-proxy.mjs';
 import {readPgcatClients} from './pgcat-metrics.mjs';
-import {discoverClientTargets} from './client-targets.mjs';
+import {discoverClientPods,discoverClientTargets} from './client-targets.mjs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {isIP} from 'node:net';
@@ -22,6 +22,12 @@ function projection(kind,data,config){
  }else if(kind==='backend'){
   if(!exact(data,['serverGroupId','listenerId','observedAt','nodes'])||data.serverGroupId!==config.serverGroupId||data.listenerId!==config.listenerId||!Array.isArray(data.nodes)||data.nodes.length>50)throw invalid();
   const seen=new Set();for(const n of data.nodes){if(!exact(n,['instanceId','privateIp','status','registered','healthy'])||!id(n.instanceId)||seen.has(n.instanceId)||!privateEndpoint('http://'+n.privateIp)||!['Available','Adding','Configuring','Removing'].includes(n.status)||typeof n.registered!=='boolean'||typeof n.healthy!=='boolean'||(n.healthy&&(!n.registered||n.status!=='Available')))throw invalid();seen.add(n.instanceId);}
+ }else if(kind==='expansion'||kind==='retirement'){
+  const ids=kind==='expansion'?'createdIds':'destroyedIds';
+  if(!exact(data,['actionId','scalingActivityId','status',ids,'observedAt'])||!id(data.actionId)||
+   !/^asa-[A-Za-z0-9-]{1,128}$/.test(data.scalingActivityId)||!['Pending','InProgress','Successful','Failed','Rejected','Warning'].includes(data.status)||
+   !Array.isArray(data[ids])||data[ids].length!==(data.status==='Successful'?2:0)||
+   new Set(data[ids]).size!==data[ids].length||data[ids].some(value=>!id(value)))throw invalid();
  }else if(!exact(data,['groupId','desiredCapacity','minSize','maxSize','observedAt'])||data.groupId!==config.groupId||data.minSize!==2||data.maxSize!==4||!Number.isSafeInteger(data.desiredCapacity)||data.desiredCapacity<2||data.desiredCapacity>4)throw invalid();
  return data;
 }
@@ -31,7 +37,14 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
  if(replacementScope&&(['envCode','groupId','serverGroupId'].some(k=>config[k]!==replacementScope[k])||['clusterId','namespace','name','uid'].some(k=>config.application[k]!==replacementScope.application?.[k])))throw invalid();
  const fresh=()=>{if(Date.parse(config.expiresAt)<=Date.now())throw invalid();};
  const execute=async(command,args,env)=>{fresh();try{return await exec(command,args,env);}catch{throw invalid();}};
+ const readClients=(kind,selector)=>execute('kubectl',['--kubeconfig',config.private?.kubeconfig,'--namespace',config.application.namespace,'get',kind,...(kind==='deployment'?[config.application.name]:['--selector',selector]),'--output','json'],{});
  const tools = {
+  async pgcatClientPods(input){
+   if(binding.approvalProtocol!=='request-grants-v1'||!input||Object.keys(input).length)throw invalid();
+   const pods=await discoverClientPods(config.application,readClients);
+   if(pods.length!==2||pods.some(p=>!/^[-a-z0-9.]{1,253}$/.test(p.name??'')||!id(p.uid)))throw invalid();
+   return {pods};
+  },
   async dbConnectionProbe(input){
    if(!input||Object.keys(input).join(',')!=='instanceId'||!id(input.instanceId))throw invalid();
    const fleet=await tools.cloudRead({kind:'fleet'});
@@ -83,7 +96,7 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
     if(metrics.readiness==='metrics-warming')return {...metrics,instanceIds:[...fleetIds].sort()};
     return {...metrics,pendingInstanceIds};
    }
-   const targets=await discoverClientTargets(config.application,async(kind,selector)=>execute('kubectl',['--kubeconfig',config.private?.kubeconfig,'--namespace',config.application.namespace,'get',kind,...(kind==='deployment'?[config.application.name]:['--selector',selector]),'--output','json'],{}));
+   const targets=await discoverClientTargets(config.application,readClients);
    const selector=`job="test-client"`;
    const queries={trafficFailures:`infra_test_operations_total{${selector},outcome=~"failure|timeout|ambiguous"}`,connections:`infra_test_connected_sessions{${selector}}`};
    if(!Object.hasOwn(queries,input.kind))throw invalid();
@@ -109,7 +122,7 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
    validate(sources,true);return {observedAt:new Date().toISOString(),samples:validate(rows)};
   },
   async cloudRead({kind}){
-   fresh();if(!['fleet','backend','capacity'].includes(kind))throw invalid();
+   fresh();if(!['fleet','backend','capacity',...(binding.approvalProtocol==='request-grants-v1'?['expansion','retirement']:[])].includes(kind))throw invalid();
    if(readCloud){try{return projection(kind,await readCloud({kind}),config);}catch{throw invalid();}}
    if(!operatorDiagnosticReads)throw invalid();
    const identity=await execute('aliyun',['sts','GetCallerIdentity','--RegionId',config.region],config.private?.aliyunEnv);

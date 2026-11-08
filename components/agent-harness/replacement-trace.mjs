@@ -7,7 +7,7 @@ const mutations=new Set(['db_proxy_scale','db_proxy_node_protection_set','db_pro
 const fresh=stamp=>Number.isFinite(Date.parse(stamp))&&Math.abs(Date.now()-Date.parse(stamp))<=30000;
 export class ReplacementTrace {
  constructor(manager,binding,scope){
-  this.manager=manager;this.identity={requestId:binding.requestId,definitionSha256:binding.definitionSha256,skillsCommit:binding.skillsCommit,model:binding.model,scope};
+  this.manager=manager;this.versioned=binding.approvalProtocol==='request-grants-v1';this.identity={requestId:binding.requestId,definitionSha256:binding.definitionSha256,skillsCommit:binding.skillsCommit,model:binding.model,scope};
   this.rows=manager.getEntries().filter(e=>e.type==='custom'&&e.customType===TYPE).map(e=>e.data);
   if(this.rows.length>200||this.rows.some(r=>!r||typeof r!=='object'||r.version!==1||canonical(r.identity)!==canonical(this.identity)||!['baseline','intent','result'].includes(r.kind)||Buffer.byteLength(canonical(r))>8192))throw invalid();
   if(this.rows.filter(r=>r.kind==='baseline').length>1)throw invalid();
@@ -50,7 +50,44 @@ export class ReplacementTrace {
   const key=this.key(tool,args),intent=this.rows.find(r=>r.kind==='intent'&&r.key===key);
   if(!intent||this.rows.some(r=>r.kind==='result'&&r.key===key))throw invalid();
   const state=tool==='db_proxy_scale'?{previousDesiredCapacity:data.previousDesiredCapacity,desiredCapacity:data.desiredCapacity,outcome:data.outcome}:tool==='deployment_restart'?{accepted:data.accepted,generation:data.generation}:{instanceIds:data.instanceIds,outcome:data.outcome};
+  if(this.versioned){
+   if(typeof data.actionId!=='string'||!data.actionId)throw invalid();
+   if(tool==='db_proxy_scale'){
+    if(typeof data.scalingActivityId!=='string'||!data.scalingActivityId)throw invalid();
+    state.scalingActivityId=data.scalingActivityId;
+   }else if(tool!=='db_proxy_scale')state.actionId=data.actionId;
+  }
   this.append({kind:'result',key,tool,state,observedAt:new Date().toISOString()});
+ }
+ reconcileSubmitted(rows,grantId){
+  if(!this.versioned||typeof grantId!=='string'||!grantId||!Array.isArray(rows))return;
+  const intent=this.rows.find(row=>row.kind==='intent'&&!this.rows.some(saved=>saved.kind==='result'&&saved.key===row.key));
+  if(!intent)return;
+  const {tool,args}=intent,scope=this.identity.scope;
+  const capability={db_proxy_scale:args.desiredCapacity===4?'db-proxy.scale-out':'db-proxy.scale-in',
+   db_proxy_node_protection_set:'db-proxy.node-protection',db_proxy_nodes_deregister:'db-proxy.drain',deployment_restart:'application.restart'}[tool];
+  const target=tool==='deployment_restart'?{kind:'application',code:scope.application.appCode}:{kind:'db-proxy',code:scope.proxyCode};
+  const matches=rows.filter(row=>row?.requestId===this.identity.requestId&&row.envCode===scope.envCode&&row.scopeDigest===scope.resolutionDigest&&
+   row.grantId===grantId&&row.capability?.capability===capability&&canonical(row.capability.target)===canonical(target)&&
+   row.arguments&&canonical(row.arguments)===canonical(args));
+  if(matches.length!==1||matches[0].state!=='submitted')return;
+  const {actionId,providerRequestId}=matches[0];
+  if(typeof actionId!=='string'||!actionId||typeof providerRequestId!=='string'||!providerRequestId)return;
+  let receipt;
+  if(tool==='db_proxy_scale'){
+   const match=/^[^:]+:(asa-[a-zA-Z0-9-]+)$/.exec(providerRequestId);
+   if(!match||actionId!==args.actionId||![2,4].includes(args.desiredCapacity))return;
+   receipt={actionId,outcome:'submitted',previousDesiredCapacity:args.desiredCapacity===4?2:4,desiredCapacity:args.desiredCapacity,scalingActivityId:match[1]};
+  }else if(tool==='deployment_restart'){
+   const [uid,value,extra]=providerRequestId.split(':');
+   const generation=Number(value);
+   if(extra!==undefined||uid!==scope.application.uid||!Number.isSafeInteger(generation)||generation<1)return;
+   receipt={actionId,accepted:true,generation};
+  }else{
+   receipt={actionId,outcome:'submitted',instanceIds:[...args.nodeIds]};
+  }
+  this.mutation(tool,args,receipt);
+  return {tool,args,receipt};
  }
  scaleActions(){return this.rows.filter(r=>r.kind==='intent'&&r.tool==='db_proxy_scale').map(intent=>({actionId:intent.args.actionId,...this.rows.find(r=>r.kind==='result'&&r.key===intent.key)?.state}));}
  unresolved(){return this.rows.some(r=>r.kind==='intent'&&!this.rows.some(v=>v.kind==='result'&&v.key===r.key));}

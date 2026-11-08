@@ -52,6 +52,14 @@ func (s *Store) LiveCancelled(ctx context.Context, id string) (bool, error) {
 	e := s.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM gateway.signals WHERE request_id=$1 AND kind='cancel')", id).Scan(&found)
 	return found, e
 }
+func (s *Store) RetainPgcatObservation(ctx context.Context, requestID string) bool {
+	var active bool
+	err := s.Pool.QueryRow(ctx, `SELECT status IN ('queued','running','waiting_approval','waiting_resource') AND
+		NOT EXISTS (SELECT 1 FROM gateway.signals WHERE request_id=$1 AND kind IN ('cancel','block'))
+		FROM gateway.executions WHERE request_id=$1 AND runtime_mode='live'`, requestID).Scan(&active)
+	return err == nil && active
+}
+
 func (s *Store) RecoveryRecord(ctx context.Context, attempt string) (RecoveryRecord, error) {
 	var r RecoveryRecord
 	var binding, result, checkpoint []byte

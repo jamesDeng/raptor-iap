@@ -34,6 +34,7 @@ type IssueInput struct {
 	ExpiresAt        time.Time `json:"expiresAt"`
 }
 type Binding struct {
+	ApprovalProtocol  string `json:"approvalProtocol,omitempty"`
 	ExecutionMode     string `json:"executionMode,omitempty"`
 	RequestID         string `json:"requestId"`
 	AttemptID         string `json:"attemptId"`
@@ -176,7 +177,7 @@ func issueBinding(ctx context.Context, q issueQuery, id string, in IssueInput, l
 	if e = q.QueryRow(ctx, "SELECT CASE WHEN ack_cluster_id<>'' AND cluster_id<>'' AND ack_cluster_id<>cluster_id THEN '' ELSE coalesce(nullif(ack_cluster_id,''),nullif(cluster_id,''),(SELECT value_json::jsonb #>> '{}' FROM raptor.environment_settings WHERE environment_code=$1 AND key='ackClusterId'),'') END FROM raptor.environments WHERE code=$1", def.EnvCode).Scan(&cluster); e != nil || cluster == "" {
 		return Binding{}, false, domain.ErrUnavailable
 	}
-	return Binding{ExecutionMode: replacementMode(def), RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}, replacement, nil
+	return Binding{ApprovalProtocol: RequestGrantProtocol(def), ExecutionMode: replacementMode(def), RequestID: id, AttemptID: in.AttemptID, Operation: def.Operations[0].Name, ObjectKind: def.Object.Kind, ObjectCode: def.Object.Code, EnvCode: def.EnvCode, SkillsCommit: def.Skills.CommitSHA, Model: def.Model, ProviderID: def.ProviderID, ConnectionVersion: def.ConnectionVersion, DefinitionSHA256: fingerprint, ClusterID: cluster}, replacement, nil
 }
 
 // Include expired and revoked history: neither can reset a request's frozen
@@ -450,7 +451,7 @@ func (s *Service) checkEligibility(ctx context.Context, in CheckInput) (CheckRes
 		return out, domain.ErrUnavailable
 	}
 	hash, e := Fingerprint(def)
-	if e != nil || hash != binding.DefinitionSHA256 || !supported(def) || binding.ExecutionMode != replacementMode(def) || binding.Operation != def.Operations[0].Name || binding.ObjectKind != def.Object.Kind || binding.ObjectCode != def.Object.Code || binding.EnvCode != def.EnvCode || binding.SkillsCommit != def.Skills.CommitSHA || binding.Model != def.Model || binding.ProviderID != def.ProviderID || binding.ConnectionVersion != def.ConnectionVersion {
+	if e != nil || hash != binding.DefinitionSHA256 || !supported(def) || binding.ApprovalProtocol != RequestGrantProtocol(def) || binding.ExecutionMode != replacementMode(def) || binding.Operation != def.Operations[0].Name || binding.ObjectKind != def.Object.Kind || binding.ObjectCode != def.Object.Code || binding.EnvCode != def.EnvCode || binding.SkillsCommit != def.Skills.CommitSHA || binding.Model != def.Model || binding.ProviderID != def.ProviderID || binding.ConnectionVersion != def.ConnectionVersion {
 		return out, nil
 	}
 	var cluster string
@@ -600,7 +601,7 @@ func replacementRows(ctx context.Context, query replacementQuery, request, env, 
 		snapshot.Write(dr)
 		snapshot.WriteByte(0)
 		fingerprint, err := Fingerprint(def)
-		if err != nil || fingerprint != b.DefinitionSHA256 || !supported(def) || b.RequestID != request || b.EnvCode != env || b.ObjectCode != proxy || !scope.ResourceValidFor(b) || (mutation && b.ExecutionMode != "replacement") || (!mutation && b.ExecutionMode != "qualification") {
+		if err != nil || fingerprint != b.DefinitionSHA256 || !supported(def) || b.ApprovalProtocol != RequestGrantProtocol(def) || b.RequestID != request || b.EnvCode != env || b.ObjectCode != proxy || !scope.ResourceValidFor(b) || (mutation && b.ExecutionMode != "replacement") || (!mutation && b.ExecutionMode != "qualification") {
 			invalid = true
 			continue
 		}
@@ -636,6 +637,33 @@ func (s *Service) PrepareRequestReplacementProof(ctx context.Context, request, e
 	return s.prepareRequestReplacement(ctx, request, env, proxy, mutation, func(ctx context.Context, b Binding) (ReplacementScope, error) {
 		return s.ValidateReplacement(ctx, b, proof)
 	})
+}
+
+func (s *Service) PrepareRequestGrantScope(ctx context.Context, request, env, proxy, digest string) (func(context.Context, pgx.Tx) error, error) {
+	if s.ResolveReplacement == nil {
+		return nil, domain.ErrUnavailable
+	}
+	return s.prepareRequestReplacement(ctx, request, env, proxy, true, func(ctx context.Context, b Binding) (ReplacementScope, error) {
+		if b.ApprovalProtocol != "request-grants-v1" {
+			return ReplacementScope{}, domain.ErrForbidden
+		}
+		current, err := s.ResolveReplacement(ctx, b)
+		if err == nil && current.ResolutionDigest != digest {
+			err = domain.ErrConflict
+		}
+		return current, err
+	})
+}
+
+func (s *Service) RequestGrantReplacementScope(ctx context.Context, request, env, proxy string) (ReplacementScope, error) {
+	scope, binding, _, err := replacementRows(ctx, s.Pool, request, env, proxy, true)
+	if err != nil {
+		return ReplacementScope{}, err
+	}
+	if binding.ApprovalProtocol != "request-grants-v1" {
+		return ReplacementScope{}, domain.ErrForbidden
+	}
+	return scope, nil
 }
 
 func (s *Service) RequestReplacementSnapshot(ctx context.Context, request, env, proxy string, mutation bool) (string, error) {

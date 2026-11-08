@@ -100,17 +100,17 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 	if e != nil {
 		return domain.ScaleReceipt{}, e
 	}
-	direction, e := policy.ScaleDirection(s, in.DesiredCapacity)
+	operation, e := policy.ScaleApprovalVariant(s, in.DesiredCapacity)
 	if e != nil {
 		return domain.ScaleReceipt{}, e
 	}
 	out := domain.ScaleReceipt{Outcome: "no_change", GroupID: s.GroupID, PreviousDesiredCapacity: s.Desired, DesiredCapacity: in.DesiredCapacity, EvidenceMode: r.evidence()}
-	if direction == "no_change" {
+	if operation.Capability == "" {
 		return out, nil
 	}
 	binding := approval.Binding{RequestID: in.RequestID, ActionID: in.ActionID, EnvCode: env.Code, ProxyCode: in.ProxyCode, GroupID: s.GroupID, DesiredCapacity: in.DesiredCapacity}
 	var observations []policy.ClientObservation
-	if direction == "in" {
+	if operation.RequiresHumanApproval {
 		if e = policy.DirectReplacementScaleInAllowed(s, in.DesiredCapacity); e != nil {
 			return domain.ScaleReceipt{}, e
 		}
@@ -137,13 +137,13 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 	if e = r.unchanged(ctx, env, in.ProxyTarget, s); e != nil {
 		return domain.ScaleReceipt{}, e
 	}
-	if direction == "in" {
+	if operation.RequiresHumanApproval {
 		allowed, e := r.Claims.Claim(ctx, binding)
 		if e != nil || !allowed {
 			return domain.ScaleReceipt{}, failure("ApprovalRequired")
 		}
 	}
-	if direction == "in" {
+	if operation.RequiresHumanApproval {
 		now := time.Now()
 		if r.Now != nil {
 			now = r.Now()
@@ -159,7 +159,7 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 		}
 	}
 	requestID, e := r.Backend.Scale(ctx, env, s.GroupID, in.DesiredCapacity)
-	if direction == "in" {
+	if operation.RequiresHumanApproval {
 		outcome := "submitted"
 		if e != nil {
 			outcome = "unknown"

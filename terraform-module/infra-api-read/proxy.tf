@@ -11,7 +11,7 @@ locals {
   # groups in the selected account. Membership and every mutation stay pinned.
   proxy_statements = !var.enable_proxy_commands ? [] : [
     { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:${var.region}:${var.account_id}:scalinggroup/*"] },
-    { Effect = "Allow", Action = ["ess:DescribeScalingInstances", "ess:ModifyScalingGroup", "ess:SetInstancesProtection"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:ess:${var.region}:${var.account_id}:scalinggroup/${p.group_id}"])) },
+    { Effect = "Allow", Action = ["ess:DescribeScalingActivities", "ess:DescribeScalingInstances", "ess:DetachInstances", "ess:ModifyScalingGroup", "ess:ScaleWithAdjustment", "ess:SetInstancesProtection"], Resource = sort(distinct([for p in values(var.proxy_targets) : "acs:ess:${var.region}:${var.account_id}:scalinggroup/${p.group_id}"])) },
     { Effect = "Allow", Action = ["nlb:ListServerGroups"], Resource = local.proxy_server_group_arns },
     { Effect = "Allow", Action = ["nlb:ListListeners"], Resource = sort(distinct(concat(["acs:nlb:${var.region}:${var.account_id}:listener/*"], flatten([for p in values(var.proxy_targets) : ["acs:nlb:${var.region}:${var.account_id}:loadBalancer/${p.load_balancer_id}", "acs:nlb:${var.region}:${var.account_id}:loadbalancer/${p.load_balancer_id}"]])))) },
     { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = local.proxy_server_group_arns },

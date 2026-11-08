@@ -22,12 +22,12 @@ import (
 
 type signalSession struct{ gate <-chan struct{} }
 
-func (s *signalSession) Operate(ctx context.Context, _ string) traffic.Outcome {
+func (s *signalSession) Operate(ctx context.Context, _ string) traffic.OperationResult {
 	select {
 	case <-s.gate:
-		return traffic.Success
+		return traffic.OperationResult{Outcome: traffic.Success}
 	case <-ctx.Done():
-		return traffic.Timeout
+		return traffic.OperationResult{Outcome: traffic.Timeout}
 	}
 }
 func (*signalSession) Close() {}

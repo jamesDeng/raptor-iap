@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -116,14 +117,19 @@ func buildSkillsBundle(ctx context.Context, repository string, version execution
 
 // Validate only verified pinned blobs, before observers, credentials, sandboxes
 // or remote model work. Release names and dirty working copies are irrelevant.
-func resourceReplacementContract(raw []byte) error {
+func resourceReplacementContract(raw []byte, protocol ...string) error {
 	var bundle SkillsBundle
 	if json.Unmarshal(raw, &bundle) != nil {
 		return ErrConfiguration
 	}
+	versioned := len(protocol) == 1 && protocol[0] == "request-grants-v1"
+	grantSkill := false
 	markers := []string{}
 	total := 0
 	for _, file := range bundle.Files {
+		if versioned && file.Path == "pgcat-replacement/references/request-grants.md" {
+			grantSkill = len(file.Data) <= 16384 && slices.Contains(strings.Split(string(file.Data), "\n"), "request-grants-contract: v1")
+		}
 		if file.Path != "pgcat-replacement/SKILL.md" && file.Path != "pgcat-replacement/references/contracts.md" && file.Path != "pgcat-replacement/references/recovery.md" {
 			continue
 		}
@@ -140,7 +146,7 @@ func resourceReplacementContract(raw []byte) error {
 	if len(markers) == 1 && markers[0] == "replacement-contract: direct-v2" {
 		return execution.ErrResourceContractMigrationRequired
 	}
-	if len(markers) != 1 || markers[0] != "replacement-contract: resource-v1" {
+	if len(markers) != 1 || markers[0] != "replacement-contract: resource-v1" || (versioned && !grantSkill) {
 		return ErrConfiguration
 	}
 	return nil

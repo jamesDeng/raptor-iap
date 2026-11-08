@@ -81,11 +81,17 @@ func ParseLiveOperation(in ExecutionInput, attempt string) (AttemptBinding, Live
 		}
 	case "db-proxy.replace-nodes":
 		if len(op.Parameters) > 0 {
-			if len(op.Parameters) != 1 || json.Unmarshal(op.Parameters["mode"], &b.ExecutionMode) != nil || (b.ExecutionMode != "qualification" && b.ExecutionMode != "replacement") {
+			if json.Unmarshal(op.Parameters["mode"], &b.ExecutionMode) != nil || (b.ExecutionMode != "qualification" && b.ExecutionMode != "replacement") {
 				return AttemptBinding{}, LiveOperationInput{}, ErrInvalid
 			}
 		}
-		if !b.journalValid() || b.ObjectKind != "db-proxy" || op.Parameters == nil || len(op.Parameters) > 1 {
+		if len(op.Parameters) > 1 {
+			if len(op.Parameters) != 2 || json.Unmarshal(op.Parameters["approvalProtocol"], &b.ApprovalProtocol) != nil ||
+				b.ApprovalProtocol != "request-grants-v1" {
+				return AttemptBinding{}, LiveOperationInput{}, ErrInvalid
+			}
+		}
+		if !b.journalValid() || b.ObjectKind != "db-proxy" || op.Parameters == nil {
 			return AttemptBinding{}, LiveOperationInput{}, ErrInvalid
 		}
 	default:
