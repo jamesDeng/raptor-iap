@@ -103,6 +103,19 @@ func TestObserverProgressIsReplacementOnly(t *testing.T) {
 	}
 }
 
+func TestGrantReceiptProgressIsReplacementOnly(t *testing.T) {
+	for _, name := range []string{"mcp__raptor__request_grant_action_get", "mcp__raptor__request_grant_actions_list"} {
+		if !ProgressToolAllowed("db-proxy.replace-nodes", name) {
+			t.Errorf("replacement rejected grant receipt tool %s", name)
+		}
+		for _, operation := range []string{"application.question", "repository.change"} {
+			if ProgressToolAllowed(operation, name) {
+				t.Errorf("%s accepted grant receipt tool %s", operation, name)
+			}
+		}
+	}
+}
+
 func TestReplacementJournalStoresBothContractVersions(t *testing.T) {
 	for _, version := range []int{1, 2} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
