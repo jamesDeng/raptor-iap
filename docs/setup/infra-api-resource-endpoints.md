@@ -7,6 +7,7 @@ Source inventory, 2026-10-31. This describes `cmd/server/main.go` → `buildReso
 | `GET /healthz` | none | Unauthenticated readiness; not a Gateway route |
 | `GET /v1/deployments` | `envCode`, `kind`, `code` | `kind`: application/database/db-proxy; typed resource/workload envelope |
 | `GET /v1/deployment-status` | `envCode`, `appCode`, optional `workloadKey` | Omitted key requires one workload |
+| `GET /v1/approval-policy` | `protocol=request-grants-v1` | Service-authenticated policy discovery for request grants, routed when proxy commands are enabled |
 | `GET /v1/deployments` with exact `Accept: application/vnd.raptor.resolution-proof+json` | `envCode`, `kind=db-proxy`, `code` | Service-only private proof on the existing routed path; agent denied before introspection/resolution |
 | `GET /v1/resource-resolution-proof` | `envCode`, `proxyCode` | Local/internal service-only equivalent; not routed by Gateway |
 | `POST /v1/deployment-restart` | `requestId`, `envCode`, `appCode`, `workloadKey` | Restart opt-in |
