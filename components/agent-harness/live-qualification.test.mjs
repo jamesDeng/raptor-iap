@@ -14,7 +14,7 @@ const cases=[
  {name:'mismatched approval identity',split:true,fault:'bad-approval',firstError:'ToolFailed',pauseCount:0},
  {name:'incomplete first probes',split:true,fault:'missing-initial-probe',firstError:'ToolFailed',pauseCount:0},
  {name:'approval with failed sibling read',split:true,fault:'sibling-failure',firstError:'ToolFailed',pauseCount:0},
- {name:'missing resumed probe',split:true,fault:'missing-resumed-probe',resumeError:'ModelFailed'},
+ {name:'missing resumed probe',split:true,fault:'missing-resumed-probe',resumeError:'TurnLimit'},
  {name:'failed resumed probe',split:true,fault:'failed-resumed-probe',resumeError:'ToolFailed'},
  {name:'stale resumed metrics',split:true,fault:'stale-resumed-metrics',resumeError:'ToolFailed'},
  {name:'denied continuation',split:true,fault:'denied-continuation',resumeError:'ToolFailed'},
