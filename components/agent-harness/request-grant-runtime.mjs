@@ -25,6 +25,9 @@ export class RequestGrantRuntime {
    data.definitionSha256!==this.binding.definitionSha256||
    typeof data.operationPrompt!=='string'||!data.operationPrompt||
    !data.approvalPolicies||typeof data.approvalPolicies!=='object')throw rejected();
+  for(const [tool,policy] of Object.entries(infraPolicies)){
+   if(policy.variants.some(variant=>variant.requiresHumanApproval)&&!isDeepStrictEqual(data.approvalPolicies[tool],policy))throw rejected();
+  }
   const required=new Map();
   for(const [tool,policy] of Object.entries(data.approvalPolicies)){
    if(!isDeepStrictEqual(policy,infraPolicies[tool]))throw rejected();

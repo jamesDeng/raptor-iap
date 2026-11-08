@@ -1,3 +1,11 @@
+// This rejection is raised before an intent or network call is made.
+export class ReplacementEvidenceRequired extends Error {
+ constructor(reads){
+  super('MissingEvidence');
+  this.reads=[...new Set(reads)];
+ }
+}
+
 // A command acknowledgement is evidence of submission, never fleet health.
 export function replacementEvidence(server,tool,data,b,scope,args,discovered=new Map()){
  const now=()=>new Date().toISOString();
