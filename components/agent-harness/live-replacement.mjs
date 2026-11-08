@@ -113,7 +113,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     pause.beforeTool(server,tool);
     const name='mcp__'+server+'__'+tool;
     if(!qualification&&REPLACEMENT_WRITES.has(name)&&
-      (!activeTools.includes(name)||(readiness.blocked()&&name!==MONITORING_SYNC)))throw Error('MissingEvidence');
+      (!activeTools.includes(name)||(grants&&trace.unresolved())||(readiness.blocked()&&name!==MONITORING_SYNC)))throw Error('MissingEvidence');
     if(name===MONITORING_SYNC&&!sequence.canSyncInventory())throw Error('MissingEvidence');
     if(grants&&server==='raptor'){
      if(tool==='request_grant_request')grants.beforeProposal(args);
@@ -155,15 +155,16 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    },
    onDiagnostic:({server,tool,category})=>{
     const name='mcp__'+server+'__'+tool;
-    if(grants&&server==='infra'&&REPLACEMENT_WRITES.has(name)&&name!==MONITORING_SYNC&&trace.unresolved()&&
-     (category==='transport-error'||category==='local-evidence'||category.startsWith('http-')||category.startsWith('remote-'))){
-     uncertainWrite=name;
-    }else readFailure=true;
+    const recoverable=grants&&server==='infra'&&REPLACEMENT_WRITES.has(name)&&name!==MONITORING_SYNC&&trace.unresolved()&&
+     (['transport-error','protocol-error','local-evidence'].includes(category)||category.startsWith('http-')||category.startsWith('remote-'));
+    if(recoverable)uncertainWrite=name;
+    else readFailure=true;
     const diagnostic=toolFailureDiagnostic('mcp__'+server+'__'+tool,profile,category);
     if(diagnostic){
      toolDiagnostics.set('mcp__'+server+'__'+tool,diagnostic.category);
      progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});
     }
+    return recoverable===true;
    },
   });
   const approvalResume=decisionContext?.decision==='resume'&&Boolean(decisionContext.approvalId);

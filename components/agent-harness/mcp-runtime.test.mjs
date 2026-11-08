@@ -263,3 +263,26 @@ test('exposes trusted Infra approval policy to Pi and rejects an unsupported ver
  assert.deepEqual(reported,[['db_proxy_scale',policy]]);
  await assert.rejects(()=>call(catalog(2,()=>assert.fail('unsupported policy was exposed to Pi'))),/InvalidApprovalPolicy/);
 });
+
+test('a granted write transport loss can reach a scoped receipt read through the same MCP gate',async()=>{
+ const {createGuardedFetch,createToolCallGate,serializeMcpToolCalls}=await import('./mcp-runtime.mjs');
+ const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'replacement',approvalProtocol:'request-grants-v1'};
+ const scope={envCode:b.envCode,proxyCode:b.objectCode,groupId:'group',serverGroupId:'backend',targetDbCode:'db',resolutionDigest:'digest',
+  application:{envCode:b.envCode,appCode:'app',clusterId:'cluster',namespace:'ns',name:'app',uid:'uid'}};
+ let dispatched=0,reads=0,diagnostic;
+ const gate=createToolCallGate(()=>false,{parallelReads:true});
+ const infra='https://infra.example/mcp',raptor='https://raptor.example/mcp';
+ const writer=serializeMcpToolCalls(createGuardedFetch({server:'infra',url:infra,binding:b,replacementScope:scope,
+  fetch:async()=>{dispatched++;throw Error('lost response');},onDiagnostic:event=>{
+   diagnostic=event;return event.category==='transport-error'&&event.tool==='db_proxy_scale';
+  }}),gate);
+ const receipt=serializeMcpToolCalls(createGuardedFetch({server:'raptor',url:raptor,binding:b,replacementScope:scope,
+  fetch:async()=>{reads++;return Response.json({jsonrpc:'2.0',id:2,result:{structuredContent:{data:[]}}});}}),gate,()=>true);
+ const call=(id,name,args)=>({method:'POST',body:JSON.stringify({jsonrpc:'2.0',id,method:'tools/call',params:{name,arguments:args}})});
+ const failed=await writer(infra,call(1,'db_proxy_scale',{requestId:b.requestId,envCode:b.envCode,proxyCode:b.objectCode,actionId:'expand',desiredCapacity:4}));
+ assert.equal((await failed.json()).result.isError,true);
+ assert.equal(diagnostic.category,'transport-error');
+ assert.equal((await receipt(raptor,call(2,'request_grant_actions_list',{requestId:b.requestId}))).status,200);
+ assert.equal(dispatched,1);
+ assert.equal(reads,1);
+});
