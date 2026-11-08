@@ -41,7 +41,7 @@ func grantFixture(t *testing.T) (*Service, domain.User, RequestGrantInput) {
 	in := RequestGrantInput{RequestID: domain.NewID(), EnvCode: "rdev.ali", ScopeDigest: strings.Repeat("a", 64),
 		Capabilities: []GrantCapability{
 			{Capability: "db-proxy.scale-in", Target: GrantTarget{Kind: "db-proxy", Code: "DP00001"}, Constraints: []byte(`{"desiredCapacity":2}`)},
-			{Capability: "application.restart", Target: GrantTarget{Kind: "application", Code: "A00003"}, Constraints: []byte(`{}`)},
+			{Capability: "db-proxy.sync-monitoring", Target: GrantTarget{Kind: "db-proxy", Code: "DP00001"}, Constraints: []byte(`{}`)},
 		}}
 	if _, err := pool.Exec(ctx, `INSERT INTO raptor.requests(id,creator_id,idempotency_key,input_hash,definition,schema_hash,status)
 		VALUES($1,$2,'grant','hash','{"type":"agent","envCode":"rdev.ali"}','schema','running')`, in.RequestID, user.ID); err != nil {

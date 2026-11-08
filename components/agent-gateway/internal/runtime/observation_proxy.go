@@ -27,13 +27,15 @@ type observationEntry struct {
 	active   func(context.Context) bool
 }
 type ObservationProxy struct {
-	ReadPgcatDrainAction func(context.Context, string, string, string, string, string) (execution.PgcatDrainAction, error)
-	origin               string
-	execute              ObservationExecutor
-	mu                   sync.Mutex
-	entries              map[[32]byte]observationEntry
-	busy                 chan struct{}
-	pgcat                *pgcatContinuity
+	ReadPgcatRestartAction func(context.Context, string, string, string, string, string, string) (execution.PgcatRestartAction, error)
+	RecordPgcatObservation func(context.Context, execution.PgcatObservationRecord) error
+	ReadPgcatDrainAction   func(context.Context, string, string, string, string, string) (execution.PgcatDrainAction, error)
+	origin                 string
+	execute                ObservationExecutor
+	mu                     sync.Mutex
+	entries                map[[32]byte]observationEntry
+	busy                   chan struct{}
+	pgcat                  *pgcatContinuity
 }
 
 func NewObservationProxy(origin string, execute ObservationExecutor) (*ObservationProxy, error) {
@@ -213,6 +215,9 @@ func (p *ObservationProxy) guardedExecute(parent context.Context, hash [32]byte,
 	var err error
 	if tool == pgcatContinuityTool {
 		raw, err = p.pgcatObservation(ctx, entry, args)
+	} else if tool == "db_connection_probe" && entry.start.Binding.ApprovalProtocol == "request-grants-v1" &&
+		p.pgcat.probesReleased(entry.start.Binding.RequestID) {
+		return nil, 503
 	} else {
 		raw, err = p.execute(ctx, entry.start, entry.material, tool, args)
 	}
@@ -223,6 +228,10 @@ func (p *ObservationProxy) guardedExecute(parent context.Context, hash [32]byte,
 		}
 	}
 	if err != nil || ctx.Err() != nil || !active() || !entry.expires.After(time.Now()) || entry.check(ctx) != nil || ctx.Err() != nil || !active() || len(raw) > 262144 || !json.Valid(raw) || unsafe {
+		return nil, 503
+	}
+	if entry.start.Binding.ApprovalProtocol == "request-grants-v1" &&
+		p.recordPgcatObservation(ctx, entry, tool, args, raw) != nil {
 		return nil, 503
 	}
 	return raw, 200
@@ -249,7 +258,7 @@ func validObservationInput(tool string, raw json.RawMessage) bool {
 			return false
 		}
 		if tool == "cloud_read" {
-			return value == "fleet" || value == "backend" || value == "capacity"
+			return value == "fleet" || value == "backend" || value == "capacity" || value == "retirement"
 		}
 		return value == "trafficFailures" || value == "connections" || value == "pgcatClients"
 	case "db_connection_probe":

@@ -26,9 +26,10 @@ func validPgcatHost(host string) bool {
 }
 
 type pgcatContinuityArgs struct {
-	Phase         string `json:"phase"`
-	ObservationID string `json:"observationId,omitempty"`
-	DrainActionID string `json:"drainActionId,omitempty"`
+	Phase           string `json:"phase"`
+	ObservationID   string `json:"observationId,omitempty"`
+	DrainActionID   string `json:"drainActionId,omitempty"`
+	RestartActionID string `json:"restartActionId,omitempty"`
 }
 
 func validPgcatContinuityArgs(raw json.RawMessage) bool {
@@ -40,9 +41,12 @@ func validPgcatContinuityArgs(raw json.RawMessage) bool {
 	switch args.Phase {
 	case "hold":
 		return len(fields) == 1
-	case "verify-drain":
+	case "verify-drain", "release-probes":
 		return len(fields) == 3 && fields["observationId"] != nil && fields["drainActionId"] != nil &&
 			transportID.MatchString(args.ObservationID) && transportID.MatchString(args.DrainActionID)
+	case "verify-traffic", "verify-final-traffic":
+		return len(fields) == 3 && fields["observationId"] != nil && fields["restartActionId"] != nil &&
+			transportID.MatchString(args.ObservationID) && transportID.MatchString(args.RestartActionID)
 	}
 	return false
 }
@@ -132,6 +136,13 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 		return nil, ErrConfiguration
 	}
 	binding, scope := entry.start.Binding, entry.start.Access.ReplacementScope
+	if args.Phase == "release-probes" {
+		release, err := p.pgcat.releaseProbes(ctx, binding.RequestID, scope.ResolutionDigest, args.ObservationID, args.DrainActionID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(release)
+	}
 	connect, err := privatePgcatConnector(entry.material, scope.Port)
 	if err != nil {
 		return nil, err
@@ -192,6 +203,9 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 		if err != nil {
 			return nil, err
 		}
+		if err := p.startPgcatLogWatch(ctx, entry, evidence); err != nil {
+			return nil, err
+		}
 		return json.Marshal(evidence)
 	case "verify-drain":
 		if len(all) != 4 || len(routed) != 2 || backend.ObservedAt.Before(drain.RecordedAt) ||
@@ -204,6 +218,85 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 			return nil, err
 		}
 		return json.Marshal(evidence)
+	case "verify-traffic", "verify-final-traffic":
+		if args.Phase == "verify-traffic" {
+			if len(all) != 4 || !p.pgcat.matchesOriginalBackends(binding.RequestID, all) {
+				return nil, ErrRuntimeUnavailable
+			}
+		} else {
+			var retired struct {
+				Status       string
+				ObservedAt   time.Time
+				DestroyedIDs []string
+			}
+			if len(all) != 2 || read("retirement", &retired) != nil || retired.Status != "Successful" ||
+				!pgcatFreshTime(retired.ObservedAt, time.Now()) || !p.pgcat.matchesOriginalNodes(binding.RequestID, retired.DestroyedIDs) {
+				return nil, ErrRuntimeUnavailable
+			}
+		}
+		return p.pgcatTraffic(ctx, entry, args, routed)
 	}
 	return nil, ErrConfiguration
+}
+
+func (p *ObservationProxy) recordPgcatObservation(ctx context.Context, entry observationEntry, tool string, args, result json.RawMessage) error {
+	binding, scope := entry.start.Binding, entry.start.Access.ReplacementScope
+	row := execution.PgcatObservationRecord{RequestID: binding.RequestID, AttemptID: binding.AttemptID,
+		ScopeDigest: scope.ResolutionDigest, Subject: "fleet", Data: result}
+	switch tool {
+	case pgcatContinuityTool:
+		var in pgcatContinuityArgs
+		var proof pgcatHoldEvidence
+		if json.Unmarshal(args, &in) != nil || json.Unmarshal(result, &proof) != nil {
+			return ErrRuntimeUnavailable
+		}
+		switch in.Phase {
+		case "hold":
+			row.Kind, row.ObservedAt = "hold", proof.ObservedAt
+		case "verify-drain":
+			row.Kind, row.ObservedAt = "drain", proof.ObservedAt
+		case "release-probes":
+			var released pgcatProbeRelease
+			if json.Unmarshal(result, &released) != nil {
+				return ErrRuntimeUnavailable
+			}
+			row.Kind, row.ObservedAt = "probe-release", released.ReleasedAt
+		case "verify-traffic", "verify-final-traffic":
+			var traffic pgcatTrafficEvidence
+			if json.Unmarshal(result, &traffic) != nil {
+				return ErrRuntimeUnavailable
+			}
+			if !traffic.NoErrors {
+				return nil
+			}
+			row.Kind, row.ObservedAt = "traffic", traffic.ObservedAt
+			if in.Phase == "verify-final-traffic" {
+				row.Kind = "final-traffic"
+			}
+		}
+	case "db_connection_probe":
+		var proof struct {
+			InstanceID string `json:"instanceId"`
+			Connected  bool   `json:"connected"`
+		}
+		if json.Unmarshal(result, &proof) != nil {
+			return ErrRuntimeUnavailable
+		}
+		if !proof.Connected {
+			return nil
+		}
+		row.Kind, row.Subject, row.ObservedAt = "sql", proof.InstanceID, time.Now().UTC()
+	default:
+		return nil
+	}
+	if p.RecordPgcatObservation == nil {
+		return ErrConfiguration
+	}
+	return p.RecordPgcatObservation(ctx, row)
+}
+
+func validPgcatInternalObservation(binding execution.AttemptBinding, tool string, args json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	return binding.ApprovalProtocol == "request-grants-v1" && tool == "pgcat_client_pods" &&
+		json.Unmarshal(args, &fields) == nil && fields != nil && len(fields) == 0
 }

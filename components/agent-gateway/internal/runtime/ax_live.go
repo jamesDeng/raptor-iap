@@ -128,7 +128,7 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 			return h, ErrConfiguration
 		}
 		if in.Binding.ExecutionMode != "qualification" {
-			if e = resourceReplacementContract(skillsBundle); e != nil {
+			if e = resourceReplacementContract(skillsBundle, in.Binding.ApprovalProtocol); e != nil {
 				return h, e
 			}
 		}

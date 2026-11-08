@@ -8,7 +8,10 @@ export function createRemoteObservationTools({binding,config,replacementScope,fe
  if(!config||Object.keys(config).some(k=>!keys.includes(k))||config.version!==1||config.transport!=='gateway'||config.url!=='https://api.rdev.raptor-iap.top/v1/gateway-observations'||!/^\w{64}$/.test(config.token)||!isDeepStrictEqual(config.binding,binding)||!isDeepStrictEqual(config.scope,replacementScope)||!Number.isFinite(Date.parse(config.expiresAt))||Date.parse(config.expiresAt)<=Date.now())throw invalid();
  const scheduleRead=createReadConcurrency(4);
  const selected={...tools};
- if(binding.approvalProtocol==='request-grants-v1')selected.pgcatConnectionContinuity=[PG_CAT_CONTINUITY];
+ if(binding.approvalProtocol==='request-grants-v1'){
+  selected.cloudRead=['cloud_read','kind',['fleet','backend','capacity','retirement']];
+  selected.pgcatConnectionContinuity=[PG_CAT_CONTINUITY];
+ }
  return Object.fromEntries(Object.entries(selected).map(([name,[tool,key,kinds]])=>[name,args=>{
   return scheduleRead(async()=>{
   const matchesSelector=()=>args&&typeof args==='object'&&!Array.isArray(args)&&Object.keys(args).length===(key?1:0)&&

@@ -149,12 +149,10 @@ func (o resourceOperations) command(ctx context.Context, path string, raw []byte
 	}
 	// Versioned requests must never fall through to the legacy write path.
 	versioned := identity != nil && identity.Binding != nil && identity.Binding.ApprovalProtocol != ""
-	if tool == "pgcat_monitoring_sync" {
+	if versioned || tool == "pgcat_monitoring_sync" {
 		if !versioned || identity.Binding.ApprovalProtocol != policy.RequestGrantProtocol || o.grants == nil || o.grantID == "" {
 			return nil, &operationError{403, "ApprovalRequired"}
 		}
-	} else if versioned {
-		return nil, &operationError{503, "RequestGrantEnforcementUnavailable"}
 	}
 	if o.commander == nil {
 		return nil, &operationError{503, "NotConfigured"}
@@ -173,6 +171,9 @@ func (o resourceOperations) command(ctx context.Context, path string, raw []byte
 	}
 	if c, ok := in.(resourceInventory); ok {
 		return o.syncMonitoring(ctx, *identity, r, c, raw)
+	}
+	if versioned {
+		return o.grantedPgcatCommand(ctx, *identity, r, tool, in, raw)
 	}
 	var data any
 	if c, ok := in.(resourceRestart); ok {

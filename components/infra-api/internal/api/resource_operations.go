@@ -297,6 +297,9 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 			return nil, e
 		}
 	}
+	if tool == "proxy_observation_get" && args[field] == "retirement" {
+		return o.pgcatRetirementRead(ctx, i, r)
+	}
 	var initialProof resources.Proof
 	if clients && i == nil {
 		initialProof, e = o.resolver.ResolveProof(ctx, args["envCode"], args["proxyCode"])
@@ -380,6 +383,9 @@ func resourceProxyReadOptions(tool string) (string, []string) {
 	field, options := proxyReadOptions(tool)
 	if tool == "proxy_pgcat_metrics_get" {
 		options = append(options, "clients")
+	}
+	if tool == "proxy_observation_get" {
+		options = append(options, "retirement")
 	}
 	return field, options
 }

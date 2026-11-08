@@ -69,11 +69,12 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const scheduleRead=createReadConcurrency(4);
   const proposalTools=grants?[...readTools,GRANT_PROPOSAL]:undefined;
   const inventoryTools=grants?[...readTools,MONITORING_SYNC]:undefined;
+  const authorizedTools=grants?tools.filter(name=>name!==GRANT_PROPOSAL):tools;
   const allowedTools=()=>{
    if(qualification)return tools;
-   if(readiness.blocked())return grants?.approved&&readiness.expansion()?.result?inventoryTools:readTools;
+   if(readiness.blocked())return grants?.approved&&sequence.canSyncInventory()?inventoryTools:readTools;
    if(!sequence.canWrite())return readTools;
-   if(!grants||grants.approved)return tools;
+   if(!grants||grants.approved)return authorizedTools;
    return grants.required&&!grants.expected?proposalTools:readTools;
   };
   let activeTools=allowedTools();
@@ -90,7 +91,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     else sequence.observe(args.kind==='pgcatClients'?'metrics':args.kind,data);
     return data;
    }),
-   ...(observer.pgcatConnectionContinuity?{pgcatConnectionContinuity:args=>serializedRead(()=>observer.pgcatConnectionContinuity(args))}:{}),
+   ...(observer.pgcatConnectionContinuity?{pgcatConnectionContinuity:args=>serializedRead(async()=>{const result=await observer.pgcatConnectionContinuity(args);sequence.observeContinuity(args,result);return result;})}:{}),
    dbConnectionProbe:args=>serializedRead(async()=>{
     if(qualification)trace.requireBaselineNode(args?.instanceId);
     else{
@@ -112,6 +113,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     const name='mcp__'+server+'__'+tool;
     if(!qualification&&REPLACEMENT_WRITES.has(name)&&
       (!activeTools.includes(name)||(readiness.blocked()&&name!==MONITORING_SYNC)))throw Error('MissingEvidence');
+    if(name===MONITORING_SYNC&&!sequence.canSyncInventory())throw Error('MissingEvidence');
     if(grants&&server==='raptor'){
      if(tool==='request_grant_request')grants.beforeProposal(args);
      if(tool==='request_grant_get')grants.beforeRead(args);
@@ -127,6 +129,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     }
    },
    onToolResult:(server,tool,args,data)=>{
+    if(server==='infra'&&tool==='pgcat_monitoring_sync')sequence.observeInventory(data);
     if(server==='infra'&&!qualification&&tool!=='pgcat_monitoring_sync'){trace.mutation(tool,args,data);sequence.onMutationResult(tool,args,data);}
     if(grants&&server==='raptor'){
      if(tool==='request_get')grants.readContext(data,mcp.getApprovalPolicies());
@@ -155,7 +158,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const afterReads='\nAfter all listed batches succeed, call db_connection_probe for every exact saved baseline instance ID in one batch. Wait for every probe to succeed. '+(approvalResume?'Finish without requesting another approval.':resourceResume?'Request human continuation approval in a separate tool round, using the new actionId qualification-'+b.attemptId+'. Never reuse the resource-wait actionId from the continuation context. Then pause. Never request approval in a batch with reads.':'Call resource_wait with seconds=60 in a separate round, then stop.');
 
   const readPlan=qualification?'\nRead batches in this order, waiting for each whole batch to succeed before starting the next. Use exactly these arguments; do not guess alternative proxy or application codes: '+JSON.stringify(qualificationReadBatches(b,replacementScope,decisionContext))+afterReads+' Stop on any failed read.': '';
-  const pinnedInstructions=qualification?'':pinnedReplacementInstructions(skills);
+  const pinnedInstructions=qualification?'':pinnedReplacementInstructions(skills,{requestGrants:Boolean(grants)});
   const loader=await createOperationResourceLoader({sdk,stateRoot,binding:b,skills,settingsManager:settings,extensionFactories:[mcp.extension,resourceWaitExtension(pause,qualification?()=>trace.requireResourceWaitReady():undefined),...(observer?[observationExtension(tracedObserver)]:[])].map(extension=>withReadOnlyToolPolicy(extension,isReadOnlyTool,scheduleRead)) ,systemPrompt:(qualification?QUALIFICATION_SYSTEM+RESOURCE_TRANSPORT_NOTICE+(approvalResume?QUALIFICATION_RESUME:resourceResume?QUALIFICATION_RESOURCE_RESUME:QUALIFICATION_FIRST):(grants?GRANT_SYSTEM+grants.resumeInstruction():SYSTEM+EXPANSION_READINESS)+pinnedInstructions+(trace.baseline()?'':INITIAL_READS))+readPlan+'\nTrusted selectors: '+JSON.stringify({binding:b,resource:{envCode:replacementScope.envCode,proxyCode:replacementScope.proxyCode,application:{appCode:replacementScope.application.appCode},targetDbCode:replacementScope.targetDbCode}})});
   const provider=b.providerId==='codex'?'openai-codex':'openai';const model=runtime.getModel(provider,b.model);if(!model||model.id!==b.model||model.provider!==provider)throw Error('InvalidJob');
   ({session}=await sdk.createAgentSession({cwd:stateRoot,agentDir:stateRoot,modelRuntime:runtime,model,thinkingLevel:'off',noTools:'all',tools,resourceLoader:loader,settingsManager:settings,sessionManager:manager}));
@@ -257,9 +260,9 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   if(qualification){const q=trace.complete();narrate('The repeated PgCat checks passed. I’ll save the qualification result.');if(error)throw Error(error);return {passed:true,result:{requestId:b.requestId,attemptId:b.attemptId,selectedModel:b.model,actualModel:session.model?.id,selectedProvider:b.providerId||'openai',actualProvider:session.model?.provider,answer:'Native read-only qualification completed; replacement and traffic acceptance were not executed.',qualification:q,evidence:[],usage,generatedAt:new Date().toISOString()},sessionReference:operationSessionReference(manager,b,stateRoot),usage};}
   const replacement=await qualifyReplacementConvergence(trace,tracedObserver,replacementScope,sequence);
   if(error)throw Error(error);
-  narrate('The replacement fleet converged. Traffic acceptance will be assessed separately.');
+  narrate(grants?'PgCat replacement and SQL traffic acceptance passed.':'The replacement fleet converged. Traffic acceptance will be assessed separately.');
   if(error)throw Error(error);
-  const result={requestId:b.requestId,attemptId:b.attemptId,selectedModel:b.model,actualModel:session.model?.id,selectedProvider:b.providerId||'openai',actualProvider:session.model?.provider,answer:'Replacement converged; retained traffic and approval assessment is pending.',replacement,evidence:[],usage,generatedAt:new Date().toISOString()};
+  const result={requestId:b.requestId,attemptId:b.attemptId,selectedModel:b.model,actualModel:session.model?.id,selectedProvider:b.providerId||'openai',actualProvider:session.model?.provider,answer:grants?'PgCat replacement and SQL traffic acceptance passed.':'Replacement converged; retained traffic and approval assessment is pending.',replacement,evidence:[],usage,generatedAt:new Date().toISOString()};
   return {passed:true,result,sessionReference:operationSessionReference(manager,b,stateRoot),usage};
  }catch(e){const allowed=['MissingEvidence','InvalidEvidence','MutationAlreadySubmitted','NeedsSignIn','Cancelled','Timeout','TurnLimit','McpUnavailable','ToolFailed','UnexpectedToolCatalog','InvalidProgress','InvalidApprovalPause','InvalidSessionReference','InvalidSkillsRelease','ResourceContractMigrationRequired'];return {passed:false,error:allowed.includes(e.message)?e.message:'ModelFailed',usage};}
  finally{clearInterval(inboxTimer);inbox?.close();signal?.removeEventListener('abort',abort);if(session){await session.abort();await session.extensionRunner.emit({type:'session_shutdown',reason:'exit'});session.dispose();}await mcp?.dispose();runtime.streamSimple=stream;}

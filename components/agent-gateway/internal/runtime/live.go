@@ -247,7 +247,7 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 			return h, ErrConfiguration
 		}
 		if b.ExecutionMode != "qualification" {
-			if e = resourceReplacementContract(skillsBundle); e != nil {
+			if e = resourceReplacementContract(skillsBundle, in.Binding.ApprovalProtocol); e != nil {
 				return h, e
 			}
 		}

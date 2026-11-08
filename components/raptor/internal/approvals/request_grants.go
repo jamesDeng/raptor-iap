@@ -83,10 +83,13 @@ func grantUUID(value string) bool {
 	return value != "" && id.Scan(value) == nil && id.Valid
 }
 
-func grantScopeValid(requestID, envCode, digest string) bool {
+func validGrantDigest(digest string) bool {
 	decoded, err := hex.DecodeString(digest)
-	return grantUUID(requestID) && grantIdentifier(envCode) && err == nil && len(decoded) == sha256.Size &&
-		digest == strings.ToLower(digest)
+	return err == nil && len(decoded) == sha256.Size && digest == strings.ToLower(digest)
+}
+
+func grantScopeValid(requestID, envCode, digest string) bool {
+	return grantUUID(requestID) && grantIdentifier(envCode) && validGrantDigest(digest)
 }
 
 func canonicalGrantObject(raw json.RawMessage) (json.RawMessage, error) {
@@ -419,6 +422,18 @@ func (s *Service) ClaimGrantAction(ctx context.Context, input GrantActionInput) 
 	}
 	if unresolved {
 		return GrantActionReceipt{}, domain.ErrConflict
+	}
+	switch in.Capability.Capability {
+	case "db-proxy.scale-out", "db-proxy.scale-in", "db-proxy.drain", "application.restart":
+		var submitted bool
+		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM raptor.request_grant_actions WHERE request_id=$1 AND
+			state='submitted' AND capability->>'capability'=$2)`, in.RequestID, in.Capability.Capability).Scan(&submitted)
+		if err != nil {
+			return GrantActionReceipt{}, domain.ErrUnavailable
+		}
+		if submitted {
+			return GrantActionReceipt{}, domain.ErrConflict
+		}
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO raptor.request_grant_actions(request_id, grant_id, action_id, input_digest, capability, arguments)
 		VALUES($1,$2,$3,$4,$5,$6)`, in.RequestID, in.GrantID, in.ActionID, digest, in.Capability, in.Arguments); err != nil {

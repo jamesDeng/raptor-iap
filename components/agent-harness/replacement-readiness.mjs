@@ -39,6 +39,7 @@ function validEvidence(e,trace,expansion,at){
  }
  // Older pinned sessions may contain SQL receipts. Validate them on reopen,
  // but never require or write them for a new exact-cohort witness.
+ if(trace.versioned&&probes===undefined)return false;
  if(probes!==undefined&&(!exactIds(probes,added)||probes.some(p=>p.connected!==true||Object.hasOwn(p,'readiness'))))return false;
  const times=[fleet,backend,capacity,metrics,...(probes??[])].map(r=>timestamp(r.observedAt));
  const sources=[timestamp(metrics.sourceAt),timestamp(metrics.latestSourceAt)],responses=[timestamp(metrics.responseAt),timestamp(metrics.latestResponseAt)],completed=timestamp(metrics.observedAt);
@@ -49,7 +50,7 @@ function validEvidence(e,trace,expansion,at){
 }
 export class ReplacementReadiness {
  constructor(manager,trace){
-  this.manager=manager;this.trace=trace;this.observations={};
+  this.manager=manager;this.trace=trace;this.observations={};this.probes=new Map();
   const entries=manager.getEntries(),rows=entries.filter(e=>e.type==='custom'&&e.customType===TYPE);
   if(rows.length>1)throw invalid();
   if(rows.length){
@@ -85,10 +86,14 @@ export class ReplacementReadiness {
    &&Array.isArray(missing)&&missing.length>=1&&missing.length<=2&&new Set(missing).size===missing.length&&missing.every(v=>ids.includes(v)&&!original.includes(v));
  }
  observe(kind,data,args){
-  if(this.ready()||!this.expansion()?.result||!['fleet','backend','capacity','metrics'].includes(kind))return;
-  const clean=sanitize(kind,data);
-  this.observations[kind]=clean;
-  const evidence={...this.observations},expansion=this.expansion(),observedAt=new Date().toISOString();
+  if(this.ready()||!this.expansion()?.result||!['fleet','backend','capacity','metrics',...(this.trace.versioned?['sql']:[])].includes(kind))return;
+  if(kind==='sql'){
+   if(args?.instanceId===data?.instanceId)this.probes.set(data.instanceId,sanitize(kind,{...data,observedAt:data.observedAt??new Date().toISOString()}));
+  }else this.observations[kind]=sanitize(kind,data);
+  const original=this.trace.baseline()?.instanceIds??[];
+  const added=this.observations.fleet?.instances?.map(n=>n.instanceId).filter(id=>!original.includes(id))??[];
+  const evidence={...this.observations,...(this.trace.versioned?{probes:added.map(id=>this.probes.get(id)).filter(Boolean)}:{})};
+  const expansion=this.expansion(),observedAt=new Date().toISOString();
   if(!validEvidence(evidence,this.trace,expansion,Date.parse(observedAt)))return;
   const row={version:1,identity:structuredClone(this.trace.identity),kind:'readyFour',expansionKey:expansion.intent.key,evidence:structuredClone(evidence),observedAt};
   if(Buffer.byteLength(canonical(row))>32768)throw invalid();

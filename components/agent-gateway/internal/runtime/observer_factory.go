@@ -56,6 +56,12 @@ func buildObservationPreparer(c LiveConfig, m Management, mount func(string, int
 		return nil, nil
 	}
 	cfg := *c.ReplacementObserver
+	if cfg.LoadBalancerHost == "" {
+		cfg.LoadBalancerHost = os.Getenv("GATEWAY_PGCAT_LOAD_BALANCER_HOST")
+	}
+	if cfg.LoadBalancerHost != "" && !validPgcatHost(cfg.LoadBalancerHost) {
+		return nil, ErrConfiguration
+	}
 	scope := cfg.Scope
 	binding := execution.AttemptBinding{Operation: "db-proxy.replace-nodes", ObjectKind: "db-proxy", ObjectCode: scope.ProxyCode, EnvCode: scope.EnvCode, ClusterID: scope.Application.ClusterID}
 	validID := regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)

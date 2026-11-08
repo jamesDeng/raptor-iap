@@ -45,6 +45,11 @@ type pgcatHeldSocket struct {
 }
 
 type pgcatHeldPair struct {
+	finalTraffic *pgcatTrafficSample
+	logs         *pgcatAppLogWatch
+	lastDrain    *pgcatDrainEvidence
+	releasedAt   time.Time
+	traffic      *pgcatTrafficSample
 	mu           sync.Mutex
 	id           string
 	request      string
@@ -239,8 +244,10 @@ func (r *pgcatContinuity) verifyDrain(ctx context.Context, request, scope, obser
 	if err := hold.probe(ctx); err != nil {
 		return pgcatDrainEvidence{}, err
 	}
-	return pgcatDrainEvidence{pgcatHoldEvidence: hold.evidence(), DrainActionID: action,
-		DrainObservedAt: seenAt, FreshConnections: counts}, nil
+	evidence := pgcatDrainEvidence{pgcatHoldEvidence: hold.evidence(), DrainActionID: action,
+		DrainObservedAt: seenAt, FreshConnections: counts}
+	hold.lastDrain = &evidence
+	return evidence, nil
 }
 
 func (r *pgcatContinuity) release(request string) {
@@ -261,6 +268,9 @@ func (r *pgcatContinuity) remove(request string, expected *pgcatHeldPair) {
 	defer hold.mu.Unlock()
 	if hold.stopWatching != nil {
 		hold.stopWatching()
+	}
+	if hold.logs != nil {
+		hold.logs.cancel()
 	}
 	hold.close()
 }
@@ -304,4 +314,47 @@ func (r *pgcatContinuity) matchesOriginalNodes(request string, ids []string) boo
 	defer r.mu.Unlock()
 	held := r.requests[request]
 	return held != nil && len(ids) == 2 && ids[0] != ids[1] && held.original[ids[0]].IsValid() && held.original[ids[1]].IsValid()
+}
+
+type pgcatProbeRelease struct {
+	pgcatHoldEvidence
+	DrainActionID string    `json:"drainActionId"`
+	ReleasedAt    time.Time `json:"releasedAt"`
+}
+
+func (r *pgcatContinuity) get(request string) *pgcatHeldPair {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.requests[request]
+}
+
+func (r *pgcatContinuity) releaseProbes(ctx context.Context, request, scope, observation, action string) (pgcatProbeRelease, error) {
+	pair := r.get(request)
+	if pair == nil {
+		return pgcatProbeRelease{}, ErrRuntimeUnavailable
+	}
+	pair.mu.Lock()
+	defer pair.mu.Unlock()
+	if pair.id != observation || pair.scope != scope || pair.lastDrain == nil || pair.lastDrain.DrainActionID != action ||
+		pair.logs == nil {
+		return pgcatProbeRelease{}, ErrRuntimeUnavailable
+	}
+	if pair.releasedAt.IsZero() {
+		if !pgcatFreshTime(pair.lastDrain.ObservedAt, time.Now()) || pair.probe(ctx) != nil {
+			return pgcatProbeRelease{}, ErrRuntimeUnavailable
+		}
+		pair.releasedAt = time.Now().UTC()
+		pair.close()
+	}
+	return pgcatProbeRelease{pgcatHoldEvidence: pair.evidence(), DrainActionID: action, ReleasedAt: pair.releasedAt}, nil
+}
+
+func (r *pgcatContinuity) probesReleased(request string) bool {
+	pair := r.get(request)
+	if pair == nil {
+		return false
+	}
+	pair.mu.Lock()
+	defer pair.mu.Unlock()
+	return !pair.releasedAt.IsZero()
 }

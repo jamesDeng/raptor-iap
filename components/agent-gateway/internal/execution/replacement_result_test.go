@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +124,50 @@ func TestActualHarnessDirectFixtureSurvivesGatewayRoundTrip(t *testing.T) {
 	}
 	if stored.Replacement.RestartGeneration != 6 || stored.Replacement.Version != 2 || len(stored.Replacement.Actions) != 2 {
 		t.Fatal("direct contract lost", string(raw))
+	}
+}
+
+func TestGrantedReplacementRequiresVerifiedTrafficAndExactRetirement(t *testing.T) {
+	b, original := directHarnessFixture(t)
+	b.ApprovalProtocol, b.ExecutionMode = "request-grants-v1", "replacement"
+	for _, fault := range []string{"", "old pending contract", "uncertain submission", "wrong ESS activity", "wrong original", "missing app traffic", "late final result"} {
+		t.Run(fault, func(t *testing.T) {
+			now := time.Now().UTC()
+			r := original
+			v := *r.Replacement
+			r.Replacement, r.Answer = &v, PgcatAcceptanceAnswer
+			v.Version, v.Acceptance, v.ObservedAt = 3, "verified", now
+			v.Actions = slices.Clone(v.Actions)
+			v.Actions[1].Outcome, v.Actions[1].ScalingActivityID = "submitted", "ess-act"
+			v.Retirement = &PgcatResultRetirement{ActionID: v.Actions[1].ActionID, ScalingActivityID: "ess-act", Status: "Successful",
+				DestroyedIDs: slices.Clone(v.OldInstanceIDs), ObservedAt: now.Add(-5 * time.Second)}
+			traffic := &PgcatResultTraffic{RestartActionID: "restart", ApplicationUID: v.Scope.Application.UID, Generation: v.RestartGeneration,
+				ObservedAt: now.Add(-time.Minute), NoErrors: true}
+			counters := `{"` + v.NewInstanceIDs[0] + `":{"queries":4,"transactions":4},"` + v.NewInstanceIDs[1] + `":{"queries":3,"transactions":3}}`
+			if err := json.Unmarshal([]byte(counters), &traffic.Nodes); err != nil {
+				t.Fatal(err)
+			}
+			v.Traffic = traffic
+			final := *traffic
+			final.ObservedAt = now.Add(-time.Second)
+			v.FinalTraffic = &final
+			switch fault {
+			case "old pending contract":
+				v.Version = 2
+			case "uncertain submission":
+				v.Actions[1].Outcome = "unknown"
+			case "wrong ESS activity":
+				v.Retirement.ScalingActivityID = "unrelated"
+			case "wrong original":
+				v.Retirement.DestroyedIDs[1] = v.NewInstanceIDs[0]
+			case "missing app traffic":
+				delete(final.Nodes, v.NewInstanceIDs[1])
+			case "late final result":
+				v.ObservedAt = now.Add(time.Minute)
+			}
+			if err := ValidateLiveResult(r, b); (err != nil) != (fault != "") {
+				t.Fatalf("validation of %q: %v", fault, err)
+			}
+		})
 	}
 }

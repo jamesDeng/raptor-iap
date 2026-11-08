@@ -66,6 +66,14 @@ class Charts(unittest.TestCase):
   self.assertEqual(binding['subjects'],[{'kind':'User','name':'300172700753867300','apiGroup':'rbac.authorization.k8s.io'}])
   self.assertFalse(any(x['kind'].startswith('ClusterRole') for x in docs))
   vals['infraReaderUser']='system:admin';self.render('infra-test-metrics',vals,False)
+ def test_pgcat_execution_rbac_names_only_the_bound_resources(self):
+  vals=self.metrics();vals.update(infraReaderUser='300172700753867300',infraExecutionDeployment='rdev-test-client-client',inventoryConfigMapName='pgcat-provider-inventory')
+  docs=self.render('infra-test-metrics',vals)
+  role=next(x for x in docs if x['kind']=='Role' and x['metadata']['name']=='raptor-rdev-infra-pgcat-execution')
+  binding=next(x for x in docs if x['kind']=='RoleBinding' and x['metadata']['name']==role['metadata']['name'])
+  self.assertEqual(role['rules'],[{'apiGroups':['apps'],'resources':['deployments'],'resourceNames':['rdev-test-client-client'],'verbs':['get','patch']},{'apiGroups':[''],'resources':['configmaps'],'resourceNames':['pgcat-provider-inventory'],'verbs':['get','patch']}])
+  self.assertEqual(binding['subjects'],[{'kind':'User','name':'300172700753867300','apiGroup':'rbac.authorization.k8s.io'}])
+  vals['infraExecutionDeployment']='foreign';self.render('infra-test-metrics',vals,False)
  def test_metrics_reader_rbac_is_opt_in(self):
   docs=self.render('infra-test-metrics',self.metrics());self.assertFalse(any(x['kind'] in ['Role','RoleBinding'] for x in docs))
 
@@ -74,7 +82,7 @@ class Charts(unittest.TestCase):
   docs=self.render('infra-test-client',vals)
   roles=[x for x in docs if x['kind']=='Role'];self.assertEqual(len(roles),2)
   observer=next(x for x in roles if x['metadata']['name']=='fixture-observer')
-  self.assertEqual(observer['rules'],[{'apiGroups':['apps'],'resources':['deployments'],'resourceNames':['fixture-client'],'verbs':['get']},{'apiGroups':['apps'],'resources':['replicasets'],'verbs':['get','list']},{'apiGroups':[''],'resources':['pods'],'verbs':['get','list']}])
+  self.assertEqual(observer['rules'],[{'apiGroups':['apps'],'resources':['deployments'],'resourceNames':['fixture-client'],'verbs':['get']},{'apiGroups':['apps'],'resources':['replicasets'],'verbs':['get','list']},{'apiGroups':[''],'resources':['pods'],'verbs':['get','list']},{'apiGroups':[''],'resources':['pods/log'],'verbs':['get']}])
   issuer=next(x for x in roles if x['metadata']['name']=='fixture-observer-issuer')
   self.assertEqual(issuer['rules'],[{'apiGroups':[''],'resources':['serviceaccounts/token'],'resourceNames':['fixture-observer'],'verbs':['create']}])
   binding=next(x for x in docs if x['kind']=='RoleBinding' and x['metadata']['name']=='fixture-observer-issuer')

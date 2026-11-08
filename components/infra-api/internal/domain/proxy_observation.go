@@ -88,3 +88,11 @@ type PgcatInventoryReceipt struct {
 	InstanceIDs     []string `json:"instanceIds"`
 	Changed         bool     `json:"changed"`
 }
+
+type PgcatRetirementObservation struct {
+	ActionID          string    `json:"actionId"`
+	ScalingActivityID string    `json:"scalingActivityId"`
+	Status            string    `json:"status"`
+	DestroyedIDs      []string  `json:"destroyedIds"`
+	ObservedAt        time.Time `json:"observedAt"`
+}

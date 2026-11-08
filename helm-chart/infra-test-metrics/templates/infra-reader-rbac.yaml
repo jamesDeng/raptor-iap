@@ -25,4 +25,38 @@ subjects:
   - kind: User
     name: {{ $user | quote }}
     apiGroup: rbac.authorization.k8s.io
+{{- if .Values.infraExecutionDeployment }}
+{{- if or (ne .Release.Namespace "raptor-test") (ne .Values.infraExecutionDeployment "rdev-test-client-client") (ne .Values.inventoryConfigMapName "pgcat-provider-inventory") }}
+{{- fail "PgCat execution permission requires the bound POC Deployment and inventory" }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: raptor-rdev-infra-pgcat-execution
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [{{ .Values.infraExecutionDeployment | quote }}]
+    verbs: [get, patch]
+  - apiGroups: ['']
+    resources: [configmaps]
+    resourceNames: [{{ .Values.inventoryConfigMapName | quote }}]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: raptor-rdev-infra-pgcat-execution
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: raptor-rdev-infra-pgcat-execution
+subjects:
+  - kind: User
+    name: {{ $user | quote }}
+    apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- end }}

@@ -35,6 +35,7 @@ func (s *Server) RegisterService(user, password string) {
 	s.registerInfraApprovals(access, credentials)
 	s.registerInfraRequestGrants(access, credentials)
 	s.registerRequestGrants(access, credentials)
+	s.registerPgcatObservations(credentials)
 	access.Register(s.Mux, auth.Credentials{Username: user, Password: password}, auth.Credentials{Username: os.Getenv("AGENT_INTROSPECTION_USERNAME"), Password: os.Getenv("AGENT_INTROSPECTION_PASSWORD")})
 	wrap := func(pattern string, h http.HandlerFunc) {
 		s.Mux.Handle(pattern, auth.BasicAuth(h, auth.Credentials{Username: user, Password: password}))

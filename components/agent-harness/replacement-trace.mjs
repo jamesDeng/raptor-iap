@@ -7,7 +7,7 @@ const mutations=new Set(['db_proxy_scale','db_proxy_node_protection_set','db_pro
 const fresh=stamp=>Number.isFinite(Date.parse(stamp))&&Math.abs(Date.now()-Date.parse(stamp))<=30000;
 export class ReplacementTrace {
  constructor(manager,binding,scope){
-  this.manager=manager;this.identity={requestId:binding.requestId,definitionSha256:binding.definitionSha256,skillsCommit:binding.skillsCommit,model:binding.model,scope};
+  this.manager=manager;this.versioned=binding.approvalProtocol==='request-grants-v1';this.identity={requestId:binding.requestId,definitionSha256:binding.definitionSha256,skillsCommit:binding.skillsCommit,model:binding.model,scope};
   this.rows=manager.getEntries().filter(e=>e.type==='custom'&&e.customType===TYPE).map(e=>e.data);
   if(this.rows.length>200||this.rows.some(r=>!r||typeof r!=='object'||r.version!==1||canonical(r.identity)!==canonical(this.identity)||!['baseline','intent','result'].includes(r.kind)||Buffer.byteLength(canonical(r))>8192))throw invalid();
   if(this.rows.filter(r=>r.kind==='baseline').length>1)throw invalid();
@@ -50,6 +50,13 @@ export class ReplacementTrace {
   const key=this.key(tool,args),intent=this.rows.find(r=>r.kind==='intent'&&r.key===key);
   if(!intent||this.rows.some(r=>r.kind==='result'&&r.key===key))throw invalid();
   const state=tool==='db_proxy_scale'?{previousDesiredCapacity:data.previousDesiredCapacity,desiredCapacity:data.desiredCapacity,outcome:data.outcome}:tool==='deployment_restart'?{accepted:data.accepted,generation:data.generation}:{instanceIds:data.instanceIds,outcome:data.outcome};
+  if(this.versioned){
+   if(typeof data.actionId!=='string'||!data.actionId)throw invalid();
+   if(tool==='db_proxy_scale'&&data.desiredCapacity===2){
+    if(typeof data.scalingActivityId!=='string'||!data.scalingActivityId)throw invalid();
+    state.scalingActivityId=data.scalingActivityId;
+   }else if(tool!=='db_proxy_scale')state.actionId=data.actionId;
+  }
   this.append({kind:'result',key,tool,state,observedAt:new Date().toISOString()});
  }
  scaleActions(){return this.rows.filter(r=>r.kind==='intent'&&r.tool==='db_proxy_scale').map(intent=>({actionId:intent.args.actionId,...this.rows.find(r=>r.kind==='result'&&r.key===intent.key)?.state}));}

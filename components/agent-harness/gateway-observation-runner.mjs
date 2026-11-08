@@ -3,7 +3,7 @@ import {createObservationTools} from './observation-tools.mjs';
 import {McpClient,StreamableHttpTransport} from '@earendil-works/pi-mcp';
 import {isDeepStrictEqual} from 'node:util';
 import {execFile} from 'node:child_process';
-const methods={cloud_read:'cloudRead',deployment_read:'deploymentRead',metrics_read:'metricsRead',db_connection_probe:'dbConnectionProbe'};
+const methods={cloud_read:'cloudRead',deployment_read:'deploymentRead',metrics_read:'metricsRead',db_connection_probe:'dbConnectionProbe',pgcat_client_pods:'pgcatClientPods'};
 const invalid=()=>Error('InvalidObservation');
 const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.slice().sort().join(',');
 const metricSeries=['up','upTimestamp','active','activeTimestamp','idle','idleTimestamp','waiting','waitingTimestamp'];
@@ -13,7 +13,7 @@ const metricSeries=['up','upTimestamp','active','activeTimestamp','idle','idleTi
 // from opaque workloadKey, stamp source observations or normalize metric rows.
 export function resourceObservation(data,scope,kind){
  const w=data?.pgproxyWorkload;
- if(!['fleet','backend','capacity','metrics'].includes(kind)||!exact(data,['envCode','proxyCode','observedAt','pgproxyWorkload'])||data.envCode!==scope.envCode||data.proxyCode!==scope.proxyCode||!exact(w,['type','code','workloadKey','state','targetDbCode',kind])||w.type!=='ess'||w.code!==scope.proxyCode||w.targetDbCode!==scope.targetDbCode||typeof w.workloadKey!=='string'||!w.workloadKey||w.workloadKey.length>256||typeof w.state!=='string'||!Number.isFinite(Date.parse(data.observedAt))||w[kind]?.observedAt!==data.observedAt)throw invalid();
+ if(!['fleet','backend','capacity','metrics','retirement'].includes(kind)||!exact(data,['envCode','proxyCode','observedAt','pgproxyWorkload'])||data.envCode!==scope.envCode||data.proxyCode!==scope.proxyCode||!exact(w,['type','code','workloadKey','state','targetDbCode',kind])||w.type!=='ess'||w.code!==scope.proxyCode||w.targetDbCode!==scope.targetDbCode||typeof w.workloadKey!=='string'||!w.workloadKey||w.workloadKey.length>256||typeof w.state!=='string'||!Number.isFinite(Date.parse(data.observedAt))||w[kind]?.observedAt!==data.observedAt)throw invalid();
  return w[kind];
 }
 
