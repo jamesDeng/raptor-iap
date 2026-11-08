@@ -177,7 +177,7 @@ func newAgentMCP(p agentPrincipal) *mcp.Server {
 				}
 				out["approvalPolicies"] = policies
 				out["scopeDigest"] = scope.ResolutionDigest
-				out["operationPrompt"] = "Use the pinned pgcat-replacement skill. Complete read-only preflight, then request one bundle for the high-risk capabilities and their bound targets."
+				out["operationPrompt"] = "Use the pinned pgcat-replacement skill. Verify the request, targets and Infra approval policy, then request one bundle. After approval, collect fresh evidence before each write."
 			}
 		}
 		out["relatedResources"] = related

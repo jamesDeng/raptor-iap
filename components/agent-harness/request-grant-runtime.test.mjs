@@ -18,6 +18,8 @@ function journal(){
 test('the normal approval proposal requires the complete matching policy from both MCP servers',()=>{
  const runtime=new RequestGrantRuntime(journal(),binding,scope);
  assert.throws(()=>runtime.readContext(context,{}),/InvalidApprovalPause/);
+ const restartPolicy={version:1,variants:[{capability:'application.restart',targetKind:'application',condition:'always',requiresHumanApproval:true}]};
+ assert.throws(()=>runtime.readContext(context,{...policies,deployment_restart:restartPolicy}),/InvalidApprovalPause/);
  runtime.readContext(context,policies);
  assert.throws(()=>runtime.beforeProposal({capabilities:[]}),/InvalidApprovalPause/);
  assert.throws(()=>runtime.beforeProposal({capabilities:[{...capability,target:{kind:'application',code:'A00003'}}]}),/InvalidApprovalPause/);
