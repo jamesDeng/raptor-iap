@@ -277,11 +277,13 @@ run "pgcat_monitoring_timer_is_fixed_and_reviewed" {
     gitops_state_bucket = "fixture-state"
   }
   assert {
-    condition = length(alicloud_fcv3_trigger.pgcat_monitoring) == 1 &&
+    condition = (
+      length(alicloud_fcv3_trigger.pgcat_monitoring) == 1 &&
       alicloud_fcv3_trigger.pgcat_monitoring[0].function_name == "raptor-read-test" &&
       alicloud_fcv3_trigger.pgcat_monitoring[0].trigger_type == "timer" &&
       alicloud_fcv3_trigger.pgcat_monitoring[0].trigger_name == "raptor-rdev-pgcat-monitoring" &&
       jsondecode(alicloud_fcv3_trigger.pgcat_monitoring[0].trigger_config).payload == "pgcat-monitoring-v1"
+    )
     error_message = "The timer must invoke only the fixed component function with the reviewed payload."
   }
   assert {
