@@ -24,7 +24,7 @@ export async function runJob(job,dependencies={}){
  }
  return result;
 }
-export function terminalExitCode(result){return result.passed===true||(!result.error&&!result.checkpointError&&['approval','resource'].includes(result.paused?.kind)&&typeof result.checkpoint?.archive_key==='string'&&result.checkpoint.archive_key)?0:1;}
+export function terminalExitCode(result){return result.passed===true||(!result.error&&!result.checkpointError&&['approval','grant','resource'].includes(result.paused?.kind)&&typeof result.checkpoint?.archive_key==='string'&&result.checkpoint.archive_key)?0:1;}
 export function progressToolsForJob(job){
  const binding=job.request.binding;
  return Object.entries(operationCapabilities(binding,job.replacement_scope)).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name))
