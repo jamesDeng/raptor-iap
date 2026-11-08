@@ -1,7 +1,7 @@
 {
   "sourceCommit": "6e613d3a22f42021a4288b5ea3b2d793f5f48893",
   "bridgeImage": "localhost:5001/raptor-ax-bridge@sha256:6e4f374eaf5a240310a9857163362d26198c90c9cf0c5d605458ba40feeef61c",
-  "piImage": "localhost:5001/ax-pi@sha256:cd1fcc8e2126c2d22095f201b42c38639d2fa6504751d7bb5886d17ff2212a49",
-  "piSourceCommit": "b57d043683d47ddf3ab2b4296db1c8adef6c6cab",
+  "piImage": "localhost:5001/ax-pi@sha256:714ca61fe1572f6e24dad3502e3261a7590a9c53e1ccb85be489c223f50b8b7b",
+  "piSourceCommit": "1fe14862e26999763161372c1665dbb0bef3f4b9",
   "piBaseImage": "ghcr.io/jamesdeng/raptor-iap-pi@sha256:4fc6772c0577156f5722d7474e3e1ea30173496f63acf5253f35c7c512535289"
 }
