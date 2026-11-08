@@ -210,6 +210,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     checkOperationSelectors('infra','db_proxy_scale',context.args,b,replacementScope);
     const nested=session.extensionRunner.createToolContext(context.toolCall.id,signal);
     const read=async(tool,args)=>{
+     if(!isReadOnlyTool(tool)||(tool==='pgcat_connection_continuity'&&args.phase!=='hold'))throw Error('InvalidEvidence');
      const result=await nested.executeTool(tool,args);
      if(result.isError)throw Error('ToolFailed');
     };
