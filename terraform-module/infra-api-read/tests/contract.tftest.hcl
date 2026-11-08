@@ -210,3 +210,34 @@ run "function_package_backup_is_scoped" {
     error_message = "RAM user metadata reads require the documented wildcard-region ARN."
   }
 }
+
+run "reviewed_function_release_is_scoped" {
+  command = plan
+  override_resource {
+    target          = alicloud_ram_role.invoke
+    override_during = plan
+    values          = { arn = "acs:ram::1234567890123456:role/raptor-read-test-invoke" }
+  }
+  override_resource {
+    target          = alicloud_api_gateway_group.read
+    override_during = plan
+    values          = { id = "group-fixture" }
+  }
+  variables {
+    gitops_plan_role    = "raptor-iap-rdev-plan"
+    gitops_apply_role   = "raptor-iap-rdev-apply"
+    gitops_state_bucket = "fixture-state"
+  }
+  assert {
+    condition = [for statement in jsondecode(alicloud_ram_policy.gitops["apply"].policy_document).Statement : statement if contains(statement.Action, "fc:UpdateFunction")] == [{
+      Effect   = "Allow"
+      Action   = ["fc:GetFunction", "fc:UpdateFunction"]
+      Resource = ["acs:fc:ap-southeast-1:1234567890123456:functions/raptor-read-test"]
+    }]
+    error_message = "Reviewed release may update only the component function."
+  }
+  assert {
+    condition     = alltrue([for statement in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : !contains(statement.Action, "fc:UpdateFunction")])
+    error_message = "The plan identity cannot release function code."
+  }
+}

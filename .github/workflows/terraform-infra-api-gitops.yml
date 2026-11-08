@@ -2,10 +2,10 @@ name: Terraform Infra API GitOps
 on:
   pull_request:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
+    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'components/infra-api/release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
   push:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
+    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'components/infra-api/release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -18,7 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: components/infra-api/go.sum
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
         with:
           terraform_version: 1.13.3
@@ -32,6 +37,19 @@ jobs:
           terraform -chdir=terraform-module/infra-api-read fmt -check -recursive
           terraform -chdir=terraform-module/infra-api-read init -backend=false -input=false -lockfile=readonly
           terraform -chdir=terraform-module/infra-api-read test
+      - name: Test and build the pinned Infra API package
+        shell: bash
+        run: |
+          (cd components/infra-api && go test ./cmd/fc-release)
+          python3 -m unittest discover -s components/infra-api/release
+          python3 components/infra-api/release/infra_release.py build "$RUNNER_TEMP/infra-api-release" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          name: reviewed-infra-api-release
+          path: ${{ runner.temp }}/infra-api-release/
+          if-no-files-found: error
+          retention-days: 3
   plan:
     needs: check
     if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.ref == 'refs/heads/main'
@@ -107,17 +125,21 @@ jobs:
       contents: read
       id-token: write
       actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.plan.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Download this run's encrypted plan
+      - name: Download this run's reviewed artifacts
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
-        run: gh run download "$RUN_ID" --name encrypted-infra-plan --dir "$RUNNER_TEMP/saved-plan"
+        run: |
+          gh run download "$RUN_ID" --name encrypted-infra-plan --dir "$RUNNER_TEMP/saved-plan"
+          gh run download "$RUN_ID" --name reviewed-infra-api-release --dir "$RUNNER_TEMP/infra-api-release"
       - name: Verify required environment review gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -126,6 +148,7 @@ jobs:
           python3 -m pip install -r scripts/rdev/requirements-recovery.txt
           gh api "repos/$GH_REPO/environments/${{ github.job == 'apply' && 'rdev.ali-apply' || 'rdev.ali-plan' }}" | python3 scripts/gitops/runner.py guard
       - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        id: apply-credentials
         with:
           role-to-assume: ${{ vars.RDEV_APPLY_ROLE_ARN }}
           oidc-provider-arn: ${{ vars.RDEV_OIDC_PROVIDER_ARN }}
@@ -147,3 +170,10 @@ jobs:
         run: |
           python3 -m pip install -r scripts/rdev/requirements-recovery.txt
           python3 scripts/gitops/runner.py apply
+      - name: Release and verify the reviewed function package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.apply-credentials.outputs.aliyun-access-key-id }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.apply-credentials.outputs.aliyun-access-key-secret }}
+          ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.apply-credentials.outputs.aliyun-security-token }}
+        run: python3 components/infra-api/release/infra_release.py deploy "$RUNNER_TEMP/infra-api-release"
