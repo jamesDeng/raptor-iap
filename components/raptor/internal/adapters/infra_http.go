@@ -351,7 +351,7 @@ func (p HTTPInfra) OperationApprovalPolicies(ctx context.Context, envCode string
 		return nil, domain.ErrUnavailable
 	}
 	var policies map[string]ToolApprovalPolicy
-	if err := p.read(ctx, env, "/v1/approval-policy", nil, &policies); err != nil || len(policies) == 0 {
+	if err := p.read(ctx, env, "/v1/approval-policy", url.Values{"protocol": {"request-grants-v1"}}, &policies); err != nil || len(policies) == 0 {
 		return nil, domain.ErrUnavailable
 	}
 	for _, policy := range policies {

@@ -24,12 +24,15 @@ type ResourceResolver interface {
 
 // NewResourceServer constructs the logical resource boundary without enabling it
 // in production. A nil authorizer permits service reads, but never proof/mutations.
-func NewResourceServer(reader Reader, resolver ResourceResolver, username, password, authHeader string, commander Commander, authorizer Authorizer, check AgentCheck) (http.Handler, error) {
+func NewResourceServer(reader Reader, resolver ResourceResolver, username, password, authHeader string, commander Commander, authorizer Authorizer, check AgentCheck, grants ...RequestGrantClient) (http.Handler, error) {
 	if reader == nil || resolver == nil || username == "agent" || username == "" || password == "" || strings.Contains(username, ":") || (authHeader != "Authorization" && authHeader != "X-Infra-Authorization") {
 		return nil, errors.New("invalid server configuration")
 	}
 	expected := sha256.Sum256([]byte(username + ":" + password))
 	base := resourceOperations{reader: reader, resolver: resolver, commander: commander, authorizer: authorizer, principal: username}
+	if len(grants) == 1 {
+		base.grants = grants[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
@@ -38,7 +41,7 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}})
 		}
 		send := func(data any) { _ = json.NewEncoder(w).Encode(map[string]any{"data": data}) }
-		if r.URL.Path != "/mcp" && ((commandPath(r.URL.Path) && r.Method != "POST") || (!commandPath(r.URL.Path) && r.Method != "GET")) {
+		if r.URL.Path != "/mcp" && ((resourceCommandPath(r.URL.Path) && r.Method != "POST") || (!resourceCommandPath(r.URL.Path) && r.Method != "GET")) {
 			fail(405, "MethodNotAllowed")
 			return
 		}
@@ -72,18 +75,23 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 				fail(403, "ScopeMismatch")
 				return
 			}
-			if r.URL.RawQuery != "" {
+			protocol := r.URL.Query().Get("protocol")
+			if r.URL.RawQuery != "" && (protocol != policy.RequestGrantProtocol ||
+				r.URL.RawQuery != "protocol="+policy.RequestGrantProtocol) {
 				fail(400, "InvalidInput")
 				return
 			}
 			policies := map[string]policy.ToolApprovalPolicy{}
 			for _, spec := range resourceCommandSpecs {
-				if toolPolicy, ok := policy.ApprovalPolicyForTool(spec.name); ok && op.visible(spec.path) {
+				if toolPolicy, ok := policy.ApprovalPolicyForTool(spec.name, protocol); ok && op.visible(spec.path) {
 					policies[spec.name] = toolPolicy
 				}
 			}
 			send(policies)
 			return
+		}
+		if values := r.Header.Values(requestGrantHeader); len(values) == 1 && grantIDPattern.MatchString(values[0]) {
+			op.grantID = values[0]
 		}
 		proofRepresentation := r.URL.Path == "/v1/deployments" && r.Header.Get("Accept") == "application/vnd.raptor.resolution-proof+json"
 		if proofRepresentation && len(r.Header.Values("Accept")) != 1 {
@@ -123,7 +131,7 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 		}
 		var data any
 		var e error
-		if commandPath(r.URL.Path) {
+		if resourceCommandPath(r.URL.Path) {
 			if r.URL.RawQuery != "" {
 				fail(400, "InvalidInput")
 				return

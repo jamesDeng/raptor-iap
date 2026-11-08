@@ -3,6 +3,7 @@ package policy
 import "strings"
 
 const ApprovalPolicyMetaKey = "io.raptor-iap/approval-policy"
+const RequestGrantProtocol = "request-grants-v1"
 
 type ApprovalVariant struct {
 	Capability            string `json:"capability"`
@@ -22,7 +23,8 @@ var (
 	scaleIn  = ApprovalVariant{Capability: "db-proxy.scale-in", TargetKind: "db-proxy", Condition: "desired-less-than-current", RequiresHumanApproval: true, label: "Scale in when the desired capacity is less than the current capacity"}
 )
 
-func ApprovalPolicyForTool(tool string) (ToolApprovalPolicy, bool) {
+func ApprovalPolicyForTool(tool string, protocol ...string) (ToolApprovalPolicy, bool) {
+	bundled := len(protocol) == 1 && protocol[0] == RequestGrantProtocol
 	var variants []ApprovalVariant
 	switch tool {
 	case "db_proxy_scale":
@@ -34,6 +36,13 @@ func ApprovalPolicyForTool(tool string) (ToolApprovalPolicy, bool) {
 	case "db_proxy_nodes_deregister":
 		variants = []ApprovalVariant{
 			{Capability: "db-proxy.drain", TargetKind: "db-proxy", Condition: "always", label: "Set the bound nodes' NLB routing weight to zero"},
+		}
+	case "pgcat_monitoring_sync":
+		if !bundled {
+			return ToolApprovalPolicy{}, false
+		}
+		variants = []ApprovalVariant{
+			{Capability: "db-proxy.sync-monitoring", TargetKind: "db-proxy", Condition: "always", label: "Synchronize the bound PgCat metrics inventory with the provider fleet"},
 		}
 	case "deployment_restart":
 		variants = []ApprovalVariant{
@@ -57,6 +66,14 @@ func ApprovalPolicyForTool(tool string) (ToolApprovalPolicy, bool) {
 		}
 	default:
 		return ToolApprovalPolicy{}, false
+	}
+	if bundled {
+		switch tool {
+		case "db_proxy_scale", "db_proxy_node_protection_set", "db_proxy_nodes_deregister", "deployment_restart", "pgcat_monitoring_sync":
+			for i := range variants {
+				variants[i].RequiresHumanApproval = true
+			}
+		}
 	}
 	return ToolApprovalPolicy{Version: 1, Variants: variants}, true
 }

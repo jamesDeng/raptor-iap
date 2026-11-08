@@ -77,6 +77,10 @@ func (s *Server) registerRequestGrants(access *agentaccess.Service, credentials 
 		out, err := s.Approvals.RequestGrant(r.Context(), in)
 		httpx.Result(w, 201, out, err)
 	}), credentials))
+	s.Mux.Handle("GET /v1/requests/{id}/grant-actions/{actionId}", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.Approvals.GetGrantAction(r.Context(), r.PathValue("id"), r.PathValue("actionId"))
+		httpx.Result(w, 200, out, err)
+	}), credentials))
 	s.Mux.Handle("GET /v1/requests/{id}/grants/{grantId}", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		out, err := s.Approvals.GetRequestGrant(r.Context(), r.PathValue("id"), r.PathValue("grantId"))
 		httpx.Result(w, 200, out, err)

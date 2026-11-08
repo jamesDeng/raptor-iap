@@ -420,8 +420,8 @@ func (s *Service) ClaimGrantAction(ctx context.Context, input GrantActionInput) 
 	if unresolved {
 		return GrantActionReceipt{}, domain.ErrConflict
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO raptor.request_grant_actions(request_id, grant_id, action_id, input_digest)
-		VALUES($1,$2,$3,$4)`, in.RequestID, in.GrantID, in.ActionID, digest); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO raptor.request_grant_actions(request_id, grant_id, action_id, input_digest, capability, arguments)
+		VALUES($1,$2,$3,$4,$5,$6)`, in.RequestID, in.GrantID, in.ActionID, digest, in.Capability, in.Arguments); err != nil {
 		return GrantActionReceipt{}, domain.ErrUnavailable
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -479,4 +479,37 @@ func (s *Service) RecordGrantAction(ctx context.Context, record GrantActionRecor
 		return domain.ErrUnavailable
 	}
 	return nil
+}
+
+type GrantActionDetails struct {
+	RequestID         string          `json:"requestId"`
+	GrantID           string          `json:"grantId"`
+	ActionID          string          `json:"actionId"`
+	EnvCode           string          `json:"envCode"`
+	ScopeDigest       string          `json:"scopeDigest"`
+	Capability        GrantCapability `json:"capability"`
+	Arguments         json.RawMessage `json:"arguments"`
+	State             string          `json:"state"`
+	ProviderRequestID string          `json:"providerRequestId,omitempty"`
+	ClaimedAt         time.Time       `json:"claimedAt"`
+	RecordedAt        *time.Time      `json:"recordedAt,omitempty"`
+}
+
+func (s *Service) GetGrantAction(ctx context.Context, requestID, actionID string) (GrantActionDetails, error) {
+	if !grantUUID(requestID) || !grantIdentifier(actionID) {
+		return GrantActionDetails{}, domain.ErrInvalid
+	}
+	out := GrantActionDetails{RequestID: requestID, ActionID: actionID}
+	err := s.Pool.QueryRow(ctx, `SELECT a.grant_id::text,g.env_code,g.scope_digest,a.capability,a.arguments,a.state,
+		a.provider_request_id,a.claimed_at,a.recorded_at FROM raptor.request_grant_actions a
+		JOIN raptor.request_grants g ON g.request_id=a.request_id AND g.id=a.grant_id
+		WHERE a.request_id=$1 AND a.action_id=$2`, requestID, actionID).
+		Scan(&out.GrantID, &out.EnvCode, &out.ScopeDigest, &out.Capability, &out.Arguments, &out.State, &out.ProviderRequestID, &out.ClaimedAt, &out.RecordedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return GrantActionDetails{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return GrantActionDetails{}, domain.ErrUnavailable
+	}
+	return out, nil
 }

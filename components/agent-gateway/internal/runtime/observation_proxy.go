@@ -24,22 +24,25 @@ type observationEntry struct {
 	material ObservationMaterial
 	expires  time.Time
 	check    func(context.Context) error
+	active   func(context.Context) bool
 }
 type ObservationProxy struct {
-	origin  string
-	execute ObservationExecutor
-	mu      sync.Mutex
-	entries map[[32]byte]observationEntry
-	busy    chan struct{}
+	ReadPgcatDrainAction func(context.Context, string, string, string, string, string) (execution.PgcatDrainAction, error)
+	origin               string
+	execute              ObservationExecutor
+	mu                   sync.Mutex
+	entries              map[[32]byte]observationEntry
+	busy                 chan struct{}
+	pgcat                *pgcatContinuity
 }
 
 func NewObservationProxy(origin string, execute ObservationExecutor) (*ObservationProxy, error) {
 	if origin != "https://api.rdev.raptor-iap.top"+observationRoute || execute == nil {
 		return nil, ErrConfiguration
 	}
-	return &ObservationProxy{origin: origin, execute: execute, entries: map[[32]byte]observationEntry{}, busy: make(chan struct{}, 4)}, nil
+	return &ObservationProxy{origin: origin, execute: execute, entries: map[[32]byte]observationEntry{}, busy: make(chan struct{}, 4), pgcat: newPgcatContinuity()}, nil
 }
-func (p *ObservationProxy) Register(in execution.LiveStart, m ObservationMaterial, check func(context.Context) error) (ObservationMaterial, error) {
+func (p *ObservationProxy) Register(in execution.LiveStart, m ObservationMaterial, check func(context.Context) error, lifecycle ...func(context.Context) bool) (ObservationMaterial, error) {
 	if in.Binding.Operation != "db-proxy.replace-nodes" || in.Access.Binding != in.Binding || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ResourceValidFor(in.Binding) || check == nil {
 		return ObservationMaterial{}, ErrConfiguration
 	}
@@ -83,7 +86,11 @@ func (p *ObservationProxy) Register(in execution.LiveStart, m ObservationMateria
 	// Snapshot the issued scope; later mutation cannot change registered authority.
 	scope := *in.Access.ReplacementScope
 	in.Access.ReplacementScope = &scope
-	p.entries[sha256.Sum256([]byte(token))] = observationEntry{start: in, material: m, expires: expires, check: check}
+	entry := observationEntry{start: in, material: m, expires: expires, check: check}
+	if len(lifecycle) == 1 {
+		entry.active = lifecycle[0]
+	}
+	p.entries[sha256.Sum256([]byte(token))] = entry
 	return ObservationMaterial{Config: raw, Secrets: append(append([]string{}, m.Secrets...), token)}, nil
 }
 func (p *ObservationProxy) Remove(attempt string) {
@@ -202,7 +209,13 @@ func (p *ObservationProxy) guardedExecute(parent context.Context, hash [32]byte,
 	default:
 		return nil, 429
 	}
-	raw, err := p.execute(ctx, entry.start, entry.material, tool, args)
+	var raw json.RawMessage
+	var err error
+	if tool == pgcatContinuityTool {
+		raw, err = p.pgcatObservation(ctx, entry, args)
+	} else {
+		raw, err = p.execute(ctx, entry.start, entry.material, tool, args)
+	}
 	unsafe := false
 	for _, secret := range entry.material.Secrets {
 		if secret != "" && bytes.Contains(raw, []byte(secret)) {
@@ -219,6 +232,9 @@ func validObservationInput(tool string, raw json.RawMessage) bool {
 	var args map[string]json.RawMessage
 	if json.Unmarshal(raw, &args) != nil || args == nil {
 		return false
+	}
+	if tool == pgcatContinuityTool {
+		return validPgcatContinuityArgs(raw)
 	}
 	if tool == "deployment_read" {
 		return len(args) == 0

@@ -68,7 +68,7 @@ func (c LiveConfig) Validate() error {
 	if c.ObservationURL != "" && c.ObservationURL != "https://api.rdev.raptor-iap.top/v1/gateway-observations" {
 		return ErrConfiguration
 	}
-	if c.Provider == "ax" && c.ReplacementObserver != nil && c.ObservationURL == "" {
+	if (c.ReplacementEnabled || c.QualificationEnabled || c.Provider == "ax" && c.ReplacementObserver != nil) && c.ObservationURL == "" {
 		return ErrConfiguration
 	}
 	if (c.ReplacementEnabled || c.QualificationEnabled) && (c.ReplacementObserver == nil || c.SkillsRepository == "") {

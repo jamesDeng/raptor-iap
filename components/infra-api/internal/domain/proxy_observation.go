@@ -81,3 +81,10 @@ type PrometheusSample struct {
 	Metric map[string]string `json:"metric"`
 	Value  []json.RawMessage `json:"value"`
 }
+
+type PgcatInventoryReceipt struct {
+	UID             string   `json:"uid"`
+	ResourceVersion string   `json:"resourceVersion"`
+	InstanceIDs     []string `json:"instanceIds"`
+	Changed         bool     `json:"changed"`
+}

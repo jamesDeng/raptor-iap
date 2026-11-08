@@ -123,7 +123,7 @@ func ProgressToolAllowed(operation, tool string) bool {
 		return true
 	}
 	switch tool {
-	case "resource_wait", "cloud_read", "deployment_read", "metrics_read", "db_connection_probe", "mcp__raptor__approval_request", "mcp__raptor__approval_get", "mcp__raptor__request_grant_request", "mcp__raptor__request_grant_get", "mcp__raptor__request_pause", "mcp__infra__db_proxy_scale", "mcp__infra__db_proxy_node_protection_set", "mcp__infra__db_proxy_nodes_deregister", "mcp__infra__deployment_restart":
+	case "resource_wait", "cloud_read", "deployment_read", "metrics_read", "db_connection_probe", "pgcat_connection_continuity", "mcp__raptor__approval_request", "mcp__raptor__approval_get", "mcp__raptor__request_grant_request", "mcp__raptor__request_grant_get", "mcp__raptor__request_pause", "mcp__infra__db_proxy_scale", "mcp__infra__db_proxy_node_protection_set", "mcp__infra__db_proxy_nodes_deregister", "mcp__infra__deployment_restart", "mcp__infra__pgcat_monitoring_sync":
 		return true
 	}
 	return false

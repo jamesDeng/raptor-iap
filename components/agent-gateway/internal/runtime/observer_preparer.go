@@ -19,7 +19,7 @@ func (c ObserverSQLCredential) GoString() string { return c.String() }
 // ObserverPreparation composes controller-owned discoveries and credential
 // issuers. None of its endpoints or SQL identity originate from agent input.
 type ObserverPreparation struct {
-	Server                                  string
+	Server, PgcatHost                       string
 	CA                                      []byte
 	DBInstanceID, ListenerID, PrometheusURL string
 	ClientTargets                           []string
@@ -67,6 +67,9 @@ func (p ObserverPreparation) Prepare(ctx context.Context, in execution.LiveStart
 	}
 	app := scope.Application
 	config := map[string]any{"version": 1, "requestId": in.Binding.RequestID, "definitionSha256": in.Binding.DefinitionSHA256, "envCode": in.Binding.EnvCode, "accountId": "1360282071200743", "region": "ap-southeast-1", "groupId": scope.GroupID, "serverGroupId": scope.ServerGroupID, "dbInstanceId": p.DBInstanceID, "listenerId": p.ListenerID, "application": map[string]any{"clusterId": app.ClusterID, "namespace": app.Namespace, "name": app.Name, "uid": app.UID}, "clientTargets": append([]string(nil), p.ClientTargets...), "prometheusURL": p.PrometheusURL, "expiresAt": until, "private": map[string]any{"kubeconfig": "/tmp/raptor-private/kubeconfig", "aliyunEnv": map[string]string{"ALIBABA_CLOUD_ACCESS_KEY_ID": cloud.AccessKeyID, "ALIBABA_CLOUD_ACCESS_KEY_SECRET": cloud.AccessKeySecret, "ALIBABA_CLOUD_SECURITY_TOKEN": cloud.SecurityToken}, "sql": map[string]string{"user": sql.User, "password": sql.Password, "database": sql.Database, "sslmode": sql.SSLMode}}}
+	if p.PgcatHost != "" {
+		config["pgcatHost"] = p.PgcatHost
+	}
 	kubeconfig := map[string]any{"apiVersion": "v1", "kind": "Config", "current-context": "observer", "clusters": []any{map[string]any{"name": app.ClusterID, "cluster": map[string]any{"server": p.Server, "certificate-authority-data": base64.StdEncoding.EncodeToString(p.CA)}}}, "contexts": []any{map[string]any{"name": "observer", "context": map[string]any{"cluster": app.ClusterID, "user": "observer", "namespace": app.Namespace}}}, "users": []any{map[string]any{"name": "observer", "user": map[string]any{"token": kube.Token}}}}
 	raw, err := json.Marshal(config)
 	if err != nil {

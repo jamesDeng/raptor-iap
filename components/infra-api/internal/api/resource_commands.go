@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"raptor-iap/infra-api/internal/domain"
+	"raptor-iap/infra-api/internal/policy"
 	"raptor-iap/infra-api/internal/resources"
 	"reflect"
 	"time"
@@ -18,6 +19,10 @@ type resourceScale struct {
 	resourceProxyTarget
 	ActionID        string `json:"actionId"`
 	DesiredCapacity int    `json:"desiredCapacity"`
+}
+type resourceInventory struct {
+	resourceProxyTarget
+	ActionID string `json:"actionId"`
 }
 type resourceProtection struct {
 	resourceProxyTarget
@@ -35,7 +40,11 @@ type resourceRestart struct {
 	WorkloadKey string `json:"workloadKey"`
 }
 
-var resourceCommandSpecs = []commandSpec{{"deployment_restart", "/v1/deployment-restart", resourceRestart{}}, {"db_proxy_scale", "/v1/db-proxy-scale", resourceScale{}}, {"db_proxy_node_protection_set", "/v1/db-proxy-node-protection", resourceProtection{}}, {"db_proxy_nodes_deregister", "/v1/db-proxy-node-deregistration", resourceDeregister{}}}
+var resourceCommandSpecs = []commandSpec{{"deployment_restart", "/v1/deployment-restart", resourceRestart{}}, {"db_proxy_scale", "/v1/db-proxy-scale", resourceScale{}}, {"db_proxy_node_protection_set", "/v1/db-proxy-node-protection", resourceProtection{}}, {"db_proxy_nodes_deregister", "/v1/db-proxy-node-deregistration", resourceDeregister{}}, {"pgcat_monitoring_sync", "/v1/pgcat-monitoring-sync", resourceInventory{}}}
+
+func resourceCommandPath(path string) bool {
+	return commandPath(path) || path == "/v1/pgcat-monitoring-sync"
+}
 
 func (o resourceOperations) command(ctx context.Context, path string, raw []byte) (any, error) {
 	bad := func() (any, error) { return nil, &operationError{400, "InvalidInput"} }
@@ -73,6 +82,14 @@ func (o resourceOperations) command(ctx context.Context, path string, raw []byte
 		}
 	}
 	switch path {
+	case "/v1/pgcat-monitoring-sync":
+		var c resourceInventory
+		if strictJSON(raw, &c) != nil || !textOK(c.ActionID) {
+			return bad()
+		}
+		in = c
+		env, code, request = c.EnvCode, c.ProxyCode, c.RequestID
+		kind = "db-proxy"
 	case "/v1/db-proxy-scale":
 		var c resourceScale
 		if strictJSON(raw, &c) != nil || c.DesiredCapacity < 0 || fields["desiredCapacity"] == nil || !textOK(c.ActionID) {
@@ -131,7 +148,12 @@ func (o resourceOperations) command(ctx context.Context, path string, raw []byte
 		return nil, e
 	}
 	// Versioned requests must never fall through to the legacy write path.
-	if identity != nil && identity.Binding != nil && identity.Binding.ApprovalProtocol != "" {
+	versioned := identity != nil && identity.Binding != nil && identity.Binding.ApprovalProtocol != ""
+	if tool == "pgcat_monitoring_sync" {
+		if !versioned || identity.Binding.ApprovalProtocol != policy.RequestGrantProtocol || o.grants == nil || o.grantID == "" {
+			return nil, &operationError{403, "ApprovalRequired"}
+		}
+	} else if versioned {
 		return nil, &operationError{503, "RequestGrantEnforcementUnavailable"}
 	}
 	if o.commander == nil {
@@ -148,6 +170,9 @@ func (o resourceOperations) command(ctx context.Context, path string, raw []byte
 		if e = o.matchProof(ctx, *identity, r); e != nil {
 			return nil, e
 		}
+	}
+	if c, ok := in.(resourceInventory); ok {
+		return o.syncMonitoring(ctx, *identity, r, c, raw)
 	}
 	var data any
 	if c, ok := in.(resourceRestart); ok {
@@ -277,8 +302,8 @@ func (i AgentIdentity) permitsResource(tool string, s map[string]string) bool {
 			want["requestId"] = b.RequestID
 			mutation = true
 		}
-	case "proxy_observation_get", "proxy_pgcat_metrics_get", "db_proxy_scale", "db_proxy_node_protection_set", "db_proxy_nodes_deregister":
-		if !replacement {
+	case "proxy_observation_get", "proxy_pgcat_metrics_get", "db_proxy_scale", "db_proxy_node_protection_set", "db_proxy_nodes_deregister", "pgcat_monitoring_sync":
+		if !replacement || (tool == "pgcat_monitoring_sync" && b.ApprovalProtocol != policy.RequestGrantProtocol) {
 			return false
 		}
 		want["requestId"] = b.RequestID

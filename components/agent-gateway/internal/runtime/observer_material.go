@@ -54,26 +54,25 @@ func (n *NativeLive) prepareObservation(ctx context.Context, in execution.LiveSt
 	if in.Binding.Operation != "db-proxy.replace-nodes" {
 		return ObservationMaterial{}, nil
 	}
-	if n.Observe == nil || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ValidFor(in.Binding) {
+	if n.Observations == nil || n.Observe == nil || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ValidFor(in.Binding) {
 		return ObservationMaterial{}, ErrConfiguration
 	}
 	material, err := n.Observe(ctx, in)
 	if err != nil || material.Validate(in.Binding, *in.Access.ReplacementScope) != nil {
 		return ObservationMaterial{}, ErrConfiguration
 	}
-	if n.Observations != nil {
-		return n.Observations.Register(in, material, func(call context.Context) error {
-			if err := n.fence(call, in.Binding.AttemptID); err != nil {
-				return err
-			}
-			cancelled, err := n.Store.LiveCancelled(call, in.Binding.RequestID)
-			if err != nil || cancelled {
-				return ErrRuntimeUnavailable
-			}
-			return nil
-		})
-	}
-	return material, nil
+	return n.Observations.Register(in, material, func(call context.Context) error {
+		if err := n.fence(call, in.Binding.AttemptID); err != nil {
+			return err
+		}
+		cancelled, err := n.Store.LiveCancelled(call, in.Binding.RequestID)
+		if err != nil || cancelled {
+			return ErrRuntimeUnavailable
+		}
+		return nil
+	}, func(call context.Context) bool {
+		return n.Store.RetainPgcatObservation(call, in.Binding.RequestID)
+	})
 }
 func observationConfigPath(in execution.LiveStart) string {
 	if in.Binding.Operation == "db-proxy.replace-nodes" {

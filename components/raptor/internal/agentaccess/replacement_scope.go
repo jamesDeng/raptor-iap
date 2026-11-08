@@ -111,6 +111,12 @@ func ReplacementSelectorsAllowed(b Binding, s ReplacementScope, audience, tool s
 			}
 			expected["kind"] = selectors["kind"]
 			expected["code"] = selectors["code"]
+		case "pgcat_monitoring_sync":
+			if b.ApprovalProtocol != "request-grants-v1" || b.ExecutionMode != "replacement" {
+				return false
+			}
+			expected["requestId"] = b.RequestID
+			expected["proxyCode"] = s.ProxyCode
 		case "proxy_observation_get", "proxy_pgcat_metrics_get", "db_proxy_scale", "db_proxy_node_protection_set", "db_proxy_nodes_deregister":
 			expected["requestId"] = b.RequestID
 			expected["proxyCode"] = s.ProxyCode

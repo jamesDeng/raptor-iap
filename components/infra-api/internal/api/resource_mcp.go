@@ -72,6 +72,10 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 		})
 	}
 	if op.commander != nil && op.authorizer != nil {
+		protocol := ""
+		if op.identity != nil && op.identity.Binding != nil {
+			protocol = op.identity.Binding.ApprovalProtocol
+		}
 		for _, spec := range resourceCommandSpecs {
 			if !op.visible(spec.path) {
 				continue
@@ -79,7 +83,13 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 			if op.identity != nil && (op.identity.Binding == nil || op.identity.Binding.Operation != "db-proxy.replace-nodes" || op.identity.Binding.ExecutionMode == "qualification") {
 				continue
 			}
-			tool, ok := resourceMCPTool(spec.name, commandSchema(spec.sample))
+			catalogProtocol := protocol
+			// For tools/call the resource binding is verified after parsing
+			// selectors. Register the handler without advertising it to legacy catalogs.
+			if spec.name == "pgcat_monitoring_sync" && op.identity == nil && op.principal == "agent" {
+				catalogProtocol = policy.RequestGrantProtocol
+			}
+			tool, ok := resourceMCPTool(spec.name, commandSchema(spec.sample), catalogProtocol)
 			if !ok {
 				continue
 			}
@@ -93,8 +103,8 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 	return boundClientsMCPResponse(handler)
 }
 
-func resourceMCPTool(name string, schema any) (*mcp.Tool, bool) {
-	approval, ok := policy.ApprovalPolicyForTool(name)
+func resourceMCPTool(name string, schema any, protocol ...string) (*mcp.Tool, bool) {
+	approval, ok := policy.ApprovalPolicyForTool(name, protocol...)
 	if !ok {
 		return nil, false
 	}

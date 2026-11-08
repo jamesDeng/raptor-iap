@@ -18,6 +18,8 @@ type resourceOperations struct {
 	principal, credential string
 	check                 AgentCheck
 	identity              *AgentIdentity
+	grantID               string
+	grants                RequestGrantClient
 }
 type resourceSelector struct {
 	EnvCode string `json:"envCode"`

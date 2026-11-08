@@ -421,11 +421,6 @@ func (n *NativeLive) prepare(ctx context.Context, r *nativeRun) error {
 		if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/observation.json", r.observation.Config); e != nil {
 			return e
 		}
-		if len(r.observation.Kubeconfig) > 0 {
-			if e = r.transport.WriteFile(ctx, r.sandbox, "/tmp/raptor-private/kubeconfig", r.observation.Kubeconfig); e != nil {
-				return e
-			}
-		}
 	}
 	job, e := liveJob(n.Config, r.start)
 	if e != nil {

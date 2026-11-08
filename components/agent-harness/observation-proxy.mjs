@@ -1,14 +1,20 @@
 import {isDeepStrictEqual} from 'node:util';
 import {createReadConcurrency} from './mcp-runtime.mjs';
+import {PG_CAT_CONTINUITY,validContinuityArgs} from './observation-extension.mjs';
 const invalid=()=>new Error('InvalidObservation');
 const tools={cloudRead:['cloud_read','kind',['fleet','backend','capacity']],deploymentRead:['deployment_read'],metricsRead:['metrics_read','kind',['trafficFailures','connections','pgcatClients']],dbConnectionProbe:['db_connection_probe','instanceId']};
 export function createRemoteObservationTools({binding,config,replacementScope,fetch=globalThis.fetch,onDiagnostic=()=>{}}){
  const keys=['version','transport','url','token','binding','scope','expiresAt'];
  if(!config||Object.keys(config).some(k=>!keys.includes(k))||config.version!==1||config.transport!=='gateway'||config.url!=='https://api.rdev.raptor-iap.top/v1/gateway-observations'||!/^\w{64}$/.test(config.token)||!isDeepStrictEqual(config.binding,binding)||!isDeepStrictEqual(config.scope,replacementScope)||!Number.isFinite(Date.parse(config.expiresAt))||Date.parse(config.expiresAt)<=Date.now())throw invalid();
  const scheduleRead=createReadConcurrency(4);
- return Object.fromEntries(Object.entries(tools).map(([name,[tool,key,kinds]])=>[name,args=>{
+ const selected={...tools};
+ if(binding.approvalProtocol==='request-grants-v1')selected.pgcatConnectionContinuity=[PG_CAT_CONTINUITY];
+ return Object.fromEntries(Object.entries(selected).map(([name,[tool,key,kinds]])=>[name,args=>{
   return scheduleRead(async()=>{
-  if(Date.parse(config.expiresAt)<=Date.now()||!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).length!==(key?1:0)||(key&&(!Object.hasOwn(args,key)||typeof args[key]!=='string'||(kinds?!kinds.includes(args[key]):!/^[-A-Za-z0-9_.]{1,128}$/.test(args[key]))))){onDiagnostic({tool,category:'local-input'});throw invalid();}
+  const matchesSelector=()=>args&&typeof args==='object'&&!Array.isArray(args)&&Object.keys(args).length===(key?1:0)&&
+   (!key||(Object.hasOwn(args,key)&&typeof args[key]==='string'&&(kinds?kinds.includes(args[key]):/^[-A-Za-z0-9_.]{1,128}$/.test(args[key]))));
+  const valid=tool===PG_CAT_CONTINUITY?validContinuityArgs(args):matchesSelector();
+  if(Date.parse(config.expiresAt)<=Date.now()||!valid){onDiagnostic({tool,category:'local-input'});throw invalid();}
   let category='transport-error';
   try{
    const response=await fetch(config.url,{method:'POST',redirect:'error',headers:{Authorization:'Bearer '+config.token,'Content-Type':'application/json'},body:JSON.stringify({requestId:binding.requestId,attemptId:binding.attemptId,definitionSha256:binding.definitionSha256,tool,arguments:args}),signal:AbortSignal.timeout(25000)});

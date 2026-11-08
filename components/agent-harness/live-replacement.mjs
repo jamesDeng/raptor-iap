@@ -1,7 +1,7 @@
 import {startPgcatTroubleshooting} from './conversation.mjs';
 import {QualificationTrace} from './qualification-trace.mjs';
 import {qualificationReadBatches} from './qualification-read-plan.mjs';
-import {observationExtension,observationArgsCategory,OBSERVATION_TOOLS} from './observation-extension.mjs';
+import {observationExtension,observationArgsCategory,operationObservationTools} from './observation-extension.mjs';
 import fs from 'node:fs';
 import {qualifyReplacementConvergence} from './replacement-completion.mjs';
 import {ReplacementTrace} from './replacement-trace.mjs';
@@ -25,8 +25,9 @@ const SYSTEM='Operate only on the trusted request and resolved PgCat scope using
 const EXPANSION_READINESS=' After both original backends stop accepting new connections, call resource_wait with seconds=60 and stop. Resume with fresh resource discovery, workload status, fleet, backend, capacity, fresh complete PgCat client metrics before the bound restart. After submitting expansion, repeat cloud fleet, backend and capacity reads and PgCat client metrics. If any node is Pending, any backend is not healthy, or metrics report pendingInstanceIds, call resource_wait with seconds=60 and stop. Apply the selected skill to exact new-node readiness; do not require new-node SQL probes. Post-expansion writes and approval requests unlock only on a later completed turn after a persisted four-node readiness witness. After the bound Deployment restart, read deployment_read and use resource_wait until generation and observedGeneration prove two updated, available and ready replicas. Do not query trafficFailures or connections during a surge; strict traffic client discovery requires exactly two Ready clients. An unknown scale outcome must be reconciled by these exact reads; never replay its action.';
 const GRANT_SYSTEM='Read request_get first. Follow its operation prompt and the pinned skill. Complete read-only preflight. Read the Infra tool descriptions and submit one request_grant_request containing every required high-risk capability with its exact target and constraints. Wait for each dependent read before proposing actions. The runtime checkpoints and pauses when the bundle is returned. After resuming, read the saved grant and recheck the current phase before writing. Only an approved Request grant authorizes a write. Keep public progress brief and exclude credentials and private reasoning.';
 const GRANT_PROPOSAL='mcp__raptor__request_grant_request';
+const MONITORING_SYNC='mcp__infra__pgcat_monitoring_sync';
 const INITIAL_READS=' First complete the request, environment, object, resource discovery, Deployment, fleet, backend, capacity, metrics and SQL reads. Wait for successful results and a valid two-node fleet baseline before protecting nodes or calling any other mutation. If a SQL probe returns target-mismatch, use the exact baselineInstanceIds it returns and require successful probes for both. Only read and wait tools are initially available.';
-const REPLACEMENT_WRITES=new Set([GRANT_PROPOSAL,'mcp__raptor__approval_request','mcp__raptor__request_pause','mcp__infra__db_proxy_scale','mcp__infra__db_proxy_node_protection_set','mcp__infra__db_proxy_nodes_deregister','mcp__infra__deployment_restart']);
+const REPLACEMENT_WRITES=new Set([GRANT_PROPOSAL,'mcp__raptor__approval_request','mcp__raptor__request_pause','mcp__infra__db_proxy_scale','mcp__infra__db_proxy_node_protection_set','mcp__infra__db_proxy_nodes_deregister','mcp__infra__deployment_restart',MONITORING_SYNC]);
 const WORK_UPDATES=new Map([
  ['cloud_read','I’ll check the PgCat fleet, load balancer registration, and capacity.'],
  ['metrics_read','I’ll read the application traffic and PgCat connection metrics.'],
@@ -38,7 +39,8 @@ const WORK_UPDATES=new Map([
 export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:b,replacementScope,skills,limits,mcpConfig,fetch,onProgress=()=>{},signal,sessionReference,decisionContext,observer,conversation}){
  let session,mcp,manager,error,inbox,inboxTimer,finishTroubleshooting,turns=0;const usage=[],replyUsage=[],toolDiagnostics=new Map(),publicStatus=[],announced=new Set();
  const stream=runtime.streamSimple.bind(runtime),pause=new ApprovalPause(b),profile=operationCapabilities(b,replacementScope);
- const tools=Object.entries(profile).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name)).concat(observer?OBSERVATION_TOOLS:[]).concat(['resource_wait']);
+ const observationTools=observer?operationObservationTools(b):[];
+ const tools=Object.entries(profile).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name)).concat(observationTools).concat(['resource_wait']);
  if(limits?.max_turns!==10||limits?.max_output_tokens!==1024)throw Error('InvalidJob');
  const abort=()=>{error||='Cancelled';void session?.abort();};
  const progress=event=>{try{
@@ -66,9 +68,11 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const isReadOnlyTool=name=>readOnlyNames.has(name);
   const scheduleRead=createReadConcurrency(4);
   const proposalTools=grants?[...readTools,GRANT_PROPOSAL]:undefined;
+  const inventoryTools=grants?[...readTools,MONITORING_SYNC]:undefined;
   const allowedTools=()=>{
    if(qualification)return tools;
-   if(!sequence.canWrite()||readiness.blocked())return readTools;
+   if(readiness.blocked())return grants?.approved&&readiness.expansion()?.result?inventoryTools:readTools;
+   if(!sequence.canWrite())return readTools;
    if(!grants||grants.approved)return tools;
    return grants.required&&!grants.expected?proposalTools:readTools;
   };
@@ -86,6 +90,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     else sequence.observe(args.kind==='pgcatClients'?'metrics':args.kind,data);
     return data;
    }),
+   ...(observer.pgcatConnectionContinuity?{pgcatConnectionContinuity:args=>serializedRead(()=>observer.pgcatConnectionContinuity(args))}:{}),
    dbConnectionProbe:args=>serializedRead(async()=>{
     if(qualification)trace.requireBaselineNode(args?.instanceId);
     else{
@@ -100,11 +105,13 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    })}:undefined;
   mcp=await createScopedMcpRuntime({
    sdk,stateRoot,privateRoot,servers:mcpConfig,binding:b,replacementScope,fetch,toolCallGate,isReadOnlyTool,
+   grantForTool:(server,tool)=>server==='infra'&&REPLACEMENT_WRITES.has('mcp__'+server+'__'+tool)?grants?.approved?.id:undefined,
    onEvidence:rows=>{if(qualification)trace.mcp(rows);else sequence.observe('mcp',rows);},
    beforeTool:(server,tool,args)=>{
     pause.beforeTool(server,tool);
     const name='mcp__'+server+'__'+tool;
-    if(!qualification&&REPLACEMENT_WRITES.has(name)&&(readiness.blocked()||!activeTools.includes(name)))throw Error('MissingEvidence');
+    if(!qualification&&REPLACEMENT_WRITES.has(name)&&
+      (!activeTools.includes(name)||(readiness.blocked()&&name!==MONITORING_SYNC)))throw Error('MissingEvidence');
     if(grants&&server==='raptor'){
      if(tool==='request_grant_request')grants.beforeProposal(args);
      if(tool==='request_grant_get')grants.beforeRead(args);
@@ -114,13 +121,13 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
      else if(!(server==='raptor'&&tool==='request_pause'))trace.beforeRead('mcp.'+server+'.'+tool,args);
     }
     if(!qualification&&server==='raptor'&&tool==='approval_request')sequence.beforeMutation(tool,args);
-    if(server==='infra'&&!qualification){
+    if(server==='infra'&&!qualification&&name!==MONITORING_SYNC){
      sequence.beforeMutation(tool,args);trace.beforeMutation(tool,args);
      if(readiness.blocked()){activeTools=readTools;session.setActiveToolsByName(readTools);}
     }
    },
    onToolResult:(server,tool,args,data)=>{
-    if(server==='infra'&&!qualification){trace.mutation(tool,args,data);sequence.onMutationResult(tool,args,data);}
+    if(server==='infra'&&!qualification&&tool!=='pgcat_monitoring_sync'){trace.mutation(tool,args,data);sequence.onMutationResult(tool,args,data);}
     if(grants&&server==='raptor'){
      if(tool==='request_get')grants.readContext(data,mcp.getApprovalPolicies());
      if(tool==='request_grant_request')pause.grantRequested(args,data);
@@ -203,7 +210,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     const update=WORK_UPDATES.get(event.toolName);
     if(update&&!announced.has(event.toolName)){announced.add(event.toolName);narrate(update);}
     toolDiagnostics.delete(event.toolName);progress({kind:'tool_start',tool:event.toolName,outcome:'started'});const category=observationArgsCategory(event.toolName,event.args);if(category)progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' '+category});}
-   if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(event.isError){readFailure=true;const diagnostic=toolFailureDiagnostic(event.toolName,profile,toolDiagnostics.get(event.toolName),event.result);if(diagnostic)progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});if(OBSERVATION_TOOLS.includes(event.toolName))progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' tool-end-failed'});error||='ToolFailed';void session.abort();}}
+   if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(event.isError){readFailure=true;const diagnostic=toolFailureDiagnostic(event.toolName,profile,toolDiagnostics.get(event.toolName),event.result);if(diagnostic)progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});if(observationTools.includes(event.toolName))progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' tool-end-failed'});error||='ToolFailed';void session.abort();}}
    if(event.type==='message_end'&&event.message.role==='assistant'){const message=event.message,u=message.usage;const failure=modelFailureDiagnostic(message,model);if(failure){progress({kind:'progress',outcome:'running',summary:'Model '+failure.category});if(failure.failureCode==='NeedsSignIn'){narrate('Model authentication expired or was rejected. Contact the platform administrator to reconnect the model provider in Raptor Admin.');error||='NeedsSignIn';}}if(message.model!==b.model||message.provider!==model.provider||['error','aborted'].includes(message.stopReason)||!u||![u.input,u.output,u.totalTokens].every(n=>Number.isSafeInteger(n)&&n>=0)){error||='ModelFailed';void session.abort();}else usage.push({input:u.input,output:u.output,totalTokens:u.totalTokens});const summary=publicProgressFromMessage(message);if(summary)progress({kind:'progress',outcome:'running',summary});}
   });
   signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();

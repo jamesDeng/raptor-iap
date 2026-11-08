@@ -103,6 +103,12 @@ func TestRequestGrantReusableAcrossActions(t *testing.T) {
 		if receipt, err := service.ClaimGrantAction(ctx, action); err != nil || receipt.Claimed || receipt.State != "submitted" || receipt.ProviderRequestID != "provider-ack" {
 			t.Fatalf("replay should return existing receipt: %+v, %v", receipt, err)
 		}
+		details, err := service.GetGrantAction(ctx, grant.RequestID, action.ActionID)
+		if err != nil || details.State != "submitted" || details.ScopeDigest != action.ScopeDigest ||
+			details.Capability.Capability != action.Capability.Capability || details.RecordedAt == nil ||
+			!equalJSON(details.Arguments, action.Arguments) {
+			t.Fatalf("trusted receipt lookup = %+v %v", details, err)
+		}
 		action.Arguments = []byte(`{"newArgument":true}`)
 		if _, err := service.ClaimGrantAction(ctx, action); !errors.Is(err, domain.ErrConflict) {
 			t.Fatalf("same action with modified arguments: %v", err)
