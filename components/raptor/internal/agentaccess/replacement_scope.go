@@ -71,9 +71,26 @@ func ReplacementSelectorsAllowed(b Binding, s ReplacementScope, audience, tool s
 			if tool == "deployments_list" {
 				expected["envCode"] = b.EnvCode
 			}
+		case "request_grant_request":
+			if b.ApprovalProtocol != "request-grants-v1" {
+				return false
+			}
+			expected["envCode"] = b.EnvCode
+			expected["scopeDigest"] = s.ResolutionDigest
+		case "request_grant_get":
+			if b.ApprovalProtocol != "request-grants-v1" {
+				return false
+			}
+			expected["grantId"] = selectors["grantId"]
 		case "approval_get":
+			if b.ApprovalProtocol != "" {
+				return false
+			}
 			expected["approvalId"] = selectors["approvalId"]
 		case "approval_request":
+			if b.ApprovalProtocol != "" {
+				return false
+			}
 			if b.ExecutionMode == "qualification" {
 				expected["interface"] = "runtime.qualification-resume"
 			}

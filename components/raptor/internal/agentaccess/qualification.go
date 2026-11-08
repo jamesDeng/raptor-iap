@@ -9,6 +9,9 @@ func validReplacementParameters(p map[string]any) bool {
 	if len(p) == 0 {
 		return true
 	}
+	if len(p) == 2 {
+		return p["mode"] == "replacement" && p["approvalProtocol"] == "request-grants-v1"
+	}
 	if len(p) != 1 {
 		return false
 	}
@@ -21,4 +24,15 @@ func replacementMode(d domain.RequestInput) string {
 	}
 	m, _ := d.Operations[0].Parameters["mode"].(string)
 	return m
+}
+
+func RequestGrantProtocol(d domain.RequestInput) string {
+	if replacementMode(d) != "replacement" {
+		return ""
+	}
+	value, _ := d.Operations[0].Parameters["approvalProtocol"].(string)
+	if value == "request-grants-v1" {
+		return value
+	}
+	return ""
 }

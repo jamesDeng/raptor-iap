@@ -15,6 +15,12 @@ function scopedToolSchema(server,tool,schema,b,scope){
   target:{type:'object',properties:{proxyCode:{type:'string',enum:[scope.proxyCode]}},required:['proxyCode'],additionalProperties:false},
   parameters:b.executionMode==='qualification'?{type:'object',properties:{phase:{type:'string',enum:['resume']}},required:['phase'],additionalProperties:false}:{type:'object',properties:{desiredCapacity:{type:'integer',minimum:0}},required:['desiredCapacity'],additionalProperties:false}
  }};
+ if(server==='raptor'&&tool==='request_grant_request'){
+  return {...schema,properties:{...schema.properties,
+   envCode:{...schema.properties.envCode,enum:[b.envCode]},
+   scopeDigest:{...schema.properties.scopeDigest,enum:[scope.resolutionDigest]},
+  }};
+ }
  if(b.executionMode!=='qualification')return schema;
  const fixed={
   raptor:{request_get:{requestId:b.requestId},environment_get:{requestId:b.requestId,envCode:b.envCode},object_get:{requestId:b.requestId,kind:b.objectKind,code:b.objectCode}},

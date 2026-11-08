@@ -71,6 +71,24 @@ func agentToolSelectors(tool string, raw json.RawMessage) (map[string]string, er
 		json.Unmarshal(fields["attemptId"], &attemptID)
 		return map[string]string{"requestId": requestID, "attemptId": attemptID}, nil
 	}
+	if tool == "request_grant_request" {
+		if len(fields) != 4 {
+			return bad()
+		}
+		var capabilities []json.RawMessage
+		if json.Unmarshal(fields["capabilities"], &capabilities) != nil || len(capabilities) < 1 || len(capabilities) > 16 {
+			return bad()
+		}
+		selectors := map[string]string{}
+		for _, key := range []string{"requestId", "envCode", "scopeDigest"} {
+			var value string
+			if json.Unmarshal(fields[key], &value) != nil || value == "" {
+				return bad()
+			}
+			selectors[key] = value
+		}
+		return selectors, nil
+	}
 	if tool == "approval_request" {
 		if len(fields) != 6 {
 			return bad()
@@ -166,4 +184,35 @@ func addReplacementAgentTools(s *mcp.Server, p agentPrincipal) {
 		v, err := p.backend.Call(ctx, "POST", requestPath(in.RequestID)+"/pause", map[string]string{"reason": in.Reason})
 		return nil, v, err
 	})
+}
+
+type grantGetArgs struct {
+	RequestID string `json:"requestId"`
+	GrantID   string `json:"grantId"`
+}
+
+func addRequestGrantAgentTools(s *mcp.Server, p agentPrincipal) {
+	const schema = `{"type":"object","required":["requestId","envCode","scopeDigest","capabilities"],"additionalProperties":false,
+	"properties":{"requestId":{"type":"string"},"envCode":{"type":"string"},"scopeDigest":{"type":"string"},
+	"capabilities":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","additionalProperties":false,
+	"required":["capability","target","constraints"],"properties":{"capability":{"type":"string"},
+	"target":{"type":"object","additionalProperties":false,"required":["kind","code"],"properties":{"kind":{"type":"string"},"code":{"type":"string"}}},
+	"constraints":{"type":"object"}}}}}}`
+	mcp.AddTool(s, &mcp.Tool{Name: "request_grant_request", Description: "Submit one bundle of human approvals bound to this request and its resolved objects. The runtime checkpoints and waits for the decision.", InputSchema: json.RawMessage(schema)},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in approvals.RequestGrantInput) (*mcp.CallToolResult, any, error) {
+			selectors := map[string]string{"requestId": in.RequestID, "envCode": in.EnvCode, "scopeDigest": in.ScopeDigest}
+			if _, err := p.check(ctx, "request_grant_request", selectors); err != nil {
+				return nil, nil, err
+			}
+			v, err := p.backend.Call(ctx, "POST", requestPath(in.RequestID)+"/grants", in)
+			return nil, v, err
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "request_grant_get", Description: "Read the authoritative current decision and exact capabilities of a bundle belonging to this request."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in grantGetArgs) (*mcp.CallToolResult, any, error) {
+			if _, err := p.check(ctx, "request_grant_get", map[string]string{"requestId": in.RequestID, "grantId": in.GrantID}); err != nil {
+				return nil, nil, err
+			}
+			v, err := p.backend.Call(ctx, "GET", requestPath(in.RequestID)+"/grants/"+url.PathEscape(in.GrantID), nil)
+			return nil, v, err
+		})
 }

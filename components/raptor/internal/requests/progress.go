@@ -32,6 +32,7 @@ type RequestView struct {
 	ExecutionAvailable   bool              `json:"executionAvailable"`
 	Targets              []RestartItem     `json:"targets"`
 	Approvals            []domain.Approval `json:"approvals"`
+	Grants               []json.RawMessage `json:"grants,omitempty"`
 }
 
 func (s *Service) View(ctx context.Context, id string) (RequestView, error) {
@@ -90,7 +91,26 @@ func (s *Service) View(ctx context.Context, id string) (RequestView, error) {
 		}
 		v.Approvals = append(v.Approvals, a)
 	}
-	return v, rows.Err()
+	err := rows.Err()
+	rows.Close()
+	if err != nil {
+		return v, domain.ErrUnavailable
+	}
+	grantRows, err := s.Pool.Query(ctx, `SELECT jsonb_build_object('id', id, 'envCode', env_code, 'state', state,
+		'version', version, 'capabilities', capabilities, 'decidedAt', decided_at) FROM raptor.request_grants
+		WHERE request_id=$1 ORDER BY created_at,id`, id)
+	if err != nil {
+		return v, domain.ErrUnavailable
+	}
+	defer grantRows.Close()
+	for grantRows.Next() {
+		var grant json.RawMessage
+		if err := grantRows.Scan(&grant); err != nil {
+			return v, domain.ErrUnavailable
+		}
+		v.Grants = append(v.Grants, grant)
+	}
+	return v, grantRows.Err()
 }
 
 type Timeline struct {

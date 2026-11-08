@@ -7,6 +7,7 @@ import (
 )
 
 type ContinuationContext struct {
+	Kind          string `json:"kind,omitempty"`
 	ApprovalID    string `json:"approvalId"`
 	ActionID      string `json:"actionId"`
 	BindingDigest string `json:"bindingDigest"`
@@ -42,7 +43,7 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 		return nil, e
 	}
 	var wait LiveWait
-	if json.Unmarshal(waitRaw, &wait) != nil || !wait.Valid() || phase != "resumed" || saved.ApprovalID != wait.ApprovalID || saved.ActionID != wait.ActionID || saved.BindingDigest != wait.BindingDigest || s.ResolveLiveDecision == nil {
+	if json.Unmarshal(waitRaw, &wait) != nil || !wait.Valid() || phase != "resumed" || (wait.Kind == "grant") != (saved.Kind == "grant") || saved.ApprovalID != wait.ApprovalID || saved.ActionID != wait.ActionID || saved.BindingDigest != wait.BindingDigest || s.ResolveLiveDecision == nil {
 		return nil, ErrInvalid
 	}
 	decision, e := s.ResolveLiveDecision(ctx, b.RequestID, wait)

@@ -4,16 +4,21 @@ import {createHash} from 'node:crypto';
 const readRaptor=['request_get','environment_get','object_get'];
 const readInfra=['deployments_list','deployment_status_get'];
 const schemas={
- raptor:{deployments_list:{requestId:'string',envCode:'string',kind:'string',code:'string'},request_get:{requestId:'string'},environment_get:{requestId:'string',envCode:'string'},object_get:{requestId:'string',kind:'string',code:'string'},pull_request_attach:{requestId:'string',attemptId:'string',repository:'string',number:'integer',url:'string',headSha:'string',baseCommit:'string',baseBranch:'string',workingBranch:'string'},approval_request:{requestId:'string',actionId:'string',interface:'string',envCode:'string',target:'object',parameters:'object'},approval_get:{requestId:'string',approvalId:'string'},request_pause:{requestId:'string',reason:'string'}},
+ raptor:{deployments_list:{requestId:'string',envCode:'string',kind:'string',code:'string'},request_get:{requestId:'string'},environment_get:{requestId:'string',envCode:'string'},object_get:{requestId:'string',kind:'string',code:'string'},pull_request_attach:{requestId:'string',attemptId:'string',repository:'string',number:'integer',url:'string',headSha:'string',baseCommit:'string',baseBranch:'string',workingBranch:'string'},approval_request:{requestId:'string',actionId:'string',interface:'string',envCode:'string',target:'object',parameters:'object'},approval_get:{requestId:'string',approvalId:'string'},request_grant_get:{requestId:'string',grantId:'string'},request_grant_request:{requestId:'string',envCode:'string',scopeDigest:'string',capabilities:'array'},request_pause:{requestId:'string',reason:'string'}},
  infra:{deployments_list:{envCode:'string',kind:'string',code:'string'},deployment_status_get:{envCode:'string',appCode:'string',workloadKey:'string'},deployment_restart:{requestId:'string',envCode:'string',appCode:'string',workloadKey:'string'},db_proxy_scale:{requestId:'string',envCode:'string',proxyCode:'string',actionId:'string',desiredCapacity:'integer'},db_proxy_node_protection_set:{requestId:'string',envCode:'string',proxyCode:'string',nodeIds:'array',protected:'boolean'},db_proxy_nodes_deregister:{requestId:'string',envCode:'string',proxyCode:'string',nodeIds:'array'}}
 };
+const capabilitySchema={type:'object',additionalProperties:false,required:['capability','target','constraints'],properties:{
+ capability:{type:'string'},
+ target:{type:'object',additionalProperties:false,required:['kind','code'],properties:{kind:{type:'string'},code:{type:'string'}}},
+ constraints:{type:'object'},
+}};
 export function operationToolSchema(server,tool){
  const fields=schemas[server]?.[tool];if(!fields)throw Error('UnexpectedToolSchema');
- return {type:'object',properties:Object.fromEntries(Object.entries(fields).map(([name,type])=>[name,{type,...(type==='array'?{items:{type:'string'}}:{})}])),required:Object.keys(fields).filter(k=>!(server==='infra'&&tool==='deployment_status_get'&&k==='workloadKey')),additionalProperties:false};
+ return {type:'object',properties:Object.fromEntries(Object.entries(fields).map(([name,type])=>[name,{type,...(type==='array'?{items:name==='capabilities'?capabilitySchema:{type:'string'}}:{})}])),required:Object.keys(fields).filter(k=>!(server==='infra'&&tool==='deployment_status_get'&&k==='workloadKey')),additionalProperties:false};
 }
 export function validateOperationToolSchema(server,tool,schema){
  const fields=schemas[server]?.[tool],keys=Object.keys(fields??{}).sort().join(','),required=Object.keys(fields??{}).filter(k=>!(server==='infra'&&tool==='deployment_status_get'&&k==='workloadKey')).sort().join(',');
- if(!fields||schema?.type!=='object'||schema.additionalProperties!==false||!Array.isArray(schema.required)||[...schema.required].sort().join(',')!==required||Object.keys(schema.properties??{}).sort().join(',')!==keys||Object.entries(fields).some(([k,type])=>schema.properties[k]?.type!==type||(type==='array'&&schema.properties[k].items?.type!=='string')))throw Error('UnexpectedToolSchema');
+ if(!fields||schema?.type!=='object'||schema.additionalProperties!==false||!Array.isArray(schema.required)||[...schema.required].sort().join(',')!==required||Object.keys(schema.properties??{}).sort().join(',')!==keys||Object.entries(fields).some(([k,type])=>schema.properties[k]?.type!==type||(type==='array'&&schema.properties[k].items?.type!==(k==='capabilities'?'object':'string'))))throw Error('UnexpectedToolSchema');
 }
 const text=v=>typeof v==='string'&&v.length>0&&v.length<=256&&v.trim()===v;
 function replacementScope(b,s){
@@ -27,7 +32,10 @@ export function operationCapabilities(b,scope){
  if(b?.operation==='db-proxy.replace-nodes'&&b.objectKind==='db-proxy'){
   replacementScope(b,scope);
   if(b.executionMode==="qualification")return {raptor:[...readRaptor,'deployments_list',"approval_request","approval_get","request_pause"],infra:[...readInfra]};
-  return {raptor:[...readRaptor,'deployments_list','approval_request','approval_get','request_pause'],infra:[...readInfra,'db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart']};
+  const approvalTools=b.approvalProtocol==='request-grants-v1'
+   ? ['request_grant_request','request_grant_get']
+   : ['approval_request','approval_get','request_pause'];
+  return {raptor:[...readRaptor,'deployments_list',...approvalTools],infra:[...readInfra,'db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart']};
  }
  throw Error('UnsupportedOperation');
 }
@@ -52,6 +60,21 @@ export function checkOperationSelectors(server,tool,args,b,scope,discovered=new 
   case 'pull_request_attach':
    exact(args,{requestId:b.requestId,attemptId:b.attemptId},['repository','number','url','headSha','baseCommit','baseBranch','workingBranch']);
    if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repository)||!Number.isSafeInteger(args.number)||args.number<1||!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(args.url)||!['headSha','baseCommit'].every(k=>/^[a-f0-9]{40}$/.test(args[k]))||!text(args.baseBranch)||!text(args.workingBranch))throw Error('ScopeMismatch');break;
+  case 'request_grant_get':
+   exact(args,{requestId:b.requestId},['grantId']);
+   if(!text(args.grantId))throw Error('ScopeMismatch');
+   break;
+  case 'request_grant_request':
+   exact(args,{requestId:b.requestId,envCode:b.envCode,scopeDigest:scope.resolutionDigest},['capabilities']);
+   if(!Array.isArray(args.capabilities)||!args.capabilities.length||args.capabilities.length>16)throw Error('ScopeMismatch');
+   for(const item of args.capabilities){
+    exact(item,{},['capability','target','constraints']);
+    const bound={'db-proxy':scope.proxyCode,application:scope.application.appCode};
+    const kind=item.target?.kind;
+    if(!Object.hasOwn(bound,kind)||!text(item.capability)||!item.constraints||typeof item.constraints!=='object'||Array.isArray(item.constraints))throw Error('ScopeMismatch');
+    exact(item.target,{kind,code:bound[kind]});
+   }
+   break;
   case 'approval_get':exact(args,{requestId:b.requestId},['approvalId']);if(!text(args.approvalId))throw Error('ScopeMismatch');break;
   case 'request_pause':exact(args,{requestId:b.requestId},['reason']);if(b.executionMode==='qualification'?args.reason!=='waiting_approval':!['waiting_approval','waiting_review'].includes(args.reason))throw Error('ScopeMismatch');break;
   case 'approval_request':

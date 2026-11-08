@@ -8,6 +8,7 @@ import (
 )
 
 type AttemptBinding struct {
+	ApprovalProtocol  string `json:"approvalProtocol,omitempty"`
 	ExecutionMode     string `json:"executionMode,omitempty"`
 	DefinitionSHA256  string `json:"definitionSha256,omitempty"`
 	ClusterID         string `json:"clusterId,omitempty"`
@@ -122,7 +123,7 @@ func ProgressToolAllowed(operation, tool string) bool {
 		return true
 	}
 	switch tool {
-	case "resource_wait", "cloud_read", "deployment_read", "metrics_read", "db_connection_probe", "mcp__raptor__approval_request", "mcp__raptor__approval_get", "mcp__raptor__request_pause", "mcp__infra__db_proxy_scale", "mcp__infra__db_proxy_node_protection_set", "mcp__infra__db_proxy_nodes_deregister", "mcp__infra__deployment_restart":
+	case "resource_wait", "cloud_read", "deployment_read", "metrics_read", "db_connection_probe", "mcp__raptor__approval_request", "mcp__raptor__approval_get", "mcp__raptor__request_grant_request", "mcp__raptor__request_grant_get", "mcp__raptor__request_pause", "mcp__infra__db_proxy_scale", "mcp__infra__db_proxy_node_protection_set", "mcp__infra__db_proxy_nodes_deregister", "mcp__infra__deployment_restart":
 		return true
 	}
 	return false
@@ -130,12 +131,12 @@ func ProgressToolAllowed(operation, tool string) bool {
 
 func (b AttemptBinding) valid() bool {
 	modelValid := (b.ProviderID == "" && b.ConnectionVersion == 0 && b.Model == "gpt-5.6-luna") || (b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))
-	return b.ExecutionMode == "" && b.RequestID != "" && b.AttemptID != "" && b.Operation == "application.question" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && modelValid
+	return b.ApprovalProtocol == "" && b.ExecutionMode == "" && b.RequestID != "" && b.AttemptID != "" && b.Operation == "application.question" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && modelValid
 }
 
 func (b AttemptBinding) repositoryChangeValid() bool {
 	modelValid := (b.ProviderID == "" && b.ConnectionVersion == 0 && b.Model == "gpt-5.6-luna") || (b.ProviderID == "codex" && b.ConnectionVersion > 0 && journalName.MatchString(b.Model))
-	return b.RequestID != "" && b.AttemptID != "" && b.Operation == "repository.change" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && shaPattern.MatchString(b.DefinitionSHA256) && modelValid
+	return b.ApprovalProtocol == "" && b.RequestID != "" && b.AttemptID != "" && b.Operation == "repository.change" && b.ObjectKind == "application" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && commitPattern.MatchString(b.SkillsCommit) && shaPattern.MatchString(b.DefinitionSHA256) && modelValid
 }
 
 // Journal persistence supports both implemented profiles; live admission remains
@@ -144,7 +145,7 @@ func (b AttemptBinding) journalValid() bool {
 	if b.valid() || b.repositoryChangeValid() {
 		return true
 	}
-	return (b.ExecutionMode == "" || b.ExecutionMode == "qualification" || b.ExecutionMode == "replacement") && b.RequestID != "" && b.AttemptID != "" && b.Operation == "db-proxy.replace-nodes" && b.ObjectKind == "db-proxy" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && journalName.MatchString(b.ClusterID) && shaPattern.MatchString(b.DefinitionSHA256) && commitPattern.MatchString(b.SkillsCommit) && b.SessionModelAllowed() && ((b.ProviderID == "" && b.ConnectionVersion == 0) || (b.ProviderID == "codex" && b.ConnectionVersion > 0))
+	return (b.ApprovalProtocol == "" || (b.ApprovalProtocol == "request-grants-v1" && b.ExecutionMode == "replacement")) && (b.ExecutionMode == "" || b.ExecutionMode == "qualification" || b.ExecutionMode == "replacement") && b.RequestID != "" && b.AttemptID != "" && b.Operation == "db-proxy.replace-nodes" && b.ObjectKind == "db-proxy" && journalName.MatchString(b.ObjectCode) && journalName.MatchString(b.EnvCode) && journalName.MatchString(b.ClusterID) && shaPattern.MatchString(b.DefinitionSHA256) && commitPattern.MatchString(b.SkillsCommit) && b.SessionModelAllowed() && ((b.ProviderID == "" && b.ConnectionVersion == 0) || (b.ProviderID == "codex" && b.ConnectionVersion > 0))
 }
 func validJournalKind(k string) bool {
 	return k == "provider" || k == "probe_cleanup" || k == "prepare" || k == "restore" || (strings.HasPrefix(k, "reconcile_key:") && journalName.MatchString(k)) || k == "key" || k == "sandbox" || k == "command" || k == "access" || k == "checkpoint" || k == "terminate" || k == "revoke_key" || k == "revoke_access"

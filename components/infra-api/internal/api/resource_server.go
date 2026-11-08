@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"raptor-iap/infra-api/internal/domain"
+	"raptor-iap/infra-api/internal/policy"
 	"raptor-iap/infra-api/internal/resources"
 	"strings"
 )
@@ -64,6 +65,24 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 			op.check = check
 		} else if err != nil || subtle.ConstantTimeCompare(sum[:], expected[:]) != 1 {
 			fail(401, "Unauthenticated")
+			return
+		}
+		if r.URL.Path == "/v1/approval-policy" {
+			if op.principal == "agent" {
+				fail(403, "ScopeMismatch")
+				return
+			}
+			if r.URL.RawQuery != "" {
+				fail(400, "InvalidInput")
+				return
+			}
+			policies := map[string]policy.ToolApprovalPolicy{}
+			for _, spec := range resourceCommandSpecs {
+				if toolPolicy, ok := policy.ApprovalPolicyForTool(spec.name); ok && op.visible(spec.path) {
+					policies[spec.name] = toolPolicy
+				}
+			}
+			send(policies)
 			return
 		}
 		proofRepresentation := r.URL.Path == "/v1/deployments" && r.Header.Get("Accept") == "application/vnd.raptor.resolution-proof+json"

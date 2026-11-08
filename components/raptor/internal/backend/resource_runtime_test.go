@@ -10,6 +10,7 @@ import (
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/catalog"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/db"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/testutil"
 	"strings"
 	"sync"
@@ -36,7 +37,29 @@ func (f *resourceInfraFixture) ListDeployments(_ context.Context, env domain.Env
 	f.reads++
 	return []adapters.Deployment{{EnvCode: env.Code, Kind: o.Kind, ObjectCode: o.Code, EvidenceMode: "live", ResourceID: "actual"}}, nil
 }
-func resourceRuntimeFixture(t *testing.T) (*Server, domain.Request, *resourceInfraFixture, string) {
+
+type grantStartGateway struct {
+	request, attempt string
+}
+
+func (g grantStartGateway) Execution(context.Context, string) (map[string]any, error) {
+	return map[string]any{"requestId": g.request, "attemptId": g.attempt, "runtimeMode": "live", "status": "running", "stage": "preparing",
+		"updatedAt": time.Now().UTC().Format(time.RFC3339Nano)}, nil
+}
+
+func (g grantStartGateway) Progress(context.Context, string, int64) ([]requests.GatewayEvent, error) {
+	return nil, nil
+}
+
+func (*resourceInfraFixture) OperationApprovalPolicies(context.Context, string) (map[string]adapters.ToolApprovalPolicy, error) {
+	return map[string]adapters.ToolApprovalPolicy{
+		"db_proxy_scale": {Version: 1, Variants: []adapters.ApprovalVariant{
+			{Capability: "db-proxy.scale-in", TargetKind: "db-proxy", Condition: "desired-less-than-current", RequiresHumanApproval: true},
+		}},
+	}, nil
+}
+
+func resourceRuntimeFixture(t *testing.T, grantProtocol ...string) (*Server, domain.Request, *resourceInfraFixture, string) {
 	t.Helper()
 	ctx := context.Background()
 	p := testutil.Database(t)
@@ -63,7 +86,11 @@ func resourceRuntimeFixture(t *testing.T) (*Server, domain.Request, *resourceInf
 	h.Requests.ResolveSkills = func(context.Context, domain.SkillsVersion) (domain.SkillsVersion, error) {
 		return domain.SkillsVersion{Tag: "skills-v1.0.0", CommitSHA: strings.Repeat("a", 40)}, nil
 	}
-	request, e := h.Requests.Create(ctx, domain.User{ID: domain.NewID()}, "resource", domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: proxy}, EnvCode: "dev", ProviderID: "codex", Model: "gpt-6-luna", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "replacement"}}}})
+	parameters := map[string]any{"mode": "replacement"}
+	if len(grantProtocol) > 0 {
+		parameters["approvalProtocol"] = grantProtocol[0]
+	}
+	request, e := h.Requests.Create(ctx, domain.User{ID: domain.NewID()}, "resource", domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: proxy}, EnvCode: "dev", ProviderID: "codex", Model: "gpt-6-luna", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: parameters}}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -76,7 +103,11 @@ func resourceRuntimeFixture(t *testing.T) (*Server, domain.Request, *resourceInf
 	t.Setenv("INFRA_AGENT_MCP_URL", "https://infra.fixture/mcp")
 	h.RegisterService("fixture-controller", "fixture-controller-password")
 	hash, _ := agentaccess.Fingerprint(request.Definition)
-	token := issued(t, h, request, hash, domain.NewID(), time.Now().Add(time.Minute))
+	attempt := domain.NewID()
+	if len(grantProtocol) > 0 {
+		h.Requests.Gateway = grantStartGateway{request: request.ID, attempt: attempt}
+	}
+	token := issued(t, h, request, hash, attempt, time.Now().Add(time.Minute))
 	return h, request, f, token
 }
 func TestResourceRuntimeFreshProofOrderingContinuityAndLegacy(t *testing.T) {

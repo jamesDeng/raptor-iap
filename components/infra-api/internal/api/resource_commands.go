@@ -130,6 +130,10 @@ func (o resourceOperations) command(ctx context.Context, path string, raw []byte
 	if e != nil {
 		return nil, e
 	}
+	// Versioned requests must never fall through to the legacy write path.
+	if identity != nil && identity.Binding != nil && identity.Binding.ApprovalProtocol != "" {
+		return nil, &operationError{503, "RequestGrantEnforcementUnavailable"}
+	}
 	if o.commander == nil {
 		return nil, &operationError{503, "NotConfigured"}
 	}

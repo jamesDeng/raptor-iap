@@ -67,6 +67,10 @@ func approveGrant(t *testing.T, s *Service, user domain.User, in RequestGrantInp
 	if err != nil || grant.State != "approved" {
 		t.Fatalf("approve grant = %+v, %v", grant, err)
 	}
+	// The trusted Gateway start handoff changes queued to running.
+	if _, err := s.Pool.Exec(ctx, "UPDATE raptor.requests SET status='running' WHERE id=$1", in.RequestID); err != nil {
+		t.Fatal(err)
+	}
 	return grant
 }
 
@@ -204,5 +208,32 @@ func TestActionClaimCloseRaceAndUnknownReplay(t *testing.T) {
 	}
 	if err := <-closed; !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("claim after close returned %v", err)
+	}
+}
+
+func TestRequestGrantEarlyDecisionQueuesOneWakeup(t *testing.T) {
+	ctx := context.Background()
+	s, user, in := grantFixture(t)
+	grant, err := s.RequestGrant(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := s.DecideRequestGrant(ctx, user, in.RequestID, grant.ID, "approve"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var status string
+	var pending bool
+	var count int
+	err = s.Pool.QueryRow(ctx, `SELECT status, approval_resume_pending,
+		(SELECT count(*) FROM raptor.outbox WHERE entity_id=$1 AND topic='signal' AND payload->>'kind'='approval'
+		 AND payload->'payload'->>'approvalId'=$2) FROM raptor.requests WHERE id=$1`, in.RequestID, grant.ID).
+		Scan(&status, &pending, &count)
+	if err != nil || status != "queued" || !pending || count != 1 {
+		t.Fatalf("early approval lost or duplicated its wakeup: %q %v %d %v", status, pending, count, err)
+	}
+	if _, err := s.DecideRequestGrant(ctx, user, in.RequestID, grant.ID, "deny"); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("conflicting replay changed approval: %v", err)
 	}
 }

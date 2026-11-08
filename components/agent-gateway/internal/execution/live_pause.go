@@ -24,7 +24,10 @@ func (w LiveWait) Valid() bool {
 	if w.Kind == "resource" {
 		return w.ApprovalID == "" && w.WakeAfterSeconds == 60
 	}
-	return w.Kind == "approval" && w.WakeAfterSeconds == 0 && regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`).MatchString(w.ApprovalID)
+	if w.Kind != "approval" && (w.Kind != "grant" || w.ActionID != w.ApprovalID) {
+		return false
+	}
+	return w.WakeAfterSeconds == 0 && regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`).MatchString(w.ApprovalID)
 }
 
 func (s *Store) SaveLiveWait(ctx context.Context, attempt, owner string, w LiveWait, c SessionCheckpoint) error {
@@ -68,6 +71,9 @@ func (s *Store) SaveLiveWait(ctx context.Context, attempt, owner string, w LiveW
 	}
 	if e != pgx.ErrNoRows {
 		return e
+	}
+	if w.Kind == "grant" && b.ApprovalProtocol != "request-grants-v1" {
+		return ErrInvalid
 	}
 	var approvalID any = w.ApprovalID
 	stage := "waiting_approval"

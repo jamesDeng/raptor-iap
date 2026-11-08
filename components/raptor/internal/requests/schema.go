@@ -78,6 +78,9 @@ func (s *Service) Validate(in domain.RequestInput) error {
 	}
 	for _, op := range in.Operations {
 		if op.Name == "db-proxy.replace-nodes" {
+			if op.Parameters["approvalProtocol"] != nil && op.Parameters["mode"] != "replacement" {
+				return domain.ErrInvalid
+			}
 			connectedCodex := s.ModelPolicy != nil && in.ProviderID == "codex"
 			if op.Parameters["mode"] == "qualification" {
 				if in.Model != "gpt-5.6-luna" && !connectedCodex {

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/jamesDeng/raptor-iap/components/raptor/internal/domain"
+	"github.com/jamesDeng/raptor-iap/components/raptor/internal/requests"
 )
 
 type GrantTarget struct {
@@ -309,6 +310,22 @@ func (s *Service) DecideRequestGrant(ctx context.Context, user domain.User, requ
 		WHERE request_id=$1 AND id=$2 RETURNING `+grantColumns, requestID, grantID, next, user.ID))
 	if err != nil {
 		return RequestGrant{}, err
+	}
+	kind := "approval"
+	if next == "approved" {
+		if _, err := tx.Exec(ctx, `UPDATE raptor.requests SET status='queued', approval_resume_pending=true,
+			approval_resume_at=clock_timestamp() WHERE id=$1`, requestID); err != nil {
+			return RequestGrant{}, domain.ErrUnavailable
+		}
+	} else {
+		kind = "block"
+		if _, err := tx.Exec(ctx, `UPDATE raptor.requests SET status='blocked', control_state='blocked'
+			WHERE id=$1`, requestID); err != nil {
+			return RequestGrant{}, domain.ErrUnavailable
+		}
+	}
+	if err := requests.QueueSignal(ctx, tx, requestID, kind, map[string]string{"approvalId": grantID, "decision": next}); err != nil {
+		return RequestGrant{}, domain.ErrUnavailable
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return RequestGrant{}, domain.ErrUnavailable

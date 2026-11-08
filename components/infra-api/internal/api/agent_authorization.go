@@ -16,6 +16,7 @@ import (
 )
 
 type AgentBinding struct {
+	ApprovalProtocol  string `json:"approvalProtocol,omitempty"`
 	SkillsCommit      string `json:"skillsCommit"`
 	Model             string `json:"model"`
 	ProviderID        string `json:"providerId,omitempty"`

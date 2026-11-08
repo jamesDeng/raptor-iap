@@ -78,6 +78,36 @@ func (c HTTPRaptor) ResolveLiveDecision(ctx context.Context, requestID string, w
 		}
 		return LiveContinuation{Next: "resume"}, nil
 	}
+	if w.Kind == "grant" {
+		if !w.Valid() {
+			return LiveContinuation{}, ErrInvalid
+		}
+		var grant struct {
+			Data struct {
+				RequestID    string `json:"requestId"`
+				ID           string `json:"id"`
+				BundleDigest string `json:"bundleDigest"`
+				State        string `json:"state"`
+				Version      int    `json:"version"`
+			}
+		}
+		if err := c.liveRead(ctx, prefix+"/grants/"+url.PathEscape(w.ApprovalID), &grant); err != nil {
+			return LiveContinuation{}, err
+		}
+		receipt := grant.Data
+		if receipt.Version != 1 || receipt.RequestID != requestID || receipt.ID != w.ApprovalID || receipt.BundleDigest != w.BindingDigest {
+			return LiveContinuation{}, ErrInvalid
+		}
+		switch receipt.State {
+		case "pending":
+			return LiveContinuation{Next: "waiting"}, nil
+		case "approved":
+			return LiveContinuation{Next: "resume"}, nil
+		case "denied":
+			return LiveContinuation{Next: "block"}, nil
+		}
+		return LiveContinuation{}, ErrInvalid
+	}
 	var approval struct{ Data LiveApprovalDecision }
 	if e := c.liveRead(ctx, prefix+"/approvals/"+url.PathEscape(w.ApprovalID), &approval); e != nil {
 		return LiveContinuation{}, e

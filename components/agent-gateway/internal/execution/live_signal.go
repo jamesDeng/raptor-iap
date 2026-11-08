@@ -109,7 +109,7 @@ func (s *Store) ResumeLive(ctx context.Context, requestID, signalID string) (boo
 		return false, e
 	}
 	var wait LiveWait
-	if json.Unmarshal(raw, &wait) != nil {
+	if json.Unmarshal(raw, &wait) != nil || !wait.Valid() {
 		return false, ErrInvalid
 	}
 	var hint struct {
@@ -151,7 +151,12 @@ func (s *Store) ResumeLive(ctx context.Context, requestID, signalID string) (boo
 	default:
 		return false, ErrInvalid
 	}
-	contextRaw, _ := json.Marshal(map[string]string{"approvalId": wait.ApprovalID, "actionId": wait.ActionID, "bindingDigest": wait.BindingDigest, "decision": decision.Next, "guidance": decision.Guidance})
+	continuation := ContinuationContext{ApprovalID: wait.ApprovalID, ActionID: wait.ActionID,
+		BindingDigest: wait.BindingDigest, Decision: decision.Next, Guidance: decision.Guidance}
+	if wait.Kind == "grant" {
+		continuation.Kind = wait.Kind
+	}
+	contextRaw, _ := json.Marshal(continuation)
 	if containsSensitive(string(contextRaw), s.KnownSecrets) {
 		return false, ErrInvalid
 	}

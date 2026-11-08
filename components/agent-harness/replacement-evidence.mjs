@@ -6,7 +6,7 @@ export function replacementEvidence(server,tool,data,b,scope,args,discovered=new
  if(server==='raptor'){
   if(tool==='request_get'){
    const d=data?.definition;
-   if(data?.requestId!==b.requestId||d?.envCode!==b.envCode||d?.object?.kind!==b.objectKind||d?.object?.code!==b.objectCode||d?.operations?.length!==1||d.operations[0].name!==b.operation||(d.operations[0].parameters?.mode??'')!==(b.executionMode??''))throw Error('ScopeMismatch');
+   if(data?.requestId!==b.requestId||d?.envCode!==b.envCode||d?.object?.kind!==b.objectKind||d?.object?.code!==b.objectCode||d?.operations?.length!==1||d.operations[0].name!==b.operation||(d.operations[0].parameters?.mode??'')!==(b.executionMode??'')||(d.operations[0].parameters?.approvalProtocol??'')!==(b.approvalProtocol??''))throw Error('ScopeMismatch');
    const refs=data.relatedResources;const expected=new Set(['application:'+scope.application.appCode,'database:'+scope.targetDbCode]);
    if(!Array.isArray(refs)||refs.length!==2||refs.some(ref=>!ref||Object.keys(ref).sort().join(',')!=='code,kind'||!expected.delete(ref.kind+':'+ref.code))||expected.size)throw Error('IdentityChanged');
   }

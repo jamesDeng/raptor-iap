@@ -28,3 +28,31 @@ test('resource wait ends a completed round without claiming human approval',()=>
  assert.throws(()=>new ApprovalPause(binding).resourceWait({seconds:3600}),/InvalidApprovalPause/);
  const approved=new ApprovalPause(binding);approved.requested(args,approval);assert.throws(()=>approved.resourceWait({seconds:60}),/InvalidApprovalPause/);
 });
+
+const grantArgs={requestId:'request',envCode:'rdev.ali',scopeDigest:'b'.repeat(64),capabilities:[
+ {capability:'application.restart',target:{kind:'application',code:'A00003'},constraints:{}},
+ {capability:'db-proxy.scale-in',target:{kind:'db-proxy',code:'DP00001'},constraints:{desiredCapacity:2}},
+]};
+const grant={...grantArgs,id:'33333333-3333-4333-8333-333333333333',state:'approved',version:1,bundleDigest:'c'.repeat(64)};
+test('an already decided grant still checkpoints the entire bundle before any mutation',()=>{
+ const pause=new ApprovalPause({...binding,executionMode:'replacement'});
+ pause.grantRequested(grantArgs,{...grant,capabilities:[...grant.capabilities].reverse()});
+ assert.equal(pause.wait(),undefined);
+ assert.throws(()=>pause.beforeTool('infra','db_proxy_scale'),/ApprovalWaiting/);
+ const wait=pause.endRound();
+ assert.equal(wait.kind,'grant');
+ assert.equal(wait.approvalId,grant.id);
+ assert.equal(wait.actionId,grant.id);
+ assert.equal(wait.bindingDigest,grant.bundleDigest);
+ assert.equal(pause.endRound(),wait);
+});
+test('changed or foreign grant receipts cannot checkpoint or authorize continuation',()=>{
+ for(const changed of [{...grant,requestId:'other'},{...grant,scopeDigest:'d'.repeat(64)},{...grant,capabilities:grant.capabilities.slice(1)}]){
+  assert.throws(()=>new ApprovalPause(binding).grantRequested(grantArgs,changed),/InvalidApprovalPause/);
+ }
+ const saved={approvalId:grant.id,actionId:grant.id,bindingDigest:grant.bundleDigest,decision:'resume',kind:'grant'};
+ assert.equal(ApprovalPause.verifyGrantResume(binding,saved,grantArgs.scopeDigest,grant).id,grant.id);
+ for(const changed of [{...grant,state:'denied'},{...grant,bundleDigest:'e'.repeat(64)},{...grant,requestId:'other'}]){
+  assert.throws(()=>ApprovalPause.verifyGrantResume(binding,saved,grantArgs.scopeDigest,changed),/InvalidApprovalPause/);
+ }
+});

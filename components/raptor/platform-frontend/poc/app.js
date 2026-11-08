@@ -53,7 +53,7 @@ export async function api(path,{method='GET',body,headers={}}={}){const epoch=pa
 function node(tag,text){const el=document.createElement(tag);if(text!==undefined)el.textContent=String(text);return el;}
 function button(text,fn){const el=node('button',text);el.type='button';el.addEventListener('click',()=>Promise.resolve(fn()).catch(showError));return el;}
 export function showError(error){if(error.pageEpoch!==undefined&&error.pageEpoch!==pageEpoch)return;document.getElementById('message').textContent=error.message??'Unavailable';}
-export function renderOperationForm(schema){const host=document.getElementById('operation-fields');host.replaceChildren();for(const [name,field]of Object.entries(schema.properties??{})){const label=node('label',`${name}${schema.required?.includes(name)?' *':''}`);let input;if(field.enum){input=node('select');for(const value of field.enum){const option=node('option',value);option.value=value;input.append(option);}}else if(field['x-multiline']){input=node('textarea');input.rows=5;}else{input=node('input');input.type=field.type==='integer'?'number':'text';if(field.minimum!==undefined)input.min=field.minimum;if(field.type==='integer')input.step='1';}input.name=name;input.required=schema.required?.includes(name)??false;if(field.default!==undefined)input.value=field.default;label.append(input);host.append(label);}}
+export function renderOperationForm(schema){const host=document.getElementById('operation-fields');host.replaceChildren();for(const [name,field]of Object.entries(schema.properties??{})){const label=node('label',`${name}${schema.required?.includes(name)?' *':''}`);let input;if(field.enum){input=node('select');if(name==='approvalProtocol'){const option=node('option','Use existing approval flow');option.value='';input.append(option);}for(const value of field.enum){const option=node('option',value);option.value=value;input.append(option);}}else if(field['x-multiline']){input=node('textarea');input.rows=5;}else{input=node('input');input.type=field.type==='integer'?'number':'text';if(field.minimum!==undefined)input.min=field.minimum;if(field.type==='integer')input.step='1';}input.name=name;input.required=schema.required?.includes(name)??false;if(field.default!==undefined)input.value=field.default;label.append(input);host.append(label);}}
 export function renderProgress(events){if(updateWorklog(document.getElementById('t3-worklog'),{events}))return;const host=document.getElementById('progress');host.replaceChildren();for(const event of events){const row=node('div');row.className='event';row.append(node('strong',`${event.evidenceMode??'unverified'} · ${event.kind}`),node('p',event.summary));if(event.occurredAt){const time=node('time',new Date(event.occurredAt).toLocaleString());time.dateTime=event.occurredAt;row.append(time);}if(event.details&&Object.keys(event.details).length){const detail=node('details');detail.append(node('summary','Tool / event details'),node('pre',JSON.stringify(event.details,null,2)));row.append(detail);}host.append(row);}}
 export function renderExecutionResult(value){
  updateWorklog(document.getElementById('t3-worklog'),{snapshot:value});
@@ -72,10 +72,28 @@ export function renderExecutionResult(value){
 }
 export function catalogObjects(objects,kind){return objects.filter(object=>object.kind===kind);}
 export function requestTabState(value,selected){
- const approvals=!!value.approvals?.length;
+ const approvals=Boolean(value.approvals?.length||value.grants?.length);
  const result=!!value.execution?.result?.answer||!!value.targets?.length;
  const pullRequests=value.request?.definition?.operations?.some(op=>op.name==='repository.change')??false;
  return {selected:(selected==='approvals'&&!approvals)||(selected==='pull-requests'&&!pullRequests)?'overview':selected|| (result?'result':'overview'),approvals};
+}
+export function renderRequestGrants(host,grants,decide){
+ for(const grant of grants??[]){
+  const section=node('section');
+  section.append(node('h3',`Request grant ${grant.state}`),node('p',grant.envCode));
+  const capabilities=node('ul');
+  for(const capability of grant.capabilities){
+   const item=node('li');
+   item.append(node('strong',capability.capability),node('p',`${capability.target.kind} ${capability.target.code}`));
+   if(Object.keys(capability.constraints).length)item.append(node('pre',JSON.stringify(capability.constraints,null,2)));
+   capabilities.append(item);
+  }
+  section.append(capabilities);
+  if(grant.state==='pending'){
+   section.append(button('Approve bundle',()=>decide(grant.id,'approve')),button('Deny and block',()=>decide(grant.id,'deny')));
+  }
+  host.append(section);
+ }
 }
 export function createPullRequestController({read,onChange}){
  let generation=0;
@@ -198,7 +216,7 @@ async function start(){
   try{return await pending.promise;}finally{pending.promise=null;}
  }
  async function loadRequest(id,replace=false){viewEpoch++;setRoute({request:id},replace);requestTab=null;requestView=null;pullRequests.clear();renderPullRequests($('pull-request-list'),{status:'idle',items:[]});const version=++requestEpoch;progress.close();requestId=id;panel('request-panel');await refreshRequest(id);if(version!==requestEpoch || requestId!==id)return;await progress.select(id);}
- async function refreshRequest(id){if(!id)return;const token=id;const value=await api(`/requests/${encodeURIComponent(id)}`);if(token!==requestId)return;const request=value.request??value;$('request-heading').textContent=`Request ${request.id}`;$('request-definition').textContent=JSON.stringify(request.definition,null,2);renderRequestInformation(request);$('request-state').textContent=value.executionAvailable===false?`${request.status} (last saved); Execution sync unavailable`:`${request.status} · ${value.execution?.runtimeMode??'unverified'} execution`;renderExecutionResult(value);updateWorklog($('t3-worklog'),{conversation:{...value.conversation,onSend:conversationSend}});renderTargetResults(value.targets??[]);$('approvals').replaceChildren();for(const approval of value.approvals??[]){const box=node('section');box.append(node('h3',`Approval ${approval.state}`),node('pre',JSON.stringify(approval.binding,null,2)));if(approval.state==='pending'){box.append(button('Approve',()=>decision(id,approval.approvalId,{decision:'approve'})));for(const next of ['block','cancel','continue'])box.append(button(`Deny and ${next}`,()=>decision(id,approval.approvalId,{decision:'deny',next,guidance:$('instructions').value})));}$('approvals').append(box);}requestView=value;renderRequestTabs();if(value.execution?.recoveryNeeded)$('request-state').append(node('p','Recovery required: previous runtime ownership is unresolved. No automatic replay.'));if(value.execution?.appliedSkills)$('request-state').append(node('p',`Applied skills: ${value.execution.appliedSkills.tag??'not started'}`));}
+ async function refreshRequest(id){if(!id)return;const token=id;const value=await api(`/requests/${encodeURIComponent(id)}`);if(token!==requestId)return;const request=value.request??value;$('request-heading').textContent=`Request ${request.id}`;$('request-definition').textContent=JSON.stringify(request.definition,null,2);renderRequestInformation(request);$('request-state').textContent=value.executionAvailable===false?`${request.status} (last saved); Execution sync unavailable`:`${request.status} · ${value.execution?.runtimeMode??'unverified'} execution`;renderExecutionResult(value);updateWorklog($('t3-worklog'),{conversation:{...value.conversation,onSend:conversationSend}});renderTargetResults(value.targets??[]);$('approvals').replaceChildren();for(const approval of value.approvals??[]){const box=node('section');box.append(node('h3',`Approval ${approval.state}`),node('pre',JSON.stringify(approval.binding,null,2)));if(approval.state==='pending'){box.append(button('Approve',()=>decision(id,approval.approvalId,{decision:'approve'})));for(const next of ['block','cancel','continue'])box.append(button(`Deny and ${next}`,()=>decision(id,approval.approvalId,{decision:'deny',next,guidance:$('instructions').value})));}$('approvals').append(box);}renderRequestGrants($('approvals'),value.grants,async(grantId,decision)=>{await api(`/requests/${encodeURIComponent(id)}/grants/${encodeURIComponent(grantId)}/decision`,{method:'POST',body:{decision}});await refreshRequest(id);});requestView=value;renderRequestTabs();if(value.execution?.recoveryNeeded)$('request-state').append(node('p','Recovery required: previous runtime ownership is unresolved. No automatic replay.'));if(value.execution?.appliedSkills)$('request-state').append(node('p',`Applied skills: ${value.execution.appliedSkills.tag??'not started'}`));}
  function renderRequestInformation(request){
   const d=request.definition??{},targets=d.targets??[],codes=[...new Set(targets.map(t=>t.appCode))],environments=[...new Set(targets.map(t=>t.envCode))];
   const object=objects.find(o=>o.code===d.object?.code);
