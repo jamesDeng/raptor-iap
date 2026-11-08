@@ -10,6 +10,11 @@ export function replacementEvidence(server,tool,data,b,scope,args,discovered=new
    const refs=data.relatedResources;const expected=new Set(['application:'+scope.application.appCode,'database:'+scope.targetDbCode]);
    if(!Array.isArray(refs)||refs.length!==2||refs.some(ref=>!ref||Object.keys(ref).sort().join(',')!=='code,kind'||!expected.delete(ref.kind+':'+ref.code))||expected.size)throw Error('IdentityChanged');
   }
+  if(tool==='request_grant_actions_list'){
+   if(!Array.isArray(data)||data.length>32||data.some(row=>row?.requestId!==b.requestId||row?.envCode!==b.envCode||
+    row?.scopeDigest!==scope.resolutionDigest||typeof row.actionId!=='string'||!['claimed','dispatching','submitted','not_submitted','unknown'].includes(row.state)))throw Error('IdentityChanged');
+   return record({count:data.length});
+  }
   if(tool==='request_grant_action_get'){
    if(data?.requestId!==b.requestId||data?.envCode!==b.envCode||data?.scopeDigest!==scope.resolutionDigest||data?.actionId!==args.actionId||
     !['claimed','dispatching','submitted','not_submitted','unknown'].includes(data.state))throw Error('IdentityChanged');

@@ -132,25 +132,36 @@ func (s *Service) ReadPgcatRequestState(ctx context.Context, requestID, scopeDig
 	if err != nil {
 		return PgcatRequestState{}, err
 	}
+	actions, err := s.GrantActionsForScope(ctx, requestID, scopeDigest)
+	if err != nil {
+		return PgcatRequestState{}, err
+	}
+	return PgcatRequestState{Observations: observations, Actions: actions}, nil
+}
+
+func (s *Service) GrantActionsForScope(ctx context.Context, requestID, scopeDigest string) ([]GrantActionDetails, error) {
+	if !grantUUID(requestID) || !validGrantDigest(scopeDigest) {
+		return nil, domain.ErrInvalid
+	}
 	rows, err := s.Pool.Query(ctx, `SELECT a.grant_id::text,a.action_id,g.env_code,a.capability,a.arguments,a.state,
 		a.provider_request_id,a.claimed_at,a.recorded_at FROM raptor.request_grant_actions a
 		JOIN raptor.request_grants g ON g.request_id=a.request_id AND g.id=a.grant_id
 		WHERE a.request_id=$1 AND g.scope_digest=$2 ORDER BY a.claimed_at,a.action_id LIMIT 33`, requestID, scopeDigest)
 	if err != nil {
-		return PgcatRequestState{}, domain.ErrUnavailable
+		return nil, domain.ErrUnavailable
 	}
 	defer rows.Close()
-	out := PgcatRequestState{Observations: observations, Actions: []GrantActionDetails{}}
+	out := []GrantActionDetails{}
 	for rows.Next() {
 		item := GrantActionDetails{RequestID: requestID, ScopeDigest: scopeDigest}
 		if err := rows.Scan(&item.GrantID, &item.ActionID, &item.EnvCode, &item.Capability, &item.Arguments, &item.State,
 			&item.ProviderRequestID, &item.ClaimedAt, &item.RecordedAt); err != nil {
-			return PgcatRequestState{}, domain.ErrUnavailable
+			return nil, domain.ErrUnavailable
 		}
-		out.Actions = append(out.Actions, item)
+		out = append(out, item)
 	}
-	if rows.Err() != nil || len(out.Actions) > 32 {
-		return PgcatRequestState{}, domain.ErrUnavailable
+	if rows.Err() != nil || len(out) > 32 {
+		return nil, domain.ErrUnavailable
 	}
 	return out, nil
 }

@@ -59,7 +59,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const settings=sdk.SettingsManager.inMemory({cacheWarming:'off',compaction:{enabled:false},retry:{enabled:false,provider:{maxRetries:0}}});
   manager=openOperationSession({sdk,stateRoot,binding:b,sessionReference});
   const grants=b.approvalProtocol==='request-grants-v1'?new RequestGrantRuntime(manager,b,replacementScope,decisionContext):undefined;
-  let readFailure=false,qualificationPauseAck,waitingForMetrics=false;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:true});const serializedRead=work=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly:true});
+  let readFailure=false,qualificationPauseAck,waitingForMetrics=false,uncertainWrite;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:true});const serializedRead=work=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly:true});
   const trace=qualification?new QualificationTrace(manager,b,replacementScope,decisionContext):new ReplacementTrace(manager,b,replacementScope);
   const readiness=qualification?undefined:new ReplacementReadiness(manager,trace);
   const sequence=qualification?undefined:new ReplacementSequence(manager,trace,readiness,selectedProfile,decisionContext);
@@ -72,6 +72,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const authorizedTools=grants?tools.filter(name=>name!==GRANT_PROPOSAL):tools;
   const allowedTools=()=>{
    if(qualification)return tools;
+   if(grants&&trace.unresolved())return readTools;
    if(readiness.blocked())return grants?.approved&&sequence.canSyncInventory()?inventoryTools:readTools;
    if(!sequence.canWrite())return readTools;
    if(!grants||grants.approved)return authorizedTools;
@@ -135,6 +136,14 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
      if(tool==='request_get')grants.readContext(data,mcp.getApprovalPolicies());
      if(tool==='request_grant_request')pause.grantRequested(args,data);
      if(tool==='request_grant_get')grants.readReceipt(data);
+     if(tool==='request_grant_actions_list'){
+      const recovered=trace.reconcileSubmitted(data,grants.approved?.id);
+      if(recovered){
+       sequence.onMutationResult(recovered.tool,recovered.args,recovered.receipt);
+       uncertainWrite=undefined;
+       narrate('I matched the saved action receipt. I’ll refresh the resource evidence before the next step.');
+      }
+     }
     }
     if(qualification&&server==='raptor'&&tool==='approval_get')trace.approvalRead(data);
     if(server==='raptor'&&tool==='approval_request')pause.requested(args,data);
@@ -145,7 +154,11 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     }
    },
    onDiagnostic:({server,tool,category})=>{
-    readFailure=true;
+    const name='mcp__'+server+'__'+tool;
+    if(grants&&server==='infra'&&REPLACEMENT_WRITES.has(name)&&name!==MONITORING_SYNC&&trace.unresolved()&&
+     (category==='transport-error'||category==='local-evidence'||category.startsWith('http-')||category.startsWith('remote-'))){
+     uncertainWrite=name;
+    }else readFailure=true;
     const diagnostic=toolFailureDiagnostic('mcp__'+server+'__'+tool,profile,category);
     if(diagnostic){
      toolDiagnostics.set('mcp__'+server+'__'+tool,diagnostic.category);
@@ -213,7 +226,9 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     const update=WORK_UPDATES.get(event.toolName);
     if(update&&!announced.has(event.toolName)){announced.add(event.toolName);narrate(update);}
     toolDiagnostics.delete(event.toolName);progress({kind:'tool_start',tool:event.toolName,outcome:'started'});const category=observationArgsCategory(event.toolName,event.args);if(category)progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' '+category});}
-   if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(event.isError){readFailure=true;const diagnostic=toolFailureDiagnostic(event.toolName,profile,toolDiagnostics.get(event.toolName),event.result);if(diagnostic)progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});if(observationTools.includes(event.toolName))progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' tool-end-failed'});error||='ToolFailed';void session.abort();}}
+   if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(event.isError&&uncertainWrite===event.toolName){
+    narrate('The write response could not be confirmed. I’ll read the saved Request action receipts before doing anything else.');
+   }else if(event.isError){readFailure=true;const diagnostic=toolFailureDiagnostic(event.toolName,profile,toolDiagnostics.get(event.toolName),event.result);if(diagnostic)progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});if(observationTools.includes(event.toolName))progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' tool-end-failed'});error||='ToolFailed';void session.abort();}}
    if(event.type==='message_end'&&event.message.role==='assistant'){const message=event.message,u=message.usage;const failure=modelFailureDiagnostic(message,model);if(failure){progress({kind:'progress',outcome:'running',summary:'Model '+failure.category});if(failure.failureCode==='NeedsSignIn'){narrate('Model authentication expired or was rejected. Contact the platform administrator to reconnect the model provider in Raptor Admin.');error||='NeedsSignIn';}}if(message.model!==b.model||message.provider!==model.provider||['error','aborted'].includes(message.stopReason)||!u||![u.input,u.output,u.totalTokens].every(n=>Number.isSafeInteger(n)&&n>=0)){error||='ModelFailed';void session.abort();}else usage.push({input:u.input,output:u.output,totalTokens:u.totalTokens});const summary=publicProgressFromMessage(message);if(summary)progress({kind:'progress',outcome:'running',summary});}
   });
   signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
@@ -258,6 +273,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    return {passed:false,paused:wait,sessionReference:operationSessionReference(manager,b,stateRoot),usage};
   }
   if(qualification){const q=trace.complete();narrate('The repeated PgCat checks passed. I’ll save the qualification result.');if(error)throw Error(error);return {passed:true,result:{requestId:b.requestId,attemptId:b.attemptId,selectedModel:b.model,actualModel:session.model?.id,selectedProvider:b.providerId||'openai',actualProvider:session.model?.provider,answer:'Native read-only qualification completed; replacement and traffic acceptance were not executed.',qualification:q,evidence:[],usage,generatedAt:new Date().toISOString()},sessionReference:operationSessionReference(manager,b,stateRoot),usage};}
+  if(uncertainWrite)throw Error('MissingEvidence');
   const replacement=await qualifyReplacementConvergence(trace,tracedObserver,replacementScope,sequence);
   if(error)throw Error(error);
   narrate(grants?'PgCat replacement and SQL traffic acceptance passed.':'The replacement fleet converged. Traffic acceptance will be assessed separately.');

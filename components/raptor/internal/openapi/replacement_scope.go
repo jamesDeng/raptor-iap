@@ -220,6 +220,18 @@ func addRequestGrantAgentTools(s *mcp.Server, p agentPrincipal) {
 			v, err := p.backend.Call(ctx, "GET", requestPath(in.RequestID)+"/grants/"+url.PathEscape(in.GrantID), nil)
 			return nil, v, err
 		})
+	mcp.AddTool(s, &mcp.Tool{Name: "request_grant_actions_list", Description: "Read saved action receipts for the resolved Request. Match exact command arguments to reconcile a lost response."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+			RequestID string `json:"requestId"`
+		}) (*mcp.CallToolResult, any, error) {
+			checked, err := p.checkResult(ctx, "request_grant_actions_list", map[string]string{"requestId": in.RequestID})
+			if err != nil {
+				return nil, nil, err
+			}
+			query := url.Values{"scopeDigest": {checked.ReplacementScope.ResolutionDigest}}
+			v, err := p.backend.Call(ctx, "GET", requestPath(in.RequestID)+"/grant-actions?"+query.Encode(), nil)
+			return nil, v, err
+		})
 	mcp.AddTool(s, &mcp.Tool{Name: "request_grant_action_get", Description: "Read the saved exact action receipt for this request. Use this read to reconcile a lost response, never to replay a write."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in grantActionGetArgs) (*mcp.CallToolResult, any, error) {
 			if _, err := p.check(ctx, "request_grant_action_get", map[string]string{"requestId": in.RequestID, "actionId": in.ActionID}); err != nil {
