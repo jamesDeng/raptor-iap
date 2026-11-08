@@ -15,6 +15,14 @@ import (
 // Restart submits one pod-template patch. It does not track rollout ownership
 // or retry a submission whose acknowledgement has been lost.
 func (p *reader) Restart(ctx context.Context, env domain.Environment, in domain.RestartCommand) (domain.RestartReceipt, error) {
+	return p.restart(ctx, env, in, nil)
+}
+
+func (p *reader) RestartGrantedPgcat(ctx context.Context, env domain.Environment, in domain.RestartCommand, admit func(context.Context) error) (domain.RestartReceipt, error) {
+	return p.restart(ctx, env, in, admit)
+}
+
+func (p *reader) restart(ctx context.Context, env domain.Environment, in domain.RestartCommand, admit func(context.Context) error) (domain.RestartReceipt, error) {
 	if in.EnvCode != env.Code || in.ClusterID != env.ClusterID {
 		return domain.RestartReceipt{}, domain.ErrScope
 	}
@@ -40,6 +48,14 @@ func (p *reader) Restart(ctx context.Context, env domain.Environment, in domain.
 	if submit == nil {
 		submit = patchOnce
 	}
+	if admit != nil {
+		if !pgcatRestartReady(d) {
+			return domain.RestartReceipt{}, &domain.CommandError{Code: "MissingEvidence"}
+		}
+		if err := admit(ctx); err != nil {
+			return domain.RestartReceipt{}, err
+		}
+	}
 	updated, e := submit(ctx, c, in.Namespace, in.Name, patch)
 	if e != nil {
 		if apierrors.IsConflict(e) {
@@ -51,6 +67,12 @@ func (p *reader) Restart(ctx context.Context, env domain.Environment, in domain.
 		return domain.RestartReceipt{}, &domain.CommandError{Code: "SubmissionUnknown"}
 	}
 	return domain.RestartReceipt{Accepted: true, Target: in, Generation: updated.Generation, EvidenceMode: p.evidence}, nil
+}
+
+func pgcatRestartReady(d *appsv1.Deployment) bool {
+	return !d.Spec.Paused && d.Spec.Replicas != nil && *d.Spec.Replicas == 2 && d.ResourceVersion != "" &&
+		d.Generation > 0 && d.Status.ObservedGeneration == d.Generation && d.Status.Replicas == 2 &&
+		d.Status.ReadyReplicas == 2 && d.Status.UpdatedReplicas == 2 && d.Status.AvailableReplicas == 2
 }
 
 func patchOnce(ctx context.Context, c kubernetes.Interface, namespace, name string, patch []byte) (*appsv1.Deployment, error) {

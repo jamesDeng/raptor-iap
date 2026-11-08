@@ -72,7 +72,7 @@ func (c HTTPRaptor) accessCall(ctx context.Context, method, route string, body [
 		return nil, ErrUnavailable
 	}
 	defer resp.Body.Close()
-	if (method == "POST" && resp.StatusCode != 201) || (method == "DELETE" && resp.StatusCode != 200 && resp.StatusCode != 204) {
+	if (method == "GET" && resp.StatusCode != 200) || (method == "POST" && resp.StatusCode != 201) || (method == "DELETE" && resp.StatusCode != 200 && resp.StatusCode != 204) {
 		log.Printf("raptor access response rejected method=%s status=%d", method, resp.StatusCode)
 		return nil, ErrUnavailable
 	}

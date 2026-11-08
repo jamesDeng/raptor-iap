@@ -62,16 +62,16 @@ func TestPgcatContinuityRetainsTheExactSocketsAndRejectsLoss(t *testing.T) {
 		}
 		return &fixturePgcatSocket{backend: added["new-2"]}, nil
 	}
-	drained, err := registry.verifyDrain(ctx, "request", "scope", hold.ObservationID, "drain-action", time.Now().UTC(), added, connectNew)
+	drained, err := registry.verifyDrain(ctx, "request", "scope", hold.ObservationID, "drain-action", time.Now().UTC().Add(time.Millisecond), added, connectNew)
 	if err != nil || drained.ObservationID != hold.ObservationID || drained.FreshConnections["new-1"] != 12 ||
 		drained.FreshConnections["new-2"] != 12 || first.reads.Load() < 2 || second.reads.Load() < 2 {
 		t.Fatalf("drain proof: %+v %v", drained, err)
 	}
-	if _, err := newPgcatContinuity().verifyDrain(ctx, "request", "scope", hold.ObservationID, "drain-action", time.Now().UTC(), added, connectNew); err == nil {
+	if _, err := newPgcatContinuity().verifyDrain(ctx, "request", "scope", hold.ObservationID, "drain-action", time.Now().UTC().Add(time.Millisecond), added, connectNew); err == nil {
 		t.Fatal("Gateway restart reused a lost physical-socket witness")
 	}
 	first.lost.Store(true)
-	if _, err := registry.verifyDrain(ctx, "request", "scope", hold.ObservationID, "drain-action", time.Now().UTC(), added, connectNew); err == nil {
+	if _, err := registry.verifyDrain(ctx, "request", "scope", hold.ObservationID, "drain-action", time.Now().UTC().Add(time.Millisecond), added, connectNew); err == nil {
 		t.Fatal("accepted a broken original socket")
 	}
 	registry.release("request")
@@ -101,7 +101,7 @@ func TestPgcatContinuityRejectsAnyFreshConnectionOnTheOriginalPair(t *testing.T)
 		t.Fatal(err)
 	}
 	foreign := &fixturePgcatSocket{backend: first}
-	if _, err := registry.verifyDrain(ctx, "request", "scope", hold.ObservationID, "drain-action", time.Now().UTC(), added, func(context.Context) (pgcatSocket, error) { return foreign, nil }); err == nil {
+	if _, err := registry.verifyDrain(ctx, "request", "scope", hold.ObservationID, "drain-action", time.Now().UTC().Add(time.Millisecond), added, func(context.Context) (pgcatSocket, error) { return foreign, nil }); err == nil {
 		t.Fatal("fresh connection still routed to a drained node")
 	}
 	if !foreign.closed.Load() {

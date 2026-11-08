@@ -9,7 +9,7 @@ export function createRemoteObservationTools({binding,config,replacementScope,fe
  const scheduleRead=createReadConcurrency(4);
  const selected={...tools};
  if(binding.approvalProtocol==='request-grants-v1'){
-  selected.cloudRead=['cloud_read','kind',['fleet','backend','capacity','retirement']];
+  selected.cloudRead=['cloud_read','kind',['fleet','backend','capacity','expansion','retirement']];
   selected.pgcatConnectionContinuity=[PG_CAT_CONTINUITY];
  }
  return Object.fromEntries(Object.entries(selected).map(([name,[tool,key,kinds]])=>[name,args=>{

@@ -56,6 +56,13 @@ func TestInfraGrantClaimRequiresServiceIdentityAndCurrentProof(t *testing.T) {
 	if got.Code != http.StatusOK || json.Unmarshal(got.Body.Bytes(), &result) != nil || !result.Data.Claimed {
 		t.Fatalf("valid claim returned %d %s", got.Code, got.Body.String())
 	}
+	dispatch := "/v1/infra/request-grant-dispatch"
+	if got := accessCall(h, "POST", dispatch, "", "", action); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous dispatch returned %d", got.Code)
+	}
+	if got := accessCall(h, "POST", dispatch, "fixture-controller", "fixture-controller-password", action); got.Code != http.StatusOK {
+		t.Fatalf("admitted dispatch returned %d %s", got.Code, got.Body.String())
+	}
 	record := approvals.GrantActionRecord{Action: action, Outcome: "unknown"}
 	if got := accessCall(h, "POST", "/v1/infra/request-grant-record", "", "", record); got.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous record returned %d", got.Code)

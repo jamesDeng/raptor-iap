@@ -20,6 +20,7 @@ type proxySDK struct {
 	health        func(context.Context, *nlb.GetListenerHealthStatusRequest, *dara.RuntimeOptions) (*nlb.GetListenerHealthStatusResponse, error)
 	listener      func(context.Context, *nlb.GetListenerAttributeRequest, *dara.RuntimeOptions) (*nlb.GetListenerAttributeResponse, error)
 	activities    func(context.Context, *ess.DescribeScalingActivitiesRequest, *dara.RuntimeOptions) (*ess.DescribeScalingActivitiesResponse, error)
+	expand        func(context.Context, *ess.ScaleWithAdjustmentRequest, *dara.RuntimeOptions) (*ess.ScaleWithAdjustmentResponse, error)
 	retire        func(context.Context, *ess.RemoveInstancesRequest, *dara.RuntimeOptions) (*ess.RemoveInstancesResponse, error)
 	scale         func(context.Context, *ess.ModifyScalingGroupRequest, *dara.RuntimeOptions) (*ess.ModifyScalingGroupResponse, error)
 	protect       func(context.Context, *ess.SetInstancesProtectionRequest, *dara.RuntimeOptions) (*ess.SetInstancesProtectionResponse, error)

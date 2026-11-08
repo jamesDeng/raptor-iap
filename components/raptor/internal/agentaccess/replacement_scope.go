@@ -82,6 +82,11 @@ func ReplacementSelectorsAllowed(b Binding, s ReplacementScope, audience, tool s
 				return false
 			}
 			expected["grantId"] = selectors["grantId"]
+		case "request_grant_action_get":
+			if b.ApprovalProtocol != "request-grants-v1" {
+				return false
+			}
+			expected["actionId"] = selectors["actionId"]
 		case "approval_get":
 			if b.ApprovalProtocol != "" {
 				return false

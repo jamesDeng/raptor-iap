@@ -113,3 +113,37 @@ func TestPatchOnceDoesNotRetryRetryAfter(t *testing.T) {
 		t.Fatalf("calls=%d error=%v", calls, e)
 	}
 }
+
+func TestGrantedRestartChecksReadyDeploymentBeforeAdmission(t *testing.T) {
+	for _, state := range []string{"ready", "paused", "rolling", "unhealthy"} {
+		t.Run(state, func(t *testing.T) {
+			replicas := int32(2)
+			d := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "ns", UID: "uid", ResourceVersion: "12", Generation: 4, Labels: map[string]string{"raptor.appcode": "app"}},
+				Spec:       appsv1.DeploymentSpec{Replicas: &replicas, Paused: state == "paused"},
+				Status:     appsv1.DeploymentStatus{ObservedGeneration: 4, Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2, AvailableReplicas: 2},
+			}
+			if state == "rolling" {
+				d.Status.ObservedGeneration--
+			}
+			if state == "unhealthy" {
+				d.Status.ReadyReplicas--
+			}
+			c := fake.NewSimpleClientset(d)
+			admitted, patches := 0, 0
+			p := &reader{evidence: "simulated", restartPatch: func(_ context.Context, _ kubernetes.Interface, _, _ string, _ []byte) (*appsv1.Deployment, error) {
+				patches++
+				return d, nil
+			}, identity: func(context.Context, domain.Environment) (string, error) { return "123", nil }, kube: func(context.Context, domain.Environment) (kubernetes.Interface, error) { return c, nil }}
+			_, err := p.RestartGrantedPgcat(context.Background(), domain.Environment{Code: "dev", AccountID: "123", ClusterID: "cluster"},
+				domain.RestartCommand{RequestID: "req", EnvCode: "dev", AppCode: "app", ClusterID: "cluster", Namespace: "ns", Name: "app", UID: "uid"}, func(context.Context) error { admitted++; return nil })
+			if state == "ready" {
+				if err != nil || admitted != 1 || patches != 1 {
+					t.Fatalf("ready rollout: %v, admitted %d, patches %d", err, admitted, patches)
+				}
+			} else if err == nil || admitted != 0 || patches != 0 {
+				t.Fatalf("unsafe rollout: %v, admitted %d, patches %d", err, admitted, patches)
+			}
+		})
+	}
+}

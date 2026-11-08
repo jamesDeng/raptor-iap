@@ -191,6 +191,11 @@ type grantGetArgs struct {
 	GrantID   string `json:"grantId"`
 }
 
+type grantActionGetArgs struct {
+	RequestID string `json:"requestId"`
+	ActionID  string `json:"actionId"`
+}
+
 func addRequestGrantAgentTools(s *mcp.Server, p agentPrincipal) {
 	const schema = `{"type":"object","required":["requestId","envCode","scopeDigest","capabilities"],"additionalProperties":false,
 	"properties":{"requestId":{"type":"string"},"envCode":{"type":"string"},"scopeDigest":{"type":"string"},
@@ -213,6 +218,14 @@ func addRequestGrantAgentTools(s *mcp.Server, p agentPrincipal) {
 				return nil, nil, err
 			}
 			v, err := p.backend.Call(ctx, "GET", requestPath(in.RequestID)+"/grants/"+url.PathEscape(in.GrantID), nil)
+			return nil, v, err
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "request_grant_action_get", Description: "Read the saved exact action receipt for this request. Use this read to reconcile a lost response, never to replay a write."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in grantActionGetArgs) (*mcp.CallToolResult, any, error) {
+			if _, err := p.check(ctx, "request_grant_action_get", map[string]string{"requestId": in.RequestID, "actionId": in.ActionID}); err != nil {
+				return nil, nil, err
+			}
+			v, err := p.backend.Call(ctx, "GET", requestPath(in.RequestID)+"/grant-actions/"+url.PathEscape(in.ActionID), nil)
 			return nil, v, err
 		})
 }

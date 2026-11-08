@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS raptor.request_grant_actions (
     input_digest text NOT NULL,
     capability jsonb NOT NULL CHECK (jsonb_typeof(capability) = 'object'),
     arguments jsonb NOT NULL CHECK (jsonb_typeof(arguments) = 'object'),
-    state text NOT NULL DEFAULT 'claimed' CHECK (state IN ('claimed', 'submitted', 'not_submitted', 'unknown')),
+    state text NOT NULL DEFAULT 'claimed' CHECK (state IN ('claimed', 'dispatching', 'submitted', 'not_submitted', 'unknown')),
     provider_request_id text NOT NULL DEFAULT '',
     claimed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     recorded_at timestamptz,

@@ -27,7 +27,7 @@ func (s *Service) RecordPgcatObservation(ctx context.Context, in PgcatObservatio
 		return domain.ErrInvalid
 	}
 	switch in.Kind {
-	case "hold", "drain", "probe-release", "traffic", "final-traffic":
+	case "hold", "drain", "probe-release", "traffic", "final-traffic", "retirement":
 		if in.Subject != "fleet" {
 			return domain.ErrInvalid
 		}

@@ -30,10 +30,10 @@ func TestPostgresInsertReadbackCommitsExactlyOnce(t *testing.T) {
 	}
 	defer s.Close()
 	id := "integration-" + time.Now().Format("150405.000000000")
-	if s.Operate(ctx, id) != Success {
+	if s.Operate(ctx, id).Outcome != Success {
 		t.Fatal("insert/readback failed")
 	}
-	if s.Operate(ctx, id) != Failure {
+	if s.Operate(ctx, id).Outcome != Failure {
 		t.Fatal("duplicate silently retried")
 	}
 	var n int

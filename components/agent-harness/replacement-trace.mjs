@@ -52,7 +52,7 @@ export class ReplacementTrace {
   const state=tool==='db_proxy_scale'?{previousDesiredCapacity:data.previousDesiredCapacity,desiredCapacity:data.desiredCapacity,outcome:data.outcome}:tool==='deployment_restart'?{accepted:data.accepted,generation:data.generation}:{instanceIds:data.instanceIds,outcome:data.outcome};
   if(this.versioned){
    if(typeof data.actionId!=='string'||!data.actionId)throw invalid();
-   if(tool==='db_proxy_scale'&&data.desiredCapacity===2){
+   if(tool==='db_proxy_scale'){
     if(typeof data.scalingActivityId!=='string'||!data.scalingActivityId)throw invalid();
     state.scalingActivityId=data.scalingActivityId;
    }else if(tool!=='db_proxy_scale')state.actionId=data.actionId;

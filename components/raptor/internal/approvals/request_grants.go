@@ -417,7 +417,7 @@ func (s *Service) ClaimGrantAction(ctx context.Context, input GrantActionInput) 
 	}
 	var unresolved bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM raptor.request_grant_actions
-		WHERE request_id=$1 AND state IN ('claimed','unknown'))`, in.RequestID).Scan(&unresolved); err != nil {
+		WHERE request_id=$1 AND state IN ('claimed','dispatching','unknown'))`, in.RequestID).Scan(&unresolved); err != nil {
 		return GrantActionReceipt{}, domain.ErrUnavailable
 	}
 	if unresolved {
@@ -443,6 +443,42 @@ func (s *Service) ClaimGrantAction(ctx context.Context, input GrantActionInput) 
 		return GrantActionReceipt{}, domain.ErrUnavailable
 	}
 	return GrantActionReceipt{Claimed: true, State: "claimed"}, nil
+}
+
+// DispatchGrantAction is the provider submission boundary. Its Request lock
+// orders dispatch against cancellation, and the transition is never replayable.
+func (s *Service) DispatchGrantAction(ctx context.Context, input GrantActionInput) error {
+	in, err := normalizeGrantAction(input)
+	if err != nil {
+		return err
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return domain.ErrUnavailable
+	}
+	defer tx.Rollback(ctx)
+	state, err := lockGrantRequest(ctx, tx, in.RequestID)
+	if err != nil {
+		return err
+	}
+	if state.kind != "agent" || state.env != in.EnvCode || state.control != "" || state.status != "running" {
+		return domain.ErrConflict
+	}
+	receipt, err := readGrantReceipt(ctx, tx, in, digestGrantValue(in), true)
+	if err != nil {
+		return err
+	}
+	if receipt.State != "claimed" {
+		return domain.ErrConflict
+	}
+	if _, err := tx.Exec(ctx, `UPDATE raptor.request_grant_actions SET state='dispatching'
+		WHERE request_id=$1 AND action_id=$2`, in.RequestID, in.ActionID); err != nil {
+		return domain.ErrUnavailable
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ErrUnavailable
+	}
+	return nil
 }
 
 // RecordGrantAction preserves a receipt even if the request was closed after
@@ -480,7 +516,7 @@ func (s *Service) RecordGrantAction(ctx context.Context, record GrantActionRecor
 	if err != nil {
 		return err
 	}
-	if receipt.State != "claimed" {
+	if receipt.State != "dispatching" && !(receipt.State == "claimed" && record.Outcome == "not_submitted") {
 		if receipt.State == record.Outcome && receipt.ProviderRequestID == record.ProviderRequestID {
 			return nil
 		}

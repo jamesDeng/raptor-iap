@@ -11,21 +11,24 @@ import (
 	"raptor-iap/infra-api/internal/policy"
 )
 
-type grantedBackendFixture struct{ backendFixture }
+type grantedBackendFixture struct {
+	backendFixture
+	wrongCohort bool
+}
 
-func (b *grantedBackendFixture) ProtectWithReceipt(context.Context, domain.Environment, string, []string, bool) (string, error) {
+func (b *grantedBackendFixture) ProtectWithReceipt(context.Context, domain.Environment, string, []string, bool, func(context.Context) error) (string, error) {
 	b.calls++
 	return "protect-ack", nil
 }
 
-func (b *grantedBackendFixture) DrainWithReceipt(context.Context, domain.Environment, string, []string) (string, error) {
+func (b *grantedBackendFixture) DrainWithReceipt(context.Context, domain.Environment, string, []string, func(context.Context) error) (string, error) {
 	b.calls++
 	return "drain-ack", nil
 }
 
-func (b *grantedBackendFixture) RetirePgcat(context.Context, domain.Environment, domain.PgcatRetirement) (domain.PgcatRetirementReceipt, error) {
+func (b *grantedBackendFixture) RetirePgcat(context.Context, domain.Environment, domain.PgcatRetirement, func(context.Context) error) (domain.PgcatScalingReceipt, error) {
 	b.calls++
-	return domain.PgcatRetirementReceipt{ProviderRequestID: "retire-ack", ScalingActivityID: "retire-activity"}, nil
+	return domain.PgcatScalingReceipt{ProviderRequestID: "retire-ack", ScalingActivityID: "retire-activity"}, nil
 }
 
 type pgcatMetricRows []policy.ClientObservation
@@ -34,11 +37,30 @@ func (rows pgcatMetricRows) ConnectedClients(context.Context, policy.ProxySnapsh
 	return rows, nil
 }
 
+func (b *grantedBackendFixture) ExpandPgcat(context.Context, domain.Environment, domain.ProxyTarget, string, func(context.Context) error) (domain.PgcatScalingReceipt, error) {
+	return domain.PgcatScalingReceipt{}, domain.ErrNotConfigured
+}
+
+func (b *grantedBackendFixture) ObservePgcatExpansion(_ context.Context, _ domain.Environment, _, activity string) (domain.PgcatExpansionObservation, error) {
+	created := []string{"new1", "new2"}
+	if b.wrongCohort {
+		created[1] = "foreign"
+	}
+	return domain.PgcatExpansionObservation{ScalingActivityID: activity, Status: "Successful", CreatedIDs: created}, nil
+}
+
 type grantedRestarterFixture struct{ calls int }
 
 func (r *grantedRestarterFixture) Restart(_ context.Context, _ domain.Environment, command domain.RestartCommand) (domain.RestartReceipt, error) {
 	r.calls++
 	return domain.RestartReceipt{Accepted: true, Target: command, Generation: 7}, nil
+}
+
+func (r *grantedRestarterFixture) RestartGrantedPgcat(ctx context.Context, env domain.Environment, command domain.RestartCommand, admit func(context.Context) error) (domain.RestartReceipt, error) {
+	if err := admit(ctx); err != nil {
+		return domain.RestartReceipt{}, err
+	}
+	return r.Restart(ctx, env, command)
 }
 
 func TestGrantedPgcatPhasesRejectMissingOrMismatchedProofBeforeSubmitting(t *testing.T) {
@@ -75,20 +97,21 @@ func TestGrantedPgcatPhasesRejectMissingOrMismatchedProofBeforeSubmitting(t *tes
 	action := func(capability, id, ack string, at time.Time) approval.GrantActionDetails {
 		return approval.GrantActionDetails{RequestID: target.RequestID, EnvCode: target.EnvCode, ScopeDigest: scope,
 			ActionID: id, State: "submitted", ProviderRequestID: ack, ClaimedAt: at.Add(-time.Second), RecordedAt: &at,
-			Capability: approval.GrantCapability{Capability: capability}}
+			Capability: approval.GrantCapability{Capability: capability, Target: approval.GrantTarget{Kind: "db-proxy", Code: "p"}}}
 	}
 	for _, test := range []struct {
 		stage, fault string
 		allow        bool
 	}{
-		{"drain", "", true}, {"drain", "missing new SQL", false}, {"drain", "wrong IDs", false}, {"drain", "metrics missing", false},
+		{"drain", "", true}, {"drain", "missing new SQL", false}, {"drain", "wrong IDs", false}, {"drain", "wrong cohort", false}, {"drain", "metrics missing", false},
 		{"restart", "", true}, {"restart", "different socket", false}, {"restart", "missing action", false}, {"restart", "fresh uses old", false}, {"restart", "probes still open", false},
 		{"retire", "", true}, {"retire", "only probe traffic", false}, {"retire", "clients remain", false}, {"retire", "unrelated restart", false}, {"retire", "probes still open", false},
 	} {
 		t.Run(test.stage+"/"+test.fault, func(t *testing.T) {
-			backend := &grantedBackendFixture{backendFixture{s: policy.ProxySnapshot{EnvCode: "dev", ProxyCode: "p", GroupID: "g", ServerGroupID: "sg", Desired: 4, Min: 2, Max: 4,
+			backend := &grantedBackendFixture{backendFixture: backendFixture{s: policy.ProxySnapshot{EnvCode: "dev", ProxyCode: "p", GroupID: "g", ServerGroupID: "sg", Desired: 4, Min: 2, Max: 4,
 				Nodes: []policy.Node{{ID: "old1", Registered: true, Protected: true, Healthy: true}, {ID: "old2", Registered: true, Protected: true, Healthy: true},
 					{ID: "new1", Registered: true, Protected: true, Healthy: true}, {ID: "new2", Registered: true, Protected: true, Healthy: true}}}}}
+			backend.wrongCohort = test.fault == "wrong cohort"
 			metrics := pgcatMetricRows{}
 			for _, id := range append(originals, added...) {
 				metrics = append(metrics, policy.ClientObservation{InstanceID: id, ObservedAt: now})
@@ -100,7 +123,7 @@ func TestGrantedPgcatPhasesRejectMissingOrMismatchedProofBeforeSubmitting(t *tes
 				}
 				observations = append(observations, record("sql", id, now, map[string]any{"instanceId": id, "connected": true}))
 			}
-			actions := []approval.GrantActionDetails{action("db-proxy.scale-out", "expand", "expand-ack", expandAt)}
+			actions := []approval.GrantActionDetails{action("db-proxy.scale-out", "expand", "expand-ack:asa-expand", expandAt)}
 			var operation any = domain.DeregisterCommand{ProxyTarget: target, ServerGroupID: "sg", InstanceIDs: originals}
 			if test.fault == "wrong IDs" {
 				operation = domain.DeregisterCommand{ProxyTarget: target, ServerGroupID: "sg", InstanceIDs: added}
@@ -152,7 +175,7 @@ func TestGrantedPgcatPhasesRejectMissingOrMismatchedProofBeforeSubmitting(t *tes
 				t.Fatalf("prepare gate: %+v %v, provider calls %d/%d", prepared.Capability, err, backend.calls, restarter.calls)
 			}
 			if test.allow {
-				if _, ack, err := prepared.Submit(context.Background()); err != nil || ack == "" || backend.calls+restarter.calls != 1 {
+				if _, ack, err := prepared.Submit(context.Background(), func(context.Context) error { return nil }); err != nil || ack == "" || backend.calls+restarter.calls != 1 {
 					t.Fatalf("submit: %q %v, provider calls %d/%d", ack, err, backend.calls, restarter.calls)
 				}
 			}

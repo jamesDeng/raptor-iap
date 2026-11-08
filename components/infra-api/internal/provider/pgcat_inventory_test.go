@@ -49,7 +49,7 @@ func TestPgcatInventoryPatchPreservesUnrelatedFieldsAndRefusesForeignTargets(t *
 		{`[{"targets":["10.70.1.220:9930"],"labels":{"env":"different","db_proxy_code":"DP00001","target_db_code":"D00002","ecs_instance_id":"old-1"}}]`, false},
 	} {
 		client := makeClient(tc.payload)
-		receipt, err := syncPgcatInventory(ctx, client.CoreV1().ConfigMaps(namespace), "rdev.ali", "DP00001", "D00002", targets)
+		receipt, err := syncPgcatInventory(ctx, client.CoreV1().ConfigMaps(namespace), "rdev.ali", "DP00001", "D00002", targets, func(context.Context) error { return nil })
 		if (err == nil) != tc.allowed {
 			t.Fatalf("patch %q: %+v %v", tc.payload, receipt, err)
 		}

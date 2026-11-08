@@ -22,6 +22,10 @@ func (s *Server) registerPgcatObservations(credentials auth.Credentials) {
 		err := s.Approvals.RecordPgcatObservation(r.Context(), in)
 		httpx.Result(w, 201, map[string]bool{"recorded": err == nil}, err)
 	}), credentials))
+	s.Mux.Handle("GET /v1/requests/{id}/pgcat-request-state", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		out, err := s.Approvals.ReadPgcatRequestState(r.Context(), r.PathValue("id"), r.URL.Query().Get("scopeDigest"))
+		httpx.Result(w, 200, out, err)
+	}), credentials))
 	s.Mux.Handle("POST /v1/infra/pgcat-request-state", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			RequestID   string `json:"requestId"`

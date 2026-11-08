@@ -13,7 +13,7 @@ const metricSeries=['up','upTimestamp','active','activeTimestamp','idle','idleTi
 // from opaque workloadKey, stamp source observations or normalize metric rows.
 export function resourceObservation(data,scope,kind){
  const w=data?.pgproxyWorkload;
- if(!['fleet','backend','capacity','metrics','retirement'].includes(kind)||!exact(data,['envCode','proxyCode','observedAt','pgproxyWorkload'])||data.envCode!==scope.envCode||data.proxyCode!==scope.proxyCode||!exact(w,['type','code','workloadKey','state','targetDbCode',kind])||w.type!=='ess'||w.code!==scope.proxyCode||w.targetDbCode!==scope.targetDbCode||typeof w.workloadKey!=='string'||!w.workloadKey||w.workloadKey.length>256||typeof w.state!=='string'||!Number.isFinite(Date.parse(data.observedAt))||w[kind]?.observedAt!==data.observedAt)throw invalid();
+ if(!['fleet','backend','capacity','metrics','expansion','retirement'].includes(kind)||!exact(data,['envCode','proxyCode','observedAt','pgproxyWorkload'])||data.envCode!==scope.envCode||data.proxyCode!==scope.proxyCode||!exact(w,['type','code','workloadKey','state','targetDbCode',kind])||w.type!=='ess'||w.code!==scope.proxyCode||w.targetDbCode!==scope.targetDbCode||typeof w.workloadKey!=='string'||!w.workloadKey||w.workloadKey.length>256||typeof w.state!=='string'||!Number.isFinite(Date.parse(data.observedAt))||w[kind]?.observedAt!==data.observedAt)throw invalid();
  return w[kind];
 }
 

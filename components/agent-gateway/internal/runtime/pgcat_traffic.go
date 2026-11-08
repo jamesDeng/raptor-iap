@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -74,7 +76,7 @@ func parsePgcatApplicationCounter(r io.Reader) (pgcatQueryCount, error) {
 			switch strings.TrimSpace(label) {
 			case `pool="test"`:
 				pool = true
-			case `user="poc_app"`:
+			case `username="poc_app"`:
 				user = true
 			}
 		}
@@ -134,6 +136,19 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 			return nil, ErrRuntimeUnavailable
 		}
 	}
+	slot := &pair.traffic
+	if args.Phase == "verify-final-traffic" {
+		slot = &pair.finalTraffic
+	}
+	base := *slot
+	routeFrom := after
+	if base != nil {
+		if base.action != args.RestartActionID || !base.at.After(after) {
+			return nil, ErrRuntimeUnavailable
+		}
+		routeFrom = base.at
+	}
+	appOps := map[netip.Addr]int64{}
 	pods, err := p.pgcatPods(ctx, entry)
 	if err != nil {
 		return nil, err
@@ -147,11 +162,17 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 			return nil, err
 		}
 		state := newPgcatLogState(pod.UID)
+		state.routes = map[netip.Addr]int64{}
+		state.routeFrom = routeFrom
 		bounded := &io.LimitedReader{R: stream, N: 16 * 1024 * 1024}
 		state.readLogs(bounded, pair.logs.started, false)
 		_ = stream.Close()
 		if bounded.N == 0 || !state.check(false, true, after) {
 			return nil, ErrRuntimeUnavailable
+		}
+
+		for addr, count := range state.routes {
+			appOps[addr] += count
 		}
 	}
 	counts := map[string]pgcatQueryCount{}
@@ -163,29 +184,29 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 		counts[id] = current
 	}
 	now := time.Now().UTC()
-	slot := &pair.traffic
-	if args.Phase == "verify-final-traffic" {
-		slot = &pair.finalTraffic
-	}
-	if *slot == nil {
+	if base == nil {
 		*slot = &pgcatTrafficSample{action: args.RestartActionID, at: now, counts: counts}
 		return json.RawMessage(`{"readiness":"traffic-warming"}`), nil
 	}
-	base := *slot
-	if base.action != args.RestartActionID || !base.at.After(after) {
-		return nil, ErrRuntimeUnavailable
-	}
 	out := pgcatTrafficEvidence{RestartActionID: args.RestartActionID, ApplicationUID: scope.Application.UID,
 		Generation: restart.Generation, ObservedAt: now, NoErrors: true, Nodes: map[string]pgcatQueryCount{}}
+	for addr := range appOps {
+		if !slices.Contains(slices.Collect(maps.Values(routed)), addr) {
+			return nil, ErrRuntimeUnavailable
+		}
+	}
 	for id, current := range counts {
 		before, ok := base.counts[id]
 		if !ok || current.Queries < before.Queries || current.Transactions < before.Transactions {
 			return nil, ErrRuntimeUnavailable
 		}
-		if current.Queries == before.Queries || current.Transactions == before.Transactions {
+		operations := appOps[routed[id]]
+		if operations < 1 || current.Queries-before.Queries < operations || current.Transactions-before.Transactions < operations {
 			return json.RawMessage(`{"readiness":"traffic-warming"}`), nil
 		}
-		out.Nodes[id] = pgcatQueryCount{Queries: current.Queries - before.Queries, Transactions: current.Transactions - before.Transactions}
+		// The committed app operations are a lower bound independent of any
+		// additional SQL issued by a concurrent probe using the same account.
+		out.Nodes[id] = pgcatQueryCount{Queries: operations, Transactions: operations}
 	}
 	return json.Marshal(out)
 }

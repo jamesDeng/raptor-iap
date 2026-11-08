@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"raptor-iap/infra-api/internal/approval"
@@ -24,13 +25,23 @@ type PgcatGrantInput struct {
 type PreparedPgcatGrant struct {
 	Capability  string
 	Constraints json.RawMessage
-	Submit      func(context.Context) (any, string, error)
+	Submit      func(context.Context, func(context.Context) error) (any, string, error)
+}
+
+type PgcatExpansionReader interface {
+	ObservePgcatExpansion(context.Context, domain.Environment, string, string) (domain.PgcatExpansionObservation, error)
 }
 
 type pgcatMutationBackend interface {
-	ProtectWithReceipt(context.Context, domain.Environment, string, []string, bool) (string, error)
-	DrainWithReceipt(context.Context, domain.Environment, string, []string) (string, error)
-	RetirePgcat(context.Context, domain.Environment, domain.PgcatRetirement) (domain.PgcatRetirementReceipt, error)
+	PgcatExpansionReader
+	ExpandPgcat(context.Context, domain.Environment, domain.ProxyTarget, string, func(context.Context) error) (domain.PgcatScalingReceipt, error)
+	ProtectWithReceipt(context.Context, domain.Environment, string, []string, bool, func(context.Context) error) (string, error)
+	DrainWithReceipt(context.Context, domain.Environment, string, []string, func(context.Context) error) (string, error)
+	RetirePgcat(context.Context, domain.Environment, domain.PgcatRetirement, func(context.Context) error) (domain.PgcatScalingReceipt, error)
+}
+
+type pgcatGrantedRestarter interface {
+	RestartGrantedPgcat(context.Context, domain.Environment, domain.RestartCommand, func(context.Context) error) (domain.RestartReceipt, error)
 }
 
 type pgcatSocketWitness struct {
@@ -70,6 +81,34 @@ type pgcatTrafficWitness struct {
 		Queries      int64 `json:"queries"`
 		Transactions int64 `json:"transactions"`
 	} `json:"nodes"`
+}
+
+func ObserveGrantedExpansion(ctx context.Context, reader PgcatExpansionReader, env domain.Environment, target domain.ProxyTarget, scope string, state approval.PgcatRequestState) (domain.PgcatExpansionObservation, error) {
+	var result domain.PgcatExpansionObservation
+	for _, action := range state.Actions {
+		if action.Capability.Capability != "db-proxy.scale-out" || action.State != "submitted" {
+			continue
+		}
+		provider, activity, ok := strings.Cut(action.ProviderRequestID, ":")
+		if !ok || provider == "" || !strings.HasPrefix(activity, "asa-") || result.ActionID != "" ||
+			action.RequestID != target.RequestID || action.EnvCode != target.EnvCode || action.ScopeDigest != scope ||
+			action.Capability.Target.Kind != "db-proxy" || action.Capability.Target.Code != target.ProxyCode {
+			return result, domain.ErrScope
+		}
+		var err error
+		result, err = reader.ObservePgcatExpansion(ctx, env, target.GroupID, activity)
+		if err != nil {
+			return result, err
+		}
+		if result.ScalingActivityID != activity {
+			return result, domain.ErrIdentity
+		}
+		result.ActionID = action.ActionID
+	}
+	if result.ActionID == "" {
+		return result, failure("MissingEvidence")
+	}
+	return result, nil
 }
 
 func pgcatFresh(at, now time.Time) bool {
@@ -251,7 +290,16 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 		now = r.Now()
 	}
 	expanded := phase.actions["db-proxy.scale-out"]
-	var invoke func(context.Context) (any, string, error)
+	if snapshot.Desired == 4 {
+		activity, err := ObserveGrantedExpansion(ctx, backend, env, in.Target, in.ScopeDigest, in.State)
+		if err != nil {
+			return out, err
+		}
+		if activity.Status != "Successful" || !pgcatIDs(activity.CreatedIDs, replacements) {
+			return out, failure("MissingEvidence")
+		}
+	}
+	var invoke func(context.Context, func(context.Context) error) (any, string, error)
 	set := func(capability string, constraints string) {
 		out.Capability = capability
 		out.Constraints = json.RawMessage(constraints)
@@ -273,10 +321,14 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 				}
 			}
 			set(variant.Capability, `{"desiredCapacity":4}`)
-			invoke = func(call context.Context) (any, string, error) {
-				ack, err := r.Backend.Scale(call, env, snapshot.GroupID, 4)
+			invoke = func(call context.Context, admit func(context.Context) error) (any, string, error) {
+				receipt, err := backend.ExpandPgcat(call, env, in.Target, in.ActionID, admit)
+				if err != nil {
+					return nil, "", err
+				}
 				return domain.ScaleReceipt{Outcome: "submitted", GroupID: snapshot.GroupID, PreviousDesiredCapacity: 2, DesiredCapacity: 4,
-					ProviderRequestID: ack, EvidenceMode: r.evidence()}, ack, err
+						ProviderRequestID: receipt.ProviderRequestID, ScalingActivityID: receipt.ScalingActivityID, EvidenceMode: r.evidence()},
+					receipt.ProviderRequestID + ":" + receipt.ScalingActivityID, nil
 			}
 			break
 		}
@@ -301,9 +353,9 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 			return out, err
 		}
 		set(variant.Capability, `{"desiredCapacity":2}`)
-		invoke = func(call context.Context) (any, string, error) {
+		invoke = func(call context.Context, admit func(context.Context) error) (any, string, error) {
 			receipt, err := backend.RetirePgcat(call, env, domain.PgcatRetirement{ProxyTarget: in.Target, ActionID: in.ActionID,
-				OriginalIDs: originals, ReplacementIDs: replacements})
+				OriginalIDs: originals, ReplacementIDs: replacements}, admit)
 			data := domain.ScaleReceipt{Outcome: "submitted", GroupID: snapshot.GroupID, PreviousDesiredCapacity: 4, DesiredCapacity: 2,
 				ProviderRequestID: receipt.ProviderRequestID, ScalingActivityID: receipt.ScalingActivityID, EvidenceMode: r.evidence()}
 			if err != nil {
@@ -333,8 +385,8 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 				return out, domain.ErrScope
 			}
 			set("db-proxy.node-protection", `{"protected":true}`)
-			invoke = func(call context.Context) (any, string, error) {
-				ack, err := backend.ProtectWithReceipt(call, env, snapshot.GroupID, replacements, true)
+			invoke = func(call context.Context, admit func(context.Context) error) (any, string, error) {
+				ack, err := backend.ProtectWithReceipt(call, env, snapshot.GroupID, replacements, true, admit)
 				return domain.NodeReceipt{Outcome: "submitted", InstanceIDs: replacements, EvidenceMode: r.evidence()}, ack, err
 			}
 		} else {
@@ -346,8 +398,8 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 				return out, err
 			}
 			set("db-proxy.drain", `{"weight":0}`)
-			invoke = func(call context.Context) (any, string, error) {
-				ack, err := backend.DrainWithReceipt(call, env, snapshot.ServerGroupID, originals)
+			invoke = func(call context.Context, admit func(context.Context) error) (any, string, error) {
+				ack, err := backend.DrainWithReceipt(call, env, snapshot.ServerGroupID, originals, admit)
 				if err == nil && ack == "" {
 					return nil, "", failure("TargetChanged")
 				}
@@ -355,13 +407,14 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 			}
 		}
 	case domain.RestartCommand:
-		if snapshot.Desired != 4 || r.Restarter == nil || phase.actions["application.restart"].ActionID != "" ||
+		restarter, ok := r.Restarter.(pgcatGrantedRestarter)
+		if snapshot.Desired != 4 || !ok || phase.actions["application.restart"].ActionID != "" ||
 			policy.TargetedPgcatRetirement(snapshot, originals, replacements) != nil || !phase.verifiesDrain(originals, replacements, now) || !phase.releasedProbes(now) {
 			return out, failure("MissingEvidence")
 		}
 		set("application.restart", `{}`)
-		invoke = func(call context.Context) (any, string, error) {
-			receipt, err := r.Restarter.Restart(call, env, command)
+		invoke = func(call context.Context, admit func(context.Context) error) (any, string, error) {
+			receipt, err := restarter.RestartGrantedPgcat(call, env, command, admit)
 			if err != nil {
 				return nil, "", err
 			}
@@ -373,11 +426,11 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 	default:
 		return out, domain.ErrScope
 	}
-	out.Submit = func(call context.Context) (any, string, error) {
+	out.Submit = func(call context.Context, admit func(context.Context) error) (any, string, error) {
 		if err := r.unchanged(call, env, in.Target, snapshot); err != nil {
 			return nil, "", err
 		}
-		return invoke(call)
+		return invoke(call, admit)
 	}
 	return out, nil
 }

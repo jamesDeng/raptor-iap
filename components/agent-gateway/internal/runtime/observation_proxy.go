@@ -258,7 +258,7 @@ func validObservationInput(tool string, raw json.RawMessage) bool {
 			return false
 		}
 		if tool == "cloud_read" {
-			return value == "fleet" || value == "backend" || value == "capacity" || value == "retirement"
+			return value == "fleet" || value == "backend" || value == "capacity" || value == "expansion" || value == "retirement"
 		}
 		return value == "trafficFailures" || value == "connections" || value == "pgcatClients"
 	case "db_connection_probe":

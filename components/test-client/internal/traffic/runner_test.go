@@ -19,7 +19,7 @@ type session struct {
 	mu      sync.Mutex
 }
 
-func (s *session) Operate(ctx context.Context, id string) Outcome {
+func (s *session) Operate(ctx context.Context, id string) OperationResult {
 	s.mu.Lock()
 	s.calls++
 	s.mu.Unlock()
@@ -30,10 +30,10 @@ func (s *session) Operate(ctx context.Context, id string) Outcome {
 		select {
 		case <-s.gate:
 		case <-ctx.Done():
-			return Timeout
+			return OperationResult{Outcome: Timeout}
 		}
 	}
-	return s.outcome
+	return OperationResult{Outcome: s.outcome}
 }
 func (s *session) Close() { s.closed = true }
 
@@ -405,12 +405,12 @@ func TestCancellationDuringIdleDialStopsAdmission(t *testing.T) {
 
 type deadlineSession struct{ deadline time.Time }
 
-func (s *deadlineSession) Operate(ctx context.Context, _ string) Outcome {
+func (s *deadlineSession) Operate(ctx context.Context, _ string) OperationResult {
 	deadline, ok := ctx.Deadline()
 	if !ok || !deadline.Equal(s.deadline) {
-		return Failure
+		return OperationResult{Outcome: Failure}
 	}
-	return Success
+	return OperationResult{Outcome: Success}
 }
 func (*deadlineSession) Close() {}
 

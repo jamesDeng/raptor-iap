@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 const readRaptor=['request_get','environment_get','object_get'];
 const readInfra=['deployments_list','deployment_status_get'];
 const schemas={
- raptor:{deployments_list:{requestId:'string',envCode:'string',kind:'string',code:'string'},request_get:{requestId:'string'},environment_get:{requestId:'string',envCode:'string'},object_get:{requestId:'string',kind:'string',code:'string'},pull_request_attach:{requestId:'string',attemptId:'string',repository:'string',number:'integer',url:'string',headSha:'string',baseCommit:'string',baseBranch:'string',workingBranch:'string'},approval_request:{requestId:'string',actionId:'string',interface:'string',envCode:'string',target:'object',parameters:'object'},approval_get:{requestId:'string',approvalId:'string'},request_grant_get:{requestId:'string',grantId:'string'},request_grant_request:{requestId:'string',envCode:'string',scopeDigest:'string',capabilities:'array'},request_pause:{requestId:'string',reason:'string'}},
+ raptor:{deployments_list:{requestId:'string',envCode:'string',kind:'string',code:'string'},request_get:{requestId:'string'},environment_get:{requestId:'string',envCode:'string'},object_get:{requestId:'string',kind:'string',code:'string'},pull_request_attach:{requestId:'string',attemptId:'string',repository:'string',number:'integer',url:'string',headSha:'string',baseCommit:'string',baseBranch:'string',workingBranch:'string'},approval_request:{requestId:'string',actionId:'string',interface:'string',envCode:'string',target:'object',parameters:'object'},approval_get:{requestId:'string',approvalId:'string'},request_grant_get:{requestId:'string',grantId:'string'},request_grant_action_get:{requestId:'string',actionId:'string'},request_grant_request:{requestId:'string',envCode:'string',scopeDigest:'string',capabilities:'array'},request_pause:{requestId:'string',reason:'string'}},
  infra:{pgcat_monitoring_sync:{requestId:'string',envCode:'string',proxyCode:'string',actionId:'string'},deployments_list:{envCode:'string',kind:'string',code:'string'},deployment_status_get:{envCode:'string',appCode:'string',workloadKey:'string'},deployment_restart:{requestId:'string',envCode:'string',appCode:'string',workloadKey:'string'},db_proxy_scale:{requestId:'string',envCode:'string',proxyCode:'string',actionId:'string',desiredCapacity:'integer'},db_proxy_node_protection_set:{requestId:'string',envCode:'string',proxyCode:'string',nodeIds:'array',protected:'boolean'},db_proxy_nodes_deregister:{requestId:'string',envCode:'string',proxyCode:'string',nodeIds:'array'}}
 };
 const capabilitySchema={type:'object',additionalProperties:false,required:['capability','target','constraints'],properties:{
@@ -33,7 +33,7 @@ export function operationCapabilities(b,scope){
   replacementScope(b,scope);
   if(b.executionMode==="qualification")return {raptor:[...readRaptor,'deployments_list',"approval_request","approval_get","request_pause"],infra:[...readInfra]};
   const approvalTools=b.approvalProtocol==='request-grants-v1'
-   ? ['request_grant_request','request_grant_get']
+   ? ['request_grant_request','request_grant_get','request_grant_action_get']
    : ['approval_request','approval_get','request_pause'];
   return {raptor:[...readRaptor,'deployments_list',...approvalTools],infra:[...readInfra,'db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart',...(b.approvalProtocol==='request-grants-v1'?['pgcat_monitoring_sync']:[])]};
  }
@@ -63,6 +63,10 @@ export function checkOperationSelectors(server,tool,args,b,scope,discovered=new 
   case 'request_grant_get':
    exact(args,{requestId:b.requestId},['grantId']);
    if(!text(args.grantId))throw Error('ScopeMismatch');
+   break;
+  case 'request_grant_action_get':
+   exact(args,{requestId:b.requestId},['actionId']);
+   if(!text(args.actionId))throw Error('ScopeMismatch');
    break;
   case 'request_grant_request':
    exact(args,{requestId:b.requestId,envCode:b.envCode,scopeDigest:scope.resolutionDigest},['capabilities']);

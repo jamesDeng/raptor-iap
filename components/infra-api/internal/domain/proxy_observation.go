@@ -96,3 +96,11 @@ type PgcatRetirementObservation struct {
 	DestroyedIDs      []string  `json:"destroyedIds"`
 	ObservedAt        time.Time `json:"observedAt"`
 }
+
+type PgcatExpansionObservation struct {
+	ActionID          string    `json:"actionId"`
+	ScalingActivityID string    `json:"scalingActivityId"`
+	Status            string    `json:"status"`
+	ObservedAt        time.Time `json:"observedAt"`
+	CreatedIDs        []string  `json:"createdIds"`
+}

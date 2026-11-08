@@ -46,14 +46,16 @@ func TestRetirementSubmitsOnlyExactDrainedOriginalNodes(t *testing.T) {
 	wrong := in
 	wrong.OriginalIDs = []string{"i-one", "i-three"}
 	wrong.ReplacementIDs = []string{"i-two", "i-four"}
-	if _, err := p.RetirePgcat(context.Background(), env, wrong); err == nil || calls != 0 {
+	if _, err := p.RetirePgcat(context.Background(), env, wrong, allowPgcatWrite); err == nil || calls != 0 {
 		t.Fatal("routed replacement reached removal")
 	}
-	out, err := p.RetirePgcat(context.Background(), env, in)
+	out, err := p.RetirePgcat(context.Background(), env, in, allowPgcatWrite)
 	if err != nil || calls != 1 || out.ProviderRequestID != "request-1" || out.ScalingActivityID != "activity-1" {
 		t.Fatalf("retirement: %+v %v", out, err)
 	}
-	if _, err = p.RetirePgcat(context.Background(), env, in); err == nil || err.Error() != "SubmissionUnknown" || calls != 2 {
+	if _, err = p.RetirePgcat(context.Background(), env, in, allowPgcatWrite); err == nil || err.Error() != "SubmissionUnknown" || calls != 2 {
 		t.Fatalf("uncertain outcome did not remain unknown: %v", err)
 	}
 }
+
+func allowPgcatWrite(context.Context) error { return nil }

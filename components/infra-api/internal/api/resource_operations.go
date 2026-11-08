@@ -297,6 +297,9 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 			return nil, e
 		}
 	}
+	if tool == "proxy_observation_get" && args[field] == "expansion" {
+		return o.pgcatExpansionRead(ctx, i, r)
+	}
 	if tool == "proxy_observation_get" && args[field] == "retirement" {
 		return o.pgcatRetirementRead(ctx, i, r)
 	}
@@ -385,7 +388,7 @@ func resourceProxyReadOptions(tool string) (string, []string) {
 		options = append(options, "clients")
 	}
 	if tool == "proxy_observation_get" {
-		options = append(options, "retirement")
+		options = append(options, "expansion", "retirement")
 	}
 	return field, options
 }

@@ -25,5 +25,5 @@ func cloudProxy(config func(string) *openapi.Config) (proxySDK, error) {
 	if e != nil {
 		return proxySDK{}, errors.New("provider unavailable")
 	}
-	return proxySDK{serverGroups: nc.ListServerGroupsWithContext, listeners: nc.ListListenersWithContext, groups: ec.DescribeScalingGroupsWithContext, instances: ec.DescribeScalingInstancesWithContext, scale: ec.ModifyScalingGroupWithContext, retire: ec.RemoveInstancesWithContext, activities: ec.DescribeScalingActivitiesWithContext, protect: ec.SetInstancesProtectionWithContext, servers: nc.ListServerGroupServersWithContext, health: nc.GetListenerHealthStatusWithContext, listener: nc.GetListenerAttributeWithContext, updateWeights: nc.UpdateServerGroupServersAttributeWithContext}, nil
+	return proxySDK{serverGroups: nc.ListServerGroupsWithContext, listeners: nc.ListListenersWithContext, groups: ec.DescribeScalingGroupsWithContext, instances: ec.DescribeScalingInstancesWithContext, scale: ec.ModifyScalingGroupWithContext, expand: ec.ScaleWithAdjustmentWithContext, retire: ec.RemoveInstancesWithContext, activities: ec.DescribeScalingActivitiesWithContext, protect: ec.SetInstancesProtectionWithContext, servers: nc.ListServerGroupServersWithContext, health: nc.GetListenerHealthStatusWithContext, listener: nc.GetListenerAttributeWithContext, updateWeights: nc.UpdateServerGroupServersAttributeWithContext}, nil
 }

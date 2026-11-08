@@ -96,6 +96,9 @@ func TestRequestGrantReusableAcrossActions(t *testing.T) {
 		if receipt, err := service.ClaimGrantAction(ctx, action); err != nil || !receipt.Claimed {
 			t.Fatalf("distinct action not admitted: %+v, %v", receipt, err)
 		}
+		if err := service.DispatchGrantAction(ctx, action); err != nil {
+			t.Fatal(err)
+		}
 		record := GrantActionRecord{Action: action, Outcome: "submitted", ProviderRequestID: "provider-ack"}
 		if err := service.RecordGrantAction(ctx, record); err != nil {
 			t.Fatal(err)
@@ -160,6 +163,9 @@ func TestActionClaimCloseRaceAndUnknownReplay(t *testing.T) {
 	action := grantAction(grant, in.Capabilities[0])
 	if receipt, err := service.ClaimGrantAction(ctx, action); err != nil || !receipt.Claimed {
 		t.Fatalf("first claim = %+v, %v", receipt, err)
+	}
+	if err := service.DispatchGrantAction(ctx, action); err != nil {
+		t.Fatal(err)
 	}
 	record := GrantActionRecord{Action: action, Outcome: "unknown"}
 	if err := service.RecordGrantAction(ctx, record); err != nil {
@@ -241,5 +247,44 @@ func TestRequestGrantEarlyDecisionQueuesOneWakeup(t *testing.T) {
 	}
 	if _, err := s.DecideRequestGrant(ctx, user, in.RequestID, grant.ID, "deny"); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("conflicting replay changed approval: %v", err)
+	}
+}
+
+func TestRequestGrantDispatchOrdersAgainstClose(t *testing.T) {
+	ctx := context.Background()
+	for _, closedFirst := range []bool{true, false} {
+		s, user, in := grantFixture(t)
+		grant := approveGrant(t, s, user, in)
+		action := grantAction(grant, in.Capabilities[0])
+		if receipt, err := s.ClaimGrantAction(ctx, action); err != nil || !receipt.Claimed {
+			t.Fatalf("claim = %+v, %v", receipt, err)
+		}
+		record := GrantActionRecord{Action: action, Outcome: "submitted", ProviderRequestID: "provider"}
+		if err := s.RecordGrantAction(ctx, record); !errors.Is(err, domain.ErrConflict) {
+			t.Fatalf("receipt before dispatch accepted: %v", err)
+		}
+		closeRequest := func() {
+			if _, err := s.Pool.Exec(ctx, "UPDATE raptor.requests SET status='cancelled',control_state='cancelled' WHERE id=$1", in.RequestID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if closedFirst {
+			closeRequest()
+			if err := s.DispatchGrantAction(ctx, action); !errors.Is(err, domain.ErrConflict) {
+				t.Fatalf("dispatch after cancellation: %v", err)
+			}
+			record.Outcome, record.ProviderRequestID = "not_submitted", ""
+		} else {
+			if err := s.DispatchGrantAction(ctx, action); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.DispatchGrantAction(ctx, action); !errors.Is(err, domain.ErrConflict) {
+				t.Fatalf("duplicate dispatch: %v", err)
+			}
+			closeRequest()
+		}
+		if err := s.RecordGrantAction(ctx, record); err != nil {
+			t.Fatalf("record after cancellation: %v", err)
+		}
 	}
 }

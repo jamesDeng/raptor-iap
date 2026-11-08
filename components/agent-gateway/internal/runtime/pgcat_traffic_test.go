@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -42,11 +43,30 @@ func TestPgcatApplicationLogsRequireContinuousSuccessfulPodEvents(t *testing.T) 
 	}
 }
 
+func TestPgcatAppRouteOnlyCountsSuccessfulTransactionsInObservationWindow(t *testing.T) {
+	now := time.Now().UTC()
+	state := newPgcatLogState("pod-1")
+	state.routes = map[netip.Addr]int64{}
+	state.routeFrom = now.Add(-2 * time.Second)
+	route := netip.MustParseAddr("10.70.1.225")
+	event := func(at time.Time, seq int, ip string) string {
+		return fmt.Sprintf(`{"kind":"operation","outcome":"success","podUid":"pod-1","processId":"proc-1","at":%q,"sequence":%d,"proxyIp":%q}`+"\n", at.Format(time.RFC3339Nano), seq, ip)
+	}
+	state.readLogs(strings.NewReader(event(now.Add(-3*time.Second), 5, route.String())+event(now.Add(-time.Second), 6, route.String())), now.Add(-time.Minute), false)
+	if !state.check(false, false, now.Add(-2*time.Second)) || state.routes[route] != 1 {
+		t.Fatalf("counted an operation outside the window: %+v", state.routes)
+	}
+	state.readLogs(strings.NewReader(event(now, 7, "")), now.Add(-time.Minute), false)
+	if state.check(false, false, now.Add(-2*time.Second)) {
+		t.Fatal("an unattributed operation was accepted")
+	}
+}
+
 func TestPgcatApplicationCounterUsesOnlyBoundPoolAndUser(t *testing.T) {
 	const queries = "pgcat_stats_total_query_count"
 	const transactions = "pgcat_stats_total_xact_count"
-	const app = `{pool="test",user="poc_app"}`
-	const probe = `{pool="test",user="probe"}`
+	const app = `{database="test",host="postgres.test",index="0",pool="test",role="primary",shard="0",username="poc_app"}`
+	const probe = `{pool="test",username="probe"}`
 	counts := queries + app + " 17\n" + transactions + app + " 9\n"
 	for _, test := range []struct {
 		name  string

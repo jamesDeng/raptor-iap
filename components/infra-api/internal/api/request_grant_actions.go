@@ -24,11 +24,21 @@ var grantIDPattern = regexp.MustCompile(`^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9
 
 type RequestGrantClient interface {
 	ClaimGrant(context.Context, approval.GrantAction, resources.Proof) (approval.GrantReceipt, error)
+	DispatchGrant(context.Context, approval.GrantAction) error
 	RecordGrant(context.Context, approval.GrantAction, string, string) error
 }
 
 type pgcatInventoryWriter interface {
-	SyncPgcatInventory(context.Context, domain.Environment, domain.ProxyReadTarget) (domain.PgcatInventoryReceipt, error)
+	SyncPgcatInventory(context.Context, domain.Environment, domain.ProxyReadTarget, []string, func(context.Context) error) (domain.PgcatInventoryReceipt, error)
+}
+
+func (o resourceOperations) grantDispatch(action approval.GrantAction) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := o.grants.DispatchGrant(ctx, action); err != nil {
+			return &domain.CommandError{Code: "ApprovalRequired"}
+		}
+		return nil
+	}
 }
 
 func (o resourceOperations) syncMonitoring(ctx context.Context, identity AgentIdentity, resolved domain.ResolvedResource, cmd resourceInventory, raw json.RawMessage) (any, error) {
@@ -43,6 +53,36 @@ func (o resourceOperations) syncMonitoring(ctx context.Context, identity AgentId
 	toolPolicy, ok := policy.ApprovalPolicyForTool("pgcat_monitoring_sync", identity.Binding.ApprovalProtocol)
 	if !ok || len(toolPolicy.Variants) != 1 || !toolPolicy.Variants[0].RequiresHumanApproval {
 		return nil, &operationError{403, "ApprovalRequired"}
+	}
+	reader, ok := o.grants.(pgcatStateReader)
+	expansionReader, expansionOK := o.reader.(commands.PgcatExpansionReader)
+	if !ok || !expansionOK {
+		return nil, &operationError{503, "EvidenceUnavailable"}
+	}
+	state, err := reader.ReadPgcatRequestState(ctx, cmd.RequestID, proof.ResolutionDigest)
+	if err != nil {
+		return nil, &operationError{503, "EvidenceUnavailable"}
+	}
+	expansion, err := commands.ObserveGrantedExpansion(ctx, expansionReader, resolved.Environment,
+		domain.ProxyTarget{RequestID: cmd.RequestID, EnvCode: cmd.EnvCode, ProxyCode: cmd.ProxyCode, GroupID: resolved.Proxy.GroupID},
+		proof.ResolutionDigest, state)
+	if err != nil {
+		return nil, commandFailure(err)
+	}
+	originals := pgcatOriginalSockets(state)
+	if expansion.Status != "Successful" || len(expansion.CreatedIDs) != 2 || len(originals) != 2 {
+		return nil, &operationError{409, "MissingEvidence"}
+	}
+	wanted := slices.Clone(expansion.CreatedIDs)
+	if !slices.ContainsFunc(state.Actions, func(action approval.GrantActionDetails) bool {
+		return action.Capability.Capability == "db-proxy.scale-in" && action.State == "submitted"
+	}) {
+		for id := range originals {
+			wanted = append(wanted, id)
+		}
+	}
+	if len(slices.Compact(slices.Sorted(slices.Values(wanted)))) != len(wanted) {
+		return nil, &operationError{409, "IdentityChanged"}
 	}
 	variant := toolPolicy.Variants[0]
 	action := approval.GrantAction{RequestID: cmd.RequestID, GrantID: o.grantID, ActionID: cmd.ActionID,
@@ -63,7 +103,7 @@ func (o resourceOperations) syncMonitoring(ctx context.Context, identity AgentId
 	var receipt domain.PgcatInventoryReceipt
 	outcome, providerID := "not_submitted", ""
 	if ctx.Err() == nil {
-		receipt, err = writer.SyncPgcatInventory(ctx, resolved.Environment, target)
+		receipt, err = writer.SyncPgcatInventory(ctx, resolved.Environment, target, wanted, o.grantDispatch(action))
 		if err == nil && receipt.Changed {
 			outcome, providerID = "submitted", receipt.UID+":"+receipt.ResourceVersion
 		}
@@ -165,7 +205,7 @@ func (o resourceOperations) grantedPgcatCommand(ctx context.Context, identity Ag
 	if !receipt.Claimed {
 		return nil, &operationError{409, "MutationAlreadySubmitted"}
 	}
-	data, providerID, err := prepared.Submit(ctx)
+	data, providerID, err := prepared.Submit(ctx, o.grantDispatch(action))
 	outcome := "not_submitted"
 	var providerErr *domain.CommandError
 	switch {
@@ -198,6 +238,47 @@ type pgcatRetirementReader interface {
 	ObservePgcatRetirement(context.Context, domain.Environment, domain.ProxyReadTarget, string) (domain.PgcatRetirementObservation, error)
 }
 
+func pgcatOriginalSockets(state approval.PgcatRequestState) map[string]json.RawMessage {
+	for _, observation := range state.Observations {
+		if observation.Kind == "hold" && observation.Subject == "fleet" {
+			var hold struct {
+				Sockets map[string]json.RawMessage `json:"sockets"`
+			}
+			if json.Unmarshal(observation.Data, &hold) == nil {
+				return hold.Sockets
+			}
+			break
+		}
+	}
+	return nil
+}
+
+func (o resourceOperations) pgcatExpansionRead(ctx context.Context, identity *AgentIdentity, resolved domain.ResolvedResource) (any, error) {
+	if identity == nil || identity.Binding == nil || identity.Binding.ApprovalProtocol != policy.RequestGrantProtocol ||
+		identity.Binding.ExecutionMode != "replacement" {
+		return nil, &operationError{403, "ScopeMismatch"}
+	}
+	reader, ok := o.grants.(pgcatStateReader)
+	provider, providerOK := o.reader.(commands.PgcatExpansionReader)
+	if !ok || !providerOK {
+		return nil, &operationError{503, "EvidenceUnavailable"}
+	}
+	b, s := identity.Binding, identity.ReplacementScope
+	state, err := reader.ReadPgcatRequestState(ctx, b.RequestID, s.ResolutionDigest)
+	if err != nil {
+		return nil, &operationError{503, "EvidenceUnavailable"}
+	}
+	observed, err := commands.ObserveGrantedExpansion(ctx, provider, resolved.Environment,
+		domain.ProxyTarget{RequestID: b.RequestID, EnvCode: b.EnvCode, ProxyCode: s.ProxyCode, GroupID: s.GroupID}, s.ResolutionDigest, state)
+	if err != nil {
+		return nil, commandFailure(err)
+	}
+	w := resolved.PgproxyWorkload
+	return map[string]any{"envCode": s.EnvCode, "proxyCode": s.ProxyCode, "observedAt": observed.ObservedAt,
+		"pgproxyWorkload": map[string]any{"type": "ess", "code": w.Code, "workloadKey": w.WorkloadKey, "state": w.State,
+			"targetDbCode": w.TargetDBCode, "expansion": observed}}, nil
+}
+
 func (o resourceOperations) pgcatRetirementRead(ctx context.Context, identity *AgentIdentity, resolved domain.ResolvedResource) (any, error) {
 	if identity == nil || identity.Binding == nil || identity.Binding.ApprovalProtocol != policy.RequestGrantProtocol ||
 		identity.Binding.ExecutionMode != "replacement" {
@@ -214,7 +295,6 @@ func (o resourceOperations) pgcatRetirementRead(ctx context.Context, identity *A
 		return nil, &operationError{503, "EvidenceUnavailable"}
 	}
 	var action, activity string
-	var originals map[string]json.RawMessage
 	for _, item := range state.Actions {
 		if item.Capability.Capability != "db-proxy.scale-in" || item.State != "submitted" {
 			continue
@@ -226,18 +306,7 @@ func (o resourceOperations) pgcatRetirementRead(ctx context.Context, identity *A
 		}
 		action, activity = item.ActionID, activityID
 	}
-	for _, observation := range state.Observations {
-		if observation.Kind != "hold" || observation.Subject != "fleet" {
-			continue
-		}
-		var hold struct {
-			Sockets map[string]json.RawMessage `json:"sockets"`
-		}
-		if json.Unmarshal(observation.Data, &hold) != nil || len(hold.Sockets) != 2 {
-			return nil, &operationError{409, "MissingEvidence"}
-		}
-		originals = hold.Sockets
-	}
+	originals := pgcatOriginalSockets(state)
 	if action == "" || len(originals) != 2 {
 		return nil, &operationError{409, "MissingEvidence"}
 	}

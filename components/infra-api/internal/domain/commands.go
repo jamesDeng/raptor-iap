@@ -69,7 +69,7 @@ type PgcatRetirement struct {
 	ReplacementIDs []string
 }
 
-type PgcatRetirementReceipt struct {
+type PgcatScalingReceipt struct {
 	ProviderRequestID string
 	ScalingActivityID string
 }

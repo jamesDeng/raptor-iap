@@ -80,7 +80,7 @@ run "proxy_permissions_and_routes" {
     }
   }
   assert {
-    condition     = alltrue([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s.Resource == ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-test"] if contains(s.Action, "ess:ModifyScalingGroup") || contains(s.Action, "ess:SetInstancesProtection") || contains(s.Action, "ess:DetachInstances") || contains(s.Action, "ess:DescribeScalingActivities")])
+    condition     = alltrue([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s.Resource == ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-test"] if contains(s.Action, "ess:ModifyScalingGroup") || contains(s.Action, "ess:SetInstancesProtection") || contains(s.Action, "ess:DetachInstances") || contains(s.Action, "ess:DescribeScalingActivities") || contains(s.Action, "ess:ScaleWithAdjustment")])
     error_message = "ESS mutation must be pinned to the POC group."
   }
   assert {
@@ -129,7 +129,7 @@ run "proxy_resolver_read_scope" {
       { Effect = "Allow", Action = ["sts:GetCallerIdentity"], Resource = ["*"] },
       { Effect = "Allow", Action = ["cs:DescribeClusterUserKubeconfig"], Resource = ["acs:cs:ap-southeast-1:1234567890123456:cluster/cluster"] },
       { Effect = "Allow", Action = ["ess:DescribeScalingGroups"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/*"] },
-      { Effect = "Allow", Action = ["ess:DescribeScalingActivities", "ess:DescribeScalingInstances", "ess:DetachInstances", "ess:ModifyScalingGroup", "ess:SetInstancesProtection"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-a", "acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-z"] },
+      { Effect = "Allow", Action = ["ess:DescribeScalingActivities", "ess:DescribeScalingInstances", "ess:DetachInstances", "ess:ModifyScalingGroup", "ess:ScaleWithAdjustment", "ess:SetInstancesProtection"], Resource = ["acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-a", "acs:ess:ap-southeast-1:1234567890123456:scalinggroup/asg-z"] },
       { Effect = "Allow", Action = ["nlb:ListServerGroupServers"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-z", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
       { Effect = "Allow", Action = ["nlb:UpdateServerGroupServersAttribute"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:serverGroup/sgp-z", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-a", "acs:nlb:ap-southeast-1:1234567890123456:servergroup/sgp-z"] },
       { Effect = "Allow", Action = ["nlb:GetListenerAttribute", "nlb:GetListenerHealthStatus"], Resource = ["acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-a", "acs:nlb:ap-southeast-1:1234567890123456:loadbalancer/nlb-z"] }

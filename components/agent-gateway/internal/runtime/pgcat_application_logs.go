@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"sync"
@@ -24,10 +25,11 @@ type pgcatLogState struct {
 	mu        sync.Mutex
 	podUID    string
 	processID string
-	firstAt   time.Time
 	lastAt    time.Time
 	sequence  uint64
 	success   int
+	routes    map[netip.Addr]int64
+	routeFrom time.Time
 	started   bool
 	final     bool
 	bad       bool
@@ -66,6 +68,7 @@ func (s *pgcatLogState) observeLog(line []byte, since time.Time) error {
 		At        time.Time `json:"at"`
 		Sequence  uint64    `json:"sequence"`
 		Outcome   string    `json:"outcome"`
+		ProxyIP   string    `json:"proxyIp"`
 		Snapshot  struct {
 			Final     bool `json:"final"`
 			Connected int  `json:"connected"`
@@ -80,7 +83,6 @@ func (s *pgcatLogState) observeLog(line []byte, since time.Time) error {
 	}
 	if s.processID == "" {
 		s.processID = event.ProcessID
-		s.firstAt = event.At
 	}
 	if event.At.Before(s.lastAt) {
 		return ErrRuntimeUnavailable
@@ -102,6 +104,17 @@ func (s *pgcatLogState) observeLog(line []byte, since time.Time) error {
 	case "operation":
 		if event.Outcome != "success" {
 			return ErrRuntimeUnavailable
+		}
+		if s.routes != nil {
+			addr, err := netip.ParseAddr(event.ProxyIP)
+			if err != nil || !addr.Is4() || !addr.IsPrivate() || len(s.routes) > 4 {
+				return ErrRuntimeUnavailable
+			}
+			count := s.routes[addr]
+			if event.At.After(s.routeFrom) {
+				count++
+			}
+			s.routes[addr] = count
 		}
 		s.success++
 	case "scheduled", "connected", "disconnected":

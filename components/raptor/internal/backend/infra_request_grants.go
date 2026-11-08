@@ -45,6 +45,15 @@ func (s *Server) registerInfraRequestGrants(access *agentaccess.Service, credent
 		httpx.Result(w, 200, out, err)
 	}), credentials))
 
+	s.Mux.Handle("POST /v1/infra/request-grant-dispatch", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in approvals.GrantActionInput
+		if !httpx.DecodePrivate(w, r, &in) {
+			return
+		}
+		err := s.Approvals.DispatchGrantAction(r.Context(), in)
+		httpx.Result(w, 200, map[string]bool{"dispatched": err == nil}, err)
+	}), credentials))
+
 	s.Mux.Handle("POST /v1/infra/request-grant-record", auth.BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in approvals.GrantActionRecord
 		if !httpx.DecodePrivate(w, r, &in) {

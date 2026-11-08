@@ -22,11 +22,12 @@ function projection(kind,data,config){
  }else if(kind==='backend'){
   if(!exact(data,['serverGroupId','listenerId','observedAt','nodes'])||data.serverGroupId!==config.serverGroupId||data.listenerId!==config.listenerId||!Array.isArray(data.nodes)||data.nodes.length>50)throw invalid();
   const seen=new Set();for(const n of data.nodes){if(!exact(n,['instanceId','privateIp','status','registered','healthy'])||!id(n.instanceId)||seen.has(n.instanceId)||!privateEndpoint('http://'+n.privateIp)||!['Available','Adding','Configuring','Removing'].includes(n.status)||typeof n.registered!=='boolean'||typeof n.healthy!=='boolean'||(n.healthy&&(!n.registered||n.status!=='Available')))throw invalid();seen.add(n.instanceId);}
- }else if(kind==='retirement'){
-  if(!exact(data,['actionId','scalingActivityId','status','destroyedIds','observedAt'])||!id(data.actionId)||
+ }else if(kind==='expansion'||kind==='retirement'){
+  const ids=kind==='expansion'?'createdIds':'destroyedIds';
+  if(!exact(data,['actionId','scalingActivityId','status',ids,'observedAt'])||!id(data.actionId)||
    !/^asa-[A-Za-z0-9-]{1,128}$/.test(data.scalingActivityId)||!['Pending','InProgress','Successful','Failed','Rejected','Warning'].includes(data.status)||
-   !Array.isArray(data.destroyedIds)||data.destroyedIds.length!==(data.status==='Successful'?2:0)||
-   new Set(data.destroyedIds).size!==data.destroyedIds.length||data.destroyedIds.some(value=>!id(value)))throw invalid();
+   !Array.isArray(data[ids])||data[ids].length!==(data.status==='Successful'?2:0)||
+   new Set(data[ids]).size!==data[ids].length||data[ids].some(value=>!id(value)))throw invalid();
  }else if(!exact(data,['groupId','desiredCapacity','minSize','maxSize','observedAt'])||data.groupId!==config.groupId||data.minSize!==2||data.maxSize!==4||!Number.isSafeInteger(data.desiredCapacity)||data.desiredCapacity<2||data.desiredCapacity>4)throw invalid();
  return data;
 }
@@ -121,7 +122,7 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
    validate(sources,true);return {observedAt:new Date().toISOString(),samples:validate(rows)};
   },
   async cloudRead({kind}){
-   fresh();if(!['fleet','backend','capacity',...(binding.approvalProtocol==='request-grants-v1'?['retirement']:[])].includes(kind))throw invalid();
+   fresh();if(!['fleet','backend','capacity',...(binding.approvalProtocol==='request-grants-v1'?['expansion','retirement']:[])].includes(kind))throw invalid();
    if(readCloud){try{return projection(kind,await readCloud({kind}),config);}catch{throw invalid();}}
    if(!operatorDiagnosticReads)throw invalid();
    const identity=await execute('aliyun',['sts','GetCallerIdentity','--RegionId',config.region],config.private?.aliyunEnv);

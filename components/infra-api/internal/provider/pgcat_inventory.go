@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -88,7 +89,7 @@ func parsePgcatInventory(raw, env, proxy, db string) ([]pgcatInventoryRow, error
 	return rows, nil
 }
 
-func syncPgcatInventory(ctx context.Context, client coreclient.ConfigMapInterface, env, proxy, db string, rows []pgcatInventoryRow) (domain.PgcatInventoryReceipt, error) {
+func syncPgcatInventory(ctx context.Context, client coreclient.ConfigMapInterface, env, proxy, db string, rows []pgcatInventoryRow, admit func(context.Context) error) (domain.PgcatInventoryReceipt, error) {
 	current, err := client.Get(ctx, pgcatInventoryName, metav1.GetOptions{})
 	if err != nil {
 		return domain.PgcatInventoryReceipt{}, err
@@ -118,6 +119,9 @@ func syncPgcatInventory(ctx context.Context, client coreclient.ConfigMapInterfac
 		{"op": "test", "path": "/metadata/resourceVersion", "value": current.ResourceVersion},
 		{"op": "replace", "path": "/data/targets.json", "value": string(payload)},
 	})
+	if err := admit(ctx); err != nil {
+		return domain.PgcatInventoryReceipt{}, err
+	}
 	if _, err := client.Patch(ctx, pgcatInventoryName, types.JSONPatchType, patch, metav1.PatchOptions{}); err != nil {
 		if apierrors.IsInvalid(err) || apierrors.IsConflict(err) || apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
 			return domain.PgcatInventoryReceipt{}, err
@@ -137,7 +141,7 @@ func syncPgcatInventory(ctx context.Context, client coreclient.ConfigMapInterfac
 
 // SyncPgcatInventory only manages the existing POC target key and derives
 // every endpoint from matching ESS membership and available NLB backends.
-func (p *reader) SyncPgcatInventory(ctx context.Context, env domain.Environment, target domain.ProxyReadTarget) (domain.PgcatInventoryReceipt, error) {
+func (p *reader) SyncPgcatInventory(ctx context.Context, env domain.Environment, target domain.ProxyReadTarget, expected []string, admit func(context.Context) error) (domain.PgcatInventoryReceipt, error) {
 	if target.RequestID == "" || target.EnvCode != "rdev.ali" || target.ProxyCode != "DP00001" {
 		return domain.PgcatInventoryReceipt{}, domain.ErrScope
 	}
@@ -160,9 +164,17 @@ func (p *reader) SyncPgcatInventory(ctx context.Context, env domain.Environment,
 	if err != nil {
 		return domain.PgcatInventoryReceipt{}, err
 	}
+	actual := make([]string, 0, len(targets))
+	for _, row := range targets {
+		actual = append(actual, row.Labels.InstanceID)
+	}
+	slices.Sort(actual)
+	if !slices.Equal(actual, slices.Sorted(slices.Values(expected))) {
+		return domain.PgcatInventoryReceipt{}, domain.ErrIdentity
+	}
 	client, err := p.cluster(ctx, env)
 	if err != nil {
 		return domain.PgcatInventoryReceipt{}, err
 	}
-	return syncPgcatInventory(ctx, client.CoreV1().ConfigMaps(pgcatInventoryNamespace), env.Code, target.ProxyCode, mapping.TargetDBCode, targets)
+	return syncPgcatInventory(ctx, client.CoreV1().ConfigMaps(pgcatInventoryNamespace), env.Code, target.ProxyCode, mapping.TargetDBCode, targets, admit)
 }

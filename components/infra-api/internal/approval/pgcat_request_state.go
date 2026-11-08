@@ -40,7 +40,7 @@ func (c *Client) ReadPgcatRequestState(ctx context.Context, requestID, scopeDige
 		Data PgcatRequestState `json:"data"`
 	}
 	input := map[string]string{"requestId": requestID, "scopeDigest": scopeDigest}
-	if err := c.submissionCall(ctx, "/v1/infra/pgcat-request-state", input, &out); err != nil {
+	if err := c.submissionCallLimit(ctx, "/v1/infra/pgcat-request-state", input, &out, 65536); err != nil {
 		return PgcatRequestState{}, err
 	}
 	return out.Data, nil

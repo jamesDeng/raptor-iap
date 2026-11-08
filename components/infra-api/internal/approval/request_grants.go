@@ -61,7 +61,7 @@ func (c *Client) ClaimGrant(ctx context.Context, action GrantAction, proof resou
 		return GrantReceipt{}, errors.New("invalid grant receipt")
 	}
 	switch state {
-	case "claimed", "not_submitted":
+	case "claimed", "dispatching", "not_submitted":
 		if providerID != "" {
 			return GrantReceipt{}, errors.New("invalid grant receipt")
 		}
@@ -74,6 +74,21 @@ func (c *Client) ClaimGrant(ctx context.Context, action GrantAction, proof resou
 		return GrantReceipt{}, errors.New("invalid grant receipt")
 	}
 	return GrantReceipt{Claimed: *claimed, State: state, ProviderRequestID: providerID}, nil
+}
+
+func (c *Client) DispatchGrant(ctx context.Context, action GrantAction) error {
+	var out struct {
+		Data struct {
+			Dispatched bool `json:"dispatched"`
+		} `json:"data"`
+	}
+	if err := c.submissionCall(ctx, "/v1/infra/request-grant-dispatch", action, &out); err != nil {
+		return err
+	}
+	if !out.Data.Dispatched {
+		return errors.New("grant dispatch was not admitted")
+	}
+	return nil
 }
 
 func (c *Client) RecordGrant(ctx context.Context, action GrantAction, outcome, providerID string) error {

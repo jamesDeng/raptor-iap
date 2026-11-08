@@ -13,8 +13,8 @@ import (
 	"raptor-iap/infra-api/internal/policy"
 )
 
-func (p *ProxyBackend) RetirePgcat(ctx context.Context, env domain.Environment, in domain.PgcatRetirement) (domain.PgcatRetirementReceipt, error) {
-	var out domain.PgcatRetirementReceipt
+func (p *ProxyBackend) RetirePgcat(ctx context.Context, env domain.Environment, in domain.PgcatRetirement, admit func(context.Context) error) (domain.PgcatScalingReceipt, error) {
+	var out domain.PgcatScalingReceipt
 	if p.sdk.retire == nil {
 		return out, domain.ErrNotConfigured
 	}
@@ -37,18 +37,25 @@ func (p *ProxyBackend) RetirePgcat(ctx context.Context, env domain.Environment, 
 	}
 	ids := slices.Clone(in.OriginalIDs)
 	slices.Sort(ids)
-	digest := sha256.Sum256([]byte(in.RequestID + "\x00" + in.ActionID))
+	if err := admit(ctx); err != nil {
+		return out, err
+	}
 	result, err := p.sdk.retire(ctx, &ess.RemoveInstancesRequest{
 		RegionId: tea.String(env.Region), ScalingGroupId: tea.String(snapshot.GroupID),
 		InstanceIds: tea.StringSlice(ids), RemovePolicy: tea.String("release"),
 		DecreaseDesiredCapacity: tea.Bool(true), IgnoreInvalidInstance: tea.Bool(false),
-		ClientToken: tea.String(hex.EncodeToString(digest[:])),
+		ClientToken: tea.String(pgcatActivityToken(in.RequestID, in.ActionID)),
 	}, noRetry())
 	if err != nil || result == nil || result.Body == nil || tea.StringValue(result.Body.RequestId) == "" ||
 		tea.StringValue(result.Body.ScalingActivityId) == "" || len(result.Body.IgnoredInstances) != 0 {
 		return out, &domain.CommandError{Code: "SubmissionUnknown"}
 	}
-	return domain.PgcatRetirementReceipt{ProviderRequestID: *result.Body.RequestId, ScalingActivityID: *result.Body.ScalingActivityId}, nil
+	return domain.PgcatScalingReceipt{ProviderRequestID: *result.Body.RequestId, ScalingActivityID: *result.Body.ScalingActivityId}, nil
+}
+
+func pgcatActivityToken(requestID, actionID string) string {
+	digest := sha256.Sum256([]byte(requestID + "\x00" + actionID))
+	return hex.EncodeToString(digest[:])
 }
 
 func (p *reader) ObservePgcatRetirement(ctx context.Context, env domain.Environment, target domain.ProxyReadTarget, activity string) (domain.PgcatRetirementObservation, error) {

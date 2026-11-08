@@ -224,14 +224,21 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 				return nil, ErrRuntimeUnavailable
 			}
 		} else {
-			var retired struct {
-				Status       string
-				ObservedAt   time.Time
-				DestroyedIDs []string
-			}
+			var retired execution.PgcatResultRetirement
 			if len(all) != 2 || read("retirement", &retired) != nil || retired.Status != "Successful" ||
-				!pgcatFreshTime(retired.ObservedAt, time.Now()) || !p.pgcat.matchesOriginalNodes(binding.RequestID, retired.DestroyedIDs) {
+				!pgcatFreshTime(retired.ObservedAt, time.Now()) || !p.pgcat.matchesOriginalNodes(binding.RequestID, retired.DestroyedIDs) ||
+				p.RecordPgcatObservation == nil {
 				return nil, ErrRuntimeUnavailable
+			}
+			raw, err := json.Marshal(retired)
+			if err != nil {
+				return nil, ErrRuntimeUnavailable
+			}
+			if err := p.RecordPgcatObservation(ctx, execution.PgcatObservationRecord{
+				RequestID: binding.RequestID, AttemptID: binding.AttemptID, ScopeDigest: scope.ResolutionDigest,
+				Kind: "retirement", Subject: "fleet", ObservedAt: retired.ObservedAt, Data: raw,
+			}); err != nil {
+				return nil, err
 			}
 		}
 		return p.pgcatTraffic(ctx, entry, args, routed)

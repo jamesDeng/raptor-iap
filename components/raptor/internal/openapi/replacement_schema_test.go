@@ -20,7 +20,7 @@ func TestReplacementRaptorSchemasMatchHarness(t *testing.T) {
 func TestRequestGrantRaptorSchemasMatchHarness(t *testing.T) {
 	server := newAgentMCP(agentPrincipal{})
 	addRequestGrantAgentTools(server, agentPrincipal{})
-	checkRaptorToolSchemas(t, server, map[string]bool{"request_grant_request": true, "request_grant_get": true})
+	checkRaptorToolSchemas(t, server, map[string]bool{"request_grant_request": true, "request_grant_get": true, "request_grant_action_get": true})
 }
 
 func checkRaptorToolSchemas(t *testing.T, server *mcp.Server, names map[string]bool) {

@@ -69,7 +69,7 @@ func TestTrafficLogProjectsEventsAndPreservesEvidence(t *testing.T) {
 	events := []traffic.Event{
 		{Kind: "connected"},
 		{Kind: "scheduled", OperationID: "process-1-0-1"},
-		{Kind: "operation", OperationID: "process-1-0-1", Outcome: traffic.Success, DurationSeconds: 0.125},
+		{Kind: "operation", OperationID: "process-1-0-1", Outcome: traffic.Success, ProxyIP: "10.70.1.225", DurationSeconds: 0.125},
 		{Kind: "operation", OperationID: "process-1-0-2", Outcome: traffic.Failure, DurationSeconds: 0.25},
 		{Kind: "operation", OperationID: "process-1-0-3", Outcome: traffic.Timeout, DurationSeconds: 5},
 		{Kind: "operation", OperationID: "process-1-0-4", Outcome: traffic.Ambiguous},
@@ -97,6 +97,9 @@ func TestTrafficLogProjectsEventsAndPreservesEvidence(t *testing.T) {
 		}
 		if !strings.HasSuffix(logString(t, record, "at"), "Z") {
 			t.Fatal("event timestamp was not normalized to UTC")
+		}
+		if want.ProxyIP != "" && logString(t, record, "proxyIp") != want.ProxyIP {
+			t.Fatal("successful route was not recorded")
 		}
 		if want.Kind == "operation" && record["durationSeconds"] == nil {
 			t.Fatal("zero operation duration omitted")
@@ -173,9 +176,9 @@ func (w *failedLogWriter) Write(p []byte) (int, error) {
 
 type logSession struct{ calls int }
 
-func (s *logSession) Operate(context.Context, string) traffic.Outcome {
+func (s *logSession) Operate(context.Context, string) traffic.OperationResult {
 	s.calls++
-	return traffic.Success
+	return traffic.OperationResult{Outcome: traffic.Success}
 }
 func (*logSession) Close() {}
 

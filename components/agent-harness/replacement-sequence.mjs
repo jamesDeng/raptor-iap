@@ -136,7 +136,9 @@ export class ReplacementSequence {
   if(this.intents('shrink').length)return this.capacity(2)&&this.fleet(ids)&&this.backend(ids)&&same([...ids].sort(),this.cohort().newInstanceIds);
   const original=this.trace.baseline()?.instanceIds??[];
   const added=ids.filter(id=>!original.includes(id));
-  return this.capacity(4)&&this.fleet(ids)&&this.backend(ids)&&original.every(id=>ids.includes(id))&&added.length===2&&this.probesReady(added);
+  const activity=this.current.expansion, scale=this.trace.scaleActions().find(action=>action.desiredCapacity===4);
+  return this.capacity(4)&&this.fleet(ids)&&this.backend(ids)&&original.every(id=>ids.includes(id))&&added.length===2&&this.probesReady(added)&&
+   fresh(activity)&&activity.status==='Successful'&&activity.actionId===scale?.actionId&&activity.scalingActivityId===scale?.scalingActivityId&&same([...activity.createdIds].sort(),[...added].sort());
  }
  observeInventory(receipt){
   if(!this.canSyncInventory()||!Array.isArray(receipt?.instanceIds)||
@@ -178,7 +180,7 @@ export class ReplacementSequence {
    if(typeof args?.instanceId!=='string')return;
    this.probes.delete(args.instanceId);
    if(data?.instanceId===args.instanceId)this.probes.set(args.instanceId,{...data,observedAt:Object.hasOwn(data,'observedAt')?data.observedAt:new Date().toISOString()});
-  }else if(['fleet','backend','capacity','metrics','deployment','trafficFailures','connections','retirement'].includes(kind))this.current[kind]=structuredClone(data);
+  }else if(['fleet','backend','capacity','metrics','deployment','trafficFailures','connections','expansion','retirement'].includes(kind))this.current[kind]=structuredClone(data);
   this.trace.observe(kind,data);this.readiness.observe(kind,data,args);
  }
  capacity(desired){const c=this.current.capacity;return fresh(c)&&c.groupId===this.trace.identity.scope.groupId&&c.desiredCapacity===desired&&c.minSize===2&&c.maxSize===4;}
