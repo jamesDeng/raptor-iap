@@ -63,6 +63,53 @@ func (r *grantedRestarterFixture) RestartGrantedPgcat(ctx context.Context, env d
 	return r.Restart(ctx, env, command)
 }
 
+func TestPgcatScaleOutHoldCanExpireBetweenDispatchAndPlanning(t *testing.T) {
+	start := time.Now().UTC().Truncate(time.Second)
+	target := domain.ProxyTarget{RequestID: "req", EnvCode: "dev", ProxyCode: "p", GroupID: "g"}
+	backend := &grantedBackendFixture{backendFixture: backendFixture{s: policy.ProxySnapshot{
+		EnvCode: "dev", ProxyCode: "p", GroupID: "g", ServerGroupID: "sg", Desired: 2, Min: 2, Max: 4,
+		Nodes: []policy.Node{{ID: "old1", Healthy: true, Protected: true, Registered: true}, {ID: "old2", Healthy: true, Protected: true, Registered: true}},
+	}}}
+	for _, tc := range []struct {
+		name     string
+		observed time.Duration
+		checked  time.Duration
+		wantErr  bool
+	}{
+		{name: "fresh at client dispatch", checked: 28600 * time.Millisecond},
+		{name: "expired at Infra planning", checked: 31 * time.Second, wantErr: true},
+		{name: "same sockets refreshed after baseline", observed: 27 * time.Second, checked: 31 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := start.Add(tc.observed)
+			hold := pgcatHoldWitness{RequestID: target.RequestID, ScopeDigest: "scope", ObservationID: "hold", ObservedAt: observed,
+				Sockets: map[string]pgcatSocketWitness{
+					"old1": {ID: "socket1", OpenedAt: start, LastSQLAt: observed, Rounds: 2},
+					"old2": {ID: "socket2", OpenedAt: start, LastSQLAt: observed, Rounds: 2},
+				}}
+			data, err := json.Marshal(hold)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := approval.PgcatRequestState{Observations: []approval.PgcatObservation{{
+				RequestID: target.RequestID, ScopeDigest: hold.ScopeDigest, Kind: "hold", Subject: "fleet", ObservedAt: observed, Data: data,
+			}}}
+			runtime := Runtime{Backend: backend, Now: func() time.Time { return start.Add(tc.checked) }}
+			prepared, err := runtime.PreparePgcatGrant(context.Background(), domain.Environment{Code: "dev"}, PgcatGrantInput{
+				Target: target, ScopeDigest: hold.ScopeDigest, ActionID: "expand", State: state,
+				Operation: domain.ScaleCommand{ProxyTarget: target, ActionID: "expand", DesiredCapacity: 4},
+			})
+			if tc.wantErr {
+				if err == nil || err.Error() != "MissingEvidence" || prepared.Submit != nil {
+					t.Fatalf("expired hold reached submission: %v", err)
+				}
+			} else if err != nil || prepared.Capability != "db-proxy.scale-out" || prepared.Submit == nil {
+				t.Fatalf("fresh hold did not prepare scale-out: %v", err)
+			}
+		})
+	}
+}
+
 func TestGrantedPgcatPhasesRejectMissingOrMismatchedProofBeforeSubmitting(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	target := domain.ProxyTarget{RequestID: "req", EnvCode: "dev", ProxyCode: "p", GroupID: "g"}
