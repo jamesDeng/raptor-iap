@@ -16,6 +16,7 @@ export function modelFailureDiagnostic(message,model){
  if(!['error','aborted'].includes(message.stopReason))return undefined;
  if(message.stopReason==='aborted')return {category:'aborted',failureCode:'ModelFailed'};
  const text=typeof message.errorMessage==='string'?message.errorMessage.slice(0,16384):'';
+ if(text==='TurnLimit')return {category:'turn-limit',failureCode:'TurnLimit'};
  if(/invalid_grant|invalid token|\b401\b|unauthorized|unauthenticated|(?:token|authentication|credential).{0,80}(?:expired|invalidated|revoked)|(?:expired|invalid|revoked).{0,40}(?:token|credential)|sign[ -]?in again/i.test(text))
   return {category:'authentication',failureCode:'NeedsSignIn'};
  if(/\b429\b|usage.limit|rate.limit/i.test(text))return {category:'usage-limit',failureCode:'ModelFailed'};

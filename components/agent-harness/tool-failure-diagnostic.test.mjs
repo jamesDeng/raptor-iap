@@ -22,6 +22,7 @@ test('model errors expose only fixed categories and identify sign-in failures',a
  }
  assert.deepEqual(modelFailureDiagnostic({...base,errorMessage:'HTTP 429 private-token'},model),{category:'usage-limit',failureCode:'ModelFailed'});
  assert.deepEqual(modelFailureDiagnostic({...base,errorMessage:'Something private'},model),{category:'provider-error',failureCode:'ModelFailed'});
+ assert.deepEqual(modelFailureDiagnostic({...base,errorMessage:'TurnLimit'},model),{category:'turn-limit',failureCode:'TurnLimit'});
  assert.deepEqual(modelFailureDiagnostic({...base,model:'foreign',errorMessage:'expired token'},model),{category:'response-identity',failureCode:'ModelFailed'});
  assert.equal(modelFailureDiagnostic({...base,stopReason:'stop'},model),undefined);
 });
