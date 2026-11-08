@@ -239,3 +239,27 @@ test('distinguishes preflight evidence rejection from a foreign selector without
  assert.equal(remoteCalls,0);
  assert.deepEqual(diagnostics.map(d=>d.category),['local-selector','local-precondition']);
 });
+
+test('exposes trusted Infra approval policy to Pi and rejects an unsupported version', async()=>{
+ const {createGuardedFetch}=await import('./mcp-runtime.mjs');
+ const {operationCapabilities}=await import('./operation-profile.mjs');
+ const b={...binding,operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'DP00001',executionMode:'replacement'};
+ const scope={envCode:'rdev.ali',proxyCode:'DP00001',groupId:'asg-bound',serverGroupId:'sgp-bound',targetDbCode:'DB00001',application:{envCode:'rdev.ali',appCode:'APP00001',clusterId:'cluster-bound',namespace:'pgcat',name:'client',uid:'uid-bound'}};
+ const policy={version:1,variants:[
+  {capability:'db-proxy.scale-out',targetKind:'db-proxy',condition:'desired-greater-than-current',requiresHumanApproval:false},
+  {capability:'db-proxy.scale-in',targetKind:'db-proxy',condition:'desired-less-than-current',requiresHumanApproval:true},
+ ]};
+ const reported=[];
+ const catalog=(version,onApprovalPolicy)=>createGuardedFetch({
+  server:'infra',url:'https://infra.example/mcp',binding:b,replacementScope:scope,onApprovalPolicy,
+  fetch:async()=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools:operationCapabilities(b,scope).infra.map(name=>({
+   name,inputSchema:operationToolSchema('infra',name),
+   ...(name==='db_proxy_scale'?{_meta:{'io.raptor-iap/approval-policy':{...policy,version}}}:{}),
+  }))}}),{headers:{'Content-Type':'application/json'}}),
+ });
+ const call=guarded=>guarded('https://infra.example/mcp',{method:'POST',body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});
+ const response=await call(catalog(1,(name,value)=>reported.push([name,value])));
+ assert.deepEqual((await response.json()).result.tools.find(t=>t.name==='db_proxy_scale')._meta['io.raptor-iap/approval-policy'],policy);
+ assert.deepEqual(reported,[['db_proxy_scale',policy]]);
+ await assert.rejects(()=>call(catalog(2,()=>assert.fail('unsupported policy was exposed to Pi'))),/InvalidApprovalPolicy/);
+});

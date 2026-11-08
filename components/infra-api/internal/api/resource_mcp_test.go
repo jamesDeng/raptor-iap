@@ -146,3 +146,65 @@ func TestResourceQualificationDiscoversReadsWithoutMutationTools(t *testing.T) {
 		t.Fatal(checks)
 	}
 }
+
+func TestResourceToolsDescribeApprovalPolicy(t *testing.T) {
+	identity, proof := replacementResourceIdentity()
+	handler, err := NewResourceServer(&observedReader{}, &resourceFixture{rows: resourceRows(), proof: proof}, "user", "secret", "X-Infra-Authorization", &resourceCommander{}, allowCommands{}, func(_ context.Context, _ string, tool string, _ map[string]string) (AgentIdentity, error) {
+		if tool != "" {
+			t.Errorf("catalog discovery unexpectedly checked operation %s", tool)
+		}
+		return identity, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := resourceRPC(handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, agentCredential())
+	if response.Code != http.StatusOK {
+		t.Fatalf("list tools: %d %s", response.Code, response.Body.String())
+	}
+	var listing struct {
+		Result struct {
+			Tools []struct {
+				Name        string                     `json:"name"`
+				Description string                     `json:"description"`
+				Meta        map[string]json.RawMessage `json:"_meta"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &listing); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]json.RawMessage{}
+	descriptions := map[string]string{}
+	for _, tool := range listing.Result.Tools {
+		byName[tool.Name] = tool.Meta["io.raptor-iap/approval-policy"]
+		descriptions[tool.Name] = tool.Description
+	}
+	var got struct {
+		Version  int `json:"version"`
+		Variants []struct {
+			Capability            string `json:"capability"`
+			TargetKind            string `json:"targetKind"`
+			Condition             string `json:"condition"`
+			RequiresHumanApproval bool   `json:"requiresHumanApproval"`
+		} `json:"variants"`
+	}
+	if err := json.Unmarshal(byName["db_proxy_scale"], &got); err != nil {
+		t.Fatalf("scale approval policy missing: %v", err)
+	}
+	if got.Version != 1 || len(got.Variants) != 2 {
+		t.Fatalf("unexpected scale approval policy: %+v", got)
+	}
+	out, in := got.Variants[0], got.Variants[1]
+	if out.Capability != "db-proxy.scale-out" || out.TargetKind != "db-proxy" || out.Condition != "desired-greater-than-current" || out.RequiresHumanApproval ||
+		in.Capability != "db-proxy.scale-in" || in.TargetKind != "db-proxy" || in.Condition != "desired-less-than-current" || !in.RequiresHumanApproval {
+		t.Fatalf("scale approval does not distinguish directions: %+v", got)
+	}
+	description := descriptions["db_proxy_scale"]
+	if !strings.Contains(description, "Scale in") || !strings.Contains(description, "requires human approval") || !strings.Contains(description, "Scale out") {
+		t.Fatalf("operator cannot discover both directions from the tool description: %q", description)
+	}
+	if err := json.Unmarshal(byName["deployments_list"], &got); err != nil || len(got.Variants) != 1 || got.Variants[0].RequiresHumanApproval {
+		t.Fatalf("read-only discovery approval policy: %s (%v)", byName["deployments_list"], err)
+	}
+}
