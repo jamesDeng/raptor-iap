@@ -49,6 +49,15 @@ variable "enable_proxy_commands" {
     error_message = "Proxy runtime requires explicit targets and the private ACK cluster."
   }
 }
+variable "enable_pgcat_monitoring" {
+  type        = bool
+  default     = false
+  description = "Enable the fixed rdev PgCat monitoring timer after the reviewed function code is live."
+  validation {
+    condition     = !var.enable_pgcat_monitoring || (var.enable_proxy_commands && var.cluster_id != "" && contains(keys(var.proxy_targets), "DP00001"))
+    error_message = "Monitoring requires the fixed PgCat target and proxy runtime."
+  }
+}
 variable "proxy_targets" {
   type    = map(object({ group_id = string, server_group_id = string, load_balancer_id = string }))
   default = {}

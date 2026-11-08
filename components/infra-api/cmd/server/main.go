@@ -45,6 +45,13 @@ func main() {
 	if e != nil {
 		log.Fatal("authentication configuration unavailable")
 	}
+	if opts.Proxy {
+		reconciler, ok := reader.(monitoringReconciler)
+		if !ok {
+			log.Fatal("monitoring reconciler unavailable")
+		}
+		h = monitoringTimerHandler(h, resolver, reconciler, time.Now)
+	}
 	addr := os.Getenv("INFRA_LISTEN")
 	if addr == "" {
 		addr = "127.0.0.1:8875"

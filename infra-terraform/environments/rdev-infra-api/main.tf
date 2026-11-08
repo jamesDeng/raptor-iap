@@ -13,6 +13,8 @@ module "infra_api_read" {
   gitops_state_bucket   = "raptor-iap-tfstate-sg-200743"
   deployment_user       = "raptor-rdev-infra-deploy"
   enable_proxy_commands = true
+  # Enable only after the reviewed function package is released and verified.
+  enable_pgcat_monitoring = false
   proxy_targets = {
     "DP00001" = {
       group_id         = "asg-t4necb4dfmu6o3z2rn0g"
