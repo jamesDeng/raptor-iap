@@ -191,7 +191,8 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    const beforeToolCall=session.agent.beforeToolCall;
    session.agent.beforeToolCall=async(context,signal)=>{
     const decision=await beforeToolCall?.(context,signal);
-    if(decision?.block||signal?.aborted||!REPLACEMENT_WRITES.has(context.toolCall.name)||
+    const releaseProbes=context.toolCall.name==='pgcat_connection_continuity'&&context.args?.phase==='release-probes';
+    if(decision?.block||signal?.aborted||!(REPLACEMENT_WRITES.has(context.toolCall.name)||releaseProbes)||
      context.assistantMessage.content.filter(part=>part.type==='toolCall').length===1)return decision;
     mixedRoundRejections.add(context.toolCall.id);
     const reason='Run this operation in a separate tool round after reviewing the preceding reads.';
@@ -221,7 +222,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    }
    if(!qualification&&!error&&!readFailure&&!signal?.aborted){
     const expansion=turn.message.content.find(part=>part.type==='toolCall'&&part.name==='mcp__infra__db_proxy_scale'&&part.arguments?.desiredCapacity===4);
-    const submittedExpansion=expansion&&readiness.expansion()?.result;
+    const submittedExpansion=expansion&&readiness.expansion()?.result&&turn.toolResults.some(result=>result.toolCallId===expansion.id&&!result.isError);
     const warmupRead=waitingForMetrics&&turn.message.content.find(part=>part.type==='toolCall'&&part.name==='metrics_read'&&part.arguments?.kind==='pgcatClients');
     const waitTrigger=warmupRead||(submittedExpansion&&expansion);
     if(waitTrigger&&!pause.candidate){

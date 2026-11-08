@@ -29,12 +29,13 @@ test('grant proposal needs no live evidence and an approved write can refresh be
  const requestRead=modelCall('mcp__raptor__request_get',{requestId});
  const discover=modelCall('mcp__raptor__deployments_list',{requestId,envCode,kind:'application',code:application.appCode});
  const expand=modelCall('mcp__infra__db_proxy_scale',{requestId,envCode,proxyCode,actionId:'expand',desiredCapacity:4});
+ const release=modelCall('pgcat_connection_continuity',{phase:'release-probes',observationId:'held-originals',drainActionId:'drain'});
  const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
  const {getCurrentTools}=await import('@earendil-works/pi-ai');
  const {runtime}=await loadPiRuntime({stateRoot});
  runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
  const progress=[],writes=[];
- let phase='proposal',round=0,observationsMade=0;
+ let phase='proposal',round=0,observationsMade=0,canariesReleased=0;
  const visible=[];
  let feedback;
  runtime.streamSimple=(model,context)=>{
@@ -43,7 +44,7 @@ test('grant proposal needs no live evidence and an approved write can refresh be
   if(phase==='resume'&&round===4)feedback=context.messages.findLast(m=>m.role==='toolResult'&&m.toolName===expand.name);
   const rounds=phase==='proposal'?[
    [requestRead],[modelCall('mcp__raptor__request_grant_request',proposal)]
-  ]:[
+  ]:phase==='resume'?[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[expand],
    [discover,modelCall('cloud_read',{kind:'fleet'})],
    [modelCall('pgcat_connection_continuity',{phase:'hold'})],
@@ -55,6 +56,9 @@ test('grant proposal needs no live evidence and an approved write can refresh be
     ...old.map(instanceId=>modelCall('db_connection_probe',{instanceId})),
     ...['trafficFailures','connections','pgcatClients'].map(kind=>modelCall('metrics_read',{kind})),expand],
    [expand]
+  ]:[
+   [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[requestRead,expand],
+   [release,requestRead],
   ];
   const calls=rounds[round-1]??[];
   const stopReason=calls.length?'toolUse':'stop';
@@ -96,7 +100,8 @@ test('grant proposal needs no live evidence and an approved write can refresh be
  const observed=work=>async args=>{observationsMade++;return work(args);};
  const observer={cloudRead:observed(args=>observations()[args.kind]),deploymentRead:observed(()=>observations().deployment),
   metricsRead:observed(args=>observations()[args.kind==='pgcatClients'?'metrics':args.kind]),
-  dbConnectionProbe:observed(args=>({...args,connected:true})),pgcatConnectionContinuity:observed(()=>{
+  dbConnectionProbe:observed(args=>({...args,connected:true})),pgcatConnectionContinuity:observed(args=>{
+   if(args.phase==='release-probes')canariesReleased++;
    const at=new Date().toISOString();
    return {requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',observedAt:at,
     sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at}]))};
@@ -126,4 +131,12 @@ test('grant proposal needs no live evidence and an approved write can refresh be
  assert.ok(progress.some(e=>e.summary?.includes('separate tool round')));
  assert.equal(resumed.paused?.kind,'resource',JSON.stringify(resumed));
  assert.deepEqual(writes,[{args:expand.arguments,grant:grantID,round:7}]);
+ phase='after-expansion';round=0;
+ const replay=await runLiveReplacement({...options,privateRoot:path.join(root,'after-expansion'),
+  binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:resumed.sessionReference,
+  decisionContext:{...resumed.paused,decision:'resume'}});
+ assert.equal(round,5,'a blocked replay must not use the earlier receipt to pause again');
+ assert.equal(replay.paused,undefined);
+ assert.equal(writes.length,1);
+ assert.equal(canariesReleased,0,'a mixed round must not close the old canaries');
 });
