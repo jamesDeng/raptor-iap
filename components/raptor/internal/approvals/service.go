@@ -14,8 +14,9 @@ import (
 type ResourceVerification func(context.Context, pgx.Tx) error
 
 type Service struct {
-	Pool           *pgxpool.Pool
-	VerifyResource func(context.Context, ApprovalInput) (ResourceVerification, error)
+	Pool             *pgxpool.Pool
+	VerifyResource   func(context.Context, ApprovalInput) (ResourceVerification, error)
+	VerifyGrantScope func(context.Context, RequestGrantInput) (ResourceVerification, error)
 }
 type ApprovalInput struct {
 	RequestID  string         `json:"requestId"`
