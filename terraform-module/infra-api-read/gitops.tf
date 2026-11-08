@@ -21,7 +21,8 @@ resource "alicloud_ram_policy" "gitops" {
     ], var.deployment_user == "" ? [] : [{ Effect = "Allow", Action = ["ram:GetUser", "ram:ListPoliciesForUser"], Resource = ["acs:ram:*:${var.account_id}:user/${var.deployment_user}"] }], each.key != "apply" ? [] : [
     { Effect = "Allow", Action = ["ram:CreatePolicyVersion", "ram:DeletePolicyVersion"], Resource = local.component_policy_arns },
     { Effect = "Allow", Action = ["apigateway:CreateApi", "apigateway:ModifyApi", "apigateway:DeployApi"], Resource = [local.component_group_arn] },
-    { Effect = "Allow", Action = ["ram:PassRole"], Resource = [alicloud_ram_role.invoke.arn] }
+    { Effect = "Allow", Action = ["ram:PassRole"], Resource = [alicloud_ram_role.invoke.arn] },
+    { Effect = "Allow", Action = ["fc:GetFunction", "fc:UpdateFunction"], Resource = ["acs:fc:${var.region}:${var.account_id}:functions/${var.function_name}"] }
   ]) })
 }
 resource "alicloud_ram_role_policy_attachment" "gitops" {

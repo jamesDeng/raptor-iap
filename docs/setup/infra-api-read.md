@@ -6,6 +6,12 @@ Go 1.27.1 (module minimum 1.25), Serverless Devs 3.1.10, fc3 component 0.1.25, T
 
 Serverless Devs owns the function and its `authType: function` HTTP trigger. Terraform owns read/invocation RAM roles, API group and Gateway routes. Its retained GET identity route is legacy: the active resource handler returns NotFound there. Current reads use deployments/status and POST `/mcp`; restart and conditional proxy command routes remain opt-in. See the [current endpoint inventory](infra-api-resource-endpoints.md). It explicitly selects FC3 HttpTrigger and forwards `X-Infra-Authorization` through PASSTHROUGH mode. Do not add a mapped request-parameter block in this mode. Gateway authentication is handled by the application Basic Auth header; its ANONYMOUS API setting does not make the FC trigger anonymous.
 
+## Reviewed rdev function release
+
+Open a PR updating `infra-terraform/environments/rdev-infra-api/function-release.json` with a full source commit already reachable from main and the current provider code checksum. The Infra API GitOps workflow tests and packages that source, then posts its sanitized Terraform plan to the PR. After merge, the `rdev.ali-apply` reviewer approves the new run. The same run applies its saved plan and uses the Alibaba SDK to update the code of the exact existing rdev function. The release checks the account, role, function ID, predecessor checksum and artifact digests. A follow-up provider read records the deployed checksum and reconciles a lost response without resubmitting it.
+
+For a rollback, review a new pin for the last known-good source and use the observed current checksum as its predecessor. Keep the previous artifact digest and release receipt for comparison. The initial migration records the deployed predecessor checksum in the pin and retains the previously verified backup separately.
+
 ## Required deployment preflight
 
 Use the existing `infra-ops-poc` operator profile privately. Confirm STS account, full September/October bills, delayed costs and balance. Select the existing Singapore VPC_SHARED gateway instance; this module does not buy an instance. Keep at most RMB20 reserved for the short probe inside the cumulative RMB1000 POC ceiling.
