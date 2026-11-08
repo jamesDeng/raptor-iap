@@ -16,6 +16,9 @@ test('checkpointed approval pause exits cleanly without claiming completion',asy
  const {terminalExitCode}=await import('./runner.mjs');assert.equal(typeof terminalExitCode,'function');
  assert.equal(terminalExitCode({passed:false,paused:{kind:'approval'},checkpoint:{archive_key:'saved'}}),0);
  assert.equal(terminalExitCode({passed:false,paused:{kind:'resource'},checkpoint:{archive_key:'saved'}}),0);
+ assert.equal(terminalExitCode({passed:false,paused:{kind:'grant'},checkpoint:{archive_key:'saved'}}),0);
+ assert.equal(terminalExitCode({passed:false,paused:{kind:'grant'}}),1);
+ assert.equal(terminalExitCode({passed:false,paused:{kind:'grant'},checkpoint:{archive_key:'saved'},checkpointError:'CheckpointFailed'}),1);
  for(const out of [{passed:false,error:'Timeout'},{passed:false,paused:{kind:'approval'}},{passed:false,paused:{kind:'approval'},checkpoint:{},checkpointError:'CheckpointFailed'}])assert.equal(terminalExitCode(out),1);
 });
 test('observer path escape is rejected before loading model runtime',async()=>{
