@@ -260,6 +260,11 @@ run "reviewed_function_release_is_scoped" {
 run "pgcat_monitoring_timer_is_fixed_and_reviewed" {
   command = plan
   override_resource {
+    target          = alicloud_ram_role.invoke
+    override_during = plan
+    values          = { arn = "acs:ram::1234567890123456:role/raptor-read-test-invoke" }
+  }
+  override_resource {
     target          = alicloud_api_gateway_group.read
     override_during = plan
     values          = { id = "group-fixture" }
