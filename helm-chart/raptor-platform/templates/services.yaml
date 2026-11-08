@@ -21,6 +21,7 @@
 {{- end -}}
 {{- if and .Values.repositoryChange.enabled (not .Values.githubPAT.enabled) -}}{{ fail "repositoryChange requires githubPAT" }}{{- end -}}
 {{- if and .Values.repositoryChange.enabled (not .Values.gatewayLive.enabled) -}}{{ fail "repositoryChange requires gatewayLive" }}{{- end -}}
+{{- if and .Values.pgcatMonitoring.reconcileEnabled (not .Values.infraReader.secretName) -}}{{ fail "pgcatMonitoring requires infraReader.secretName" }}{{- end -}}
 {{- $revision := required "repository.revision must be a reviewed commit" .Values.repository.revision -}}
 {{- if not (regexMatch "^[a-f0-9]{40}$" $revision) }}{{ fail "invalid repository revision" }}{{ end -}}
 {{- range $name, $image := .Values.images -}}

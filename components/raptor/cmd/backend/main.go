@@ -85,6 +85,9 @@ func main() {
 		h.Catalog.Infra = adapters.HTTPInfra{Username: os.Getenv("INFRA_USERNAME"), Password: os.Getenv("INFRA_PASSWORD"), AuthHeader: os.Getenv("INFRA_AUTH_HEADER"), ResolveEnvironment: h.Catalog.GetEnvironment}
 	}
 	if os.Getenv("RAPTOR_PGCAT_MONITORING_RECONCILE") == "true" {
+		if os.Getenv("INFRA_USERNAME") == "" || os.Getenv("INFRA_PASSWORD") == "" {
+			log.Fatal("PgCat monitoring credentials unavailable")
+		}
 		infra := adapters.HTTPInfra{Username: os.Getenv("INFRA_USERNAME"), Password: os.Getenv("INFRA_PASSWORD"), AuthHeader: os.Getenv("INFRA_AUTH_HEADER"), ResolveEnvironment: h.Catalog.GetEnvironment}
 		go func() {
 			ticker := time.NewTicker(time.Minute)
