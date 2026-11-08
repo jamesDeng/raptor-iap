@@ -20,7 +20,7 @@ Use this workflow when request_get returns request-grants-v1 in definition.opera
 
 After each continuation, read request_get and then request_grant_get for the checkpointed grant ID in its own round. Wait for the result and use the exact verified approval. Re-read current observations before the next write. Use resource_wait with 60 seconds for a genuinely pending resource. Resume the same request and re-read its grant.
 
-If a write returns EvidenceRefreshRequired, refresh the listed observations and wait for their results. That local rejection happens before submission. Retry only the same action with the same arguments and actionId. Reconcile an uncertain submission through the action receipt before any further write.
+Use one tool call per write round. If a write returns EvidenceRefreshRequired, refresh the listed observations and wait for their results. That local rejection happens before submission. Retry only the same action with the same arguments and actionId. Reconcile an uncertain submission through the action receipt before any further write.
 
 ## Expand and qualify the replacement pair
 

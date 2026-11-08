@@ -12,7 +12,6 @@ import {RequestGrantRuntime} from './request-grant-runtime.mjs';
 import {createOperationResourceLoader} from './live-operation.mjs';
 import {openOperationSession,operationSessionReference} from './operation-session.mjs';
 import {operationCapabilities,validateResourceScope} from './operation-profile.mjs';
-import {ReplacementEvidenceRequired} from './replacement-evidence.mjs';
 import {createScopedMcpRuntime,createToolCallGate,withReadOnlyToolPolicy,createReadConcurrency} from './mcp-runtime.mjs';
 import {publicProgressFromMessage} from './progress.mjs';
 import {toolFailureDiagnostic,modelFailureDiagnostic} from './tool-failure-diagnostic.mjs';
@@ -60,7 +59,8 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const settings=sdk.SettingsManager.inMemory({cacheWarming:'off',compaction:{enabled:false},retry:{enabled:false,provider:{maxRetries:0}}});
   manager=openOperationSession({sdk,stateRoot,binding:b,sessionReference});
   const grants=b.approvalProtocol==='request-grants-v1'?new RequestGrantRuntime(manager,b,replacementScope,decisionContext):undefined;
-  let readFailure=false,qualificationPauseAck,waitingForMetrics=false,uncertainWrite,refreshRejection;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:true});const serializedRead=work=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly:true});
+  let readFailure=false,qualificationPauseAck,waitingForMetrics=false,uncertainWrite,refreshRejected=false;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:true});const serializedRead=work=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly:true});
+  const mixedRoundRejections=new Set();
   const trace=qualification?new QualificationTrace(manager,b,replacementScope,decisionContext):new ReplacementTrace(manager,b,replacementScope);
   const readiness=qualification?undefined:new ReplacementReadiness(manager,trace);
   const sequence=qualification?undefined:new ReplacementSequence(manager,trace,readiness,selectedProfile,decisionContext);
@@ -115,7 +115,6 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
       (!activeTools.includes(name)||(grants&&trace.unresolved())||(!grants&&readiness.blocked())))throw Error('MissingEvidence');
     if(grants&&server==='infra'&&REPLACEMENT_WRITES.has(name)){
      if(!grants.approved)throw Error('InvalidApprovalPause');
-     if(refreshRejection)throw refreshRejection;
      if(name===MONITORING_SYNC)sequence.requireInventory();
     }
     if(grants&&server==='raptor'){
@@ -159,8 +158,8 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    onDiagnostic:({server,tool,category,reads})=>{
     const name='mcp__'+server+'__'+tool;
     if(grants?.approved&&server==='infra'&&REPLACEMENT_WRITES.has(name)&&category==='local-evidence-refresh'&&!trace.unresolved()){
-     if(!refreshRejection)narrate('Write held for fresh evidence. Read '+reads.join(', ')+'.');
-     refreshRejection??=new ReplacementEvidenceRequired(reads);
+     narrate('Write held for fresh evidence. Read '+reads.join(', ')+'.');
+     refreshRejected=true;
      toolDiagnostics.set(name,category);
      return true;
     }
@@ -188,6 +187,18 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   // Pi runs all-read batches concurrently. A non-read tool marks the entire
   // mixed batch sequential before any execution, preserving mutation ordering.
   await session.bindExtensions({mode:'sdk'});await mcp.ready(session);session.setActiveToolsByName(activeTools);
+  if(grants){
+   const beforeToolCall=session.agent.beforeToolCall;
+   session.agent.beforeToolCall=async(context,signal)=>{
+    const decision=await beforeToolCall?.(context,signal);
+    if(decision?.block||signal?.aborted||!REPLACEMENT_WRITES.has(context.toolCall.name)||
+     context.assistantMessage.content.filter(part=>part.type==='toolCall').length===1)return decision;
+    mixedRoundRejections.add(context.toolCall.id);
+    const reason='Run this operation in a separate tool round after reviewing the preceding reads.';
+    narrate(reason);
+    return {block:true,reason};
+   };
+  }
   // Pi awaits finishTurn after persisting the assistant and every tool result.
   // End cleanly here; abort() would append a synthetic aborted assistant entry.
   const finishTurn=session.agent.finishTurn;
@@ -228,7 +239,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    if(!qualification&&!error){const next=allowedTools();if(activeTools!==next){activeTools=next;session.setActiveToolsByName(activeTools);}}
    const wait=pause.endRound();
    if(wait){if(!qualification)sequence.recordResourceWait(wait);grants?.recordWait(wait);return {action:'end'};}
-   if(refreshRejection){refreshRejection=undefined;return {action:'continue'};}
+   if(refreshRejected){refreshRejected=false;return {action:'continue'};}
    return decision;
   };
   session.subscribe(event=>{
@@ -237,7 +248,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     const update=WORK_UPDATES.get(event.toolName);
     if(update&&!announced.has(event.toolName)){announced.add(event.toolName);narrate(update);}
     toolDiagnostics.delete(event.toolName);progress({kind:'tool_start',tool:event.toolName,outcome:'started'});const category=observationArgsCategory(event.toolName,event.args);if(category)progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' '+category});}
-   if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(event.isError&&toolDiagnostics.get(event.toolName)==='local-evidence-refresh')return;
+   if(event.type==='tool_execution_end'){progress({kind:'tool_result',tool:event.toolName,outcome:event.isError?'failed':'succeeded'});if(mixedRoundRejections.delete(event.toolCallId)||(event.isError&&toolDiagnostics.get(event.toolName)==='local-evidence-refresh'))return;
    if(event.isError&&uncertainWrite===event.toolName){
     narrate('The write response could not be confirmed. I’ll read the saved Request action receipts before doing anything else.');
    }else if(event.isError){readFailure=true;const diagnostic=toolFailureDiagnostic(event.toolName,profile,toolDiagnostics.get(event.toolName),event.result);if(diagnostic)progress({kind:'progress',outcome:'running',summary:'MCP '+diagnostic.server+'.'+diagnostic.tool+' '+diagnostic.category});if(observationTools.includes(event.toolName))progress({kind:'progress',outcome:'running',summary:'Observation '+event.toolName+' tool-end-failed'});error||='ToolFailed';void session.abort();}}

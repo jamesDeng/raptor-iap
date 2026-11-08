@@ -212,7 +212,11 @@ export class ReplacementSequence {
  }
  app(minGeneration=1,after=0){const a=this.current.deployment,s=this.trace.identity.scope.application;return fresh(a,after)&&['clusterId','namespace','name','uid'].every(k=>a[k]===s[k])&&['replicas','readyReplicas','updatedReplicas','availableReplicas'].every(k=>a[k]===2)&&Number.isSafeInteger(a.generation)&&a.generation>=minGeneration&&Number.isSafeInteger(a.observedGeneration)&&a.observedGeneration===a.generation;}
  traffic(kind){const row=this.current[kind];if(!fresh(row)||!Array.isArray(row.samples)||!row.samples.length)return false;const seen=new Set();for(const s of row.samples){const key=s.instance+'|'+(s.outcome??'');if(typeof s.instance!=='string'||!s.instance||seen.has(key)||!Number.isFinite(s.timestamp)||Math.abs(Date.now()/1000-s.timestamp)>30||!Number.isFinite(s.value)||(kind==='connections'?s.value<=0:s.value!==0))return false;seen.add(key);}const ids=[...new Set(row.samples.map(s=>s.instance))];return ids.length===2&&(kind==='connections'?row.samples.length===2:row.samples.length===6&&ids.every(id=>['failure','timeout','ambiguous'].every(outcome=>seen.has(id+'|'+outcome))));}
- probesReady(ids){return ids.every(id=>{const p=this.probes.get(id);return fresh(p)&&p.connected===true&&!Object.hasOwn(p,'readiness');});}
+ probesReady(ids,after=0){return ids.every(id=>{const p=this.probes.get(id);return fresh(p,after)&&p.connected===true&&!Object.hasOwn(p,'readiness');});}
+ holdReady(){
+  const hold=this.current.hold;
+  return fresh(hold)&&Object.values(hold.sockets).every(socket=>fresh({observedAt:socket.lastSqlAt}));
+ }
  initialReads(){
   const ids=this.trace.baseline()?.instanceIds;
   return missingReads([
@@ -272,7 +276,7 @@ export class ReplacementSequence {
   if(['protectOld','expand'].includes(stage)){
    this.requireReads([...this.initialReads(),...missingReads([
     [stage!=='expand'||this.current.fleet?.instances?.every(protectedNode),'cloud_read fleet with both originals protected'],
-    [stage!=='expand'||!this.trace.versioned||fresh(this.current.hold),'pgcat_connection_continuity hold'],
+    [stage!=='expand'||!this.trace.versioned||this.holdReady(),'pgcat_connection_continuity hold'],
    ])]);
   }else{
    if(this.trace.versioned)this.requireReadyFour();
@@ -283,6 +287,10 @@ export class ReplacementSequence {
     [this.fleet([...old,...added])&&(stage==='protectNew'||this.current.fleet.instances.filter(n=>added.includes(n.instanceId)).every(protectedNode)),'cloud_read fleet'],
     [!['protectNew','withdraw','restart'].includes(stage)||metricsValid(this.current.metrics,[...old,...added]),'metrics_read pgcatClients'],
    ]);
+   if(this.trace.versioned&&['protectNew','withdraw'].includes(stage)){
+    const after=Date.parse(this.readiness.expansion().result.observedAt);
+    if(!this.probesReady(added,after))reads.push('db_connection_probe for the two replacement nodes');
+   }
    if(stage==='protectNew'){
     // The new pair may be unprotected before this specific protection operation.
     if(!this.backend([...old,...added]))reads.push('cloud_read backend');

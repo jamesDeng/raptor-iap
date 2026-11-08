@@ -14,9 +14,17 @@ import (
 )
 
 func TestResourceScopedMCPReturnsSelectedDependenciesOnly(t *testing.T) {
+	t.Run("legacy", func(t *testing.T) { testResourceScopedMCP(t, "") })
+	t.Run("request grants", func(t *testing.T) { testResourceScopedMCP(t, "request-grants-v1") })
+}
+
+func testResourceScopedMCP(t *testing.T, protocol string) {
 	def := domain.RequestInput{Type: "agent", Object: domain.ObjectRef{Kind: "db-proxy", Code: "p"}, EnvCode: "dev", Model: "gpt-6-luna", Operations: []domain.Operation{{Name: "db-proxy.replace-nodes", Parameters: map[string]any{"mode": "replacement"}}}}
+	if protocol != "" {
+		def.Operations[0].Parameters["approvalProtocol"] = protocol
+	}
 	hash, _ := agentaccess.Fingerprint(def)
-	b := agentaccess.Binding{RequestID: "r", AttemptID: "a", Operation: "db-proxy.replace-nodes", ObjectKind: "db-proxy", ObjectCode: "p", EnvCode: "dev", ClusterID: "c", DefinitionSHA256: hash, ExecutionMode: "replacement"}
+	b := agentaccess.Binding{RequestID: "r", AttemptID: "a", Operation: "db-proxy.replace-nodes", ObjectKind: "db-proxy", ObjectCode: "p", EnvCode: "dev", ClusterID: "c", DefinitionSHA256: hash, ExecutionMode: "replacement", ApprovalProtocol: protocol}
 	scope := agentaccess.ReplacementScope{EnvCode: "dev", ProxyCode: "p", GroupID: "g", ServerGroupID: "sg", TargetDBCode: "db", Application: agentaccess.ApplicationScope{EnvCode: "dev", AppCode: "app", ClusterID: "c", Namespace: "n", Name: "app", UID: "u"}, AccountID: "123", Region: "ap-southeast-1", ListenerID: "l", Port: 5432, DatabaseResourceID: "rds"}
 	scope.ResolutionDigest = scope.Identity().Digest()
 	backendReads := 0
@@ -33,7 +41,8 @@ func TestResourceScopedMCPReturnsSelectedDependenciesOnly(t *testing.T) {
 			backendReads++
 			switch r.URL.Path {
 			case "/v1/requests/r/context":
-				data = map[string]any{"requestId": "r", "definition": def, "environment": map[string]any{"code": "dev"}}
+				data = map[string]any{"requestId": "r", "definition": def, "environment": map[string]any{"code": "dev"},
+					"approvalPolicies": map[string]any{"db_proxy_scale": map[string]any{"version": 1}}}
 			case "/v1/objects/application/app":
 				data = map[string]any{"kind": "application", "code": "app", "name": "Client"}
 			case "/v1/requests/r/resource-deployments":
@@ -74,6 +83,9 @@ func TestResourceScopedMCPReturnsSelectedDependenciesOnly(t *testing.T) {
 			t.Fatal(call.name, result, e)
 		}
 		raw, _ := json.Marshal(result)
+		if call.name == "request_get" && protocol != "" && !strings.Contains(string(raw), "After approval, collect fresh evidence before each write.") {
+			t.Fatal("request grant instructions must place live evidence after approval", string(raw))
+		}
 		for _, want := range call.contains {
 			if !strings.Contains(string(raw), want) {
 				t.Fatal("missing selected resource", call.name, want, string(raw))

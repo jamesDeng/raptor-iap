@@ -174,7 +174,7 @@ test('a resumed grant needs fresh request, environment and object reads before e
  ]);
  gate.observeContinuity({phase:'hold'},{
   requestId:binding.requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',
-  observedAt:new Date().toISOString(),sockets:Object.fromEntries(old.map(id=>[id,{id}]))
+  observedAt:at,sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at}]))
  });
  const args=argsFor('db_proxy_scale',{actionId:'expand',desiredCapacity:4});
  assert.throws(()=>gate.beforeMutation('db_proxy_scale',args),/MissingEvidence/);
@@ -183,6 +183,32 @@ test('a resumed grant needs fresh request, environment and object reads before e
  assert.throws(()=>gate.beforeMutation('db_proxy_scale',args),/MissingEvidence/);
  observe({gate});
  assert.doesNotThrow(()=>gate.beforeMutation('db_proxy_scale',args));
+});
+
+test('granted protection and drain name expired replacement SQL after readiness was recorded',()=>{
+ const {session}=setup();
+ const trace=new ReplacementTrace(session,{...binding,approvalProtocol:'request-grants-v1'},scope);
+ const readiness=new ReplacementReadiness(session,trace);
+ const gate=new ReplacementSequence(session,trace,readiness,'resource-v1');
+ const x={gate,trace};
+ observe(x);
+ const at=new Date().toISOString();
+ gate.observeContinuity({phase:'hold'},{requestId:binding.requestId,scopeDigest:scope.resolutionDigest,observationId:'hold',
+  observedAt:at,sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at}]))});
+ mutate(x,'db_proxy_scale',{actionId:'expand',desiredCapacity:4},{actionId:'expand',scalingActivityId:'asa-test',previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'});
+ const refresh=()=>observe(x,observations([...old,...added]));
+ const expire=()=>gate.observe('sql',{instanceId:added[0],connected:true,observedAt:new Date(Date.now()-43000).toISOString()},{instanceId:added[0]});
+ refresh();
+ assert.equal(readiness.ready(),true);
+ expire();
+ const protection={nodeIds:added,protected:true};
+ const requestsSQL=e=>e.reads?.includes('db_connection_probe for the two replacement nodes')===true;
+ assert.throws(()=>gate.beforeMutation('db_proxy_node_protection_set',argsFor('db_proxy_node_protection_set',protection)),requestsSQL);
+ refresh();
+ mutate(x,'db_proxy_node_protection_set',protection,{actionId:'protect',instanceIds:added,outcome:'submitted'});
+ refresh();
+ expire();
+ assert.throws(()=>gate.beforeMutation('db_proxy_nodes_deregister',argsFor('db_proxy_nodes_deregister',{nodeIds:old})),requestsSQL);
 });
 
 test('historical readyFour cannot substitute for fresh complete metrics on resume',()=>{

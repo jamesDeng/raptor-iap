@@ -44,7 +44,7 @@ test('grant proposal needs no live evidence and an approved write can refresh be
   const rounds=phase==='proposal'?[
    [requestRead],[modelCall('mcp__raptor__request_grant_request',proposal)]
   ]:[
-   [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[expand,expand],
+   [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[expand],
    [discover,modelCall('cloud_read',{kind:'fleet'})],
    [modelCall('pgcat_connection_continuity',{phase:'hold'})],
    [requestRead,discover,modelCall('mcp__raptor__environment_get',{requestId,envCode}),
@@ -53,7 +53,7 @@ test('grant proposal needs no live evidence and an approved write can refresh be
     modelCall('mcp__infra__deployment_status_get',{envCode,appCode:application.appCode,workloadKey:'opaque-app'}),
     modelCall('deployment_read',{}),...['fleet','backend','capacity'].map(kind=>modelCall('cloud_read',{kind})),
     ...old.map(instanceId=>modelCall('db_connection_probe',{instanceId})),
-    ...['trafficFailures','connections','pgcatClients'].map(kind=>modelCall('metrics_read',{kind}))],
+    ...['trafficFailures','connections','pgcatClients'].map(kind=>modelCall('metrics_read',{kind})),expand],
    [expand]
   ];
   const calls=rounds[round-1]??[];
@@ -88,7 +88,7 @@ test('grant proposal needs no live evidence and an approved write can refresh be
     db_proxy_scale:{actionId:args.actionId,scalingActivityId:'asa-test',evidenceMode:'live',groupId:scope.groupId,previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'}
    }[name];
    assert.ok(data,`unexpected remote ${name}`);
-   if(name==='db_proxy_scale')writes.push({args,grant:new Headers(init.headers).get('X-Raptor-Request-Grant')});
+   if(name==='db_proxy_scale')writes.push({args,grant:new Headers(init.headers).get('X-Raptor-Request-Grant'),round});
    result={structuredContent:{data},content:[{type:'text',text:JSON.stringify({data})}]};
   }else assert.fail(`unexpected RPC ${rpc.method}`);
   return Response.json({jsonrpc:'2.0',id:rpc.id,result});
@@ -96,8 +96,11 @@ test('grant proposal needs no live evidence and an approved write can refresh be
  const observed=work=>async args=>{observationsMade++;return work(args);};
  const observer={cloudRead:observed(args=>observations()[args.kind]),deploymentRead:observed(()=>observations().deployment),
   metricsRead:observed(args=>observations()[args.kind==='pgcatClients'?'metrics':args.kind]),
-  dbConnectionProbe:observed(args=>({...args,connected:true})),pgcatConnectionContinuity:observed(()=>({requestId,scopeDigest:scope.resolutionDigest,
-   observationId:'held-originals',observedAt:new Date().toISOString(),sockets:Object.fromEntries(old.map(id=>[id,{id}]))}))};
+  dbConnectionProbe:observed(args=>({...args,connected:true})),pgcatConnectionContinuity:observed(()=>{
+   const at=new Date().toISOString();
+   return {requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',observedAt:at,
+    sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at}]))};
+  })};
  const options={stateRoot,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,fetch,
   skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:fs.realpathSync(new URL('../../agent-skills',import.meta.url))},
   limits:{max_turns:10,max_output_tokens:1024},onProgress:e=>progress.push(e),
@@ -120,6 +123,7 @@ test('grant proposal needs no live evidence and an approved write can refresh be
  assert.match(feedback?.content[0].text,/object_get/);
  assert.match(feedback?.content[0].text,/pgcat_connection_continuity/);
  assert.equal(progress.filter(e=>e.tool===expand.name&&e.outcome==='failed').length,2);
+ assert.ok(progress.some(e=>e.summary?.includes('separate tool round')));
  assert.equal(resumed.paused?.kind,'resource',JSON.stringify(resumed));
- assert.deepEqual(writes,[{args:expand.arguments,grant:grantID}]);
+ assert.deepEqual(writes,[{args:expand.arguments,grant:grantID,round:7}]);
 });
