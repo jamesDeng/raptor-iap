@@ -35,7 +35,7 @@ func newFunctionAPI(ctx context.Context) (functionAPI, error) {
 	}
 	result, err := identity.GetCallerIdentityWithOptions(&dara.RuntimeOptions{Autoretry: tea.Bool(false)})
 	if err != nil || result == nil || result.Body == nil || tea.StringValue(result.Body.AccountId) != accountID ||
-		!strings.HasPrefix(tea.StringValue(result.Body.Arn), "acs:ram::"+accountID+":assumed-role/raptor-iap-rdev-apply/") {
+		!isProtectedRole(tea.StringValue(result.Body.Arn)) {
 		return nil, errors.New("protected rdev apply role could not be verified")
 	}
 	client, err := openapi.NewClient(config("fcv3." + region + ".aliyuncs.com"))
@@ -45,12 +45,21 @@ func newFunctionAPI(ctx context.Context) (functionAPI, error) {
 	return cloudFunction{client}, nil
 }
 
+func isProtectedRole(arn string) bool {
+	role := "::" + accountID + ":assumed-role/raptor-iap-rdev-apply/"
+	return strings.HasPrefix(arn, "acs:ram"+role) || strings.HasPrefix(arn, "acs:sts"+role)
+}
+
 func (f cloudFunction) call(ctx context.Context, action, method string, body map[string]any) (map[string]any, error) {
+	options := &dara.RuntimeOptions{Autoretry: tea.Bool(false)}
+	if method == "PUT" {
+		options.ReadTimeout = tea.Int(120000)
+	}
 	return f.client.CallApiWithCtx(ctx, &openapi.Params{
 		Action: tea.String(action), Version: tea.String("2023-03-30"), Protocol: tea.String("HTTPS"),
 		Pathname: tea.String("/2023-03-30/functions/" + functionName), Method: tea.String(method),
 		AuthType: tea.String("AK"), Style: tea.String("ROA"), ReqBodyType: tea.String("json"), BodyType: tea.String("json"),
-	}, &openapi.OpenApiRequest{Body: body}, &dara.RuntimeOptions{Autoretry: tea.Bool(false)})
+	}, &openapi.OpenApiRequest{Body: body}, options)
 }
 
 func (f cloudFunction) read(ctx context.Context) (functionState, error) {

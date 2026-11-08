@@ -11,7 +11,17 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-PIN = ROOT / "infra-terraform/environments/rdev-infra-api/function-release.json"
+REPO = "jamesDeng/raptor-iap"
+PIN = "infra-terraform/environments/rdev-infra-api/function-release.json"
+CONTROL_FILES = (
+    PIN,
+    ".github/workflows/terraform-infra-api-gitops.yml",
+    "components/infra-api/release/infra_release.py",
+    "components/infra-api/cmd/fc-release/main.go",
+    "components/infra-api/cmd/fc-release/sdk.go",
+    "components/infra-api/go.mod",
+    "components/infra-api/go.sum",
+)
 FILES = ("function.zip", "fc-release")
 
 
@@ -50,6 +60,29 @@ def git(*args):
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
 
+def reviewed_merge(commit, pulls):
+    return any(pull["merge_commit_sha"] == commit and pull["merged_at"]
+               and pull["base"]["ref"] == "main" and pull["base"]["repo"]["full_name"] == REPO
+               for pull in pulls)
+
+
+def verify_review(pin, control_commit):
+    git("fetch", "--no-tags", f"https://github.com/{REPO}.git", "refs/heads/main")
+    latest = git("rev-parse", "FETCH_HEAD")
+    try:
+        git("merge-base", "--is-ancestor", control_commit, latest)
+        git("diff", "--quiet", control_commit, latest, "--", *CONTROL_FILES)
+    except subprocess.CalledProcessError as exc:
+        raise ValueError("Infra API release no longer matches current main") from exc
+    merges = {control_commit, pin["sourceCommit"]}
+    for path in CONTROL_FILES:
+        merges.add(git("log", "--first-parent", "-1", "--format=%H", control_commit, "--", path))
+    for commit in sorted(merges):
+        pulls = subprocess.check_output(["gh", "api", f"repos/{REPO}/commits/{commit}/pulls"], cwd=ROOT, text=True)
+        if not reviewed_merge(commit, json.loads(pulls)):
+            raise ValueError("Infra API release provenance requires an exact merged main PR")
+
+
 def build(directory, pin, control_commit):
     source_commit = pin["sourceCommit"]
     subprocess.run(["git", "merge-base", "--is-ancestor", source_commit, "origin/main"], cwd=ROOT, check=True)
@@ -81,13 +114,14 @@ def build(directory, pin, control_commit):
 def main():
     mode, path = sys.argv[1:]
     directory = Path(path).resolve()
-    pin = validate_pin(json.loads(PIN.read_text()))
+    pin = validate_pin(json.loads((ROOT / PIN).read_text()))
     control_commit = git("rev-parse", "HEAD")
     if mode == "build":
         build(directory, pin, control_commit)
     elif mode == "deploy":
         if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("GITHUB_REF") != "refs/heads/main":
             raise ValueError("Function release requires protected main CI")
+        verify_review(pin, control_commit)
         digests = verify_bundle(directory, pin, control_commit)
         executable = directory / "fc-release"
         executable.chmod(0o700)
@@ -99,5 +133,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, subprocess.CalledProcessError):
+    except ValueError as error:
+        sys.exit(str(error))
+    except (OSError, subprocess.CalledProcessError):
         sys.exit("Infra API release step failed.")

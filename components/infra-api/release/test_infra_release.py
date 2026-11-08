@@ -1,8 +1,10 @@
 import hashlib
 import json
 import pathlib
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -45,6 +47,26 @@ class InfraRelease(unittest.TestCase):
             (root / "fc-release").write_bytes(b"different program")
             with self.assertRaises(ValueError):
                 infra_release.verify_bundle(root, pin, "b" * 40)
+
+    def test_provenance_requires_an_exact_merged_main_pr(self):
+        commit = "a" * 40
+        pull = {
+            "merge_commit_sha": commit,
+            "merged_at": "2026-11-08T06:09:03Z",
+            "base": {"ref": "main", "repo": {"full_name": infra_release.REPO}},
+        }
+        self.assertTrue(infra_release.reviewed_merge(commit, [pull]))
+        self.assertFalse(infra_release.reviewed_merge("b" * 40, [pull]))
+        self.assertFalse(infra_release.reviewed_merge(commit, [dict(pull, merged_at=None)]))
+        self.assertFalse(infra_release.reviewed_merge(commit, [dict(pull, base=dict(pull["base"], ref="other"))]))
+
+    def test_superseded_release_is_rejected_before_review_lookup(self):
+        commit, latest = "a" * 40, "b" * 40
+        changed = subprocess.CalledProcessError(1, "git diff --quiet")
+        with patch.object(infra_release, "git", side_effect=["", latest, "", changed]) as git:
+            with self.assertRaisesRegex(ValueError, "no longer matches current main"):
+                infra_release.verify_review({"sourceCommit": commit}, commit)
+        git.assert_called_with("diff", "--quiet", commit, latest, "--", *infra_release.CONTROL_FILES)
 
 
 if __name__ == "__main__":

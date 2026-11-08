@@ -125,10 +125,12 @@ jobs:
       contents: read
       id-token: write
       actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ needs.plan.outputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Download this run's reviewed artifacts
         env:
@@ -170,6 +172,7 @@ jobs:
           python3 scripts/gitops/runner.py apply
       - name: Release and verify the reviewed function package
         env:
+          GH_TOKEN: ${{ github.token }}
           ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.apply-credentials.outputs.aliyun-access-key-id }}
           ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.apply-credentials.outputs.aliyun-access-key-secret }}
           ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.apply-credentials.outputs.aliyun-security-token }}
