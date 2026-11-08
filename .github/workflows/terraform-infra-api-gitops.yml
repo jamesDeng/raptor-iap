@@ -2,10 +2,10 @@ name: Terraform Infra API GitOps
 on:
   pull_request:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
+    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'components/infra-api/release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
   push:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
+    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'components/infra-api/release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -41,7 +41,8 @@ jobs:
         shell: bash
         run: |
           (cd components/infra-api && go test ./cmd/fc-release)
-          python3 scripts/gitops/infra_release.py build "$RUNNER_TEMP/infra-api-release" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 -m unittest discover -s components/infra-api/release
+          python3 components/infra-api/release/infra_release.py build "$RUNNER_TEMP/infra-api-release" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
@@ -172,4 +173,4 @@ jobs:
           ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.apply-credentials.outputs.aliyun-access-key-id }}
           ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.apply-credentials.outputs.aliyun-access-key-secret }}
           ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.apply-credentials.outputs.aliyun-security-token }}
-        run: python3 scripts/gitops/infra_release.py deploy "$RUNNER_TEMP/infra-api-release"
+        run: python3 components/infra-api/release/infra_release.py deploy "$RUNNER_TEMP/infra-api-release"

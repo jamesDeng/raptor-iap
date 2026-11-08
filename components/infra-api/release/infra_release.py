@@ -10,7 +10,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 PIN = ROOT / "infra-terraform/environments/rdev-infra-api/function-release.json"
 FILES = ("function.zip", "fc-release")
 
