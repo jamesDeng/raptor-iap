@@ -2,10 +2,10 @@ name: Terraform Infra API GitOps
 on:
   pull_request:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'components/infra-api/release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
+    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'components/infra-api/release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml', '.github/actions/locked-alicloud-provider/**']
   push:
     branches: [main]
-    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'components/infra-api/release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml']
+    paths: ['infra-terraform/environments/rdev-infra-api/**', 'terraform-module/infra-api-read/**', 'components/infra-api/cmd/fc-release/**', 'components/infra-api/release/**', 'scripts/gitops/**', 'scripts/rdev/requirements-recovery.txt', '.github/workflows/terraform-infra-api-gitops.yml', '.github/actions/locked-alicloud-provider/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,6 +28,7 @@ jobs:
         with:
           terraform_version: 1.13.3
           terraform_wrapper: false
+      - uses: ./.github/actions/locked-alicloud-provider
       - run: |
           python3 -m pip install -r scripts/rdev/requirements-recovery.txt
           python3 -m unittest discover -s scripts/gitops -v
@@ -71,6 +72,7 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Install plan dependencies
         run: python3 -m pip install -r scripts/rdev/requirements-recovery.txt
+      - uses: ./.github/actions/locked-alicloud-provider
       - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
         with:
           role-to-assume: ${{ vars.RDEV_PLAN_ROLE_ARN }}
@@ -147,6 +149,7 @@ jobs:
         run: |
           python3 -m pip install -r scripts/rdev/requirements-recovery.txt
           gh api "repos/$GH_REPO/environments/${{ github.job == 'apply' && 'rdev.ali-apply' || 'rdev.ali-plan' }}" | python3 scripts/gitops/runner.py guard
+      - uses: ./.github/actions/locked-alicloud-provider
       - uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
         id: apply-credentials
         with:
