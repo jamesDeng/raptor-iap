@@ -31,7 +31,10 @@ locals {
     ] : [], var.cluster_id == "" ? [] : [
     { Effect = "Allow", Action = ["cs:DescribeClusterUserKubeconfig"], Resource = ["acs:cs:${var.region}:${var.account_id}:cluster/${var.cluster_id}"] }
   ])
-  routes = { identity = "/v1/cloud/identity", deployments = "/v1/deployments", status = "/v1/deployment-status" }
+  routes = merge(
+    { identity = "/v1/cloud/identity", deployments = "/v1/deployments", status = "/v1/deployment-status" },
+    var.enable_proxy_commands ? { "approval-policy" = "/v1/approval-policy" } : {},
+  )
 }
 resource "alicloud_ram_role" "read" {
   depends_on                  = [terraform_data.account_guard]

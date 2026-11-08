@@ -11,6 +11,10 @@ variables {
 run "read_only_contract" {
   command = plan
   assert {
+    condition     = !contains(keys(alicloud_api_gateway_api.read), "approval-policy")
+    error_message = "Keep request-grant policy discovery disabled unless proxy commands are enabled."
+  }
+  assert {
     condition     = alicloud_api_gateway_api.read["identity"].fc_service_config[0].function_version == "3.0"
     error_message = "Backend must be FC3 HTTP."
   }
@@ -90,6 +94,17 @@ run "proxy_permissions_and_routes" {
   assert {
     condition     = toset(keys(alicloud_api_gateway_api.proxy)) == toset(["scale", "protection", "deregistration"])
     error_message = "Expose exactly the reviewed individual commands."
+  }
+  assert {
+    condition = try(
+      alicloud_api_gateway_api.read["approval-policy"].request_config[0].path == "/v1/approval-policy" &&
+      alicloud_api_gateway_api.read["approval-policy"].request_config[0].method == "GET" &&
+      alicloud_api_gateway_api.read["approval-policy"].request_config[0].protocol == "HTTPS" &&
+      alicloud_api_gateway_api.read["approval-policy"].fc_service_config[0].path == "/v1/approval-policy" &&
+      alicloud_api_gateway_api.read["approval-policy"].fc_service_config[0].method == "GET",
+      false,
+    )
+    error_message = "Publish read-only approval policy discovery to the existing authenticated function."
   }
   assert {
     condition     = length([for s in jsondecode(alicloud_ram_policy.read.policy_document).Statement : s if contains(s.Action, "ecs:DeleteInstance") || contains(s.Action, "ess:RemoveInstances")]) == 0
