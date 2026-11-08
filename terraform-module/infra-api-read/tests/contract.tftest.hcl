@@ -265,9 +265,9 @@ run "pgcat_monitoring_timer_is_fixed_and_reviewed" {
     values          = { id = "group-fixture" }
   }
   variables {
-    ack_only               = true
-    cluster_id             = "cluster"
-    enable_proxy_commands  = true
+    ack_only                = true
+    cluster_id              = "cluster"
+    enable_proxy_commands   = true
     enable_pgcat_monitoring = true
     proxy_targets = {
       DP00001 = { group_id = "asg-test", server_group_id = "sgp-test", load_balancer_id = "nlb-test" }
