@@ -219,7 +219,7 @@ func (p *reader) SyncPgcatInventory(ctx context.Context, env domain.Environment,
 	return syncPgcatInventory(ctx, client.CoreV1().ConfigMaps(pgcatInventoryNamespace), env.Code, target.ProxyCode, mapping.TargetDBCode, targets, admit)
 }
 
-// ReconcilePgcatMonitoring is the platform timer's fixed POC operation. It
+// ReconcilePgcatMonitoring is the platform scheduler's fixed POC operation. It
 // retains the agent command unchanged while it is still needed by live runs.
 func (p *reader) ReconcilePgcatMonitoring(ctx context.Context, env domain.Environment, mapping domain.ProxyMapping) (domain.PgcatInventoryReceipt, error) {
 	if env.Code != "rdev.ali" || env.Region != "ap-southeast-1" || env.AccountID != "1360282071200743" ||

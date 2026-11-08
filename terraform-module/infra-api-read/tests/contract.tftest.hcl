@@ -92,8 +92,8 @@ run "proxy_permissions_and_routes" {
     error_message = "Required runtime capabilities must exist exactly once."
   }
   assert {
-    condition     = toset(keys(alicloud_api_gateway_api.proxy)) == toset(["scale", "protection", "deregistration"])
-    error_message = "Expose exactly the reviewed individual commands."
+    condition     = toset(keys(alicloud_api_gateway_api.proxy)) == toset(["scale", "protection", "deregistration", "monitoring"])
+    error_message = "Expose exactly the reviewed individual operations."
   }
   assert {
     condition = try(
@@ -257,50 +257,3 @@ run "reviewed_function_release_is_scoped" {
   }
 }
 
-run "pgcat_monitoring_timer_is_fixed_and_reviewed" {
-  command = plan
-  override_resource {
-    target          = alicloud_ram_role.invoke
-    override_during = plan
-    values          = { arn = "acs:ram::1234567890123456:role/raptor-read-test-invoke" }
-  }
-  override_resource {
-    target          = alicloud_api_gateway_group.read
-    override_during = plan
-    values          = { id = "group-fixture" }
-  }
-  variables {
-    ack_only                = true
-    cluster_id              = "cluster"
-    enable_proxy_commands   = true
-    enable_pgcat_monitoring = true
-    proxy_targets = {
-      DP00001 = { group_id = "asg-test", server_group_id = "sgp-test", load_balancer_id = "nlb-test" }
-    }
-    gitops_plan_role    = "raptor-iap-rdev-plan"
-    gitops_apply_role   = "raptor-iap-rdev-apply"
-    gitops_state_bucket = "fixture-state"
-  }
-  assert {
-    condition = (
-      length(alicloud_fcv3_trigger.pgcat_monitoring) == 1 &&
-      alicloud_fcv3_trigger.pgcat_monitoring[0].function_name == "raptor-read-test" &&
-      alicloud_fcv3_trigger.pgcat_monitoring[0].trigger_type == "timer" &&
-      alicloud_fcv3_trigger.pgcat_monitoring[0].trigger_name == "raptor-rdev-pgcat-monitoring" &&
-      jsondecode(alicloud_fcv3_trigger.pgcat_monitoring[0].trigger_config).payload == "pgcat-monitoring-v1"
-    )
-    error_message = "The timer must invoke only the fixed component function with the reviewed payload."
-  }
-  assert {
-    condition = [for s in jsondecode(alicloud_ram_policy.gitops["plan"].policy_document).Statement : s if contains(s.Action, "fc:GetTrigger")] == [{
-      Effect = "Allow", Action = ["fc:GetTrigger"], Resource = ["acs:fc:ap-southeast-1:1234567890123456:functions/raptor-read-test/triggers/raptor-rdev-pgcat-monitoring"]
-    }]
-    error_message = "The plan role may read only this trigger."
-  }
-  assert {
-    condition = [for s in jsondecode(alicloud_ram_policy.gitops["apply"].policy_document).Statement : s if contains(s.Action, "fc:CreateTrigger")] == [{
-      Effect = "Allow", Action = ["fc:CreateTrigger", "fc:UpdateTrigger", "fc:DeleteTrigger"], Resource = ["acs:fc:ap-southeast-1:1234567890123456:functions/raptor-read-test/triggers/raptor-rdev-pgcat-monitoring"]
-    }]
-    error_message = "Only the reviewed apply role may change this trigger."
-  }
-}

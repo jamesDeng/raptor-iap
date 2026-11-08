@@ -18,6 +18,10 @@ publicFrontend: false
 infraReader:
   secretName: ''
 
+# Enable after the Infra API route has been deployed and POC acceptance is idle.
+pgcatMonitoring:
+  reconcileEnabled: false
+
 # Secret references only; private values are supplied outside Git.
 agentAccess:
   secretName: ''
@@ -64,3 +68,4 @@ progress:
   origins: ''
   connectOrigin: ''
 # Public controller binding; absent keeps replacement access disabled.
+
