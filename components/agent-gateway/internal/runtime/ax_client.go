@@ -86,6 +86,9 @@ func NewAXClient(c AXConfig) (*AXClient, error) {
 }
 func (c *AXClient) Call(ctx context.Context, in AXRequest) (AXResponse, error) {
 	var out AXResponse
+	// AX accepts its own binding schema. The approval protocol is already
+	// covered by the definition digest sent to AX and stays in Gateway state.
+	in.Binding.ApprovalProtocol = ""
 	raw, e := json.Marshal(in)
 	if e != nil {
 		return out, ErrConfiguration
