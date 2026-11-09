@@ -6,10 +6,12 @@ import path from 'node:path';
 import {loadPiRuntime} from './pi-adapter.mjs';
 import {runLiveReplacement} from './live-replacement.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
-import {binding,scope,old,observations} from './replacement-sequence-fixtures.mjs';
+import {binding,scope,old,added,observations} from './replacement-sequence-fixtures.mjs';
 
-for(const stale of ['baseline','metrics','refresh-still-stale']){
-test(`an approved scale-out refreshes ${stale} before dispatch`,async t=>{
+for(const stale of ['baseline','metrics','refresh-still-stale','drain-stale','drain-fresh','drain-unhealthy','drain-still-stale','drain-wrong-target']){
+test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
+ const drainScenario=stale.startsWith('drain-');
+ const drainAccepted=['drain-stale','drain-fresh'].includes(stale);
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'grant-evidence-')));
  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -24,25 +26,34 @@ test(`an approved scale-out refreshes ${stale} before dispatch`,async t=>{
  const capability={capability:'db-proxy.scale-out',target:{kind:'db-proxy',code:proxyCode},constraints:{desiredCapacity:4}};
  const policies={db_proxy_scale:{version:1,variants:[{capability:capability.capability,targetKind:'db-proxy',
   condition:'desired-greater-than-current',requiresHumanApproval:true}]}};
+ const pgcatTarget={kind:'db-proxy',code:proxyCode};
+ const protectionCapability={capability:'db-proxy.node-protection',target:pgcatTarget,constraints:{protected:true}};
+ const drainCapability={capability:'db-proxy.drain',target:pgcatTarget,constraints:{weight:0}};
+ if(drainScenario)for(const [tool,capability] of [['db_proxy_node_protection_set',protectionCapability],['db_proxy_nodes_deregister',drainCapability]]){
+  policies[tool]={version:1,variants:[{capability:capability.capability,targetKind:'db-proxy',condition:'always',requiresHumanApproval:true}]};
+ }
  const grantID='33333333-3333-4333-8333-333333333333';
- const proposal={requestId,envCode,scopeDigest:scope.resolutionDigest,capabilities:[capability]};
+ const proposal={requestId,envCode,scopeDigest:scope.resolutionDigest,capabilities:[capability,...(drainScenario?[protectionCapability,drainCapability]:[])]};
  const grant={...proposal,id:grantID,bundleDigest:'c'.repeat(64),version:1,state:'pending'};
  const modelCall=(name,args)=>({type:'toolCall',name,arguments:args});
  const requestRead=modelCall('mcp__raptor__request_get',{requestId});
  const discover=modelCall('mcp__raptor__deployments_list',{requestId,envCode,kind:'application',code:application.appCode});
  const expand=modelCall('mcp__infra__db_proxy_scale',{requestId,envCode,proxyCode,actionId:'expand',desiredCapacity:4});
+ const protect=modelCall('mcp__infra__db_proxy_node_protection_set',{requestId,envCode,proxyCode,nodeIds:added,protected:true});
+ const drain=modelCall('mcp__infra__db_proxy_nodes_deregister',{requestId,envCode,proxyCode,nodeIds:stale==='drain-wrong-target'?added:old});
  const release=modelCall('pgcat_connection_continuity',{phase:'release-probes',observationId:'held-originals',drainActionId:'drain'});
  const {createAssistantMessageEventStream}=await import('@earendil-works/pi-ai/utils/event-stream');
  const {getCurrentTools}=await import('@earendil-works/pi-ai');
  const {runtime}=await loadPiRuntime({stateRoot});
  runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
  const progress=[],writes=[],refreshOrder=[];
- let phase='proposal',round=0,observationsMade=0,canariesReleased=0;
+ let phase='proposal',round=0,observationsMade=0,canariesReleased=0,newProtected=false;
  const visible=[];
  let feedback;
  runtime.streamSimple=(model,context)=>{
   round++;
   if(phase==='resume'&&round===7)t.mock.timers.tick(stale==='metrics'?1000:31000);
+  if(phase==='drain'&&round===5&&stale!=='drain-fresh')t.mock.timers.tick(31000);
   visible.push(getCurrentTools(context.messages).map(tool=>tool.name));
   if(phase==='resume'&&round===4)feedback=context.messages.findLast(m=>m.role==='toolResult'&&m.toolName===expand.name);
   const rounds=phase==='proposal'?[
@@ -59,6 +70,11 @@ test(`an approved scale-out refreshes ${stale} before dispatch`,async t=>{
     ...old.map(instanceId=>modelCall('db_connection_probe',{instanceId})),
     ...['trafficFailures','connections','pgcatClients'].map(kind=>modelCall('metrics_read',{kind})),expand],
    [expand]
+  ]:phase==='drain'?[
+   [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
+   [...['fleet','backend','capacity'].map(kind=>modelCall('cloud_read',{kind})),
+    ...added.map(instanceId=>modelCall('db_connection_probe',{instanceId})),modelCall('metrics_read',{kind:'pgcatClients'})],
+   [protect],[drain],...(drainAccepted?[[drain]]:[])
   ]:[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[requestRead,expand],
    [release,requestRead],
@@ -92,6 +108,8 @@ test(`an approved scale-out refreshes ${stale} before dispatch`,async t=>{
      deployments:[{...workload,kind:'application',objectCode:application.appCode}]}:{resource:{envCode,kind:'db-proxy',code:proxyCode},
      pgproxyWorkload:{type:'ess',code:proxyCode,workloadKey:'opaque-proxy',targetDbCode:scope.targetDbCode}},
     deployment_status_get:{resource,applicationWorkload:{...workload,type:'kubernetes'},status:{...observations().deployment,evidenceMode:'live',observedAt:time}},
+    db_proxy_node_protection_set:{actionId:'protect',evidenceMode:'live',instanceIds:args.nodeIds,outcome:'submitted'},
+    db_proxy_nodes_deregister:{actionId:'drain',evidenceMode:'live',instanceIds:args.nodeIds,outcome:'submitted'},
     db_proxy_scale:{actionId:args.actionId,scalingActivityId:'asa-test',evidenceMode:'live',groupId:scope.groupId,previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'}
    }[name];
    assert.ok(data,`unexpected remote ${name}`);
@@ -99,23 +117,41 @@ test(`an approved scale-out refreshes ${stale} before dispatch`,async t=>{
     writes.push({args,grant:new Headers(init.headers).get('X-Raptor-Request-Grant'),round});
     refreshOrder.push('write');
    }
+   if(name==='db_proxy_node_protection_set')newProtected=true;
+   if(name==='db_proxy_nodes_deregister'){
+    writes.push({args,grant:new Headers(init.headers).get('X-Raptor-Request-Grant'),round});
+    refreshOrder.push('drain');
+   }
    result={structuredContent:{data},content:[{type:'text',text:JSON.stringify({data})}]};
   }else assert.fail(`unexpected RPC ${rpc.method}`);
   return Response.json({jsonrpc:'2.0',id:rpc.id,result});
  };
  const observed=work=>async args=>{observationsMade++;return work(args);};
- const observer={cloudRead:observed(args=>observations()[args.kind]),deploymentRead:observed(()=>observations().deployment),
+ const isDrainRefresh=()=>phase==='drain'&&round===5;
+ const fleetObservations=()=>phase==='drain'?observations([...old,...added],{unprotected:newProtected?[]:added}):observations();
+ const observer={cloudRead:observed(args=>{
+  const data=fleetObservations()[args.kind];
+  if(isDrainRefresh()){
+   refreshOrder.push(args.kind);
+   if(stale==='drain-unhealthy'&&args.kind==='backend')data.nodes.at(-1).healthy=false;
+  }
+  return data;
+ }),deploymentRead:observed(()=>observations().deployment),
   metricsRead:observed(args=>{
-   const evidence=observations()[args.kind==='pgcatClients'?'metrics':args.kind];
+   const evidence=fleetObservations()[args.kind==='pgcatClients'?'metrics':args.kind];
    if(args.kind==='pgcatClients'){
-    if(round===7)refreshOrder.push('pgcatClients');
+    if(round===7||isDrainRefresh())refreshOrder.push('pgcatClients');
+    if(stale==='drain-still-stale'&&isDrainRefresh())evidence.sourceAt=new Date(Date.now()-15001).toISOString();
     if((stale==='metrics'&&round===6)||(stale==='refresh-still-stale'&&round===7)){
      evidence.sourceAt=new Date(Date.now()-(round===6?14500:16000)).toISOString();
     }
    }
    return evidence;
   }),
-  dbConnectionProbe:observed(args=>({...args,connected:true})),pgcatConnectionContinuity:observed(args=>{
+  dbConnectionProbe:observed(args=>{
+   if(isDrainRefresh())refreshOrder.push(args.instanceId);
+   return {...args,connected:true};
+  }),pgcatConnectionContinuity:observed(args=>{
    if(args.phase==='release-probes')canariesReleased++;
    if(round===7&&args.phase==='hold')refreshOrder.push('hold');
    const at=new Date().toISOString();
@@ -154,6 +190,22 @@ test(`an approved scale-out refreshes ${stale} before dispatch`,async t=>{
  assert.equal(resumed.paused?.kind,'resource',JSON.stringify(resumed));
  assert.deepEqual(writes,[{args:expand.arguments,grant:grantID,round:7}]);
  assert.deepEqual(refreshOrder,stale==='metrics'?['pgcatClients','write']:['hold','pgcatClients','write']);
+ if(drainScenario){
+  phase='drain';round=0;refreshOrder.length=0;
+  await runLiveReplacement({...options,privateRoot:path.join(root,'drain'),
+   binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:resumed.sessionReference,
+   decisionContext:{...resumed.paused,decision:'resume'}});
+  assert.equal(newProtected,true,'the protection write must precede the proposed drain');
+  if(stale==='drain-wrong-target'){
+   assert.equal(writes.length,1);
+   assert.deepEqual(refreshOrder,[]);
+  }else{
+   assert.deepEqual(refreshOrder.slice(0,5).sort(),['backend','capacity','fleet',...added].sort());
+   assert.deepEqual(refreshOrder.slice(5),drainAccepted?['pgcatClients','drain']:['pgcatClients']);
+   assert.deepEqual(writes.slice(1),drainAccepted?[{args:drain.arguments,grant:grantID,round:5}]:[]);
+  }
+  return;
+ }
  phase='after-expansion';round=0;
  const replay=await runLiveReplacement({...options,privateRoot:path.join(root,'after-expansion'),
   binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:resumed.sessionReference,

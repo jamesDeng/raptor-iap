@@ -14,14 +14,14 @@ const cases=[
  {name:'mismatched approval identity',split:true,fault:'bad-approval',firstError:'ToolFailed',pauseCount:0},
  {name:'incomplete first probes',split:true,fault:'missing-initial-probe',firstError:'ToolFailed',pauseCount:0},
  {name:'approval with failed sibling read',split:true,fault:'sibling-failure',firstError:'ToolFailed',pauseCount:0},
- {name:'missing resumed probe',split:true,fault:'missing-resumed-probe',resumeError:'TurnLimit'},
+ {name:'missing resumed probe',split:true,fault:'missing-resumed-probe',resumeError:'MissingEvidence'},
  {name:'failed resumed probe',split:true,fault:'failed-resumed-probe',resumeError:'ToolFailed'},
  {name:'stale resumed metrics',split:true,fault:'stale-resumed-metrics',resumeError:'ToolFailed'},
  {name:'denied continuation',split:true,fault:'denied-continuation',resumeError:'ToolFailed'},
  {name:'completed resumed probes with failed sibling',split:true,fault:'resumed-sibling-failure',resumeError:'ToolFailed'},
  {name:'completed reads with model error',split:true,fault:'resumed-model-error',resumeError:'ModelFailed'},
 ];
-for(const {name,split,explicit=false,fault,firstError,pauseCount,resumeError,chatWriteFails=false,resourceWait=true,nodeCount=2} of cases)test(`pinned Pi qualification ${name} settles safely within ten model calls`,async()=>{
+for(const {name,split,explicit=false,fault,firstError,pauseCount,resumeError,chatWriteFails=false,resourceWait=true,nodeCount=2} of cases)test(`pinned Pi qualification ${name} settles according to read-only evidence`,async()=>{
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'qual-pi-')));try{
  const state=path.join(root,'state'),skills=path.join(root,'skills');fs.mkdirSync(state);fs.mkdirSync(path.join(skills,'pgcat-qualification'),{recursive:true});fs.writeFileSync(path.join(skills,'pgcat-qualification','SKILL.md'),'---\nname: pgcat-qualification\ndescription: Qualify read-only runtime.\n---\nNo infrastructure changes.\n');fs.writeFileSync(path.join(state,'auth.json'),JSON.stringify({'openai-codex':{type:'oauth',access:'synthetic',refresh:'synthetic',expires:Date.now()+999999}}));
  const b={requestId:'11111111-1111-4111-8111-111111111111',attemptId:'22222222-2222-4222-8222-222222222222',definitionSha256:'a'.repeat(64),skillsCommit:'b'.repeat(40),operation:'db-proxy.replace-nodes',objectKind:'db-proxy',objectCode:'proxy',envCode:'dev',clusterId:'cluster',model:'gpt-6-luna',providerId:'codex',connectionVersion:3,executionMode:'qualification'};
@@ -75,7 +75,7 @@ for(const {name,split,explicit=false,fault,firstError,pauseCount,resumeError,cha
  assert.ok(!initialJournal.some(row=>row.message?.role==='assistant'&&['error','aborted'].includes(row.message.stopReason)));
 
  resumed=true;n=0;runtime.streamSimple=stream;const next=await runLiveReplacement({...args,privateRoot:path.join(root,'private-resume'),binding:{...b,attemptId:'44444444-4444-4444-8444-444444444444'},sessionReference:first.sessionReference,decisionContext:{approvalId:first.paused.approvalId,actionId:first.paused.actionId,bindingDigest:first.paused.bindingDigest,decision:'resume'}});
- if(resumeError){assert.equal(next.passed,false);assert.equal(next.error,resumeError,JSON.stringify(next));assert.equal(next.paused,undefined);assert.equal(pauseCalls,1);assert.ok(n<=10);return;}
+ if(resumeError){assert.equal(next.passed,false);assert.equal(next.error,resumeError,JSON.stringify(next));assert.equal(next.paused,undefined);assert.equal(pauseCalls,1);if(fault==='missing-resumed-probe')assert.equal(n,11);return;}
  assert.equal(next.passed,true,JSON.stringify(next));assert.equal(n,split?10:8);assert.equal(next.usage.length,n);assert.equal(next.result.replacement,undefined);assert.equal(next.result.qualification.checks.length,13);assert.equal(next.result.qualification.trafficAcceptance,'not_assessed');assert.equal(next.sessionReference.sessionId,first.sessionReference.sessionId);assert.equal(next.result.qualification.version,2);assert.equal(next.result.qualification.transportContract,'raptor-resource-v1');
  assert.equal(events[beforeResume].summary,'Resuming read-only PgCat qualification. I’ll verify the approval and repeat the baseline checks.');
  assert.equal(events.at(-1).summary,'The repeated PgCat checks passed. I’ll save the qualification result.');

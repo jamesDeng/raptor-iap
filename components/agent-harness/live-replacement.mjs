@@ -37,11 +37,11 @@ const WORK_UPDATES=new Map([
  ['mcp__infra__deployment_restart','I’ll request a restart of the bound application.']
 ]);
 export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:b,replacementScope,skills,limits,mcpConfig,fetch,onProgress=()=>{},signal,sessionReference,decisionContext,observer,conversation}){
- let session,mcp,manager,error,inbox,inboxTimer,finishTroubleshooting,turns=0;const usage=[],replyUsage=[],toolDiagnostics=new Map(),publicStatus=[],announced=new Set();
+ let session,mcp,manager,error,inbox,inboxTimer,finishTroubleshooting;const usage=[],replyUsage=[],toolDiagnostics=new Map(),publicStatus=[],announced=new Set();
  const stream=runtime.streamSimple.bind(runtime),pause=new ApprovalPause(b),profile=operationCapabilities(b,replacementScope);
  const observationTools=observer?operationObservationTools(b):[];
  const tools=Object.entries(profile).flatMap(([server,names])=>names.map(name=>'mcp__'+server+'__'+name)).concat(observationTools).concat(['resource_wait']);
- if(limits?.max_turns!==10||limits?.max_output_tokens!==1024)throw Error('InvalidJob');
+ if(limits?.max_output_tokens!==1024)throw Error('InvalidJob');
  const abort=()=>{error||='Cancelled';void session?.abort();};
  const progress=event=>{try{
   onProgress(event);
@@ -54,7 +54,6 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
  const narrate=summary=>{phaseSummary=summary;progress({kind:'progress',outcome:'running',summary});};
  runtime.streamSimple=(model,context,options)=>{
   if(pause.wait())throw Error('ApprovalWaiting');
-  if(++turns>10){error||='TurnLimit';throw Error('TurnLimit');}
   return stream(model,context,{...options,maxTokens:1024,maxRetries:0});
  };
  try{
@@ -203,18 +202,27 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
      narrate(reason);
      return {block:true,reason};
     }
-    if(context.toolCall.name!=='mcp__infra__db_proxy_scale'||context.args.desiredCapacity!==4||
-     !grants.approved||pause.candidate||trace.unresolved()||sequence.intents('expand').length)return decision;
-    const refresh=sequence.scaleOutRefresh();
-    if(!refresh)return decision;
-    checkOperationSelectors('infra','db_proxy_scale',context.args,b,replacementScope);
+    if(!grants.approved||pause.candidate||trace.unresolved())return decision;
+    const scaleOut=context.toolCall.name==='mcp__infra__db_proxy_scale'&&context.args.desiredCapacity===4&&!sequence.intents('expand').length;
+    const drain=context.toolCall.name==='mcp__infra__db_proxy_nodes_deregister';
+    const refresh=scaleOut?sequence.scaleOutRefresh():undefined;
+    const drainNodes=drain?sequence.drainRefreshNodes(context.args):undefined;
+    if(!refresh&&!drainNodes)return decision;
+    checkOperationSelectors('infra',drain?'db_proxy_nodes_deregister':'db_proxy_scale',context.args,b,replacementScope);
     const nested=session.extensionRunner.createToolContext(context.toolCall.id,signal);
     const read=async(tool,args)=>{
      if(!isReadOnlyTool(tool)||(tool==='pgcat_connection_continuity'&&args.phase!=='hold'))throw Error('InvalidEvidence');
      const result=await nested.executeTool(tool,args);
      if(result.isError)throw Error('ToolFailed');
     };
-    if(refresh==='baseline'){
+    if(drainNodes){
+     narrate('Refreshing the bound four-node fleet, routing and replacement SQL probes before drain.');
+     const outcomes=await Promise.allSettled([
+      ...drainNodes.map(instanceId=>read('db_connection_probe',{instanceId})),
+      ...['fleet','backend','capacity'].map(kind=>read('cloud_read',{kind})),
+     ]);
+     if(outcomes.some(outcome=>outcome.status==='rejected'))throw Error('ToolFailed');
+    }else if(refresh==='baseline'){
      narrate('Refreshing the bound baseline and the same original sockets before scale-out.');
      const hold=read('pgcat_connection_continuity',{phase:'hold'});
      const reads=qualificationReadBatches(b,replacementScope).flat().filter(call=>

@@ -244,6 +244,15 @@ export class ReplacementSequence {
   if(missing.length===1&&missing[0]==='metrics_read pgcatClients')return 'metrics';
   if(missing.length)return 'baseline';
  }
+ // Recheck even apparently fresh evidence before the first drain: it can
+ // expire while the write is dispatched and Infra checks the same phase.
+ drainRefreshNodes(args){
+  if(!this.trace.versioned||!this.readiness.ready()||this.intents('withdraw').length)return;
+  const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();
+  if(!Array.isArray(args.nodeIds)||!same([...args.nodeIds].sort(),old))return;
+  const protection=this.intents('protectNew')[0];
+  if(protection&&this.trace.rows.some(row=>row.kind==='result'&&row.key===protection.key&&row.state.outcome==='submitted'))return added;
+ }
  requireReads(reads){
   if(reads.length)throw this.trace.versioned?new ReplacementEvidenceRequired(reads):missing();
  }
