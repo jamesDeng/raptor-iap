@@ -44,7 +44,7 @@ run "receiver_grants_remain_apply_only" {
     condition = (
       length([for s in jsondecode(alicloud_ram_policy.fleet_read.policy_document).Statement : s if contains(s.Action, "nlb:AddServersToServerGroup") || contains(s.Action, "nlb:LoadBalancerJoinSecurityGroup")]) == 0 &&
       one([for s in jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement : s.Resource if contains(s.Action, "nlb:AddServersToServerGroup")]) == [
-        "acs:nlb:ap-southeast-1:123456789012:servergroup/sgp-test",
+        "acs:nlb:ap-southeast-1:123456789012:serverGroup/sgp-test",
         "acs:ecs:ap-southeast-1:123456789012:instance/i-test"
       ]
     )
