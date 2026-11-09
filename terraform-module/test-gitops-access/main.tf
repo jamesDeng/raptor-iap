@@ -86,7 +86,7 @@ resource "alicloud_ram_policy" "fleet_apply" {
       ], var.pgcat_scaling_group_id == null ? [] : [
       { Effect = "Allow", Action = ["ess:CreateLifecycleHook"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/${var.pgcat_scaling_group_id}"] }
       ], var.metrics_receiver_backend == null ? [] : [
-      { Effect = "Allow", Action = ["nlb:AddServersToServerGroup"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:servergroup/${var.metrics_receiver_backend.server_group_id}", "acs:ecs:ap-southeast-1:${var.account_id}:instance/${var.metrics_receiver_backend.instance_id}"] }
+      { Effect = "Allow", Action = ["nlb:AddServersToServerGroup"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:serverGroup/${var.metrics_receiver_backend.server_group_id}", "acs:ecs:ap-southeast-1:${var.account_id}:instance/${var.metrics_receiver_backend.instance_id}"] }
     ])
   })
   depends_on = [terraform_data.account_guard]
