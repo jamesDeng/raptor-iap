@@ -1,6 +1,6 @@
 # PgCat ECS / ESS module proposal
 
-The optional `monitoring_enabled` input adds a pinned Prometheus Agent to newly launched nodes through the ESS user-data template. It scrapes the local PgCat exporter and remote-writes through the Terraform-owned VPC-only receiver alias. The default is disabled, and existing nodes need a reviewed replacement to gain the Agent. See `docs/pgcat-prometheus-agent.md` for activation order.
+The optional `monitoring_enabled` input adds a pinned Prometheus Agent to newly launched nodes through the ESS user-data template. It scrapes the local PgCat exporter and remote-writes through the Terraform-owned private NLB. The default is disabled, and existing nodes need a reviewed replacement to gain the Agent. See `docs/pgcat-prometheus-agent.md` for activation order.
 
 Defines private NLB/TCP listener, server group, ESS group, NLB attachment and ECS launch configuration, with discovery tags on group and nodes. Baseline/minimum is two, maximum four. Runtime desired-capacity and per-instance protection changes are narrowly ignored so Terraform cannot reset an in-progress replacement or clear protection from retained nodes; centrally audit drift and require the final capacity two before permanent configuration apply. The runtime replacement API owns both settings. No entire-resource ignore, automatic import, direct instance delete or shared state modification.
 

@@ -6,6 +6,7 @@ module "metrics_receiver" {
   account_id               = var.account_id
   vpc_id                   = var.vpc_id
   nlb_zones                = [{ zone_id = "ap-southeast-1a", vswitch_id = var.proxy_worker_vswitch_id }, { zone_id = "ap-southeast-1b", vswitch_id = alicloud_vswitch.proxy_b.id }]
+  endpoint_zone_id         = "ap-southeast-1a"
   worker_instance_id       = var.receiver_worker_instance_id
   worker_security_group_id = var.receiver_worker_security_group_id
   proxy_client_cidrs       = ["10.70.1.0/24"]

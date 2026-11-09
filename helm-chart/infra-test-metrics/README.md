@@ -1,6 +1,6 @@
 # Dedicated private Prometheus chart
 
-The optional `receiver.enabled` switch adds the private-write NodePort on 30909 and a pinned NGINX sidecar that forwards only POST `/api/v1/write` to Prometheus. Terraform owns the intranet NLB and VPC-only CNAME that point at the current ACK worker. This switch is disabled by default. Enable it before turning on the PgCat ESS Prometheus Agents. See `docs/pgcat-prometheus-agent.md` for deployment order and acceptance checks.
+The optional `receiver.enabled` switch adds the private-write NodePort on 30909 and a pinned NGINX sidecar that forwards only POST `/api/v1/write` to Prometheus. Terraform owns the intranet NLB that points at the current ACK worker. Enable the receiver before turning on the PgCat ESS Prometheus Agents. See `docs/pgcat-prometheus-agent.md` for deployment order and acceptance checks.
 
 Requires immutable Prometheus image digest and a centrally reviewed external ConfigMap with key `targets.json`, produced from current authoritative ESS inventory. Each target group must include env, db_proxy_code, target_db_code and ecs_instance_id labels. Do not supply guessed/static IPs and call them live inventory. This chart creates no inventory controller, cloud access, role grant or Argo Application. Stale inventory must be refused by Infra API independently against fresh provider node membership.
 

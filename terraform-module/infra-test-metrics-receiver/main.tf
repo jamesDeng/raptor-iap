@@ -113,27 +113,3 @@ resource "alicloud_nlb_listener" "receiver" {
   depends_on        = [alicloud_nlb_server_group_server_attachment.worker]
 }
 
-# Post-2024 NLB DNS names require a customer CNAME. Keep the alias private to
-# this VPC so Agents can use a stable internal hostname.
-resource "alicloud_pvtz_zone" "receiver" {
-  zone_name  = "pgcat-metrics.rdev.internal"
-  tags       = local.tags
-  depends_on = [terraform_data.account_guard]
-}
-
-resource "alicloud_pvtz_zone_record" "receiver" {
-  zone_id = alicloud_pvtz_zone.receiver.id
-  rr      = "write"
-  type    = "CNAME"
-  value   = alicloud_nlb_load_balancer.receiver.dns_name
-  ttl     = 60
-}
-
-resource "alicloud_pvtz_zone_attachment" "receiver" {
-  zone_id = alicloud_pvtz_zone.receiver.id
-  vpcs {
-    vpc_id    = var.vpc_id
-    region_id = "ap-southeast-1"
-  }
-  depends_on = [alicloud_pvtz_zone_record.receiver]
-}

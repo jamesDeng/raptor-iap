@@ -123,7 +123,7 @@ run "monitoring_agent_is_explicit_and_local" {
   variables {
     monitoring_enabled       = true
     monitoring_agent_image   = "prom/prometheus@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    monitoring_receiver_host = "write.pgcat-metrics.rdev.internal"
+    monitoring_receiver_host = "10.70.1.27"
     catalog_proxy_code       = "DP00001"
     catalog_target_db_code   = "D00002"
   }
@@ -134,7 +134,7 @@ run "monitoring_agent_is_explicit_and_local" {
       strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "pgcat-agent") &&
       strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "db_proxy_code: 'DP00001'") &&
       strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "target_db_code: 'D00002'") &&
-      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "http://write.pgcat-metrics.rdev.internal:9091/api/v1/write") &&
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "http://10.70.1.27:9091/api/v1/write") &&
       strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "X-aliyun-ecs-metadata-token") &&
       !strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "Bearer ")
     )
@@ -157,5 +157,10 @@ run "monitoring_agent_rejects_mutable_image" {
   command = plan
   variables { monitoring_agent_image = "prom/prometheus:latest" }
   expect_failures = [var.monitoring_agent_image]
+}
+run "monitoring_agent_rejects_public_receiver" {
+  command = plan
+  variables { monitoring_receiver_host = "192.0.2.27" }
+  expect_failures = [var.monitoring_receiver_host]
 }
 

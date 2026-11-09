@@ -9,3 +9,6 @@ clientDiscoveryNames:
 infraReaderUser: '300172700753867300'
 
 infraExecutionDeployment: 'rdev-test-client-client'
+
+receiver:
+  enabled: true
