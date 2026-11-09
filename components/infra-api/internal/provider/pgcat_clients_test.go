@@ -23,15 +23,26 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+const clientTestLabels = `env="dev",db_proxy_code="proxy",target_db_code="db",ecs_instance_id=~"i-one|i-two"`
+
 var clientsQueries = []string{
-	`up{job="pgcat",env="dev",db_proxy_code="proxy",target_db_code="db"}`,
-	`timestamp(up{job="pgcat",env="dev",db_proxy_code="proxy",target_db_code="db"})`,
-	`pgcat_pools_cl_active{job="pgcat",env="dev",db_proxy_code="proxy",target_db_code="db"}`,
-	`timestamp(pgcat_pools_cl_active{job="pgcat",env="dev",db_proxy_code="proxy",target_db_code="db"})`,
-	`pgcat_pools_cl_idle{job="pgcat",env="dev",db_proxy_code="proxy",target_db_code="db"}`,
-	`timestamp(pgcat_pools_cl_idle{job="pgcat",env="dev",db_proxy_code="proxy",target_db_code="db"})`,
-	`pgcat_pools_cl_waiting{job="pgcat",env="dev",db_proxy_code="proxy",target_db_code="db"}`,
-	`timestamp(pgcat_pools_cl_waiting{job="pgcat",env="dev",db_proxy_code="proxy",target_db_code="db"})`,
+	clientTestQuery("up", false),
+	clientTestQuery("up", true),
+	clientTestQuery("pgcat_pools_cl_active", false),
+	clientTestQuery("pgcat_pools_cl_active", true),
+	clientTestQuery("pgcat_pools_cl_idle", false),
+	clientTestQuery("pgcat_pools_cl_idle", true),
+	clientTestQuery("pgcat_pools_cl_waiting", false),
+	clientTestQuery("pgcat_pools_cl_waiting", true),
+}
+
+func clientTestQuery(metric string, timestamp bool) string {
+	agent := fmt.Sprintf(`%s{job="pgcat-agent",%s}`, metric, clientTestLabels)
+	central := fmt.Sprintf(`%s{job="pgcat",%s}`, metric, clientTestLabels)
+	if timestamp {
+		agent, central = "timestamp("+agent+")", "timestamp("+central+")"
+	}
+	return fmt.Sprintf(`(%s or (%s unless on (env,db_proxy_code,target_db_code,ecs_instance_id) up{job="pgcat-agent",%s}))`, agent, central, clientTestLabels)
 }
 
 const clientsVector = `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"job":"pgcat","env":"dev","db_proxy_code":"proxy","target_db_code":"db","ecs_instance_id":"i-one","pool":"test","user":"poc_app"},"value":[1793300000.125,"1.00"]}]}}`
@@ -217,6 +228,7 @@ func TestPgcatClientsRejectsMalformedRawVectors(t *testing.T) {
 		`{"status":"success","data":{"resultType":"vector"}}`,
 		`{"status":"success","data":{"resultType":"vector","result":[` + row + `,` + row + `]}}`,
 		strings.Replace(clientsVector, `"env":"dev"`, `"env":"foreign"`, 1),
+		strings.Replace(clientsVector, `"i-one"`, `"i-retired"`, 1),
 		strings.Replace(clientsVector, `"1.00"`, `"NaN"`, 1),
 		strings.Replace(clientsVector, `1793300000.125`, `"bad"`, 1),
 		strings.Replace(clientsVector, `"1.00"`, `1`, 1),
@@ -289,5 +301,19 @@ func TestPgcatClientsDoesNotRetryPrivateRateLimit(t *testing.T) {
 	_, err = observer.ObservePgcatClients(ctx, env, target)
 	if err == nil || strings.Contains(err.Error(), "private") || calls.Load() > 2 {
 		t.Fatalf("private query retried after rate limit: requests=%d err=%v", calls.Load(), err)
+	}
+}
+
+func TestPgcatClientsSelectsAutomaticSamplesForOnlyProviderMembers(t *testing.T) {
+	p, env, target, _, _, _, _ := observationFixture(t)
+	seriesFixture(t, p, func(r *http.Request) (string, error) {
+		query := r.URL.Query().Get("query")
+		if !strings.Contains(query, "job=\"pgcat-agent\"") || !strings.Contains(query, "ecs_instance_id=~\"i-one|i-two\"") {
+			t.Errorf("query does not select automatically reported samples for the verified fleet: %s", query)
+		}
+		return strings.Replace(clientsVector, "job\":\"pgcat\"", "job\":\"pgcat-agent\"", 1), nil
+	})
+	if _, err := requireClientsObserver(t, p).ObservePgcatClients(context.Background(), env, target); err != nil {
+		t.Fatal(err)
 	}
 }

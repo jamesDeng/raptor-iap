@@ -25,9 +25,8 @@ const SYSTEM='Operate only on the trusted request and resolved PgCat scope using
 const EXPANSION_READINESS=' After both original backends stop accepting new connections, call resource_wait with seconds=60 and stop. Resume with fresh resource discovery, workload status, fleet, backend, capacity, fresh complete PgCat client metrics before the bound restart. After submitting expansion, repeat cloud fleet, backend and capacity reads and PgCat client metrics. If any node is Pending, any backend is not healthy, or metrics report pendingInstanceIds, call resource_wait with seconds=60 and stop. Apply the selected skill to exact new-node readiness; do not require new-node SQL probes. Post-expansion writes and approval requests unlock only on a later completed turn after a persisted four-node readiness witness. After the bound Deployment restart, read deployment_read and use resource_wait until generation and observedGeneration prove two updated, available and ready replicas. Do not query trafficFailures or connections during a surge; strict traffic client discovery requires exactly two Ready clients. An unknown scale outcome must be reconciled by these exact reads; never replay its action.';
 const GRANT_SYSTEM='Read request_get first. Follow its operation prompt and the pinned skill. Verify the exact request, target and Infra approval policy, then submit one request_grant_request with every required high-risk capability, exact target and constraints. Live health evidence is checked before writes. The runtime checkpoints and pauses when the bundle is returned. On resume, verify the saved grant, discover exact selectors and recheck the current phase before writing. For EvidenceRefreshRequired, run the named reads and wait for their results before retrying the same unsubmitted action. Never retry a submitted or uncertain action. Keep public progress brief and exclude credentials and private reasoning.';
 const GRANT_PROPOSAL='mcp__raptor__request_grant_request';
-const MONITORING_SYNC='mcp__infra__pgcat_monitoring_sync';
 const INITIAL_READS=' First complete the request, environment, object, resource discovery, Deployment, fleet, backend, capacity, metrics and SQL reads. Wait for successful results and a valid two-node fleet baseline before protecting nodes or calling any other mutation. If a SQL probe returns target-mismatch, use the exact baselineInstanceIds it returns and require successful probes for both. Only read and wait tools are initially available.';
-const REPLACEMENT_WRITES=new Set([GRANT_PROPOSAL,'mcp__raptor__approval_request','mcp__raptor__request_pause','mcp__infra__db_proxy_scale','mcp__infra__db_proxy_node_protection_set','mcp__infra__db_proxy_nodes_deregister','mcp__infra__deployment_restart',MONITORING_SYNC]);
+const REPLACEMENT_WRITES=new Set([GRANT_PROPOSAL,'mcp__raptor__approval_request','mcp__raptor__request_pause','mcp__infra__db_proxy_scale','mcp__infra__db_proxy_node_protection_set','mcp__infra__db_proxy_nodes_deregister','mcp__infra__deployment_restart']);
 const WORK_UPDATES=new Map([
  ['cloud_read','I’ll check the PgCat fleet, load balancer registration, and capacity.'],
  ['metrics_read','I’ll read the application traffic and PgCat connection metrics.'],
@@ -116,10 +115,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     const name='mcp__'+server+'__'+tool;
     if(!qualification&&REPLACEMENT_WRITES.has(name)&&
       (!activeTools.includes(name)||(grants&&trace.unresolved())||(!grants&&readiness.blocked())))throw Error('MissingEvidence');
-    if(grants&&server==='infra'&&REPLACEMENT_WRITES.has(name)){
-     if(!grants.approved)throw Error('InvalidApprovalPause');
-     if(name===MONITORING_SYNC)sequence.requireInventory();
-    }
+    if(grants&&server==='infra'&&REPLACEMENT_WRITES.has(name)&&!grants.approved)throw Error('InvalidApprovalPause');
     if(grants&&server==='raptor'){
      if(tool==='request_grant_request')grants.beforeProposal(args);
      if(tool==='request_grant_get')grants.beforeRead(args);
@@ -129,14 +125,13 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
      else if(!(server==='raptor'&&tool==='request_pause'))trace.beforeRead('mcp.'+server+'.'+tool,args);
     }
     if(!qualification&&server==='raptor'&&tool==='approval_request')sequence.beforeMutation(tool,args);
-    if(server==='infra'&&!qualification&&name!==MONITORING_SYNC){
+    if(server==='infra'&&!qualification){
      sequence.beforeMutation(tool,args);trace.beforeMutation(tool,args);
      if(readiness.blocked()){activeTools=readTools;session.setActiveToolsByName(readTools);}
     }
    },
    onToolResult:(server,tool,args,data)=>{
-    if(server==='infra'&&tool==='pgcat_monitoring_sync')sequence.observeInventory(data);
-    if(server==='infra'&&!qualification&&tool!=='pgcat_monitoring_sync'){trace.mutation(tool,args,data);sequence.onMutationResult(tool,args,data);}
+    if(server==='infra'&&!qualification){trace.mutation(tool,args,data);sequence.onMutationResult(tool,args,data);}
     if(grants&&server==='raptor'){
      if(tool==='request_get')grants.readContext(data,mcp.getApprovalPolicies());
      if(tool==='request_grant_request')pause.grantRequested(args,data);
@@ -166,7 +161,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
      toolDiagnostics.set(name,category);
      return true;
     }
-    const recoverable=grants&&server==='infra'&&REPLACEMENT_WRITES.has(name)&&name!==MONITORING_SYNC&&trace.unresolved()&&
+    const recoverable=grants&&server==='infra'&&REPLACEMENT_WRITES.has(name)&&trace.unresolved()&&
      (['transport-error','protocol-error','local-evidence'].includes(category)||category.startsWith('http-')||category.startsWith('remote-'));
     if(recoverable)uncertainWrite=name;
     else readFailure=true;

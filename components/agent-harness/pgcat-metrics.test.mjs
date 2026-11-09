@@ -40,3 +40,17 @@ test('fast collection retains oldest response and scrape timestamps',async t=>{
  assert.equal(out.latestResponseAt,new Date(start+8000).toISOString());
  assert.equal(out.latestSourceAt,new Date(start+5000).toISOString());
 });
+
+test('automatic PgCat Agent samples can cover the exact cohort without file discovery',async()=>{
+ const out=await readPgcatClients({scope,nodeIds:['node-a','node-b'],pool:'test',user:'poc_app',query:async q=>rows(q).map(r=>({...r,metric:{...r.metric,job:'pgcat-agent'}}))});
+ assert.deepEqual(out.nodes.map(n=>[n.instanceId,n.connectedClients]),[['node-a',0],['node-b',6]]);
+});
+
+test('client counters and source timestamps agree on the scrape origin for each node',async()=>{
+ for(const mismatch of ['job','instance']){
+  const query=async q=>rows(q).map(r=>({...r,metric:{...r.metric,
+   job:r.metric.ecs_instance_id==='node-a'&&mismatch==='job'&&q.startsWith('timestamp(')?'pgcat':'pgcat-agent',
+   instance:r.metric.ecs_instance_id==='node-a'&&mismatch==='instance'&&q.includes('cl_idle')?'other:9930':`${r.metric.ecs_instance_id}:9930`}}));
+  await assert.rejects(()=>readPgcatClients({scope,nodeIds:['node-a','node-b'],pool:'test',user:'poc_app',query}),/InvalidObservation/);
+ }
+});

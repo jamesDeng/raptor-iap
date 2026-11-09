@@ -28,10 +28,6 @@ type RequestGrantClient interface {
 	RecordGrant(context.Context, approval.GrantAction, string, string) error
 }
 
-type pgcatInventoryWriter interface {
-	SyncPgcatInventory(context.Context, domain.Environment, domain.ProxyReadTarget, []string, func(context.Context) error) (domain.PgcatInventoryReceipt, error)
-}
-
 func (o resourceOperations) grantDispatch(action approval.GrantAction) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if err := o.grants.DispatchGrant(ctx, action); err != nil {
@@ -39,90 +35,6 @@ func (o resourceOperations) grantDispatch(action approval.GrantAction) func(cont
 		}
 		return nil
 	}
-}
-
-func (o resourceOperations) syncMonitoring(ctx context.Context, identity AgentIdentity, resolved domain.ResolvedResource, cmd resourceInventory, raw json.RawMessage) (any, error) {
-	writer, ok := o.reader.(pgcatInventoryWriter)
-	if !ok || resolved.Proxy == nil || resolved.Proxy.Code != cmd.ProxyCode {
-		return nil, &operationError{503, "NotConfigured"}
-	}
-	proof, err := resourceIdentityProof(identity)
-	if err != nil {
-		return nil, err
-	}
-	toolPolicy, ok := policy.ApprovalPolicyForTool("pgcat_monitoring_sync", identity.Binding.ApprovalProtocol)
-	if !ok || len(toolPolicy.Variants) != 1 || !toolPolicy.Variants[0].RequiresHumanApproval {
-		return nil, &operationError{403, "ApprovalRequired"}
-	}
-	reader, ok := o.grants.(pgcatStateReader)
-	expansionReader, expansionOK := o.reader.(commands.PgcatExpansionReader)
-	if !ok || !expansionOK {
-		return nil, &operationError{503, "EvidenceUnavailable"}
-	}
-	state, err := reader.ReadPgcatRequestState(ctx, cmd.RequestID, proof.ResolutionDigest)
-	if err != nil {
-		return nil, &operationError{503, "EvidenceUnavailable"}
-	}
-	expansion, err := commands.ObserveGrantedExpansion(ctx, expansionReader, resolved.Environment,
-		domain.ProxyTarget{RequestID: cmd.RequestID, EnvCode: cmd.EnvCode, ProxyCode: cmd.ProxyCode, GroupID: resolved.Proxy.GroupID},
-		proof.ResolutionDigest, state)
-	if err != nil {
-		return nil, commandFailure(err)
-	}
-	originals := pgcatOriginalSockets(state)
-	if expansion.Status != "Successful" || len(expansion.CreatedIDs) != 2 || len(originals) != 2 {
-		return nil, &operationError{409, "MissingEvidence"}
-	}
-	wanted := slices.Clone(expansion.CreatedIDs)
-	if !slices.ContainsFunc(state.Actions, func(action approval.GrantActionDetails) bool {
-		return action.Capability.Capability == "db-proxy.scale-in" && action.State == "submitted"
-	}) {
-		for id := range originals {
-			wanted = append(wanted, id)
-		}
-	}
-	if len(slices.Compact(slices.Sorted(slices.Values(wanted)))) != len(wanted) {
-		return nil, &operationError{409, "IdentityChanged"}
-	}
-	variant := toolPolicy.Variants[0]
-	action := approval.GrantAction{RequestID: cmd.RequestID, GrantID: o.grantID, ActionID: cmd.ActionID,
-		EnvCode: cmd.EnvCode, ScopeDigest: proof.ResolutionDigest, Arguments: raw,
-		Capability: approval.GrantCapability{Capability: variant.Capability,
-			Target:      approval.GrantTarget{Kind: variant.TargetKind, Code: cmd.ProxyCode},
-			Constraints: json.RawMessage(`{}`)}}
-	claim, err := o.grants.ClaimGrant(ctx, action, proof)
-	if err != nil {
-		return nil, &operationError{403, "ApprovalRequired"}
-	}
-	if !claim.Claimed {
-		return nil, &operationError{409, "MutationAlreadySubmitted"}
-	}
-
-	target := domain.ProxyReadTarget{RequestID: cmd.RequestID, EnvCode: cmd.EnvCode, ProxyCode: cmd.ProxyCode,
-		GroupID: resolved.Proxy.GroupID, ServerGroupID: resolved.Proxy.ServerGroupID}
-	var receipt domain.PgcatInventoryReceipt
-	outcome, providerID := "not_submitted", ""
-	if ctx.Err() == nil {
-		receipt, err = writer.SyncPgcatInventory(ctx, resolved.Environment, target, wanted, o.grantDispatch(action))
-		if err == nil && receipt.Changed {
-			outcome, providerID = "submitted", receipt.UID+":"+receipt.ResourceVersion
-		}
-		var commandErr *domain.CommandError
-		if errors.As(err, &commandErr) && commandErr.Code == "SubmissionUnknown" {
-			outcome = "unknown"
-		}
-	} else {
-		err = ctx.Err()
-	}
-	record, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if e := o.grants.RecordGrant(record, action, outcome, providerID); e != nil {
-		return nil, &operationError{503, "SubmissionUnknown"}
-	}
-	if err != nil {
-		return nil, commandFailure(err)
-	}
-	return receipt, nil
 }
 
 type pgcatStateReader interface {

@@ -37,13 +37,6 @@ func ApprovalPolicyForTool(tool string, protocol ...string) (ToolApprovalPolicy,
 		variants = []ApprovalVariant{
 			{Capability: "db-proxy.drain", TargetKind: "db-proxy", Condition: "always", label: "Set the bound nodes' NLB routing weight to zero"},
 		}
-	case "pgcat_monitoring_sync":
-		if !bundled {
-			return ToolApprovalPolicy{}, false
-		}
-		variants = []ApprovalVariant{
-			{Capability: "db-proxy.sync-monitoring", TargetKind: "db-proxy", Condition: "always", label: "Synchronize the bound PgCat metrics inventory with the provider fleet"},
-		}
 	case "deployment_restart":
 		variants = []ApprovalVariant{
 			{Capability: "application.restart", TargetKind: "application", Condition: "always", label: "Roll the bound application deployment"},
@@ -69,7 +62,7 @@ func ApprovalPolicyForTool(tool string, protocol ...string) (ToolApprovalPolicy,
 	}
 	if bundled {
 		switch tool {
-		case "db_proxy_scale", "db_proxy_node_protection_set", "db_proxy_nodes_deregister", "deployment_restart", "pgcat_monitoring_sync":
+		case "db_proxy_scale", "db_proxy_node_protection_set", "db_proxy_nodes_deregister", "deployment_restart":
 			for i := range variants {
 				variants[i].RequiresHumanApproval = true
 			}

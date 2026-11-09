@@ -71,7 +71,7 @@ class Charts(unittest.TestCase):
   docs=self.render('infra-test-metrics',vals)
   role=next(x for x in docs if x['kind']=='Role' and x['metadata']['name']=='raptor-rdev-infra-pgcat-execution')
   binding=next(x for x in docs if x['kind']=='RoleBinding' and x['metadata']['name']==role['metadata']['name'])
-  self.assertEqual(role['rules'],[{'apiGroups':['apps'],'resources':['deployments'],'resourceNames':['rdev-test-client-client'],'verbs':['get','patch']},{'apiGroups':[''],'resources':['configmaps'],'resourceNames':['pgcat-provider-inventory'],'verbs':['get','patch']}])
+  self.assertEqual(role['rules'],[{'apiGroups':['apps'],'resources':['deployments'],'resourceNames':['rdev-test-client-client'],'verbs':['get','patch']}])
   self.assertEqual(binding['subjects'],[{'kind':'User','name':'300172700753867300','apiGroup':'rbac.authorization.k8s.io'}])
   vals['infraExecutionDeployment']='foreign';self.render('infra-test-metrics',vals,False)
  def test_metrics_reader_rbac_is_opt_in(self):

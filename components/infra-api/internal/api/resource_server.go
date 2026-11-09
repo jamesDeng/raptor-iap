@@ -41,7 +41,7 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}})
 		}
 		send := func(data any) { _ = json.NewEncoder(w).Encode(map[string]any{"data": data}) }
-		if r.URL.Path != "/mcp" && ((resourceCommandPath(r.URL.Path) && r.Method != "POST") || (!resourceCommandPath(r.URL.Path) && r.Method != "GET")) {
+		if r.URL.Path != "/mcp" && ((commandPath(r.URL.Path) && r.Method != "POST") || (!commandPath(r.URL.Path) && r.Method != "GET")) {
 			fail(405, "MethodNotAllowed")
 			return
 		}
@@ -131,7 +131,7 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 		}
 		var data any
 		var e error
-		if resourceCommandPath(r.URL.Path) {
+		if commandPath(r.URL.Path) {
 			if r.URL.RawQuery != "" {
 				fail(400, "InvalidInput")
 				return

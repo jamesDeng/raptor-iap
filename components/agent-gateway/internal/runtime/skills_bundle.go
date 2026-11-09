@@ -128,7 +128,7 @@ func resourceReplacementContract(raw []byte, protocol ...string) error {
 	total := 0
 	for _, file := range bundle.Files {
 		if versioned && file.Path == "pgcat-replacement/references/request-grants.md" {
-			grantSkill = len(file.Data) <= 16384 && slices.Contains(strings.Split(string(file.Data), "\n"), "request-grants-contract: v1")
+			grantSkill = len(file.Data) <= 16384 && slices.Contains(strings.Split(string(file.Data), "\n"), "request-grants-contract: v2")
 		}
 		if file.Path != "pgcat-replacement/SKILL.md" && file.Path != "pgcat-replacement/references/contracts.md" && file.Path != "pgcat-replacement/references/recovery.md" {
 			continue

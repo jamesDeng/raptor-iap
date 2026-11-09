@@ -10,10 +10,11 @@ import (
 	"time"
 
 	"raptor-iap/infra-api/internal/domain"
+	"raptor-iap/infra-api/internal/metrics"
 )
 
 // Only these eight named selections can reach the existing private ACK Service.
-func pgcatExpression(series string, env domain.Environment, m domain.ProxyMapping) (string, error) {
+func pgcatExpression(series string, env domain.Environment, m domain.ProxyMapping, fleetSelector string) (string, error) {
 	metric, timestamp := "", false
 	switch series {
 	case "up":
@@ -35,6 +36,9 @@ func pgcatExpression(series string, env domain.Environment, m domain.ProxyMappin
 	default:
 		return "", domain.ErrScope
 	}
+	if fleetSelector != "" {
+		return metrics.PgcatPreferredSeries(metric, fleetSelector, timestamp), nil
+	}
 	query := fmt.Sprintf(`%s{job="pgcat",env=%s,db_proxy_code=%s,target_db_code=%s}`, metric, strconv.Quote(env.Code), strconv.Quote(m.Code), strconv.Quote(m.TargetDBCode))
 	if timestamp {
 		query = "timestamp(" + query + ")"
@@ -47,19 +51,19 @@ func (p *reader) ObservePgcatSeries(ctx context.Context, env domain.Environment,
 		return domain.PgcatSeriesObservation{}, domain.ErrScope
 	}
 	// Reject the finite selector before any provider or query work.
-	if _, err := pgcatExpression(series, env, domain.ProxyMapping{}); err != nil {
+	if _, err := pgcatExpression(series, env, domain.ProxyMapping{}, ""); err != nil {
 		return domain.PgcatSeriesObservation{}, err
 	}
 	m, _, err := p.observationGroup(ctx, env, target)
 	if err != nil {
 		return domain.PgcatSeriesObservation{}, err
 	}
-	query, _ := pgcatExpression(series, env, m)
+	query, _ := pgcatExpression(series, env, m, "")
 	raw, err := p.PrometheusQuery(ctx, env, query, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return domain.PgcatSeriesObservation{}, &domain.CommandError{Code: "MetricsUnavailable"}
 	}
-	rows, err := pgcatVector(raw, env, m)
+	rows, err := pgcatVector(raw, env, m, nil)
 	if err != nil {
 		return domain.PgcatSeriesObservation{}, err
 	}
@@ -67,7 +71,7 @@ func (p *reader) ObservePgcatSeries(ctx context.Context, env domain.Environment,
 	return domain.PgcatSeriesObservation{Series: series, ObservedAt: time.Now().UTC(), Rows: rows}, nil
 }
 
-func pgcatVector(raw []byte, env domain.Environment, m domain.ProxyMapping) ([]domain.PrometheusSample, error) {
+func pgcatVector(raw []byte, env domain.Environment, m domain.ProxyMapping, members map[string]bool) ([]domain.PrometheusSample, error) {
 	invalid := func() ([]domain.PrometheusSample, error) {
 		return nil, &domain.CommandError{Code: "MetricsInvalid"}
 	}
@@ -86,7 +90,9 @@ func pgcatVector(raw []byte, env domain.Environment, m domain.ProxyMapping) ([]d
 		return invalid()
 	}
 	for _, row := range response.Data.Result {
-		if row.Metric == nil || row.Metric["job"] != "pgcat" || row.Metric["env"] != env.Code || row.Metric["db_proxy_code"] != m.Code || row.Metric["target_db_code"] != m.TargetDBCode || len(row.Value) != 2 {
+		job := row.Metric["job"]
+		if row.Metric == nil || (job != "pgcat" && (members == nil || job != "pgcat-agent")) ||
+			(members != nil && !members[row.Metric["ecs_instance_id"]]) || row.Metric["env"] != env.Code || row.Metric["db_proxy_code"] != m.Code || row.Metric["target_db_code"] != m.TargetDBCode || len(row.Value) != 2 {
 			return invalid()
 		}
 		var stamp float64
@@ -119,6 +125,13 @@ func (p *reader) ObservePgcatClients(ctx context.Context, env domain.Environment
 	if err != nil {
 		return domain.PgcatClientsObservation{}, err
 	}
+	memberIDs := make([]string, 0, len(members))
+	currentMembers := make(map[string]bool, len(members))
+	for _, member := range members {
+		memberIDs = append(memberIDs, member.InstanceID)
+		currentMembers[member.InstanceID] = true
+	}
+	fleetSelector := metrics.PgcatFleetSelector(env.Code, m.Code, m.TargetDBCode, memberIDs)
 	// Initialize the checked private ACK transport once, under the existing
 	// setup bound. All fixed queries retain their individual five-second bound.
 	setup, cancelSetup := context.WithTimeout(ctx, 5*time.Second)
@@ -147,11 +160,11 @@ func (p *reader) ObservePgcatClients(ctx context.Context, env domain.Environment
 				i := next
 				next++
 				mu.Unlock()
-				query, _ := pgcatExpression(selections[i], env, m)
+				query, _ := pgcatExpression(selections[i], env, m, fleetSelector)
 				raw, err := queryPrivatePrometheus(ctx, client, query, evaluation, true)
 				var vector []domain.PrometheusSample
 				if err == nil {
-					vector, err = pgcatVector(raw, env, m)
+					vector, err = pgcatVector(raw, env, m, currentMembers)
 				}
 				if err == nil {
 					seen := map[string]bool{}

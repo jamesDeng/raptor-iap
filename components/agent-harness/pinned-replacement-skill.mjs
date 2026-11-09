@@ -33,7 +33,7 @@ export function pinnedReplacementInstructions(skills,{requestGrants=false}={}){
     if(legacy<0)throw Error();
     content=content.slice(0,legacy);
    }
-   if(requestGrants&&name.endsWith('request-grants.md')&&!content.split('\n').includes('request-grants-contract: v1'))throw Error();
+   if(requestGrants&&name.endsWith('request-grants.md')&&!content.split('\n').includes('request-grants-contract: v2'))throw Error();
    if(!content.trim()||content.includes('\0'))throw Error();
    return `--- ${name} ---\n${content}`;
   });
