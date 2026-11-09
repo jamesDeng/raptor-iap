@@ -8,10 +8,11 @@ import {runLiveReplacement} from './live-replacement.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 import {binding,scope,old,added,observations} from './replacement-sequence-fixtures.mjs';
 
-for(const stale of ['baseline','metrics','refresh-still-stale','drain-stale','drain-fresh','drain-unhealthy','drain-still-stale','drain-wrong-target']){
+for(const stale of ['baseline','metrics','refresh-still-stale','drain-stale','drain-fresh','drain-already-protected','drain-unhealthy','drain-still-stale','drain-wrong-target']){
 test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
  const drainScenario=stale.startsWith('drain-');
- const drainAccepted=['drain-stale','drain-fresh'].includes(stale);
+ const alreadyProtected=stale==='drain-already-protected';
+ const drainAccepted=alreadyProtected||['drain-stale','drain-fresh'].includes(stale);
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'grant-evidence-')));
  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -74,7 +75,7 @@ test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
    [...['fleet','backend','capacity'].map(kind=>modelCall('cloud_read',{kind})),
     ...added.map(instanceId=>modelCall('db_connection_probe',{instanceId})),modelCall('metrics_read',{kind:'pgcatClients'})],
-   [protect],[drain],...(drainAccepted?[[drain]]:[])
+   [alreadyProtected?modelCall('cloud_read',{kind:'fleet'}):protect],[drain],...(drainAccepted?[[drain]]:[])
   ]:[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[requestRead,expand],
    [release,requestRead],
@@ -127,7 +128,7 @@ test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
   return Response.json({jsonrpc:'2.0',id:rpc.id,result});
  };
  const observed=work=>async args=>{observationsMade++;return work(args);};
- const isDrainRefresh=()=>phase==='drain'&&round===5;
+ const isDrainRefresh=()=>phase==='drain'&&round>=5;
  const fleetObservations=()=>phase==='drain'?observations([...old,...added],{unprotected:newProtected?[]:added}):observations();
  const observer={cloudRead:observed(args=>{
   const data=fleetObservations()[args.kind];
@@ -191,11 +192,11 @@ test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
  assert.deepEqual(writes,[{args:expand.arguments,grant:grantID,round:7}]);
  assert.deepEqual(refreshOrder,stale==='metrics'?['pgcatClients','write']:['hold','pgcatClients','write']);
  if(drainScenario){
-  phase='drain';round=0;refreshOrder.length=0;
+  phase='drain';round=0;refreshOrder.length=0;newProtected=alreadyProtected;
   await runLiveReplacement({...options,privateRoot:path.join(root,'drain'),
    binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:resumed.sessionReference,
    decisionContext:{...resumed.paused,decision:'resume'}});
-  assert.equal(newProtected,true,'the protection write must precede the proposed drain');
+  assert.equal(newProtected,true,'the exact replacements must be protected before drain');
   if(stale==='drain-wrong-target'){
    assert.equal(writes.length,1);
    assert.deepEqual(refreshOrder,[]);
