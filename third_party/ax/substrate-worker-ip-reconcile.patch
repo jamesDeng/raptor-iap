@@ -96,10 +96,10 @@ index 969b5ec3..2f1780d2 100644
  		// Already draining: no write, and specifically no version bump.
  		return proto.Clone(stored).(*ateapipb.Worker), nil
 diff --git a/cmd/atecontroller/internal/workersync/syncer.go b/cmd/atecontroller/internal/workersync/syncer.go
-index 40f820a7..7ddc9c0a 100644
+index 40f820a7..b8776f60 100644
 --- a/cmd/atecontroller/internal/workersync/syncer.go
 +++ b/cmd/atecontroller/internal/workersync/syncer.go
-@@ -405,23 +405,38 @@ func (s *WorkerPoolSyncer) createOrUpdateWorker(ctx context.Context, key workerK
+@@ -405,23 +405,42 @@ func (s *WorkerPoolSyncer) createOrUpdateWorker(ctx context.Context, key workerK
  		slog.DebugContext(ctx, "Syncer: registered worker sandbox class predates its pool",
  			append(key.logAttrs(), slog.String("registered", w.GetSandboxClass()), slog.String("pool", string(pool.Spec.SandboxClass)))...)
  	}
@@ -120,6 +120,10 @@ index 40f820a7..7ddc9c0a 100644
  			append(key.logAttrs(), slog.Any("registered", w.GetIps()), slog.Any("pod_ips", ips))...)
 -	}
 -	if !changed {
++		// Raptor enables automatic replacement only for its AX worker pool.
++		if pool.GetLabels()["workload"] != "ax" {
++			return nil
++		}
 +		// The route copied the registered IP into Actor assignments. Replace
 +		// an idle pod to give its successor a new Worker identity and address.
 +		// Drain first so no Actor can bind between the check and deletion.
@@ -150,7 +154,7 @@ index 40f820a7..7ddc9c0a 100644
  }
  
  func isWorkerEligible(pod *corev1.Pod) bool {
-@@ -457,6 +472,13 @@ func (s *WorkerPoolSyncer) deleteTerminalPod(ctx context.Context, key workerKey,
+@@ -457,6 +476,13 @@ func (s *WorkerPoolSyncer) deleteTerminalPod(ctx context.Context, key workerKey,
  	}
  	slog.InfoContext(ctx, "Syncer: deleting worker pod (terminal phase)",
  		append(key.logAttrs(), slog.String("phase", string(pod.Status.Phase)))...)
@@ -164,7 +168,7 @@ index 40f820a7..7ddc9c0a 100644
  	uid := pod.UID
  	err := s.pods.Pods(key.namespace).Delete(ctx, key.name, metav1.DeleteOptions{
  		Preconditions: &metav1.Preconditions{UID: &uid},
-@@ -464,10 +486,7 @@ func (s *WorkerPoolSyncer) deleteTerminalPod(ctx context.Context, key workerKey,
+@@ -464,10 +490,7 @@ func (s *WorkerPoolSyncer) deleteTerminalPod(ctx context.Context, key workerKey,
  	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
  		return nil
  	}
@@ -177,18 +181,34 @@ index 40f820a7..7ddc9c0a 100644
  
  // podIPs returns the pod's IP addresses, one per IP family, in the order
 diff --git a/cmd/atecontroller/internal/workersync/syncer_test.go b/cmd/atecontroller/internal/workersync/syncer_test.go
-index 6e37c992..9bf75b54 100644
+index 6e37c992..faa48504 100644
 --- a/cmd/atecontroller/internal/workersync/syncer_test.go
 +++ b/cmd/atecontroller/internal/workersync/syncer_test.go
-@@ -891,6 +891,125 @@ func TestSyncer_PodRecreatedWithNewUID(t *testing.T) {
+@@ -891,6 +891,141 @@ func TestSyncer_PodRecreatedWithNewUID(t *testing.T) {
  	}
  }
  
++func TestSyncer_PodIPChanged_LeavesOtherPoolsAlone(t *testing.T) {
++	ctx := context.Background()
++	ns, name, pool := "ate-demo-counter", "counter-worker", "counter"
++	api := newFakeControl()
++	s, pods, _ := setupReconcileTest(t, api, workerPool(ns, pool, "gvisor", nil))
++	key := seedPod(t, pods, workerPod(ns, name, pool, testPodUID, "10.0.0.7"))
++	mustReconcile(t, ctx, s, key)
++	if err := pods.Update(workerPod(ns, name, pool, testPodUID, "10.0.0.8")); err != nil {
++		t.Fatal(err)
++	}
++	mustReconcile(t, ctx, s, key)
++	if got := api.get(testPodUID).GetStatus().GetState(); got != ateapipb.WorkerState_WORKER_STATE_ACTIVE {
++		t.Errorf("worker state = %v, want ACTIVE", got)
++	}
++}
++
 +func TestSyncer_PodIPChanged_ReplacesIdleWorker(t *testing.T) {
 +	ctx := context.Background()
 +	ns, podName, poolName := "ns-ip-change", "worker-ip-change", "pool1"
 +	api := newFakeControl()
-+	s, pods, _ := setupReconcileTest(t, api, workerPool(ns, poolName, "gvisor", nil))
++	s, pods, _ := setupReconcileTest(t, api, workerPool(ns, poolName, "gvisor", map[string]string{"workload": "ax"}))
 +	oldPod := workerPod(ns, podName, poolName, testPodUID, "10.0.0.7")
 +	oldPod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: ateomContainer}}
 +	key := seedPod(t, pods, oldPod)
@@ -238,7 +258,7 @@ index 6e37c992..9bf75b54 100644
 +	ctx := context.Background()
 +	ns, podName, poolName := "ns-ip-busy", "worker-ip-busy", "pool1"
 +	api := newFakeControl()
-+	s, pods, _ := setupReconcileTest(t, api, workerPool(ns, poolName, "gvisor", nil))
++	s, pods, _ := setupReconcileTest(t, api, workerPool(ns, poolName, "gvisor", map[string]string{"workload": "ax"}))
 +	key := seedPod(t, pods, workerPod(ns, podName, poolName, testPodUID, "10.0.0.7"))
 +	mustReconcile(t, ctx, s, key)
 +	w := api.get(testPodUID)
@@ -273,7 +293,7 @@ index 6e37c992..9bf75b54 100644
 +	defer cancel()
 +	ns, podName, poolName := "ns-ip-restart", "worker-ip-restart", "pool1"
 +	api := newFakeControl()
-+	fakeK8s := setupSyncerTest(t, ctx, api, workerPool(ns, poolName, "gvisor", nil))
++	fakeK8s := setupSyncerTest(t, ctx, api, workerPool(ns, poolName, "gvisor", map[string]string{"workload": "ax"}))
 +	oldPod := workerPod(ns, podName, poolName, testPodUID, "10.0.0.7")
 +	oldPod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: ateomContainer}}
 +	if _, err := fakeK8s.CoreV1().Pods(ns).Create(ctx, oldPod, metav1.CreateOptions{}); err != nil {
