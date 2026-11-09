@@ -19,6 +19,12 @@ for item in ax substrate; do
   [[ "$(git -C "$workspace/$item" rev-parse HEAD)" == "$revision" ]]
 done
 python3 "$root/scripts/ecs_ax/materialize_sources.py" "$workspace/ax" "$workspace/substrate" "$workspace/verified"
+git -C "$workspace/substrate" apply "$workspace/verified/substrate-worker-ip-reconcile.patch"
+(
+  cd "$workspace/substrate"
+  go test -race ./cmd/atecontroller/internal/workersync
+  REQUIRE_DOCKER=true go test ./cmd/ateapi/internal/controlapi -run '^TestDrain(Idle)?Worker'
+)
 cd "$workspace/ax"
 patch -p1 < "$root/third_party/ax/substrate-v1-compat.patch"
 mkdir -p cmd/raptor-bridge
