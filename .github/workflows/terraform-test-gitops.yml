@@ -74,6 +74,7 @@ jobs:
         env:
           # Bind the private receiver to the current ACK worker in the plan environment.
           TF_VAR_metrics_receiver_enabled: 'true'
+          TF_VAR_monitoring_agent_enabled: ${{ vars.RDEV_PGCAT_AGENT_ENABLED || 'false' }}
           TF_VAR_receiver_worker_instance_id: ${{ fromJSON(vars.RDEV_METRICS_ACK_WORKER || '{}').instance_id }}
           TF_VAR_receiver_worker_security_group_id: ${{ fromJSON(vars.RDEV_METRICS_ACK_WORKER || '{}').security_group_id }}
           TF_SOURCE_SHA: ${{ steps.source.outputs.sha }}

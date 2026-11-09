@@ -41,8 +41,9 @@ resource "alicloud_ram_role_policy_attachment" "state" {
 
 # Read-only fleet planning supplement. No credential-object reads or cloud writes.
 resource "alicloud_ram_policy" "fleet_read" {
-  policy_name = "raptor-iap-test-gitops-fleet-read"
-  force       = false
+  policy_name     = "raptor-iap-test-gitops-fleet-read"
+  force           = false
+  rotate_strategy = "DeleteOldestNonDefaultVersionWhenLimitExceeded"
   policy_document = jsonencode({
     Version = "1"
     Statement = concat([
@@ -72,7 +73,7 @@ resource "alicloud_ram_policy" "fleet_apply" {
     Version = "1"
     Statement = concat([
       { Effect = "Allow", Action = ["ess:CreateScalingGroup", "ess:CreateScalingConfiguration", "ess:ModifyScalingConfiguration", "ess:EnableScalingGroup", "ess:ModifyScalingGroup", "ess:AttachServerGroups", "ess:TagResources"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/*", "acs:ess:ap-southeast-1:${var.account_id}:scalingconfiguration/*"] },
-      { Effect = "Allow", Action = ["nlb:CreateLoadBalancer", "nlb:CreateServerGroup", "nlb:CreateListener", "nlb:StartListener", "nlb:UpdateLoadBalancerProtection", "nlb:AddServersToServerGroup", "nlb:LoadBalancerJoinSecurityGroup", "nlb:TagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:*", "acs:vpc:ap-southeast-1:${var.account_id}:vpc/*", "acs:vpc:ap-southeast-1:${var.account_id}:vswitch/*", "acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/*"] },
+      { Effect = "Allow", Action = ["nlb:CreateLoadBalancer", "nlb:CreateServerGroup", "nlb:CreateListener", "nlb:StartListener", "nlb:UpdateLoadBalancerProtection", "nlb:LoadBalancerJoinSecurityGroup", "nlb:TagResources"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:*", "acs:vpc:ap-southeast-1:${var.account_id}:vpc/*", "acs:vpc:ap-southeast-1:${var.account_id}:vswitch/*", "acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/*"] },
       { Effect = "Allow", Action = ["ecs:CreateSecurityGroup", "ecs:AuthorizeSecurityGroup", "ecs:TagResources"], Resource = ["acs:ecs:ap-southeast-1:${var.account_id}:securitygroup/*", "acs:vpc:ap-southeast-1:${var.account_id}:vpc/*"] },
       { Effect = "Allow", Action = ["ram:CreateServiceLinkedRole"], Resource = ["*"], Condition = { StringEquals = { "ram:ServiceName" = "nlb.aliyuncs.com" } } },
       { Effect = "Allow", Action = ["ram:PassRole"], Resource = ["acs:ram::${var.account_id}:role/raptor-iap-rdev-pgcat-config"] }
@@ -84,6 +85,8 @@ resource "alicloud_ram_policy" "fleet_apply" {
       { Effect = "Allow", Action = ["rds:UntagResources"], Resource = ["acs:rds:ap-southeast-1:${var.account_id}:dbinstance/${var.catalog_untag_targets.db_instance_id}"] }
       ], var.pgcat_scaling_group_id == null ? [] : [
       { Effect = "Allow", Action = ["ess:CreateLifecycleHook"], Resource = ["acs:ess:ap-southeast-1:${var.account_id}:scalinggroup/${var.pgcat_scaling_group_id}"] }
+      ], var.metrics_receiver_backend == null ? [] : [
+      { Effect = "Allow", Action = ["nlb:AddServersToServerGroup"], Resource = ["acs:nlb:ap-southeast-1:${var.account_id}:servergroup/${var.metrics_receiver_backend.server_group_id}", "acs:ecs:ap-southeast-1:${var.account_id}:instance/${var.metrics_receiver_backend.instance_id}"] }
     ])
   })
   depends_on = [terraform_data.account_guard]
@@ -128,3 +131,18 @@ variable "pgcat_scaling_group_id" {
   }
 }
 
+variable "metrics_receiver_backend" {
+  type = object({
+    instance_id     = string
+    server_group_id = string
+  })
+  default     = null
+  description = "Exact rdev ACK worker and receiver server group for the GitOps apply role."
+  validation {
+    condition = var.metrics_receiver_backend == null ? true : (
+      can(regex("^i-[a-zA-Z0-9]+$", var.metrics_receiver_backend.instance_id)) &&
+      can(regex("^sgp-[a-zA-Z0-9]+$", var.metrics_receiver_backend.server_group_id))
+    )
+    error_message = "Receiver backend requires exact ECS instance and NLB server group IDs."
+  }
+}
