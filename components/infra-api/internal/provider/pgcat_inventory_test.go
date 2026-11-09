@@ -26,55 +26,6 @@ func TestPgcatInventoryUsesOnlyExactProviderMembers(t *testing.T) {
 	}
 }
 
-func TestPgcatMonitoringTargetsConvergeExpandDrainAndRetire(t *testing.T) {
-	fleet := []domain.FleetNode{{InstanceID: "old-1", LifecycleState: "Protected", HealthStatus: "Healthy"}, {InstanceID: "old-2", LifecycleState: "Protected", HealthStatus: "Healthy"}}
-	backends := []domain.BackendNode{{InstanceID: "old-1", PrivateIP: "10.70.1.220", Status: "Available", Registered: true}, {InstanceID: "old-2", PrivateIP: "10.70.1.221", Status: "Available", Registered: true}}
-	check := func(want int) []pgcatInventoryRow {
-		t.Helper()
-		rows, err := pgcatMonitoringTargets("rdev.ali", "DP00001", "D00002", want, fleet, backends)
-		if err != nil || len(rows) != want {
-			t.Fatalf("targets %d: %+v %v", want, rows, err)
-		}
-		return rows
-	}
-	check(2)
-	fleet = append(fleet, domain.FleetNode{InstanceID: "new-1", LifecycleState: "Protected", HealthStatus: "Healthy"})
-	if _, err := pgcatMonitoringTargets("rdev.ali", "DP00001", "D00002", 4, fleet, backends); err == nil {
-		t.Fatal("partial scale out published")
-	}
-	fleet = append(fleet, domain.FleetNode{InstanceID: "new-2", LifecycleState: "Protected", HealthStatus: "Healthy"})
-	backends = append(backends, domain.BackendNode{InstanceID: "new-1", PrivateIP: "10.70.1.222", Status: "Available", Registered: true}, domain.BackendNode{InstanceID: "new-2", PrivateIP: "10.70.1.223", Status: "Available", Registered: true})
-	check(4)
-	backends[0].Registered, backends[1].Registered = false, false
-	if rows := check(4); rows[2].Labels.InstanceID != "old-1" {
-		t.Fatal("drained member disappeared from scrape")
-	}
-	fleet = fleet[2:]
-	rows := check(2)
-	if rows[0].Labels.InstanceID != "new-1" || rows[1].Labels.InstanceID != "new-2" {
-		t.Fatalf("retired targets remained: %+v", rows)
-	}
-}
-
-func TestPgcatMonitoringTargetsRefuseIncompleteOrForeignEvidence(t *testing.T) {
-	fleet := []domain.FleetNode{{InstanceID: "one", LifecycleState: "Protected", HealthStatus: "Healthy"}, {InstanceID: "two", LifecycleState: "Protected", HealthStatus: "Healthy"}}
-	backends := []domain.BackendNode{{InstanceID: "one", PrivateIP: "10.70.1.1", Status: "Available"}, {InstanceID: "two", PrivateIP: "10.70.1.2", Status: "Available"}}
-	for _, mutate := range []func(){
-		func() { backends[1].Status = "Adding" },
-		func() { backends[1].PrivateIP = "8.8.8.8" },
-		func() { backends[1].InstanceID = "foreign" },
-		func() { fleet[1].HealthStatus = "Unhealthy" },
-	} {
-		copyFleet := append([]domain.FleetNode(nil), fleet...)
-		copyBackends := append([]domain.BackendNode(nil), backends...)
-		mutate()
-		if _, err := pgcatMonitoringTargets("rdev.ali", "DP00001", "D00002", 2, fleet, backends); err == nil {
-			t.Fatal("invalid provider evidence published")
-		}
-		fleet, backends = copyFleet, copyBackends
-	}
-}
-
 func TestPgcatInventoryPatchPreservesUnrelatedFieldsAndRefusesForeignTargets(t *testing.T) {
 	ctx := context.Background()
 	const namespace = "raptor-test"

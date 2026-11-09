@@ -35,6 +35,16 @@ run "apply_only_exact_bucket_retention" {
     error_message = "Retention write must bind only apply identity and exact config bucket."
   }
 }
+run "receiver_grants_remain_apply_only" {
+  command = plan
+  assert {
+    condition = (
+      length([for s in jsondecode(alicloud_ram_policy.fleet_read.policy_document).Statement : s if contains(s.Action, "nlb:AddServersToServerGroup") || contains(s.Action, "nlb:LoadBalancerJoinSecurityGroup")]) == 0 &&
+      length([for s in jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement : s if contains(s.Action, "nlb:AddServersToServerGroup") && contains(s.Action, "nlb:LoadBalancerJoinSecurityGroup")]) == 1
+    )
+    error_message = "Only the reviewed apply identity may attach the private receiver backend and security group."
+  }
+}
 
 run "catalog_tag_migration_exact_resources" {
   command = plan
@@ -48,7 +58,7 @@ run "catalog_tag_migration_exact_resources" {
     }
   }
   assert {
-    condition = slice(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement, 5, length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement)) == [
+    condition = slice(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement, 6, length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement)) == [
       { Effect = "Allow", Action = ["ess:UntagResources"], Resource = ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"] },
       { Effect = "Allow", Action = ["ecs:UntagResources"], Resource = ["acs:ecs:ap-southeast-1:123456789012:securitygroup/sg-test"] },
       { Effect = "Allow", Action = ["nlb:UntagResources"], Resource = ["acs:nlb:ap-southeast-1:123456789012:loadbalancer/nlb-test", "acs:nlb:ap-southeast-1:123456789012:serverGroup/sgp-test"] },
@@ -64,7 +74,7 @@ run "catalog_tag_migration_exact_resources" {
 run "catalog_untag_absent_by_default" {
   command = plan
   assert {
-    condition     = length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement) == 5
+    condition     = length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement) == 6
     error_message = "No catalog migration grant should exist without explicit target configuration."
   }
 }
@@ -75,7 +85,7 @@ run "pgcat_hook_create_exact_group_apply_only" {
     pgcat_scaling_group_id = "asg-test"
   }
   assert {
-    condition = slice(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement, 5, length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement)) == [
+    condition = slice(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement, 6, length(jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement)) == [
       { Effect = "Allow", Action = ["ess:CreateLifecycleHook"], Resource = ["acs:ess:ap-southeast-1:123456789012:scalinggroup/asg-test"] }
     ]
     error_message = "Lifecycle hook creation must be limited to the exact PgCat scaling group."
@@ -99,3 +109,4 @@ run "pgcat_hook_create_exact_group_apply_only" {
     error_message = "Lifecycle hook creation must attach only to the apply role."
   }
 }
+

@@ -84,24 +84,6 @@ func main() {
 	if os.Getenv("INFRA_USERNAME") != "" && os.Getenv("INFRA_PASSWORD") != "" {
 		h.Catalog.Infra = adapters.HTTPInfra{Username: os.Getenv("INFRA_USERNAME"), Password: os.Getenv("INFRA_PASSWORD"), AuthHeader: os.Getenv("INFRA_AUTH_HEADER"), ResolveEnvironment: h.Catalog.GetEnvironment}
 	}
-	if os.Getenv("RAPTOR_PGCAT_MONITORING_RECONCILE") == "true" {
-		if os.Getenv("INFRA_USERNAME") == "" || os.Getenv("INFRA_PASSWORD") == "" {
-			log.Fatal("PgCat monitoring credentials unavailable")
-		}
-		infra := adapters.HTTPInfra{Username: os.Getenv("INFRA_USERNAME"), Password: os.Getenv("INFRA_PASSWORD"), AuthHeader: os.Getenv("INFRA_AUTH_HEADER"), ResolveEnvironment: h.Catalog.GetEnvironment}
-		go func() {
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for {
-				reconcileCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
-				if infra.ReconcilePgcatMonitoring(reconcileCtx) != nil {
-					log.Print("PgCat monitoring reconciliation will retry")
-				}
-				cancel()
-				<-ticker.C
-			}
-		}()
-	}
 	h.Skills.Source = skills.GitSource{Repository: os.Getenv("RAPTOR_REPOSITORY")}
 	h.Requests.ConversationEnabled = os.Getenv("RAPTOR_CONVERSATION_ENABLED") == "true"
 	if gatewayURL := os.Getenv("GATEWAY_URL"); gatewayURL != "" {

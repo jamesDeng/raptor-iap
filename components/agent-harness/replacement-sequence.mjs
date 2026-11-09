@@ -173,7 +173,12 @@ export class ReplacementSequence {
    const ids=this.trace.baseline()?.instanceIds;
    if(!ids||result.requestId!==this.trace.identity.requestId||result.scopeDigest!==this.trace.identity.scope.resolutionDigest||
     !fresh(result)||!same(Object.keys(result.sockets??{}).sort(),[...ids].sort()))throw invalid();
-   if(args.phase==='hold')this.current.hold=result;
+   if(args.phase==='hold'){
+    const prior=this.current.hold;
+    if(prior&&(prior.observationId!==result.observationId||
+     ids.some(id=>prior.sockets[id].id!==result.sockets[id].id)))throw invalid();
+    this.current.hold=result;
+   }
    else{
     if(result.observationId!==args.observationId||result.drainActionId!==args.drainActionId||
       !same(Object.keys(result.freshConnections??{}).sort(),this.cohort().newInstanceIds))throw invalid();
@@ -228,6 +233,17 @@ export class ReplacementSequence {
   ]);
  }
  initial(){return this.initialReads().length===0;}
+ scaleOutRefresh(){
+  const ids=this.trace.baseline()?.instanceIds;
+  const {hold,fleet,backend,capacity,deployment,metrics,trafficFailures,connections}=this.current;
+  if(!ids||!hold||!fleet||!backend||!capacity||!deployment||!metrics||!trafficFailures||!connections||
+   !ids.every(id=>this.probes.has(id))||!mcpChecks.every(key=>this.checks.has(key)))return;
+  // Leave headroom for Infra's independent checks without relaxing the write guard.
+  if(!this.holdReady()||Date.now()-Date.parse(hold.observedAt)>15000)return 'baseline';
+  const missing=this.initialReads();
+  if(missing.length===1&&missing[0]==='metrics_read pgcatClients')return 'metrics';
+  if(missing.length)return 'baseline';
+ }
  requireReads(reads){
   if(reads.length)throw this.trace.versioned?new ReplacementEvidenceRequired(reads):missing();
  }

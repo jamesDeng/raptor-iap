@@ -8,7 +8,9 @@ import {runLiveReplacement} from './live-replacement.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 import {binding,scope,old,observations} from './replacement-sequence-fixtures.mjs';
 
-test('grant proposal needs no live evidence and an approved write can refresh before any dispatch',async t=>{
+for(const stale of ['baseline','metrics','refresh-still-stale']){
+test(`an approved scale-out refreshes ${stale} before dispatch`,async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'grant-evidence-')));
  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const stateRoot=path.join(root,'state');
@@ -34,12 +36,13 @@ test('grant proposal needs no live evidence and an approved write can refresh be
  const {getCurrentTools}=await import('@earendil-works/pi-ai');
  const {runtime}=await loadPiRuntime({stateRoot});
  runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
- const progress=[],writes=[];
+ const progress=[],writes=[],refreshOrder=[];
  let phase='proposal',round=0,observationsMade=0,canariesReleased=0;
  const visible=[];
  let feedback;
  runtime.streamSimple=(model,context)=>{
   round++;
+  if(phase==='resume'&&round===7)t.mock.timers.tick(stale==='metrics'?1000:31000);
   visible.push(getCurrentTools(context.messages).map(tool=>tool.name));
   if(phase==='resume'&&round===4)feedback=context.messages.findLast(m=>m.role==='toolResult'&&m.toolName===expand.name);
   const rounds=phase==='proposal'?[
@@ -92,16 +95,29 @@ test('grant proposal needs no live evidence and an approved write can refresh be
     db_proxy_scale:{actionId:args.actionId,scalingActivityId:'asa-test',evidenceMode:'live',groupId:scope.groupId,previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'}
    }[name];
    assert.ok(data,`unexpected remote ${name}`);
-   if(name==='db_proxy_scale')writes.push({args,grant:new Headers(init.headers).get('X-Raptor-Request-Grant'),round});
+   if(name==='db_proxy_scale'){
+    writes.push({args,grant:new Headers(init.headers).get('X-Raptor-Request-Grant'),round});
+    refreshOrder.push('write');
+   }
    result={structuredContent:{data},content:[{type:'text',text:JSON.stringify({data})}]};
   }else assert.fail(`unexpected RPC ${rpc.method}`);
   return Response.json({jsonrpc:'2.0',id:rpc.id,result});
  };
  const observed=work=>async args=>{observationsMade++;return work(args);};
  const observer={cloudRead:observed(args=>observations()[args.kind]),deploymentRead:observed(()=>observations().deployment),
-  metricsRead:observed(args=>observations()[args.kind==='pgcatClients'?'metrics':args.kind]),
+  metricsRead:observed(args=>{
+   const evidence=observations()[args.kind==='pgcatClients'?'metrics':args.kind];
+   if(args.kind==='pgcatClients'){
+    if(round===7)refreshOrder.push('pgcatClients');
+    if((stale==='metrics'&&round===6)||(stale==='refresh-still-stale'&&round===7)){
+     evidence.sourceAt=new Date(Date.now()-(round===6?14500:16000)).toISOString();
+    }
+   }
+   return evidence;
+  }),
   dbConnectionProbe:observed(args=>({...args,connected:true})),pgcatConnectionContinuity:observed(args=>{
    if(args.phase==='release-probes')canariesReleased++;
+   if(round===7&&args.phase==='hold')refreshOrder.push('hold');
    const at=new Date().toISOString();
    return {requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',observedAt:at,
     sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at}]))};
@@ -127,10 +143,17 @@ test('grant proposal needs no live evidence and an approved write can refresh be
  assert.match(feedback?.content[0].text,/environment_get/);
  assert.match(feedback?.content[0].text,/object_get/);
  assert.match(feedback?.content[0].text,/pgcat_connection_continuity/);
- assert.equal(progress.filter(e=>e.tool===expand.name&&e.outcome==='failed').length,2);
+ assert.equal(progress.filter(e=>e.tool===expand.name&&e.outcome==='failed').length,stale==='refresh-still-stale'?3:2);
  assert.ok(progress.some(e=>e.summary?.includes('separate tool round')));
+ if(stale==='refresh-still-stale'){
+  assert.equal(resumed.paused,undefined);
+  assert.deepEqual(writes,[]);
+  assert.deepEqual(refreshOrder,['hold','pgcatClients']);
+  return;
+ }
  assert.equal(resumed.paused?.kind,'resource',JSON.stringify(resumed));
  assert.deepEqual(writes,[{args:expand.arguments,grant:grantID,round:7}]);
+ assert.deepEqual(refreshOrder,stale==='metrics'?['pgcatClients','write']:['hold','pgcatClients','write']);
  phase='after-expansion';round=0;
  const replay=await runLiveReplacement({...options,privateRoot:path.join(root,'after-expansion'),
   binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:resumed.sessionReference,
@@ -140,3 +163,4 @@ test('grant proposal needs no live evidence and an approved write can refresh be
  assert.equal(writes.length,1);
  assert.equal(canariesReleased,0,'a mixed round must not close the old canaries');
 });
+}

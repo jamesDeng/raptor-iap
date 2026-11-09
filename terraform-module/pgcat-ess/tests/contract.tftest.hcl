@@ -118,3 +118,44 @@ run "catalog_migration_preserves_bootstrap_identity" {
     error_message = "Catalog migration must preserve physical names and version-bound bootstrap identity."
   }
 }
+run "monitoring_agent_is_explicit_and_local" {
+  command = plan
+  variables {
+    monitoring_enabled       = true
+    monitoring_agent_image   = "prom/prometheus@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    monitoring_receiver_host = "write.pgcat-metrics.rdev.internal"
+    catalog_proxy_code       = "DP00001"
+    catalog_target_db_code   = "D00002"
+  }
+  assert {
+    condition = (
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "--agent --config.file=/etc/prometheus/agent.yml") &&
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "127.0.0.1:9930") &&
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "pgcat-agent") &&
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "db_proxy_code: 'DP00001'") &&
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "target_db_code: 'D00002'") &&
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "http://write.pgcat-metrics.rdev.internal:9091/api/v1/write") &&
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "X-aliyun-ecs-metadata-token") &&
+      !strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "Bearer ")
+    )
+    error_message = "New nodes must run a local identity-bound Prometheus Agent against only the private receiver."
+  }
+}
+run "monitoring_agent_disabled_without_receiver" {
+  command = plan
+  assert {
+    condition     = !strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "raptor-pgcat-monitoring")
+    error_message = "Do not launch monitoring before the receiver is ready."
+  }
+}
+run "monitoring_agent_requires_receiver" {
+  command = plan
+  variables { monitoring_enabled = true }
+  expect_failures = [var.monitoring_enabled]
+}
+run "monitoring_agent_rejects_mutable_image" {
+  command = plan
+  variables { monitoring_agent_image = "prom/prometheus:latest" }
+  expect_failures = [var.monitoring_agent_image]
+}
+

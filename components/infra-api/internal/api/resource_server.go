@@ -15,7 +15,6 @@ import (
 	"raptor-iap/infra-api/internal/policy"
 	"raptor-iap/infra-api/internal/resources"
 	"strings"
-	"time"
 )
 
 type ResourceResolver interface {
@@ -42,8 +41,7 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}})
 		}
 		send := func(data any) { _ = json.NewEncoder(w).Encode(map[string]any{"data": data}) }
-		monitoring := r.URL.Path == "/v1/pgcat-monitoring-reconcile"
-		if r.URL.Path != "/mcp" && (((resourceCommandPath(r.URL.Path) || monitoring) && r.Method != "POST") || (!resourceCommandPath(r.URL.Path) && !monitoring && r.Method != "GET")) {
+		if r.URL.Path != "/mcp" && ((resourceCommandPath(r.URL.Path) && r.Method != "POST") || (!resourceCommandPath(r.URL.Path) && r.Method != "GET")) {
 			fail(405, "MethodNotAllowed")
 			return
 		}
@@ -70,35 +68,6 @@ func NewResourceServer(reader Reader, resolver ResourceResolver, username, passw
 			op.check = check
 		} else if err != nil || subtle.ConstantTimeCompare(sum[:], expected[:]) != 1 {
 			fail(401, "Unauthenticated")
-			return
-		}
-		if monitoring {
-			if op.principal != username || r.URL.RawQuery != "" || r.ContentLength != 0 ||
-				r.Header.Get("Content-Type") != "application/json" ||
-				!op.visible(r.URL.Path) || op.authorizer == nil || op.authorizer.Authorize(r.Context(), op.principal, r.URL.Path, nil) != nil {
-				fail(403, "ScopeMismatch")
-				return
-			}
-			reconciler, ok := reader.(interface {
-				ReconcilePgcatMonitoring(context.Context, domain.Environment, domain.ProxyMapping) (domain.PgcatInventoryReceipt, error)
-			})
-			if !ok {
-				fail(503, "Unavailable")
-				return
-			}
-			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-			defer cancel()
-			resolved, e := resolver.Resolve(ctx, "rdev.ali", "db-proxy", "DP00001")
-			if e != nil || resolved.Proxy == nil || resolved.Proxy.TargetDBCode != "D00002" {
-				fail(409, "ScopeMismatch")
-				return
-			}
-			receipt, e := reconciler.ReconcilePgcatMonitoring(ctx, resolved.Environment, *resolved.Proxy)
-			if e != nil {
-				fail(409, "EvidenceUnavailable")
-				return
-			}
-			send(map[string]any{"changed": receipt.Changed, "count": len(receipt.InstanceIDs)})
 			return
 		}
 		if r.URL.Path == "/v1/approval-policy" {

@@ -11,7 +11,7 @@ import {ApprovalPause,resourceWaitExtension} from './approval-pause.mjs';
 import {RequestGrantRuntime} from './request-grant-runtime.mjs';
 import {createOperationResourceLoader} from './live-operation.mjs';
 import {openOperationSession,operationSessionReference} from './operation-session.mjs';
-import {operationCapabilities,validateResourceScope} from './operation-profile.mjs';
+import {checkOperationSelectors,operationCapabilities,validateResourceScope} from './operation-profile.mjs';
 import {createScopedMcpRuntime,createToolCallGate,withReadOnlyToolPolicy,createReadConcurrency} from './mcp-runtime.mjs';
 import {publicProgressFromMessage} from './progress.mjs';
 import {toolFailureDiagnostic,modelFailureDiagnostic} from './tool-failure-diagnostic.mjs';
@@ -52,7 +52,11 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
  }catch{error||='InvalidProgress';void session?.abort();}};
  let phaseSummary='';
  const narrate=summary=>{phaseSummary=summary;progress({kind:'progress',outcome:'running',summary});};
- runtime.streamSimple=(model,context,options)=>{if(pause.wait())throw Error('ApprovalWaiting');if(++turns>10)throw Error('TurnLimit');return stream(model,context,{...options,maxTokens:1024,maxRetries:0});};
+ runtime.streamSimple=(model,context,options)=>{
+  if(pause.wait())throw Error('ApprovalWaiting');
+  if(++turns>10){error||='TurnLimit';throw Error('TurnLimit');}
+  return stream(model,context,{...options,maxTokens:1024,maxRetries:0});
+ };
  try{
   const qualification=b.executionMode==='qualification',selectedProfile=qualification?undefined:pinnedReplacementProfile(skills);validateResourceScope(b,replacementScope);
   fs.mkdirSync(privateRoot,{recursive:true,mode:0o700});const sdk=await import('@earendil-works/pi-coding-agent');
@@ -192,12 +196,37 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    session.agent.beforeToolCall=async(context,signal)=>{
     const decision=await beforeToolCall?.(context,signal);
     const releaseProbes=context.toolCall.name==='pgcat_connection_continuity'&&context.args?.phase==='release-probes';
-    if(decision?.block||signal?.aborted||!(REPLACEMENT_WRITES.has(context.toolCall.name)||releaseProbes)||
-     context.assistantMessage.content.filter(part=>part.type==='toolCall').length===1)return decision;
-    mixedRoundRejections.add(context.toolCall.id);
-    const reason='Run this operation in a separate tool round after reviewing the preceding reads.';
-    narrate(reason);
-    return {block:true,reason};
+    if(decision?.block||signal?.aborted||!(REPLACEMENT_WRITES.has(context.toolCall.name)||releaseProbes))return decision;
+    if(context.assistantMessage.content.filter(part=>part.type==='toolCall').length!==1){
+     mixedRoundRejections.add(context.toolCall.id);
+     const reason='Run this operation in a separate tool round after reviewing the preceding reads.';
+     narrate(reason);
+     return {block:true,reason};
+    }
+    if(context.toolCall.name!=='mcp__infra__db_proxy_scale'||context.args.desiredCapacity!==4||
+     !grants.approved||pause.candidate||trace.unresolved()||sequence.intents('expand').length)return decision;
+    const refresh=sequence.scaleOutRefresh();
+    if(!refresh)return decision;
+    checkOperationSelectors('infra','db_proxy_scale',context.args,b,replacementScope);
+    const nested=session.extensionRunner.createToolContext(context.toolCall.id,signal);
+    const read=async(tool,args)=>{
+     if(!isReadOnlyTool(tool)||(tool==='pgcat_connection_continuity'&&args.phase!=='hold'))throw Error('InvalidEvidence');
+     const result=await nested.executeTool(tool,args);
+     if(result.isError)throw Error('ToolFailed');
+    };
+    if(refresh==='baseline'){
+     narrate('Refreshing the bound baseline and the same original sockets before scale-out.');
+     const hold=read('pgcat_connection_continuity',{phase:'hold'});
+     const reads=qualificationReadBatches(b,replacementScope).flat().filter(call=>
+      call.tool!=='mcp__infra__deployment_status_get'&&call.arguments.kind!=='pgcatClients');
+     const freshReads=reads.map(call=>read(call.tool,call.arguments).then(()=>
+      call.tool==='mcp__raptor__deployments_list'&&read('mcp__infra__deployment_status_get',
+       {envCode:b.envCode,appCode:replacementScope.application.appCode})));
+     const outcomes=await Promise.allSettled([hold,...freshReads,...trace.baseline().instanceIds.map(instanceId=>read('db_connection_probe',{instanceId}))]);
+     if(outcomes.some(outcome=>outcome.status==='rejected'))throw Error('ToolFailed');
+    }else narrate('Refreshing PgCat metrics before scale-out.');
+    await read('metrics_read',{kind:'pgcatClients'});
+    return decision;
    };
   }
   // Pi awaits finishTurn after persisting the assistant and every tool result.

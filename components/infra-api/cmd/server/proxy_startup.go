@@ -101,7 +101,6 @@ func buildResourceRuntimeHandler(reader api.Reader, resolver api.ResourceResolve
 		}
 		runtime := commands.Runtime{Backend: deps.Backend, Metrics: deps.Metrics, Approval: deps.Approval, Claims: deps.Claims, Fleet: deps.Fleet, EvidenceMode: "live"}
 		paths = append(paths, "/v1/db-proxy-scale", "/v1/db-proxy-node-protection", "/v1/db-proxy-node-deregistration")
-		paths = append(paths, "/v1/pgcat-monitoring-reconcile")
 		if !absent(deps.Grants) {
 			paths = append(paths, "/v1/pgcat-monitoring-sync")
 		}

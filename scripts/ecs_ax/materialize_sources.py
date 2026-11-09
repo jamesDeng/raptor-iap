@@ -10,7 +10,9 @@ def materialize(ax,substrate,output):
   if actual!=revision:raise ValueError('upstream revision mismatch')
   data=subprocess.check_output(['git','-C',checkout,'archive','--format=tar',revision])
   (out/name).write_bytes(gzip.compress(data,compresslevel=9,mtime=0))
- (out/pins['patch']).write_bytes((root/'third_party/ax'/pins['patch']).read_bytes())
+ for key in ('patch', 'substrate_patch'):
+  name=pins[key]
+  (out/name).write_bytes((root/'third_party/ax'/name).read_bytes())
  verify(out,pins['source_sha256'])
  (out/'pins.json').write_text(json.dumps(pins,indent=2)+'\n')
 if __name__=='__main__':materialize(*sys.argv[1:])

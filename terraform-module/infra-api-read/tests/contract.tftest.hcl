@@ -92,8 +92,8 @@ run "proxy_permissions_and_routes" {
     error_message = "Required runtime capabilities must exist exactly once."
   }
   assert {
-    condition     = toset(keys(alicloud_api_gateway_api.proxy)) == toset(["scale", "protection", "deregistration", "monitoring"])
-    error_message = "Expose exactly the reviewed individual operations."
+    condition     = toset(keys(alicloud_api_gateway_api.proxy)) == toset(["scale", "protection", "deregistration"])
+    error_message = "Expose exactly the reviewed individual commands."
   }
   assert {
     condition = try(
@@ -256,4 +256,3 @@ run "reviewed_function_release_is_scoped" {
     error_message = "The plan identity cannot release function code."
   }
 }
-

@@ -21,7 +21,6 @@
 {{- end -}}
 {{- if and .Values.repositoryChange.enabled (not .Values.githubPAT.enabled) -}}{{ fail "repositoryChange requires githubPAT" }}{{- end -}}
 {{- if and .Values.repositoryChange.enabled (not .Values.gatewayLive.enabled) -}}{{ fail "repositoryChange requires gatewayLive" }}{{- end -}}
-{{- if and .Values.pgcatMonitoring.reconcileEnabled (not .Values.infraReader.secretName) -}}{{ fail "pgcatMonitoring requires infraReader.secretName" }}{{- end -}}
 {{- $revision := required "repository.revision must be a reviewed commit" .Values.repository.revision -}}
 {{- if not (regexMatch "^[a-f0-9]{40}$" $revision) }}{{ fail "invalid repository revision" }}{{ end -}}
 {{- range $name, $image := .Values.images -}}
@@ -182,7 +181,6 @@ spec:
             - {name: ALIBABA_CLOUD_OIDC_TOKEN_FILE, value: '/run/raptor/github-pat-rrsa/token'}
             {{ end }}
             - {name: RAPTOR_ENABLE_RESTART, value: {{ $.Values.directRestart.enabled | quote }}}
-            - {name: RAPTOR_PGCAT_MONITORING_RECONCILE, value: {{ $.Values.pgcatMonitoring.reconcileEnabled | quote }}}
             - {name: RAPTOR_MODEL_PROVIDERS_ENABLED, value: {{ $.Values.modelProviders.enabled | quote }}}
             {{ if $.Values.modelProviders.enabled }}
             - {name: RAPTOR_MODEL_CREDENTIAL_KEY_FILE, value: '/run/raptor/model-key/key'}
@@ -344,4 +342,3 @@ spec:
   ports:
     - {name: http, port: {{ $service.port }}, targetPort: http}
 {{ end }}
-

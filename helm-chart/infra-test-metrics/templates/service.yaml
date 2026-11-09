@@ -5,3 +5,14 @@ spec:
   type: ClusterIP
   selector: {app.kubernetes.io/name: {{ .Release.Name }}-metrics}
   ports: [{name: http, port: 9090, targetPort: http}]
+{{- if .Values.receiver.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: {{ .Release.Name }}-metrics-write}
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: {{ .Release.Name }}-metrics}
+  ports: [{name: write, port: 9091, targetPort: write, nodePort: {{ .Values.receiver.nodePort }} }]
+{{- end }}
+

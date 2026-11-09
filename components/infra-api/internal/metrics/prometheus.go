@@ -135,11 +135,17 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 		members[n.ID] = true
 	}
 	selector := fmt.Sprintf(`env=%s,db_proxy_code=%s,target_db_code=%s`, strconv.Quote(s.EnvCode), strconv.Quote(s.ProxyCode), strconv.Quote(db))
-	rawSelector := `job="pgcat",` + selector
-	q := `{__name__=~"pgcat_pools_cl_(active|idle|waiting)",` + rawSelector + `} or {__name__=~"infra_pgcat_connected_clients|infra_pgcat_client_observation_timestamp_seconds",` + selector + `} or up{` + rawSelector + `}`
+	identity := `env,db_proxy_code,target_db_code,ecs_instance_id`
+	agentUp := `up{job="pgcat-agent",` + selector + `}`
+	selected := func(metric string) string {
+		return `(` + metric + `{job="pgcat-agent",` + selector + `} or (` + metric + `{job="pgcat",` + selector + `} unless on (` + identity + `) ` + agentUp + `))`
+	}
+	rawMatcher := `__name__=~"pgcat_pools_cl_(active|idle|waiting)",`
+	raw := `({` + rawMatcher + `job="pgcat-agent",` + selector + `} or ({` + rawMatcher + `job="pgcat",` + selector + `} unless on (` + identity + `) ` + agentUp + `))`
+	q := raw + ` or {__name__=~"infra_pgcat_connected_clients|infra_pgcat_client_observation_timestamp_seconds",` + selector + `} or ` + selected("up")
 	timestampQueries := []string{}
 	for _, k := range []string{"active", "idle", "waiting"} {
-		timestampQueries = append(timestampQueries, fmt.Sprintf(`label_replace(timestamp(pgcat_pools_cl_%s{%s}),"source_metric",%s,"","")`, k, rawSelector, strconv.Quote(k)))
+		timestampQueries = append(timestampQueries, fmt.Sprintf(`label_replace(timestamp(%s),"source_metric",%s,"","")`, selected("pgcat_pools_cl_"+k), strconv.Quote(k)))
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -177,7 +183,7 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 		k := kind(r.Metric["__name__"])
 		if k != "" {
 			key := poolKey{id, r.Metric["pool"], r.Metric["user"], k}
-			if key.pool == "" || key.user == "" || r.Metric["job"] != "pgcat" || r.Metric["instance"] == "" || math.Trunc(v) != v || v > 9007199254740991 {
+			if key.pool == "" || key.user == "" || (r.Metric["job"] != "pgcat" && r.Metric["job"] != "pgcat-agent") || r.Metric["instance"] == "" || math.Trunc(v) != v || v > 9007199254740991 {
 				return nil, fail()
 			}
 			if _, exists := counts[key]; exists {
@@ -195,7 +201,7 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 				}
 				e = put(observed, id, v)
 			case "up":
-				if r.Metric["job"] != "pgcat" || r.Metric["instance"] == "" || v != 1 {
+				if (r.Metric["job"] != "pgcat" && r.Metric["job"] != "pgcat-agent") || r.Metric["instance"] == "" || v != 1 {
 					return nil, fail()
 				}
 				e = put(ups, id, v)
@@ -209,7 +215,7 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 	}
 	sourceTimes := map[poolKey]float64{}
 	for _, r := range sources {
-		if !validLabels(r.Metric) || r.Metric["job"] != "pgcat" {
+		if !validLabels(r.Metric) || (r.Metric["job"] != "pgcat" && r.Metric["job"] != "pgcat-agent") {
 			return nil, fail()
 		}
 		key := poolKey{r.Metric["ecs_instance_id"], r.Metric["pool"], r.Metric["user"], r.Metric["source_metric"]}

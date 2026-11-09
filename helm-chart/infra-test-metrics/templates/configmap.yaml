@@ -41,3 +41,8 @@ data:
         static_configs:
           - targets: {{ .Values.clientTargets | toJson }}
 {{- end }}
+{{- if .Values.receiver.enabled }}
+  write-proxy.conf: |
+{{ .Files.Get "files/write-proxy.conf" | indent 4 }}
+{{- end }}
+

@@ -65,46 +65,6 @@ func pgcatInventoryTargets(env, proxy, db string, desired int, fleet []domain.Fl
 	return rows, nil
 }
 
-// pgcatMonitoringTargets keeps a drained ESS member under scrape until it
-// actually leaves the group. NLB weight zero excludes new TCP connections but
-// does not stop existing SQL sessions or the PgCat exporter. A backend that
-// lingers after ESS retirement is ignored only when every current ESS member
-// has a distinct available backend and private address.
-func pgcatMonitoringTargets(env, proxy, db string, desired int, fleet []domain.FleetNode, backends []domain.BackendNode) ([]pgcatInventoryRow, error) {
-	if env != "rdev.ali" || proxy != "DP00001" || db != "D00002" ||
-		(desired != 2 && desired != 4) || len(fleet) != desired {
-		return nil, domain.ErrScope
-	}
-	members := make(map[string]bool, len(fleet))
-	for _, member := range fleet {
-		if member.InstanceID == "" || members[member.InstanceID] || member.HealthStatus != "Healthy" ||
-			(member.LifecycleState != "Protected" && member.LifecycleState != "InService") {
-			return nil, domain.ErrScope
-		}
-		members[member.InstanceID] = true
-	}
-	rows := make([]pgcatInventoryRow, 0, desired)
-	addresses := make(map[netip.Addr]bool, desired)
-	for _, backend := range backends {
-		if !members[backend.InstanceID] {
-			continue
-		}
-		ip, err := netip.ParseAddr(backend.PrivateIP)
-		if backend.Status != "Available" || err != nil || !ip.Is4() || !ip.IsPrivate() || addresses[ip] {
-			return nil, domain.ErrScope
-		}
-		delete(members, backend.InstanceID)
-		addresses[ip] = true
-		rows = append(rows, pgcatInventoryRow{Targets: []string{net.JoinHostPort(ip.String(), "9930")},
-			Labels: pgcatInventoryLabels{Env: env, ProxyCode: proxy, TargetDB: db, InstanceID: backend.InstanceID}})
-	}
-	if len(members) != 0 || len(rows) != desired {
-		return nil, domain.ErrScope
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Labels.InstanceID < rows[j].Labels.InstanceID })
-	return rows, nil
-}
-
 func parsePgcatInventory(raw, env, proxy, db string) ([]pgcatInventoryRow, error) {
 	var rows []pgcatInventoryRow
 	if raw == "" || len(raw) > 8192 || jsoninput.Decode([]byte(raw), &rows) != nil || rows == nil || len(rows) > 4 {
@@ -217,37 +177,4 @@ func (p *reader) SyncPgcatInventory(ctx context.Context, env domain.Environment,
 		return domain.PgcatInventoryReceipt{}, err
 	}
 	return syncPgcatInventory(ctx, client.CoreV1().ConfigMaps(pgcatInventoryNamespace), env.Code, target.ProxyCode, mapping.TargetDBCode, targets, admit)
-}
-
-// ReconcilePgcatMonitoring is the platform scheduler's fixed POC operation. It
-// retains the agent command unchanged while it is still needed by live runs.
-func (p *reader) ReconcilePgcatMonitoring(ctx context.Context, env domain.Environment, mapping domain.ProxyMapping) (domain.PgcatInventoryReceipt, error) {
-	if env.Code != "rdev.ali" || env.Region != "ap-southeast-1" || env.AccountID != "1360282071200743" ||
-		env.ClusterID != "c92787e953503492ea141a744c81498f1" || mapping.Code != "DP00001" ||
-		mapping.GroupID != "asg-t4necb4dfmu6o3z2rn0g" || mapping.ServerGroupID != "sgp-xs5s42tihtl6ja2a67" ||
-		mapping.TargetDBCode != "D00002" || mapping.ListenerID == "" || mapping.Port != 6432 {
-		return domain.PgcatInventoryReceipt{}, domain.ErrScope
-	}
-	target := domain.ProxyReadTarget{EnvCode: env.Code, ProxyCode: mapping.Code, GroupID: mapping.GroupID, ServerGroupID: mapping.ServerGroupID}
-	verified, group, err := p.observationGroup(ctx, env, target)
-	if err != nil || verified != mapping {
-		return domain.PgcatInventoryReceipt{}, domain.ErrScope
-	}
-	fleet, err := p.proxy.observationMembers(ctx, env, mapping)
-	if err != nil {
-		return domain.PgcatInventoryReceipt{}, err
-	}
-	backends, err := p.proxy.observationBackends(ctx, env, mapping)
-	if err != nil {
-		return domain.PgcatInventoryReceipt{}, err
-	}
-	rows, err := pgcatMonitoringTargets(env.Code, mapping.Code, mapping.TargetDBCode, int(*group.DesiredCapacity), fleet, backends)
-	if err != nil {
-		return domain.PgcatInventoryReceipt{}, err
-	}
-	client, err := p.cluster(ctx, env)
-	if err != nil {
-		return domain.PgcatInventoryReceipt{}, err
-	}
-	return syncPgcatInventory(ctx, client.CoreV1().ConfigMaps(pgcatInventoryNamespace), env.Code, mapping.Code, mapping.TargetDBCode, rows, func(context.Context) error { return nil })
 }

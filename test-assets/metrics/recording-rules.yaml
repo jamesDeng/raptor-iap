@@ -2,19 +2,55 @@ groups:
   - name: infra-pgcat-client-observation
     interval: 5s
     rules:
+      # Once an Agent exists for a node, central scraping cannot fill gaps in
+      # its series. Missing Agent families must fail the replacement gate.
+      - record: infra_pgcat_selected_active
+        expr: >-
+          pgcat_pools_cl_active{job="pgcat-agent"}
+          or (pgcat_pools_cl_active{job="pgcat"}
+          unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
+          up{job="pgcat-agent"})
+      - record: infra_pgcat_selected_idle
+        expr: >-
+          pgcat_pools_cl_idle{job="pgcat-agent"}
+          or (pgcat_pools_cl_idle{job="pgcat"}
+          unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
+          up{job="pgcat-agent"})
+      - record: infra_pgcat_selected_waiting
+        expr: >-
+          pgcat_pools_cl_waiting{job="pgcat-agent"}
+          or (pgcat_pools_cl_waiting{job="pgcat"}
+          unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
+          up{job="pgcat-agent"})
+      - record: infra_pgcat_selected_source_timestamp_seconds
+        expr: >-
+          label_replace(timestamp(
+          pgcat_pools_cl_active{job="pgcat-agent"}
+          or (pgcat_pools_cl_active{job="pgcat"}
+          unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
+          up{job="pgcat-agent"})), "source_metric", "active", "", "")
+          or label_replace(timestamp(
+          pgcat_pools_cl_idle{job="pgcat-agent"}
+          or (pgcat_pools_cl_idle{job="pgcat"}
+          unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
+          up{job="pgcat-agent"})), "source_metric", "idle", "", "")
+          or label_replace(timestamp(
+          pgcat_pools_cl_waiting{job="pgcat-agent"}
+          or (pgcat_pools_cl_waiting{job="pgcat"}
+          unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
+          up{job="pgcat-agent"})), "source_metric", "waiting", "", "")
       - record: infra_pgcat_connected_clients
         expr: >-
           sum by (env, db_proxy_code, target_db_code, ecs_instance_id)
-          (pgcat_pools_cl_active + pgcat_pools_cl_idle + pgcat_pools_cl_waiting)
+          (infra_pgcat_selected_active + infra_pgcat_selected_idle + infra_pgcat_selected_waiting)
           unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
           count by (env, db_proxy_code, target_db_code, ecs_instance_id)
           (count by (env, db_proxy_code, target_db_code, ecs_instance_id, pool, user)
-          ({__name__=~"pgcat_pools_cl_(active|idle|waiting)"}) != 3)
+          ({__name__=~"infra_pgcat_selected_(active|idle|waiting)"}) != 3)
       - record: infra_pgcat_client_observation_timestamp_seconds
         expr: >-
           min by (env, db_proxy_code, target_db_code, ecs_instance_id)
-          (label_replace(timestamp(pgcat_pools_cl_active), "source_metric", "active", "", "")
-          or label_replace(timestamp(pgcat_pools_cl_idle), "source_metric", "idle", "", "")
-          or label_replace(timestamp(pgcat_pools_cl_waiting), "source_metric", "waiting", "", ""))
+          (infra_pgcat_selected_source_timestamp_seconds)
           and on (env, db_proxy_code, target_db_code, ecs_instance_id)
           infra_pgcat_connected_clients
+

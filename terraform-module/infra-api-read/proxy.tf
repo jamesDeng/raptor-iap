@@ -3,7 +3,6 @@ locals {
     scale          = "/v1/db-proxy-scale"
     protection     = "/v1/db-proxy-node-protection"
     deregistration = "/v1/db-proxy-node-deregistration"
-    monitoring     = "/v1/pgcat-monitoring-reconcile"
   } : {}
   # NLB has evaluated the mixed-case resource type for both discovery and
   # weight updates. Keep the documented lowercase alias for the same IDs.

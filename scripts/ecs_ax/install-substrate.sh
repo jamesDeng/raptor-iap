@@ -15,9 +15,11 @@ install -d -m 700 /opt/raptor/substrate
 cd /opt/raptor/substrate
 tar --no-same-owner --warning=no-unknown-keyword -xzf /var/lib/raptor-ecs-ax/downloads/ecs-ax-substrate.tar.gz
 find . -name "._*" -type f -delete
+git apply --check /var/lib/raptor-ecs-ax/downloads/substrate-worker-ip-reconcile.patch
+git apply /var/lib/raptor-ecs-ax/downloads/substrate-worker-ip-reconcile.patch
 git init -q
 git add .
-git -c user.name=Raptor -c user.email=poc@localhost commit -qm 'Pinned upstream ac41c06ee8929ee05159d679febab970a9e5cf4c'
+git -c user.name=Raptor -c user.email=poc@localhost commit -qm 'Pinned Substrate source with worker IP reconciliation'
 docker rm -f raptor-registry >/dev/null
 docker run -d --restart=always --name raptor-registry -p 127.0.0.1:5001:5000 -p "${ECS_AX_PRIVATE_IP}:5001:5000" -v /var/lib/raptor-ecs-ax/registry:/var/lib/registry registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
 cat > /etc/rancher/k3s/registries.yaml <<'CONFIG'

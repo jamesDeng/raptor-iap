@@ -105,8 +105,14 @@ resource "alicloud_ess_scaling_configuration" "proxy" {
   enable                     = true
   tags                       = local.bootstrap_tags
   user_data = base64encode(templatefile("${path.module}/startup.sh.tftpl", {
-    metadata_b64    = base64encode(local.bootstrap)
-    container_image = var.container_image
+    metadata_b64           = base64encode(local.bootstrap)
+    container_image        = var.container_image
+    monitoring_enabled     = var.monitoring_enabled
+    monitoring_agent_image = var.monitoring_agent_image
+    monitoring_receiver    = var.monitoring_receiver_host
+    monitoring_env         = var.env_code
+    monitoring_proxy       = coalesce(var.catalog_proxy_code, var.proxy_code)
+    monitoring_db          = coalesce(var.catalog_target_db_code, var.target_db_code)
   }))
   depends_on = [alicloud_ess_server_group_attachment.proxy]
 }
@@ -118,3 +124,4 @@ module "config_iam" {
   bucket_name = regex("^oss://([^/]+)/", var.secret_reference)[0]
   object_key  = regex("^oss://[^/]+/([^?]+)\\?versionId=", var.secret_reference)[0]
 }
+

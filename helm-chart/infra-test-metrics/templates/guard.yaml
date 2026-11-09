@@ -6,3 +6,8 @@
 {{- if not (regexMatch "^[a-zA-Z0-9./_-]+@sha256:[a-f0-9]{64}$" $image) }}{{ fail "immutable image digest required" }}{{ end -}}
 {{- $inventory := required "external provider-derived inventory required" .Values.inventoryConfigMapName -}}
 {{- if not (regexMatch "^[a-f0-9]{40}$" .Values.inventoryRevision) }}{{ fail "reviewed inventory contract revision required" }}{{ end -}}
+{{- if .Values.receiver.enabled -}}
+{{- if ne (.Values.receiver.nodePort | int) 30909 }}{{ fail "fixed private receiver NodePort required" }}{{ end -}}
+{{- if not (regexMatch "^ghcr.io/nginx/nginx-unprivileged@sha256:[a-f0-9]{64}$" .Values.receiver.proxyImage) }}{{ fail "pinned write proxy image required" }}{{ end -}}
+{{- end -}}
+
