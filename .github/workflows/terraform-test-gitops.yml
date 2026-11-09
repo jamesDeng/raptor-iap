@@ -72,6 +72,10 @@ jobs:
           terraform_wrapper: false
       - name: Private plan and sanitized summary
         env:
+          # Bind the private receiver to the current ACK worker in the plan environment.
+          TF_VAR_metrics_receiver_enabled: 'true'
+          TF_VAR_receiver_worker_instance_id: ${{ fromJSON(vars.RDEV_METRICS_ACK_WORKER || '{}').instance_id }}
+          TF_VAR_receiver_worker_security_group_id: ${{ fromJSON(vars.RDEV_METRICS_ACK_WORKER || '{}').security_group_id }}
           TF_SOURCE_SHA: ${{ steps.source.outputs.sha }}
           TF_STACK_INPUTS: ${{ secrets.TF_TEST_STACK_INPUTS }}
           TF_STATE_BUCKET: ${{ vars.RDEV_STATE_BUCKET }}
