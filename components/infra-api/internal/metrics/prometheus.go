@@ -145,7 +145,11 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 	q := raw + ` or {__name__=~"infra_pgcat_connected_clients|infra_pgcat_client_observation_timestamp_seconds",` + selector + `} or ` + selected("up")
 	timestampQueries := []string{}
 	for _, k := range []string{"active", "idle", "waiting"} {
-		timestampQueries = append(timestampQueries, fmt.Sprintf(`label_replace(timestamp(%s),"source_metric",%s,"","")`, selected("pgcat_pools_cl_"+k), strconv.Quote(k)))
+		metric := "pgcat_pools_cl_" + k
+		agent := metric + `{job="pgcat-agent",` + selector + `}`
+		central := metric + `{job="pgcat",` + selector + `}`
+		originTime := `(timestamp(` + agent + `) or (timestamp(` + central + `) unless on (` + identity + `) ` + agentUp + `))`
+		timestampQueries = append(timestampQueries, fmt.Sprintf(`label_replace(%s,"source_metric",%s,"","")`, originTime, strconv.Quote(k)))
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

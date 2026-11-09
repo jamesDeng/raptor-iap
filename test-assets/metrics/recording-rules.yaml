@@ -24,21 +24,21 @@ groups:
           up{job="pgcat-agent"})
       - record: infra_pgcat_selected_source_timestamp_seconds
         expr: >-
-          label_replace(timestamp(
-          pgcat_pools_cl_active{job="pgcat-agent"}
-          or (pgcat_pools_cl_active{job="pgcat"}
+          label_replace(
+          timestamp(pgcat_pools_cl_active{job="pgcat-agent"})
+          or (timestamp(pgcat_pools_cl_active{job="pgcat"})
           unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
-          up{job="pgcat-agent"})), "source_metric", "active", "", "")
-          or label_replace(timestamp(
-          pgcat_pools_cl_idle{job="pgcat-agent"}
-          or (pgcat_pools_cl_idle{job="pgcat"}
+          up{job="pgcat-agent"}), "source_metric", "active", "", "")
+          or label_replace(
+          timestamp(pgcat_pools_cl_idle{job="pgcat-agent"})
+          or (timestamp(pgcat_pools_cl_idle{job="pgcat"})
           unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
-          up{job="pgcat-agent"})), "source_metric", "idle", "", "")
-          or label_replace(timestamp(
-          pgcat_pools_cl_waiting{job="pgcat-agent"}
-          or (pgcat_pools_cl_waiting{job="pgcat"}
+          up{job="pgcat-agent"}), "source_metric", "idle", "", "")
+          or label_replace(
+          timestamp(pgcat_pools_cl_waiting{job="pgcat-agent"})
+          or (timestamp(pgcat_pools_cl_waiting{job="pgcat"})
           unless on (env, db_proxy_code, target_db_code, ecs_instance_id)
-          up{job="pgcat-agent"})), "source_metric", "waiting", "", "")
+          up{job="pgcat-agent"}), "source_metric", "waiting", "", "")
       - record: infra_pgcat_connected_clients
         expr: >-
           sum by (env, db_proxy_code, target_db_code, ecs_instance_id)
