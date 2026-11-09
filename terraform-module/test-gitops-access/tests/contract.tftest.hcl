@@ -37,12 +37,18 @@ run "apply_only_exact_bucket_retention" {
 }
 run "receiver_grants_remain_apply_only" {
   command = plan
+  variables {
+    metrics_receiver_backend = { instance_id = "i-test", server_group_id = "sgp-test" }
+  }
   assert {
     condition = (
       length([for s in jsondecode(alicloud_ram_policy.fleet_read.policy_document).Statement : s if contains(s.Action, "nlb:AddServersToServerGroup") || contains(s.Action, "nlb:LoadBalancerJoinSecurityGroup")]) == 0 &&
-      length([for s in jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement : s if contains(s.Action, "nlb:AddServersToServerGroup") && contains(s.Action, "nlb:LoadBalancerJoinSecurityGroup")]) == 1
+      one([for s in jsondecode(alicloud_ram_policy.fleet_apply.policy_document).Statement : s.Resource if contains(s.Action, "nlb:AddServersToServerGroup")]) == [
+        "acs:nlb:ap-southeast-1:123456789012:servergroup/sgp-test",
+        "acs:ecs:ap-southeast-1:123456789012:instance/i-test"
+      ]
     )
-    error_message = "Only the reviewed apply identity may attach the private receiver backend and security group."
+    error_message = "The apply identity may attach only the reviewed ECS instance to the reviewed receiver group."
   }
 }
 

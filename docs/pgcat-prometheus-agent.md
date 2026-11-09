@@ -10,7 +10,7 @@ The launch-template user data contains no credentials. IMDSv2 provides the ECS i
 
 - `terraform-module/pgcat-ess` owns the ESS launch template and its runtime IAM. The Agent needs no new cloud IAM.
 - `terraform-module/infra-test-metrics-receiver` owns the private NLB, its client security group, listener, server group, worker attachment and narrowly scoped worker NodePort ingress. The NLB service-linked role is a shared prerequisite already required by PgCat.
-- The rdev test foundation root composes both modules. The shared GitOps role in `terraform-module/test-gitops-access` needs the added NLB and ECS permissions applied through its own reviewed Terraform state before receiver activation.
+- The rdev test foundation root composes both modules. The shared GitOps role in `terraform-module/test-gitops-access` needs the NLB and ECS permissions applied through its own reviewed Terraform state. Bind `metrics_receiver_backend` to the exact receiver server group and ACK worker ECS instance before attaching the backend. For a fresh receiver, create the group in the foundation stack first, record its ID privately, then resume the foundation apply after the shared role plan is applied.
 - The ACK worker ECS ID and worker security group ID must be verified from the current cluster and supplied through protected stack inputs. The receiver server attachment must be updated in Terraform if the worker changes. An internal NLB has recurring cloud cost.
 - The Helm chart owns the NodePort service and write proxy. Its `receiver.enabled` switch remains false until the service is deployed and checked.
 
