@@ -14,3 +14,10 @@ clientDiscoveryNames: []
 infraReaderUser: ''
 
 infraExecutionDeployment: ''
+
+# Staged remote-write receiver for PgCat ESS Prometheus Agents.
+receiver:
+  enabled: false
+  nodePort: 30909
+  proxyImage: 'ghcr.io/nginx/nginx-unprivileged@sha256:847080049e23239e86144f01a4b79252db60494cebea58e827ae4e7d66c96c58'
+

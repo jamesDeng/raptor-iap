@@ -23,3 +23,28 @@ variable "proxy_secret_version" {
   type    = string
   default = ""
 }
+variable "metrics_receiver_enabled" {
+  type    = bool
+  default = false
+  validation {
+    condition     = !var.metrics_receiver_enabled || (var.proxy_enabled && var.receiver_worker_instance_id != "" && var.receiver_worker_security_group_id != "")
+    error_message = "Receiver requires the enabled PgCat fleet and exact ACK worker binding."
+  }
+}
+variable "monitoring_agent_enabled" {
+  type    = bool
+  default = false
+  validation {
+    condition     = !var.monitoring_agent_enabled || var.metrics_receiver_enabled
+    error_message = "The private receiver must be reviewed before enabling node agents."
+  }
+}
+variable "receiver_worker_instance_id" {
+  type    = string
+  default = ""
+}
+variable "receiver_worker_security_group_id" {
+  type    = string
+  default = ""
+}
+

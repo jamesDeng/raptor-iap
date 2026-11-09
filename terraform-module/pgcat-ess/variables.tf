@@ -85,6 +85,33 @@ variable "container_image" {
     error_message = "Container reference must be pinned by sha256 digest, without a mutable tag or credentials."
   }
 }
+variable "monitoring_enabled" {
+  type        = bool
+  default     = false
+  description = "Start a local Prometheus Agent on newly launched PgCat ESS nodes."
+  validation {
+    condition     = !var.monitoring_enabled || (var.monitoring_receiver_host != null && var.monitoring_agent_image != null)
+    error_message = "Enabled monitoring requires a reviewed private receiver and pinned agent image."
+  }
+}
+variable "monitoring_agent_image" {
+  type        = string
+  default     = null
+  description = "Prometheus Agent container pinned by digest; no mutable tag."
+  validation {
+    condition     = var.monitoring_agent_image == null ? true : can(regex("^prom/prometheus@sha256:[a-f0-9]{64}$", var.monitoring_agent_image))
+    error_message = "Prometheus Agent image must be pinned by sha256 digest."
+  }
+}
+variable "monitoring_receiver_host" {
+  type        = string
+  default     = null
+  description = "VPC-only PrivateZone alias for the Terraform-owned NLB receiver; no URL credentials."
+  validation {
+    condition     = var.monitoring_receiver_host == null ? true : var.monitoring_receiver_host == "write.pgcat-metrics.rdev.internal"
+    error_message = "Only the reviewed private receiver alias is accepted."
+  }
+}
 variable "instance_class" { type = string }
 variable "secret_reference" { type = string }
 variable "execution_role_name" {
@@ -126,3 +153,4 @@ variable "catalog_target_db_code" {
     error_message = "Catalog association code must be a valid generated code."
   }
 }
+

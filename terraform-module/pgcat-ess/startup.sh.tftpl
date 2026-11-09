@@ -13,6 +13,9 @@ retry() {
 export DEBIAN_FRONTEND=noninteractive
 retry apt-get update -qq
 retry apt-get install -y --no-install-recommends docker.io
+%{ if monitoring_enabled ~}
+retry apt-get install -y --no-install-recommends curl
+%{ endif ~}
 systemctl enable --now docker
 install -d -m 0755 /etc/raptor-pgcat
 printf '%s' '${metadata_b64}' | base64 -d > /etc/raptor-pgcat/bootstrap.json
@@ -27,3 +30,50 @@ docker run -d --name raptor-pgcat --restart unless-stopped \
   --mount type=bind,src=/etc/raptor-pgcat/bootstrap.json,dst=/etc/raptor-pgcat/bootstrap.json,readonly \
   --log-driver local --log-opt max-size=5m --log-opt max-file=2 \
   '${container_image}'
+%{ if monitoring_enabled ~}
+# The agent scrapes only this node; ECS IMDSv2 supplies its immutable series ID.
+token=$(retry curl -fsS --max-time 3 -X PUT \
+  -H 'X-aliyun-ecs-metadata-token-ttl-seconds:60' \
+  http://100.100.100.200/latest/api/token)
+instance_id=$(retry curl -fsS --max-time 3 \
+  -H "X-aliyun-ecs-metadata-token: $token" \
+  http://100.100.100.200/latest/meta-data/instance-id)
+printf '%s' "$instance_id" | grep -Eq '^i-[A-Za-z0-9]+$' || exit 1
+install -d -m 0755 /etc/raptor-pgcat/monitoring
+install -d -m 0700 /var/lib/raptor-pgcat-monitoring
+chown 65534:65534 /var/lib/raptor-pgcat-monitoring
+cat > /etc/raptor-pgcat/monitoring/agent.yml <<EOF
+global:
+  scrape_interval: 5s
+  external_labels:
+    env: '${monitoring_env}'
+    db_proxy_code: '${monitoring_proxy}'
+    target_db_code: '${monitoring_db}'
+    ecs_instance_id: '$instance_id'
+scrape_configs:
+  - job_name: pgcat-agent
+    honor_labels: false
+    honor_timestamps: false
+    scrape_timeout: 3s
+    static_configs:
+      - targets: ['127.0.0.1:9930']
+    relabel_configs:
+      - target_label: instance
+        replacement: '$instance_id:9930'
+remote_write:
+  - url: 'http://${monitoring_receiver}:9091/api/v1/write'
+EOF
+chmod 0644 /etc/raptor-pgcat/monitoring/agent.yml
+retry docker pull --quiet '${monitoring_agent_image}'
+docker run -d --name raptor-pgcat-monitoring --restart unless-stopped \
+  --network host --user 65534:65534 --read-only \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --mount type=bind,src=/etc/raptor-pgcat/monitoring/agent.yml,dst=/etc/prometheus/agent.yml,readonly \
+  --mount type=bind,src=/var/lib/raptor-pgcat-monitoring,dst=/prometheus \
+  --log-driver local --log-opt max-size=5m --log-opt max-file=2 \
+  '${monitoring_agent_image}' \
+  --agent --config.file=/etc/prometheus/agent.yml \
+  --storage.agent.path=/prometheus --storage.agent.retention.max-time=2h \
+  --web.listen-address=127.0.0.1:9095
+%{ endif ~}
+

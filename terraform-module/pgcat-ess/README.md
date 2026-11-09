@@ -1,5 +1,7 @@
 # PgCat ECS / ESS module proposal
 
+The optional `monitoring_enabled` input adds a pinned Prometheus Agent to newly launched nodes through the ESS user-data template. It scrapes the local PgCat exporter and remote-writes through the Terraform-owned VPC-only receiver alias. The default is disabled, and existing nodes need a reviewed replacement to gain the Agent. See `docs/pgcat-prometheus-agent.md` for activation order.
+
 Defines private NLB/TCP listener, server group, ESS group, NLB attachment and ECS launch configuration, with discovery tags on group and nodes. Baseline/minimum is two, maximum four. Runtime desired-capacity and per-instance protection changes are narrowly ignored so Terraform cannot reset an in-progress replacement or clear protection from retained nodes; centrally audit drift and require the final capacity two before permanent configuration apply. The runtime replacement API owns both settings. No entire-resource ignore, automatic import, direct instance delete or shared state modification.
 
 `bootstrap_reviewed=false` fails planning until Docker startup and role-backed secret delivery are qualified. Nodes use a standard Ubuntu ECS image. The module's first-boot `user_data` installs Docker and launches the PgCat/bootstrap container pinned by digest; Docker restart policy handles later reboots. The container fetches the exact OSS object version using the module-owned ECS role, writes configuration to private tmpfs, checks DB connectivity and execs PgCat as UID 65532. No database secrets appear in user data or Terraform. The private POC uses plaintext SQL; OSS remains HTTPS/SSE-OSS. Host networking permits IMDSv2 and private SQL/metrics ports. Package/container downloads require working NAT/outbound access. A custom ECS image is not required.
@@ -11,3 +13,4 @@ Caller supplies existing private security group, VPC, ECS subnets and at least t
 Mocked Terraform tests and validation are configuration evidence only. No live plan/apply or resources are established by this module.
 
 The current POC role was adopted by Terraform before fleet creation. Its temporary bootstrap entrypoint calls this nested module, with moved blocks preserving its resource identity. Before enabling the full fleet, transfer the three state entries into the full test-stack module addresses and relinquish bootstrap-state ownership; never apply two states against the same role. The runtime bootstrap qualification guard remains false.
+

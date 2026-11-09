@@ -81,6 +81,29 @@ func TestMetricsRequiresEveryNodeIncludingProtected(t *testing.T) {
 		t.Fatalf("wrong observation: %+v", rows)
 	}
 }
+func TestMetricsAcceptsAgentAndSelectsItBeforeCentralScrape(t *testing.T) {
+	c, s, rows, times := metricFixture(t)
+	previous := c.query
+	queries := []string{}
+	c.query = func(ctx context.Context, env domain.Environment, q, evaluation string) ([]byte, error) {
+		queries = append(queries, q)
+		return previous(ctx, env, q, evaluation)
+	}
+	for i := 0; i < 6; i++ {
+		if (*rows)[i].Metric["job"] == "pgcat" {
+			(*rows)[i].Metric["job"] = "pgcat-agent"
+		}
+	}
+	for i := 0; i < 3; i++ {
+		(*times)[i].Metric["job"] = "pgcat-agent"
+	}
+	if _, err := c.ConnectedClients(context.Background(), s); err != nil {
+		t.Fatalf("agent observations refused: %v", err)
+	}
+	if len(queries) != 2 || !strings.Contains(queries[0], `up{job="pgcat-agent"`) || !strings.Contains(queries[0], `unless on (env,db_proxy_code,target_db_code,ecs_instance_id)`) || !strings.Contains(queries[1], `job="pgcat-agent"`) {
+		t.Fatal("agent precedence missing from query")
+	}
+}
 func TestMetricsRefusesMissingStaleOrAmbiguousCoverage(t *testing.T) {
 	cases := []string{"missing raw", "duplicate raw", "missing protected", "missing pool", "missing user", "down", "stale raw", "stale recorded", "negative", "fraction", "nan", "infinite", "record mismatch", "foreign node", "foreign db", "duplicate up", "missing source", "duplicate source", "foreign group", "empty nodes"}
 	for _, kind := range cases {
