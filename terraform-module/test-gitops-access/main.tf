@@ -41,8 +41,9 @@ resource "alicloud_ram_role_policy_attachment" "state" {
 
 # Read-only fleet planning supplement. No credential-object reads or cloud writes.
 resource "alicloud_ram_policy" "fleet_read" {
-  policy_name = "raptor-iap-test-gitops-fleet-read"
-  force       = false
+  policy_name     = "raptor-iap-test-gitops-fleet-read"
+  force           = false
+  rotate_strategy = "DeleteOldestNonDefaultVersionWhenLimitExceeded"
   policy_document = jsonencode({
     Version = "1"
     Statement = concat([
