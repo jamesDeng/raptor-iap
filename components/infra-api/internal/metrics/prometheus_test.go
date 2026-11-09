@@ -204,3 +204,20 @@ func TestResourceMetricsRetainsCompletePoolGate(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsQueriesOnlyCurrentProviderMembers(t *testing.T) {
+	c, s, _, _ := metricFixture(t)
+	previous := c.query
+	c.query = func(ctx context.Context, env domain.Environment, q, evaluation string) ([]byte, error) {
+		// Both value and source-time queries exclude series for already retired
+		// nodes, even when Prometheus still holds their latest samples.
+		if !strings.Contains(q, "ecs_instance_id=~\"i-one|i-two\"") ||
+			strings.Count(q, "target_db_code=") != strings.Count(q, "ecs_instance_id=~") {
+			t.Fatalf("query includes selectors without an exact fleet match: %s", q)
+		}
+		return previous(ctx, env, q, evaluation)
+	}
+	if _, err := c.ConnectedClients(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+}

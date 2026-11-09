@@ -72,7 +72,7 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
       const metric=row.metric;
       if(!pending.has(metric?.ecs_instance_id))continue;
       const timestamp=Number(row.value?.[0]),raw=row.value?.[1],value=Number(raw);
-      if(metric.job!=='pgcat'||metric.env!==replacementScope?.envCode||metric.db_proxy_code!==replacementScope?.proxyCode||metric.target_db_code!==replacementScope?.targetDbCode||!Number.isFinite(timestamp)||Math.abs(now-timestamp)>30||(typeof raw!=='string'&&typeof raw!=='number')||raw===''||!Number.isFinite(value))throw invalid();
+      if(!['pgcat','pgcat-agent'].includes(metric.job)||metric.env!==replacementScope?.envCode||metric.db_proxy_code!==replacementScope?.proxyCode||metric.target_db_code!==replacementScope?.targetDbCode||!Number.isFinite(timestamp)||Math.abs(now-timestamp)>30||(typeof raw!=='string'&&typeof raw!=='number')||raw===''||!Number.isFinite(value))throw invalid();
       if(source?(Math.abs(now-value)>15):up?![0,1].includes(value):(!metric.pool||!metric.user||!Number.isSafeInteger(value)||value<0))throw invalid();
       const key=up?metric.ecs_instance_id:JSON.stringify([metric.ecs_instance_id,metric.pool,metric.user]);
       if(seen.has(key))throw invalid();seen.add(key);

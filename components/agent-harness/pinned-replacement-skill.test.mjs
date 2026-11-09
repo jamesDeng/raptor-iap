@@ -63,3 +63,17 @@ test('checked-in candidate uses the resource contract and matching logical selec
 test('legacy direct-v2 wire contract is an explicit migration gate',async()=>{
  const {pinnedReplacementProfile}=await import('./pinned-replacement-skill.mjs');const x=fixture();try{fs.appendFileSync(path.join(x.folder,'SKILL.md'),'\nreplacement-contract: direct-v2\n');assert.throws(()=>pinnedReplacementProfile(x.skills),/ResourceContractMigrationRequired/);}finally{fs.rmSync(x.root,{recursive:true,force:true});}
 });
+
+test('request grants require a skill release that omits the retired monitoring write',()=>{
+ const x=fixture();try{
+  fs.appendFileSync(path.join(x.folder,'SKILL.md'),'\n## Legacy resource-v1 workflow\n');
+  const grants=path.join(x.folder,'references','request-grants.md');
+  fs.writeFileSync(grants,'request-grants-contract: v1\n');
+  assert.throws(()=>pinnedReplacementInstructions(x.skills,{requestGrants:true}),/InvalidSkillsRelease/);
+  assert.doesNotThrow(()=>pinnedReplacementInstructions(x.skills));
+  const skills={...x.skills,path:fs.realpathSync(new URL('../../agent-skills',import.meta.url))};
+  const instructions=pinnedReplacementInstructions(skills,{requestGrants:true});
+  assert.match(instructions,/request-grants-contract: v2/);
+  assert.doesNotMatch(instructions,/sync-monitoring|pgcat_monitoring_sync/);
+ }finally{fs.rmSync(x.root,{recursive:true,force:true});}
+});

@@ -39,7 +39,7 @@ export class ApprovalPause {
  resourceWait(args){if(this.candidate||!args||Object.keys(args).join(',')!=='seconds'||args.seconds!==60)throw Error('InvalidApprovalPause');this.candidate={kind:'resource',approvalId:'',actionId:'capacity-'+randomUUID(),bindingDigest:this.binding.definitionSha256,requestId:this.binding.requestId,definitionSha256:this.binding.definitionSha256,startedAt:new Date().toISOString(),wakeAfterSeconds:60};this.pending=true;}
  paused(args){if(!this.candidate||args?.requestId!==this.binding.requestId||args.reason!=='waiting_approval')throw Error('InvalidApprovalPause');this.pending=true;}
  endRound(){if(this.pending)this.committed??=Object.freeze({...this.candidate});return this.committed;}
- beforeTool(server,tool){if(this.committed||(this.candidate&&server==='infra'&&['db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart','pgcat_monitoring_sync'].includes(tool)))throw Error('ApprovalWaiting');}
+ beforeTool(server,tool){if(this.committed||(this.candidate&&server==='infra'&&['db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart'].includes(tool)))throw Error('ApprovalWaiting');}
  wait(){return this.committed;}
 }
 

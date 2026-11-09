@@ -82,13 +82,6 @@ type PrometheusSample struct {
 	Value  []json.RawMessage `json:"value"`
 }
 
-type PgcatInventoryReceipt struct {
-	UID             string   `json:"uid"`
-	ResourceVersion string   `json:"resourceVersion"`
-	InstanceIDs     []string `json:"instanceIds"`
-	Changed         bool     `json:"changed"`
-}
-
 type PgcatRetirementObservation struct {
 	ActionID          string    `json:"actionId"`
 	ScalingActivityID string    `json:"scalingActivityId"`

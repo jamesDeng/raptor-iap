@@ -58,3 +58,10 @@ test('resource transport refuses missing or retargeted canonical private proof',
  for(const key of ['accountId','region','listenerId','port','databaseResourceId','resolutionDigest']){const copy={...s};delete copy[key];assert.throws(()=>validateResourceScope({...binding,executionMode:'replacement'},copy),/InvalidEvidence/);}
  assert.throws(()=>validateResourceScope({...binding,executionMode:'replacement'},{...s,listenerId:'retargeted'}),/InvalidEvidence/);
 });
+
+test('the replacement grant profile cannot call the retired monitoring write',()=>{
+ const b={...binding,approvalProtocol:'request-grants-v1',executionMode:'replacement'};
+ assert.ok(!operationCapabilities(b,scope).infra.includes('pgcat_monitoring_sync'));
+ assert.throws(()=>checkOperationSelectors('infra','pgcat_monitoring_sync',
+  {requestId:b.requestId,envCode:b.envCode,proxyCode:scope.proxyCode,actionId:'retired'},b,scope),/ScopeMismatch/);
+});

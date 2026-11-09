@@ -1,6 +1,6 @@
 # Request grant workflow
 
-request-grants-contract: v1
+request-grants-contract: v2
 
 Use this workflow when request_get returns request-grants-v1 in definition.operations[0].parameters.approvalProtocol. This workflow supersedes the legacy contracts and recovery procedure. Keep the same Request, pinned skill and resolved scope on every continuation. All infrastructure changes use the Infra MCP tools. Keep the conversation open for troubleshooting and use public progress to name the current phase or missing evidence.
 
@@ -14,7 +14,6 @@ Use this workflow when request_get returns request-grants-v1 in definition.opera
 | db-proxy.scale-out | db-proxy / bound proxy code | `{"desiredCapacity":4}` |
 | db-proxy.node-protection | db-proxy / bound proxy code | `{"protected":true}` |
 | db-proxy.drain | db-proxy / bound proxy code | `{"weight":0}` |
-| db-proxy.sync-monitoring | db-proxy / bound proxy code | `{}` |
 | application.restart | application / bound application code | `{}` |
 | db-proxy.scale-in | db-proxy / bound proxy code | `{"desiredCapacity":2}` |
 
@@ -34,7 +33,7 @@ Use one tool call per write round. If a write returns EvidenceRefreshRequired, r
 4. Require exactly two healthy, registered and protected originals, successful SQL on both, and the bound application 2/2 with healthy traffic and fresh metrics. If a discovery result disagrees with the earlier workloadKey or original IDs, stop for reconciliation. The evidence window is 30 seconds and PgCat source samples must be at most 15 seconds old.
 5. After the baseline batch, always call `pgcat_connection_continuity({"phase":"hold"})` again in its own round before the first scale-out. Require the original observationId, the same two socket IDs, and current successful SQL on both. Infra checks their age after its own provider reads, so the earlier hold is insufficient at this step. After each hold, recheck the other evidence and refresh only expired reads, with PgCat metrics last. If those reads take more than 15 seconds since the latest hold, refresh the same two sockets again before submitting.
 6. In the next write-only round, call Infra db_proxy_scale once with requestId, envCode, proxyCode, a new stable actionId and desiredCapacity 4. Save the returned ESS scaling activity ID. Use cloud_read with kind expansion to check that exact activity. If it is pending, wait and resume. A successful activity must list exactly two created instance IDs.
-7. Verify the two provider-created IDs match the two new members alongside the fixed originals. Require healthy registration and successful direct db_connection_probe on each new node. Refresh the successful expansion activity read before calling pgcat_monitoring_sync with the bound requestId, envCode and proxyCode plus a new stable actionId. Re-read until all four nodes have fresh complete active, idle and waiting metrics. If a registered new target has yet to be scraped, wait and recheck. Once complete, protect both exact replacement IDs in one Infra call, then verify protection and health.
+7. Verify the two provider-created IDs match the two new members alongside the fixed originals. Require healthy registration and successful direct db_connection_probe on each new node. Re-read until all four nodes have fresh complete active, idle and waiting metrics from automatic collection. If a registered new target has yet to be scraped, wait and recheck. Once complete, protect both exact replacement IDs in one Infra call, then verify protection and health.
 
 ## Drain and restart
 
@@ -47,4 +46,4 @@ Use one tool call per write round. If a write returns EvidenceRefreshRequired, r
 
 1. Call pgcat_connection_continuity with phase verify-traffic, the observationId and restartActionId. The first sample may return traffic-warming. Wait and recheck. Require positive application query and transaction deltas on both new nodes, complete application logs without a failure, timeout, skipped operation or connection failure, and fresh raw active, idle and waiting counts of zero on each original across all pools and users.
 2. Immediately before retirement, call metrics_read with kind pgcatClients and confirm both originals still have zero active, idle and waiting clients. Use the existing approved scale-in capability to submit one db_proxy_scale with a new stable actionId and desiredCapacity 2. Infra releases the two original IDs directly. Keep both originals protected until the release. Retain the ESS activity ID. If a write loses its response, use Raptor request_grant_actions_list to find the receipt by exact arguments, then refresh resource reads. Never submit an uncertain action again.
-3. Check cloud_read retirement until ESS confirms successful release of exactly both originals. Confirm desired and fleet capacity two with only the healthy, protected replacement pair. Synchronize the final monitoring inventory and verify both targets are freshly scraped. Recheck application 2/2, then use phase verify-final-traffic with the same restart and observation IDs until both remaining nodes have positive post-retirement SQL deltas. Finish only after all these observations pass.
+3. Check cloud_read retirement until ESS confirms successful release of exactly both originals. Confirm desired and fleet capacity two with only the healthy, protected replacement pair. Verify both retained nodes have fresh complete metrics from automatic collection. Recheck application 2/2, then use phase verify-final-traffic with the same restart and observation IDs until both remaining nodes have positive post-retirement SQL deltas. Finish only after all these observations pass.

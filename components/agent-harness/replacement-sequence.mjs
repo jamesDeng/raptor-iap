@@ -5,7 +5,6 @@ import {ReplacementEvidenceRequired} from './replacement-evidence.mjs';
 const WAIT='raptor-replacement-withdrawal-wait-v1';
 const TRAFFIC='raptor-pgcat-traffic-v1';
 const FINAL_TRAFFIC='raptor-pgcat-final-traffic-v1';
-const INVENTORY='raptor-pgcat-inventory-v1';
 const digest=v=>createHash('sha256').update(canonical(v)).digest('hex');
 const TYPE='raptor-replacement-sequence-v2',TRACE='raptor-replacement-evidence-v1';
 const missing=()=>Error('MissingEvidence'),invalid=()=>Error('InvalidEvidence');
@@ -45,7 +44,6 @@ export class ReplacementSequence {
   if(trace.versioned){
    this.trafficProof=entries.findLast(e=>e.type==='custom'&&e.customType===TRAFFIC)?.data;
    this.finalTraffic=entries.findLast(e=>e.type==='custom'&&e.customType===FINAL_TRAFFIC)?.data;
-   this.inventory=entries.findLast(e=>e.type==='custom'&&e.customType===INVENTORY)?.data;
   }
   if(saved.length>16)throw invalid();
   const intents=trace.rows.filter(r=>r.kind==='intent');
@@ -139,33 +137,6 @@ export class ReplacementSequence {
   if(tool==='db_proxy_nodes_deregister'&&expanded&&!restarted&&(!this.trace.versioned||args.nodeIds.length===2)&&subset(args.nodeIds,old)&&args.nodeIds.every(id=>!this.idsFor('withdraw').includes(id)))return 'withdraw';
   if(tool==='deployment_restart'&&expanded&&!restarted&&this.idsFor('withdraw').length===2)return 'restart';
   throw missing();
- }
- inventoryReads(){
-  const ids=this.current.fleet?.instances?.map(node=>node.instanceId)??[];
-  if(this.intents('shrink').length)return missingReads([
-   [this.capacity(2),'cloud_read capacity'],[this.fleet(ids)&&same([...ids].sort(),this.cohort().newInstanceIds),'cloud_read fleet'],
-   [this.backend(ids),'cloud_read backend'],
-  ]);
-  const original=this.trace.baseline()?.instanceIds??[];
-  const added=ids.filter(id=>!original.includes(id));
-  const activity=this.current.expansion, scale=this.trace.scaleActions().find(action=>action.desiredCapacity===4);
-  return missingReads([
-   [this.capacity(4),'cloud_read capacity'],[this.fleet(ids)&&original.every(id=>ids.includes(id))&&added.length===2,'cloud_read fleet'],
-   [this.backend(ids),'cloud_read backend'],[added.length===2&&this.probesReady(added),'db_connection_probe for the two replacement nodes'],
-   [fresh(activity)&&activity.status==='Successful'&&activity.actionId===scale?.actionId&&activity.scalingActivityId===scale?.scalingActivityId&&
-    Array.isArray(activity.createdIds)&&same([...activity.createdIds].sort(),[...added].sort()),'cloud_read expansion for the saved activity'],
-  ]);
- }
- canSyncInventory(){return this.trace.versioned&&Boolean(this.readiness.expansion()?.result)&&this.inventoryReads().length===0;}
- requireInventory(){
-  if(!this.trace.versioned||!this.readiness.expansion()?.result)throw missing();
-  this.requireReads(this.inventoryReads());
- }
- observeInventory(receipt){
-  if(!this.canSyncInventory()||!Array.isArray(receipt?.instanceIds)||
-    !same([...receipt.instanceIds].sort(),this.current.fleet.instances.map(node=>node.instanceId).sort()))throw invalid();
-  this.inventory={instanceIds:[...receipt.instanceIds].sort(),observedAt:new Date().toISOString()};
-  this.manager.appendCustomEntry(INVENTORY,this.inventory);
  }
  observeContinuity(args,result){
   if(!this.trace.versioned||!result||result.readiness==='traffic-warming')return;
@@ -350,7 +321,7 @@ export class ReplacementSequence {
   if(this.trace.versioned){
    const retirement=this.current.retirement,shrink=this.trace.scaleActions().find(action=>action.desiredCapacity===2);
    if(!this.trafficProof?.noErrors||!this.finalTraffic?.noErrors||!fresh(this.finalTraffic)||
-    !same(this.inventory?.instanceIds,cohort.newInstanceIds)||!fresh(retirement)||retirement.status!=='Successful'||
+    !fresh(retirement)||retirement.status!=='Successful'||
     retirement.actionId!==shrink?.actionId||retirement.scalingActivityId!==shrink.scalingActivityId||
     !same([...retirement.destroyedIds].sort(),cohort.oldInstanceIds)||
     !metricsValid(this.current.metrics,cohort.newInstanceIds))throw missing();

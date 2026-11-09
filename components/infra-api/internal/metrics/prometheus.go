@@ -9,10 +9,36 @@ import (
 	"math"
 	"raptor-iap/infra-api/internal/domain"
 	"raptor-iap/infra-api/internal/policy"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// PgcatFleetSelector restricts both live and retained series to the provider's
+// current members. Prometheus regex matchers match the entire label value.
+func PgcatFleetSelector(env, proxy, db string, instanceIDs []string) string {
+	ids := make([]string, len(instanceIDs))
+	for i, id := range instanceIDs {
+		ids[i] = regexp.QuoteMeta(id)
+	}
+	slices.Sort(ids)
+	return fmt.Sprintf(`env=%s,db_proxy_code=%s,target_db_code=%s,ecs_instance_id=~%s`,
+		strconv.Quote(env), strconv.Quote(proxy), strconv.Quote(db), strconv.Quote(strings.Join(ids, "|")))
+}
+
+// PgcatPreferredSeries uses remote write when the node has an Agent source.
+// Select timestamps before combining the series to preserve raw scrape times.
+func PgcatPreferredSeries(metric, selector string, timestamp bool) string {
+	agent := metric + "{job=\"pgcat-agent\"," + selector + "}"
+	central := metric + "{job=\"pgcat\"," + selector + "}"
+	if timestamp {
+		agent = "timestamp(" + agent + ")"
+		central = "timestamp(" + central + ")"
+	}
+	return "(" + agent + " or (" + central + " unless on (env,db_proxy_code,target_db_code,ecs_instance_id) up{job=\"pgcat-agent\"," + selector + "}))"
+}
 
 type Query func(context.Context, domain.Environment, string, string) ([]byte, error)
 type Client struct {
@@ -128,27 +154,24 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 		return nil, fail()
 	}
 	members := map[string]bool{}
+	ids := make([]string, 0, len(s.Nodes))
 	for _, n := range s.Nodes {
 		if n.ID == "" || members[n.ID] {
 			return nil, fail()
 		}
 		members[n.ID] = true
+		ids = append(ids, n.ID)
 	}
-	selector := fmt.Sprintf(`env=%s,db_proxy_code=%s,target_db_code=%s`, strconv.Quote(s.EnvCode), strconv.Quote(s.ProxyCode), strconv.Quote(db))
+	selector := PgcatFleetSelector(s.EnvCode, s.ProxyCode, db, ids)
 	identity := `env,db_proxy_code,target_db_code,ecs_instance_id`
 	agentUp := `up{job="pgcat-agent",` + selector + `}`
-	selected := func(metric string) string {
-		return `(` + metric + `{job="pgcat-agent",` + selector + `} or (` + metric + `{job="pgcat",` + selector + `} unless on (` + identity + `) ` + agentUp + `))`
-	}
 	rawMatcher := `__name__=~"pgcat_pools_cl_(active|idle|waiting)",`
 	raw := `({` + rawMatcher + `job="pgcat-agent",` + selector + `} or ({` + rawMatcher + `job="pgcat",` + selector + `} unless on (` + identity + `) ` + agentUp + `))`
-	q := raw + ` or {__name__=~"infra_pgcat_connected_clients|infra_pgcat_client_observation_timestamp_seconds",` + selector + `} or ` + selected("up")
+	q := raw + ` or {__name__=~"infra_pgcat_connected_clients|infra_pgcat_client_observation_timestamp_seconds",` + selector + `} or ` + PgcatPreferredSeries("up", selector, false)
 	timestampQueries := []string{}
 	for _, k := range []string{"active", "idle", "waiting"} {
 		metric := "pgcat_pools_cl_" + k
-		agent := metric + `{job="pgcat-agent",` + selector + `}`
-		central := metric + `{job="pgcat",` + selector + `}`
-		originTime := `(timestamp(` + agent + `) or (timestamp(` + central + `) unless on (` + identity + `) ` + agentUp + `))`
+		originTime := PgcatPreferredSeries(metric, selector, true)
 		timestampQueries = append(timestampQueries, fmt.Sprintf(`label_replace(%s,"source_metric",%s,"","")`, originTime, strconv.Quote(k)))
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)

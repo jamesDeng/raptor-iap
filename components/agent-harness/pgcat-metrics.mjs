@@ -5,10 +5,18 @@ export async function readPgcatClients({scope,nodeIds,pool,user,query,allowIncom
  const selector='{job="pgcat",env='+JSON.stringify(scope.envCode)+',db_proxy_code='+JSON.stringify(scope.proxyCode)+',target_db_code='+JSON.stringify(scope.targetDbCode)+'}';
  const responseTimes=[],sourceTimes=[];
  const missing=new Set();
+ const origins=new Map();
  const markMissing=instanceId=>{if(!allowIncomplete)throw invalid();missing.add(instanceId);};
  const validRows=rows=>{
   if(!Array.isArray(rows)||!rows.length||rows.length>100)throw invalid();
-  for(const r of rows){const m=r.metric,t=Number(r.value?.[0]);if(!m||m.job!=='pgcat'||m.env!==scope.envCode||m.db_proxy_code!==scope.proxyCode||m.target_db_code!==scope.targetDbCode||!nodeIds.includes(m.ecs_instance_id)||!Number.isFinite(t)||Math.abs(Date.now()/1000-t)>30)throw invalid();responseTimes.push(t);}
+  for(const r of rows){
+   const m=r.metric,t=Number(r.value?.[0]);
+   if(!m||!['pgcat','pgcat-agent'].includes(m.job)||m.env!==scope.envCode||m.db_proxy_code!==scope.proxyCode||m.target_db_code!==scope.targetDbCode||!nodeIds.includes(m.ecs_instance_id)||!Number.isFinite(t)||Math.abs(Date.now()/1000-t)>30)throw invalid();
+   const origin=origins.get(m.ecs_instance_id);
+   if(origin&&(origin.job!==m.job||origin.instance!==m.instance))throw invalid();
+   origins.set(m.ecs_instance_id,{job:m.job,instance:m.instance});
+   responseTimes.push(t);
+  }
   return rows;
  };
  const up=validRows(await query('up'+selector)),stamps=validRows(await query('timestamp(up'+selector+')'));

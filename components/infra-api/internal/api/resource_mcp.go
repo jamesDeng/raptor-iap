@@ -83,13 +83,7 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 			if op.identity != nil && (op.identity.Binding == nil || op.identity.Binding.Operation != "db-proxy.replace-nodes" || op.identity.Binding.ExecutionMode == "qualification") {
 				continue
 			}
-			catalogProtocol := protocol
-			// For tools/call the resource binding is verified after parsing
-			// selectors. Register the handler without advertising it to legacy catalogs.
-			if spec.name == "pgcat_monitoring_sync" && op.identity == nil && op.principal == "agent" {
-				catalogProtocol = policy.RequestGrantProtocol
-			}
-			tool, ok := resourceMCPTool(spec.name, commandSchema(spec.sample), catalogProtocol)
+			tool, ok := resourceMCPTool(spec.name, commandSchema(spec.sample), protocol)
 			if !ok {
 				continue
 			}
