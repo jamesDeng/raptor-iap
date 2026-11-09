@@ -23,6 +23,7 @@ jobs:
             -v "$PWD/test-assets/metrics:/fixtures:ro" -w /fixtures \
             prom/prometheus@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e \
             test rules fixtures.yaml
-          docker run --rm --entrypoint nginx \
+          docker run --rm --read-only --user 101:101 --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=16m --entrypoint nginx \
             -v "$PWD/helm-chart/infra-test-metrics/files/write-proxy.conf:/etc/nginx/nginx.conf:ro" \
             ghcr.io/nginx/nginx-unprivileged@sha256:847080049e23239e86144f01a4b79252db60494cebea58e827ae4e7d66c96c58 -t
