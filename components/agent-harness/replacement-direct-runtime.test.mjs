@@ -8,7 +8,7 @@ import {operationCapabilities,operationToolSchema} from './operation-profile.mjs
 import {runLiveReplacement} from './live-replacement.mjs';
 import {scope,old,added,observations} from './replacement-sequence-fixtures.mjs';
 
-test('real pinned Pi settles ten-turn expansion and approval with durable withdrawal and rollout waits',async(t)=>{
+test('real pinned Pi settles expansion beyond ten model turns and approval with durable withdrawal and rollout waits',async(t)=>{
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'direct-native-')));
  try{
@@ -27,7 +27,7 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
   const approval={requestId:b.requestId,actionId:'shrink',interface:'db-proxy.scale-in',envCode:b.envCode,target:{proxyCode:'proxy'},parameters:{desiredCapacity:2}};
   const scripts=[
    [[control[0]],[control[1]],[control[2]],[control[3],control[4]],[control[5]],
-    [cloud('fleet')],[cloud('backend'),cloud('capacity')],
+    [cloud('fleet')],[cloud('backend')],[cloud('capacity')],
     [deployment,metric('pgcatClients'),metric('trafficFailures'),metric('connections')],
     old.map(instanceId=>call('db_connection_probe',{instanceId})),
     [call('mcp__infra__db_proxy_scale',{...target,actionId:'expand',desiredCapacity:4})]],
@@ -121,7 +121,7 @@ test('real pinned Pi settles ten-turn expansion and approval with durable withdr
   progress.length=0;
   scaleArgs.actionId=actionID;
   let previous;
-  const counts=[10,1,1,6,5,10,3];
+  const counts=[11,1,1,6,5,10,3];
   for(phase=0;phase<scripts.length;phase++){
    round=0;if(phase===5)surge=false;
    const continuation=previous?.paused?{decision:'resume',approvalId:previous.paused.approvalId,actionId:previous.paused.actionId,bindingDigest:previous.paused.bindingDigest}:undefined;
