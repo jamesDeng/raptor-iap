@@ -1,0 +1,604 @@
+diff --git a/cmd/ateapi/internal/controlapi/worker.go b/cmd/ateapi/internal/controlapi/worker.go
+index 533a9e59..ca84bc5e 100644
+--- a/cmd/ateapi/internal/controlapi/worker.go
++++ b/cmd/ateapi/internal/controlapi/worker.go
+@@ -253,6 +253,14 @@ func (s *ServiceImpl) DeleteWorker(ctx context.Context, name string, preconditio
+ }
+ 
+ func (s *RPCService) DrainWorker(ctx context.Context, req *ateapipb.DrainWorkerRequest) (*ateapipb.Worker, error) {
++	return s.drainWorker(ctx, req, false)
++}
++
++func (s *RPCService) DrainIdleWorker(ctx context.Context, req *ateapipb.DrainWorkerRequest) (*ateapipb.Worker, error) {
++	return s.drainWorker(ctx, req, true)
++}
++
++func (s *RPCService) drainWorker(ctx context.Context, req *ateapipb.DrainWorkerRequest, idleOnly bool) (*ateapipb.Worker, error) {
+ 	if errs := apivalidation.ValidateDrainWorkerRequest(ctx, req); len(errs) > 0 {
+ 		return nil, resources.ToGRPCStatusError(errs)
+ 	}
+@@ -271,6 +279,9 @@ func (s *RPCService) DrainWorker(ctx context.Context, req *ateapipb.DrainWorkerR
+ 	}
+ 
+ 	return s.mutateWorker(ctx, name, store.PreconditionFrom(observed), func(toUpdate *ateapipb.Worker) error {
++		if idleOnly && toUpdate.GetStatus().GetAllocated().GetActors() != 0 {
++			return status.Error(codes.FailedPrecondition, "worker has actor assignments")
++		}
+ 		if toUpdate.GetStatus().GetState() == ateapipb.WorkerState_WORKER_STATE_DRAINING {
+ 			// already draining, do nothing
+ 			return &workerUnchanged{worker: proto.Clone(toUpdate).(*ateapipb.Worker)}
+diff --git a/cmd/ateapi/internal/controlapi/worker_test.go b/cmd/ateapi/internal/controlapi/worker_test.go
+index 3fd1b510..37f2430d 100644
+--- a/cmd/ateapi/internal/controlapi/worker_test.go
++++ b/cmd/ateapi/internal/controlapi/worker_test.go
+@@ -652,6 +652,34 @@ func TestDrainWorker_KeepsAssignment(t *testing.T) {
+ 	}
+ }
+ 
++func TestDrainIdleWorker_WaitsForAssignmentRelease(t *testing.T) {
++	ctx := context.Background()
++	svc, persistence := newWorkerAPIService(t)
++	seedAPIWorker(t, ctx, persistence, validWorker(apiWorkerName))
++	const actor = "actor-uid-1"
++	before := assignAPIWorker(t, ctx, persistence, apiWorkerName, actor)
++	req := &ateapipb.DrainWorkerRequest{Worker: workerRef(apiWorkerName)}
++	if _, err := svc.DrainIdleWorker(ctx, req); status.Code(err) != codes.FailedPrecondition {
++		t.Fatalf("DrainIdleWorker with a binding = %v, want FailedPrecondition", err)
++	}
++	stillActive, err := persistence.GetWorker(ctx, apiWorkerName)
++	if err != nil || !proto.Equal(stillActive, before) {
++		t.Fatalf("busy drain changed worker: %v, %v", stillActive, err)
++	}
++	host, err := persistence.FindWorkerHostingActor(ctx, actor)
++	if err != nil || host != apiWorkerName {
++		t.Fatalf("actor host = %q, %v, want original worker", host, err)
++	}
++	if _, err := persistence.ReleaseActorFromWorker(ctx, apiWorkerName, actor); err != nil {
++		t.Fatal(err)
++	}
++	drained, err := svc.DrainIdleWorker(ctx, req)
++	if err != nil || drained.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING ||
++		drained.GetStatus().GetAllocated().GetActors() != 0 {
++		t.Fatalf("DrainIdleWorker after release = %v, %v, want idle and draining", drained, err)
++	}
++}
++
+ func TestDrainWorker_Errors(t *testing.T) {
+ 	ctx := context.Background()
+ 	svc, _ := newWorkerAPIService(t)
+diff --git a/cmd/atecontroller/internal/workersync/fakecontrol_test.go b/cmd/atecontroller/internal/workersync/fakecontrol_test.go
+index 969b5ec3..2f1780d2 100644
+--- a/cmd/atecontroller/internal/workersync/fakecontrol_test.go
++++ b/cmd/atecontroller/internal/workersync/fakecontrol_test.go
+@@ -228,6 +228,14 @@ func (f *fakeControl) DeleteWorker(_ context.Context, in *ateapipb.DeleteWorkerR
+ }
+ 
+ func (f *fakeControl) DrainWorker(_ context.Context, in *ateapipb.DrainWorkerRequest, _ ...grpc.CallOption) (*ateapipb.Worker, error) {
++	return f.drainWorker(in, false)
++}
++
++func (f *fakeControl) DrainIdleWorker(_ context.Context, in *ateapipb.DrainWorkerRequest, _ ...grpc.CallOption) (*ateapipb.Worker, error) {
++	return f.drainWorker(in, true)
++}
++
++func (f *fakeControl) drainWorker(in *ateapipb.DrainWorkerRequest, idleOnly bool) (*ateapipb.Worker, error) {
+ 	f.mu.Lock()
+ 	defer f.mu.Unlock()
+ 
+@@ -236,6 +244,9 @@ func (f *fakeControl) DrainWorker(_ context.Context, in *ateapipb.DrainWorkerReq
+ 	if !ok {
+ 		return nil, status.Errorf(codes.NotFound, "Worker %s not found", name)
+ 	}
++	if idleOnly && stored.GetStatus().GetAllocated().GetActors() != 0 {
++		return nil, status.Error(codes.FailedPrecondition, "worker has actor assignments")
++	}
+ 	if stored.GetStatus().GetState() == ateapipb.WorkerState_WORKER_STATE_DRAINING {
+ 		// Already draining: no write, and specifically no version bump.
+ 		return proto.Clone(stored).(*ateapipb.Worker), nil
+diff --git a/cmd/atecontroller/internal/workersync/syncer.go b/cmd/atecontroller/internal/workersync/syncer.go
+index 40f820a7..b8776f60 100644
+--- a/cmd/atecontroller/internal/workersync/syncer.go
++++ b/cmd/atecontroller/internal/workersync/syncer.go
+@@ -405,23 +405,42 @@ func (s *WorkerPoolSyncer) createOrUpdateWorker(ctx context.Context, key workerK
+ 		slog.DebugContext(ctx, "Syncer: registered worker sandbox class predates its pool",
+ 			append(key.logAttrs(), slog.String("registered", w.GetSandboxClass()), slog.String("pool", string(pool.Spec.SandboxClass)))...)
+ 	}
++	if changed {
++		// Preserve epoch reconciliation for assignments left by a restarted
++		// worker, even if its Pod cannot yet be replaced.
++		w, err = s.client.UpdateWorker(ctx, &ateapipb.UpdateWorkerRequest{Worker: w})
++		if err != nil {
++			return err
++		}
++	}
+ 	if ips := podIPs(pod); !slices.Equal(w.GetIps(), ips) {
+-		// TODO: I don't think this is possible, but handling this case so we can
+-		// log it just in case we can reproduce it. It is logged rather than
+-		// repaired because ips is immutable on a registered Worker: writing the
+-		// pod's value back would be rejected rather than applied.
+ 		slog.WarnContext(ctx, "Syncer: registered worker IPs disagree with its pod",
+ 			append(key.logAttrs(), slog.Any("registered", w.GetIps()), slog.Any("pod_ips", ips))...)
+-	}
+-	if !changed {
++		// Raptor enables automatic replacement only for its AX worker pool.
++		if pool.GetLabels()["workload"] != "ax" {
++			return nil
++		}
++		// The route copied the registered IP into Actor assignments. Replace
++		// an idle pod to give its successor a new Worker identity and address.
++		// Drain first so no Actor can bind between the check and deletion.
++		drained, err := s.client.DrainIdleWorker(ctx, &ateapipb.DrainWorkerRequest{Worker: key.workerRef()})
++		if status.Code(err) == codes.NotFound {
++			return nil
++		}
++		if err != nil {
++			return err
++		}
++		if drained.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING ||
++			drained.GetStatus().GetAllocated().GetActors() != 0 {
++			return fmt.Errorf("worker is not idle and draining after DrainIdleWorker")
++		}
++		slog.InfoContext(ctx, "Syncer: deleting worker pod (IP changed)", key.logAttrs()...)
++		if err := s.deleteWorkerPod(ctx, key, pod); err != nil {
++			return fmt.Errorf("deleting worker pod after IP change: %w", err)
++		}
+ 		return nil
+ 	}
+-
+-	// w carries the uid and version it was read at, which the API requires as the
+-	// update's precondition. ABORTED requeues the key; the retry re-fetches the
+-	// worker at its new version.
+-	_, err = s.client.UpdateWorker(ctx, &ateapipb.UpdateWorkerRequest{Worker: w})
+-	return err
++	return nil
+ }
+ 
+ func isWorkerEligible(pod *corev1.Pod) bool {
+@@ -457,6 +476,13 @@ func (s *WorkerPoolSyncer) deleteTerminalPod(ctx context.Context, key workerKey,
+ 	}
+ 	slog.InfoContext(ctx, "Syncer: deleting worker pod (terminal phase)",
+ 		append(key.logAttrs(), slog.String("phase", string(pod.Status.Phase)))...)
++	if err := s.deleteWorkerPod(ctx, key, pod); err != nil {
++		return fmt.Errorf("deleting terminal pod: %w", err)
++	}
++	return nil
++}
++
++func (s *WorkerPoolSyncer) deleteWorkerPod(ctx context.Context, key workerKey, pod *corev1.Pod) error {
+ 	uid := pod.UID
+ 	err := s.pods.Pods(key.namespace).Delete(ctx, key.name, metav1.DeleteOptions{
+ 		Preconditions: &metav1.Preconditions{UID: &uid},
+@@ -464,10 +490,7 @@ func (s *WorkerPoolSyncer) deleteTerminalPod(ctx context.Context, key workerKey,
+ 	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+ 		return nil
+ 	}
+-	if err != nil {
+-		return fmt.Errorf("deleting terminal pod: %w", err)
+-	}
+-	return nil
++	return err
+ }
+ 
+ // podIPs returns the pod's IP addresses, one per IP family, in the order
+diff --git a/cmd/atecontroller/internal/workersync/syncer_test.go b/cmd/atecontroller/internal/workersync/syncer_test.go
+index 6e37c992..faa48504 100644
+--- a/cmd/atecontroller/internal/workersync/syncer_test.go
++++ b/cmd/atecontroller/internal/workersync/syncer_test.go
+@@ -891,6 +891,141 @@ func TestSyncer_PodRecreatedWithNewUID(t *testing.T) {
+ 	}
+ }
+ 
++func TestSyncer_PodIPChanged_LeavesOtherPoolsAlone(t *testing.T) {
++	ctx := context.Background()
++	ns, name, pool := "ate-demo-counter", "counter-worker", "counter"
++	api := newFakeControl()
++	s, pods, _ := setupReconcileTest(t, api, workerPool(ns, pool, "gvisor", nil))
++	key := seedPod(t, pods, workerPod(ns, name, pool, testPodUID, "10.0.0.7"))
++	mustReconcile(t, ctx, s, key)
++	if err := pods.Update(workerPod(ns, name, pool, testPodUID, "10.0.0.8")); err != nil {
++		t.Fatal(err)
++	}
++	mustReconcile(t, ctx, s, key)
++	if got := api.get(testPodUID).GetStatus().GetState(); got != ateapipb.WorkerState_WORKER_STATE_ACTIVE {
++		t.Errorf("worker state = %v, want ACTIVE", got)
++	}
++}
++
++func TestSyncer_PodIPChanged_ReplacesIdleWorker(t *testing.T) {
++	ctx := context.Background()
++	ns, podName, poolName := "ns-ip-change", "worker-ip-change", "pool1"
++	api := newFakeControl()
++	s, pods, _ := setupReconcileTest(t, api, workerPool(ns, poolName, "gvisor", map[string]string{"workload": "ax"}))
++	oldPod := workerPod(ns, podName, poolName, testPodUID, "10.0.0.7")
++	oldPod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: ateomContainer}}
++	key := seedPod(t, pods, oldPod)
++	mustReconcile(t, ctx, s, key)
++
++	changed := workerPod(ns, podName, poolName, testPodUID, "10.0.0.8")
++	changed.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: ateomContainer, RestartCount: 1}}
++	if err := pods.Update(changed); err != nil {
++		t.Fatal(err)
++	}
++	// The fake Kubernetes client records the actual deletion and its UID guard.
++	fakeK8s := fake.NewSimpleClientset(changed.DeepCopy())
++	s.pods = fakeK8s.CoreV1()
++	mustReconcile(t, ctx, s, key)
++	if _, err := fakeK8s.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
++		t.Errorf("old pod remains after IP change: %v", err)
++	}
++	if got := api.get(testPodUID).GetStatus().GetState(); got != ateapipb.WorkerState_WORKER_STATE_DRAINING {
++		t.Errorf("worker state = %v, want DRAINING", got)
++	}
++	var deleted *metav1.Preconditions
++	for _, action := range fakeK8s.Actions() {
++		if d, ok := action.(k8stesting.DeleteAction); ok {
++			deleted = d.GetDeleteOptions().Preconditions
++		}
++	}
++	if deleted == nil || deleted.UID == nil || *deleted.UID != testPodUID {
++		t.Errorf("pod deletion preconditions = %+v, want UID %s", deleted, testPodUID)
++	}
++
++	if err := pods.Delete(changed); err != nil {
++		t.Fatal(err)
++	}
++	mustReconcile(t, ctx, s, key)
++	newPod := workerPod(ns, podName, poolName, otherPodUID, "10.0.0.8")
++	newKey := seedPod(t, pods, newPod)
++	mustReconcile(t, ctx, s, newKey)
++	if names := api.names(); len(names) != 1 || names[0] != otherPodUID {
++		t.Errorf("registered workers = %v, want replacement UID", names)
++	}
++	if got := api.get(otherPodUID).GetIps(); !slices.Equal(got, []string{"10.0.0.8"}) {
++		t.Errorf("replacement IPs = %v, want 10.0.0.8", got)
++	}
++}
++
++func TestSyncer_PodIPChanged_KeepsBoundWorker(t *testing.T) {
++	ctx := context.Background()
++	ns, podName, poolName := "ns-ip-busy", "worker-ip-busy", "pool1"
++	api := newFakeControl()
++	s, pods, _ := setupReconcileTest(t, api, workerPool(ns, poolName, "gvisor", map[string]string{"workload": "ax"}))
++	key := seedPod(t, pods, workerPod(ns, podName, poolName, testPodUID, "10.0.0.7"))
++	mustReconcile(t, ctx, s, key)
++	w := api.get(testPodUID)
++	w.Status.Allocated = &ateapipb.WorkerResources{Actors: 1}
++	api.put(w)
++	changed := workerPod(ns, podName, poolName, testPodUID, "10.0.0.8")
++	if err := pods.Update(changed); err != nil {
++		t.Fatal(err)
++	}
++	fakeK8s := fake.NewSimpleClientset(changed.DeepCopy())
++	s.pods = fakeK8s.CoreV1()
++	if err := s.reconcile(ctx, key); status.Code(err) != codes.FailedPrecondition {
++		t.Fatalf("reconcile with a bound actor = %v, want FailedPrecondition", err)
++	}
++	if _, err := fakeK8s.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{}); err != nil {
++		t.Errorf("pod with a bound actor was deleted: %v", err)
++	}
++	if got := api.get(testPodUID).GetStatus().GetState(); got != ateapipb.WorkerState_WORKER_STATE_ACTIVE {
++		t.Errorf("worker state = %v, want ACTIVE", got)
++	}
++	w = api.get(testPodUID)
++	w.Status.Allocated = nil
++	api.put(w)
++	mustReconcile(t, ctx, s, key)
++	if _, err := fakeK8s.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
++		t.Errorf("idle pod remains after retry: %v", err)
++	}
++}
++
++func TestSyncer_PodIPChanged_ViaInformer(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	ns, podName, poolName := "ns-ip-restart", "worker-ip-restart", "pool1"
++	api := newFakeControl()
++	fakeK8s := setupSyncerTest(t, ctx, api, workerPool(ns, poolName, "gvisor", map[string]string{"workload": "ax"}))
++	oldPod := workerPod(ns, podName, poolName, testPodUID, "10.0.0.7")
++	oldPod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: ateomContainer}}
++	if _, err := fakeK8s.CoreV1().Pods(ns).Create(ctx, oldPod, metav1.CreateOptions{}); err != nil {
++		t.Fatal(err)
++	}
++	waitForWorker(t, ctx, api, testPodUID, func(w *ateapipb.Worker) bool { return w != nil })
++
++	changed := oldPod.DeepCopy()
++	changed.Status.PodIP = "10.0.0.8"
++	changed.Status.PodIPs = []corev1.PodIP{{IP: "10.0.0.8"}}
++	changed.Status.ContainerStatuses[0].RestartCount = 1
++	if _, err := fakeK8s.CoreV1().Pods(ns).UpdateStatus(ctx, changed, metav1.UpdateOptions{}); err != nil {
++		t.Fatal(err)
++	}
++	waitForWorker(t, ctx, api, testPodUID, func(w *ateapipb.Worker) bool { return w == nil })
++	if _, err := fakeK8s.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
++		t.Errorf("old pod remains after reconcile: %v", err)
++	}
++
++	replacement := workerPod(ns, podName, poolName, otherPodUID, "10.0.0.8")
++	if _, err := fakeK8s.CoreV1().Pods(ns).Create(ctx, replacement, metav1.CreateOptions{}); err != nil {
++		t.Fatal(err)
++	}
++	waitForWorker(t, ctx, api, otherPodUID, func(w *ateapipb.Worker) bool { return w != nil })
++	if got := api.get(otherPodUID).GetIps(); !slices.Equal(got, []string{"10.0.0.8"}) {
++		t.Errorf("replacement IPs = %v, want 10.0.0.8", got)
++	}
++}
++
+ // TestSyncer_DeleteNeverEligiblePod verifies that deleting a pod that never got
+ // an IP (and so was never registered) is a no-op rather than an error, which is
+ // what keeps it from error-looping.
+diff --git a/pkg/proto/ateapipb/ateapi.pb.go b/pkg/proto/ateapipb/ateapi.pb.go
+index bfb45484..61303ce4 100644
+--- a/pkg/proto/ateapipb/ateapi.pb.go
++++ b/pkg/proto/ateapipb/ateapi.pb.go
+@@ -8428,7 +8428,7 @@ const file_ateapi_proto_rawDesc = "" +
+ 	"\vWorkerState\x12\x1c\n" +
+ 	"\x18WORKER_STATE_UNSPECIFIED\x10\x00\x12\x17\n" +
+ 	"\x13WORKER_STATE_ACTIVE\x10\x01\x12\x19\n" +
+-	"\x15WORKER_STATE_DRAINING\x10\x022\xfe\x18\n" +
++	"\x15WORKER_STATE_DRAINING\x10\x022\xbf\x19\n" +
+ 	"\aControl\x124\n" +
+ 	"\bGetActor\x12\x17.ateapi.GetActorRequest\x1a\r.ateapi.Actor\"\x00\x12:\n" +
+ 	"\vCreateActor\x12\x1a.ateapi.CreateActorRequest\x1a\r.ateapi.Actor\"\x00\x12:\n" +
+@@ -8455,7 +8455,8 @@ const file_ateapi_proto_rawDesc = "" +
+ 	"\fCreateWorker\x12\x1b.ateapi.CreateWorkerRequest\x1a\x0e.ateapi.Worker\"\x00\x12=\n" +
+ 	"\fUpdateWorker\x12\x1b.ateapi.UpdateWorkerRequest\x1a\x0e.ateapi.Worker\"\x00\x12=\n" +
+ 	"\fDeleteWorker\x12\x1b.ateapi.DeleteWorkerRequest\x1a\x0e.ateapi.Worker\"\x00\x12;\n" +
+-	"\vDrainWorker\x12\x1a.ateapi.DrainWorkerRequest\x1a\x0e.ateapi.Worker\"\x00\x12u\n" +
++	"\vDrainWorker\x12\x1a.ateapi.DrainWorkerRequest\x1a\x0e.ateapi.Worker\"\x00\x12?\n" +
++	"\x0fDrainIdleWorker\x12\x1a.ateapi.DrainWorkerRequest\x1a\x0e.ateapi.Worker\"\x00\x12u\n" +
+ 	"\x1aListWorkerActorAssignments\x12).ateapi.ListWorkerActorAssignmentsRequest\x1a*.ateapi.ListWorkerActorAssignmentsResponse\"\x00\x12E\n" +
+ 	"\n" +
+ 	"ListActors\x12\x19.ateapi.ListActorsRequest\x1a\x1a.ateapi.ListActorsResponse\"\x00\x12C\n" +
+@@ -8793,73 +8794,75 @@ var file_ateapi_proto_depIdxs = []int32{
+ 	96,  // 170: ateapi.Control.UpdateWorker:input_type -> ateapi.UpdateWorkerRequest
+ 	97,  // 171: ateapi.Control.DeleteWorker:input_type -> ateapi.DeleteWorkerRequest
+ 	98,  // 172: ateapi.Control.DrainWorker:input_type -> ateapi.DrainWorkerRequest
+-	90,  // 173: ateapi.Control.ListWorkerActorAssignments:input_type -> ateapi.ListWorkerActorAssignmentsRequest
+-	99,  // 174: ateapi.Control.ListActors:input_type -> ateapi.ListActorsRequest
+-	53,  // 175: ateapi.Control.CreateAtespace:input_type -> ateapi.CreateAtespaceRequest
+-	54,  // 176: ateapi.Control.GetAtespace:input_type -> ateapi.GetAtespaceRequest
+-	55,  // 177: ateapi.Control.ListAtespaces:input_type -> ateapi.ListAtespacesRequest
+-	57,  // 178: ateapi.Control.DeleteAtespace:input_type -> ateapi.DeleteAtespaceRequest
+-	58,  // 179: ateapi.Control.CreateActorTemplate:input_type -> ateapi.CreateActorTemplateRequest
+-	59,  // 180: ateapi.Control.GetActorTemplate:input_type -> ateapi.GetActorTemplateRequest
+-	60,  // 181: ateapi.Control.ListActorTemplates:input_type -> ateapi.ListActorTemplatesRequest
+-	62,  // 182: ateapi.Control.DeleteActorTemplate:input_type -> ateapi.DeleteActorTemplateRequest
+-	113, // 183: ateapi.Control.GetGlobalAccessPolicy:input_type -> ateapi.GetGlobalAccessPolicyRequest
+-	114, // 184: ateapi.Control.CreateGlobalAccessPolicy:input_type -> ateapi.CreateGlobalAccessPolicyRequest
+-	115, // 185: ateapi.Control.UpdateGlobalAccessPolicy:input_type -> ateapi.UpdateGlobalAccessPolicyRequest
+-	116, // 186: ateapi.Control.GetAtespaceAccessPolicy:input_type -> ateapi.GetAtespaceAccessPolicyRequest
+-	117, // 187: ateapi.Control.CreateAtespaceAccessPolicy:input_type -> ateapi.CreateAtespaceAccessPolicyRequest
+-	118, // 188: ateapi.Control.UpdateAtespaceAccessPolicy:input_type -> ateapi.UpdateAtespaceAccessPolicyRequest
+-	119, // 189: ateapi.Control.DeleteAtespaceAccessPolicy:input_type -> ateapi.DeleteAtespaceAccessPolicyRequest
+-	105, // 190: ateapi.WorkerService.SetWorkerCapacity:input_type -> ateapi.SetWorkerCapacityRequest
+-	107, // 191: ateapi.WorkerService.MintAteomActorCertificate:input_type -> ateapi.MintAteomActorCertificateRequest
+-	109, // 192: ateapi.WorkerService.RequestActorSuspend:input_type -> ateapi.RequestActorSuspendRequest
+-	12,  // 193: ateapi.Control.GetActor:output_type -> ateapi.Actor
+-	12,  // 194: ateapi.Control.CreateActor:output_type -> ateapi.Actor
+-	12,  // 195: ateapi.Control.UpdateActor:output_type -> ateapi.Actor
+-	67,  // 196: ateapi.Control.SuspendActor:output_type -> ateapi.SuspendActorResponse
+-	69,  // 197: ateapi.Control.PauseActor:output_type -> ateapi.PauseActorResponse
+-	71,  // 198: ateapi.Control.ResumeActor:output_type -> ateapi.ResumeActorResponse
+-	73,  // 199: ateapi.Control.RevertActor:output_type -> ateapi.RevertActorResponse
+-	12,  // 200: ateapi.Control.DeleteActor:output_type -> ateapi.Actor
+-	13,  // 201: ateapi.Control.GetActorEgressPolicy:output_type -> ateapi.EgressPolicy
+-	13,  // 202: ateapi.Control.CreateActorEgressPolicy:output_type -> ateapi.EgressPolicy
+-	13,  // 203: ateapi.Control.UpdateActorEgressPolicy:output_type -> ateapi.EgressPolicy
+-	13,  // 204: ateapi.Control.DeleteActorEgressPolicy:output_type -> ateapi.EgressPolicy
+-	81,  // 205: ateapi.Control.MintActorJWT:output_type -> ateapi.MintActorJWTResponse
+-	83,  // 206: ateapi.Control.MintActorCertificate:output_type -> ateapi.MintActorCertificateResponse
+-	27,  // 207: ateapi.Control.CreateTag:output_type -> ateapi.Tag
+-	27,  // 208: ateapi.Control.GetTag:output_type -> ateapi.Tag
+-	85,  // 209: ateapi.Control.ListTags:output_type -> ateapi.ListTagsResponse
+-	27,  // 210: ateapi.Control.UpdateTag:output_type -> ateapi.Tag
+-	27,  // 211: ateapi.Control.DeleteTag:output_type -> ateapi.Tag
+-	93,  // 212: ateapi.Control.ListWorkers:output_type -> ateapi.ListWorkersResponse
+-	101, // 213: ateapi.Control.GetWorker:output_type -> ateapi.Worker
+-	101, // 214: ateapi.Control.CreateWorker:output_type -> ateapi.Worker
+-	101, // 215: ateapi.Control.UpdateWorker:output_type -> ateapi.Worker
+-	101, // 216: ateapi.Control.DeleteWorker:output_type -> ateapi.Worker
+-	101, // 217: ateapi.Control.DrainWorker:output_type -> ateapi.Worker
+-	91,  // 218: ateapi.Control.ListWorkerActorAssignments:output_type -> ateapi.ListWorkerActorAssignmentsResponse
+-	100, // 219: ateapi.Control.ListActors:output_type -> ateapi.ListActorsResponse
+-	28,  // 220: ateapi.Control.CreateAtespace:output_type -> ateapi.Atespace
+-	28,  // 221: ateapi.Control.GetAtespace:output_type -> ateapi.Atespace
+-	56,  // 222: ateapi.Control.ListAtespaces:output_type -> ateapi.ListAtespacesResponse
+-	28,  // 223: ateapi.Control.DeleteAtespace:output_type -> ateapi.Atespace
+-	30,  // 224: ateapi.Control.CreateActorTemplate:output_type -> ateapi.ActorTemplate
+-	30,  // 225: ateapi.Control.GetActorTemplate:output_type -> ateapi.ActorTemplate
+-	61,  // 226: ateapi.Control.ListActorTemplates:output_type -> ateapi.ListActorTemplatesResponse
+-	30,  // 227: ateapi.Control.DeleteActorTemplate:output_type -> ateapi.ActorTemplate
+-	111, // 228: ateapi.Control.GetGlobalAccessPolicy:output_type -> ateapi.AccessPolicy
+-	111, // 229: ateapi.Control.CreateGlobalAccessPolicy:output_type -> ateapi.AccessPolicy
+-	111, // 230: ateapi.Control.UpdateGlobalAccessPolicy:output_type -> ateapi.AccessPolicy
+-	111, // 231: ateapi.Control.GetAtespaceAccessPolicy:output_type -> ateapi.AccessPolicy
+-	111, // 232: ateapi.Control.CreateAtespaceAccessPolicy:output_type -> ateapi.AccessPolicy
+-	111, // 233: ateapi.Control.UpdateAtespaceAccessPolicy:output_type -> ateapi.AccessPolicy
+-	111, // 234: ateapi.Control.DeleteAtespaceAccessPolicy:output_type -> ateapi.AccessPolicy
+-	106, // 235: ateapi.WorkerService.SetWorkerCapacity:output_type -> ateapi.SetWorkerCapacityResponse
+-	108, // 236: ateapi.WorkerService.MintAteomActorCertificate:output_type -> ateapi.MintAteomActorCertificateResponse
+-	110, // 237: ateapi.WorkerService.RequestActorSuspend:output_type -> ateapi.RequestActorSuspendResponse
+-	193, // [193:238] is the sub-list for method output_type
+-	148, // [148:193] is the sub-list for method input_type
++	98,  // 173: ateapi.Control.DrainIdleWorker:input_type -> ateapi.DrainWorkerRequest
++	90,  // 174: ateapi.Control.ListWorkerActorAssignments:input_type -> ateapi.ListWorkerActorAssignmentsRequest
++	99,  // 175: ateapi.Control.ListActors:input_type -> ateapi.ListActorsRequest
++	53,  // 176: ateapi.Control.CreateAtespace:input_type -> ateapi.CreateAtespaceRequest
++	54,  // 177: ateapi.Control.GetAtespace:input_type -> ateapi.GetAtespaceRequest
++	55,  // 178: ateapi.Control.ListAtespaces:input_type -> ateapi.ListAtespacesRequest
++	57,  // 179: ateapi.Control.DeleteAtespace:input_type -> ateapi.DeleteAtespaceRequest
++	58,  // 180: ateapi.Control.CreateActorTemplate:input_type -> ateapi.CreateActorTemplateRequest
++	59,  // 181: ateapi.Control.GetActorTemplate:input_type -> ateapi.GetActorTemplateRequest
++	60,  // 182: ateapi.Control.ListActorTemplates:input_type -> ateapi.ListActorTemplatesRequest
++	62,  // 183: ateapi.Control.DeleteActorTemplate:input_type -> ateapi.DeleteActorTemplateRequest
++	113, // 184: ateapi.Control.GetGlobalAccessPolicy:input_type -> ateapi.GetGlobalAccessPolicyRequest
++	114, // 185: ateapi.Control.CreateGlobalAccessPolicy:input_type -> ateapi.CreateGlobalAccessPolicyRequest
++	115, // 186: ateapi.Control.UpdateGlobalAccessPolicy:input_type -> ateapi.UpdateGlobalAccessPolicyRequest
++	116, // 187: ateapi.Control.GetAtespaceAccessPolicy:input_type -> ateapi.GetAtespaceAccessPolicyRequest
++	117, // 188: ateapi.Control.CreateAtespaceAccessPolicy:input_type -> ateapi.CreateAtespaceAccessPolicyRequest
++	118, // 189: ateapi.Control.UpdateAtespaceAccessPolicy:input_type -> ateapi.UpdateAtespaceAccessPolicyRequest
++	119, // 190: ateapi.Control.DeleteAtespaceAccessPolicy:input_type -> ateapi.DeleteAtespaceAccessPolicyRequest
++	105, // 191: ateapi.WorkerService.SetWorkerCapacity:input_type -> ateapi.SetWorkerCapacityRequest
++	107, // 192: ateapi.WorkerService.MintAteomActorCertificate:input_type -> ateapi.MintAteomActorCertificateRequest
++	109, // 193: ateapi.WorkerService.RequestActorSuspend:input_type -> ateapi.RequestActorSuspendRequest
++	12,  // 194: ateapi.Control.GetActor:output_type -> ateapi.Actor
++	12,  // 195: ateapi.Control.CreateActor:output_type -> ateapi.Actor
++	12,  // 196: ateapi.Control.UpdateActor:output_type -> ateapi.Actor
++	67,  // 197: ateapi.Control.SuspendActor:output_type -> ateapi.SuspendActorResponse
++	69,  // 198: ateapi.Control.PauseActor:output_type -> ateapi.PauseActorResponse
++	71,  // 199: ateapi.Control.ResumeActor:output_type -> ateapi.ResumeActorResponse
++	73,  // 200: ateapi.Control.RevertActor:output_type -> ateapi.RevertActorResponse
++	12,  // 201: ateapi.Control.DeleteActor:output_type -> ateapi.Actor
++	13,  // 202: ateapi.Control.GetActorEgressPolicy:output_type -> ateapi.EgressPolicy
++	13,  // 203: ateapi.Control.CreateActorEgressPolicy:output_type -> ateapi.EgressPolicy
++	13,  // 204: ateapi.Control.UpdateActorEgressPolicy:output_type -> ateapi.EgressPolicy
++	13,  // 205: ateapi.Control.DeleteActorEgressPolicy:output_type -> ateapi.EgressPolicy
++	81,  // 206: ateapi.Control.MintActorJWT:output_type -> ateapi.MintActorJWTResponse
++	83,  // 207: ateapi.Control.MintActorCertificate:output_type -> ateapi.MintActorCertificateResponse
++	27,  // 208: ateapi.Control.CreateTag:output_type -> ateapi.Tag
++	27,  // 209: ateapi.Control.GetTag:output_type -> ateapi.Tag
++	85,  // 210: ateapi.Control.ListTags:output_type -> ateapi.ListTagsResponse
++	27,  // 211: ateapi.Control.UpdateTag:output_type -> ateapi.Tag
++	27,  // 212: ateapi.Control.DeleteTag:output_type -> ateapi.Tag
++	93,  // 213: ateapi.Control.ListWorkers:output_type -> ateapi.ListWorkersResponse
++	101, // 214: ateapi.Control.GetWorker:output_type -> ateapi.Worker
++	101, // 215: ateapi.Control.CreateWorker:output_type -> ateapi.Worker
++	101, // 216: ateapi.Control.UpdateWorker:output_type -> ateapi.Worker
++	101, // 217: ateapi.Control.DeleteWorker:output_type -> ateapi.Worker
++	101, // 218: ateapi.Control.DrainWorker:output_type -> ateapi.Worker
++	101, // 219: ateapi.Control.DrainIdleWorker:output_type -> ateapi.Worker
++	91,  // 220: ateapi.Control.ListWorkerActorAssignments:output_type -> ateapi.ListWorkerActorAssignmentsResponse
++	100, // 221: ateapi.Control.ListActors:output_type -> ateapi.ListActorsResponse
++	28,  // 222: ateapi.Control.CreateAtespace:output_type -> ateapi.Atespace
++	28,  // 223: ateapi.Control.GetAtespace:output_type -> ateapi.Atespace
++	56,  // 224: ateapi.Control.ListAtespaces:output_type -> ateapi.ListAtespacesResponse
++	28,  // 225: ateapi.Control.DeleteAtespace:output_type -> ateapi.Atespace
++	30,  // 226: ateapi.Control.CreateActorTemplate:output_type -> ateapi.ActorTemplate
++	30,  // 227: ateapi.Control.GetActorTemplate:output_type -> ateapi.ActorTemplate
++	61,  // 228: ateapi.Control.ListActorTemplates:output_type -> ateapi.ListActorTemplatesResponse
++	30,  // 229: ateapi.Control.DeleteActorTemplate:output_type -> ateapi.ActorTemplate
++	111, // 230: ateapi.Control.GetGlobalAccessPolicy:output_type -> ateapi.AccessPolicy
++	111, // 231: ateapi.Control.CreateGlobalAccessPolicy:output_type -> ateapi.AccessPolicy
++	111, // 232: ateapi.Control.UpdateGlobalAccessPolicy:output_type -> ateapi.AccessPolicy
++	111, // 233: ateapi.Control.GetAtespaceAccessPolicy:output_type -> ateapi.AccessPolicy
++	111, // 234: ateapi.Control.CreateAtespaceAccessPolicy:output_type -> ateapi.AccessPolicy
++	111, // 235: ateapi.Control.UpdateAtespaceAccessPolicy:output_type -> ateapi.AccessPolicy
++	111, // 236: ateapi.Control.DeleteAtespaceAccessPolicy:output_type -> ateapi.AccessPolicy
++	106, // 237: ateapi.WorkerService.SetWorkerCapacity:output_type -> ateapi.SetWorkerCapacityResponse
++	108, // 238: ateapi.WorkerService.MintAteomActorCertificate:output_type -> ateapi.MintAteomActorCertificateResponse
++	110, // 239: ateapi.WorkerService.RequestActorSuspend:output_type -> ateapi.RequestActorSuspendResponse
++	194, // [194:240] is the sub-list for method output_type
++	148, // [148:194] is the sub-list for method input_type
+ 	148, // [148:148] is the sub-list for extension type_name
+ 	148, // [148:148] is the sub-list for extension extendee
+ 	0,   // [0:148] is the sub-list for field type_name
+diff --git a/pkg/proto/ateapipb/ateapi.proto b/pkg/proto/ateapipb/ateapi.proto
+index 3271b24a..fb9b97d7 100644
+--- a/pkg/proto/ateapipb/ateapi.proto
++++ b/pkg/proto/ateapipb/ateapi.proto
+@@ -115,6 +115,10 @@ service Control {
+   // Returns ABORTED if another write lands on the Worker first; retry.
+   rpc DrainWorker(DrainWorkerRequest) returns (Worker) {}
+ 
++  // Drain a Worker only if it has no Actor assignments.
++  // Returns FAILED_PRECONDITION while an Actor is assigned.
++  rpc DrainIdleWorker(DrainWorkerRequest) returns (Worker) {}
++
+   // List the Actors hosted by a given Worker.
+   rpc ListWorkerActorAssignments(ListWorkerActorAssignmentsRequest) returns (ListWorkerActorAssignmentsResponse) {}
+ 
+diff --git a/pkg/proto/ateapipb/ateapi_grpc.pb.go b/pkg/proto/ateapipb/ateapi_grpc.pb.go
+index 292dc8f6..8d02c868 100644
+--- a/pkg/proto/ateapipb/ateapi_grpc.pb.go
++++ b/pkg/proto/ateapipb/ateapi_grpc.pb.go
+@@ -58,6 +58,7 @@ const (
+ 	Control_UpdateWorker_FullMethodName               = "/ateapi.Control/UpdateWorker"
+ 	Control_DeleteWorker_FullMethodName               = "/ateapi.Control/DeleteWorker"
+ 	Control_DrainWorker_FullMethodName                = "/ateapi.Control/DrainWorker"
++	Control_DrainIdleWorker_FullMethodName            = "/ateapi.Control/DrainIdleWorker"
+ 	Control_ListWorkerActorAssignments_FullMethodName = "/ateapi.Control/ListWorkerActorAssignments"
+ 	Control_ListActors_FullMethodName                 = "/ateapi.Control/ListActors"
+ 	Control_CreateAtespace_FullMethodName             = "/ateapi.Control/CreateAtespace"
+@@ -151,6 +152,9 @@ type ControlClient interface {
+ 	// it. Idempotent; one-way. Deliberately leaves any bound Actor alone.
+ 	// Returns ABORTED if another write lands on the Worker first; retry.
+ 	DrainWorker(ctx context.Context, in *DrainWorkerRequest, opts ...grpc.CallOption) (*Worker, error)
++	// Drain a Worker only if it has no Actor assignments.
++	// Returns FAILED_PRECONDITION while an Actor is assigned.
++	DrainIdleWorker(ctx context.Context, in *DrainWorkerRequest, opts ...grpc.CallOption) (*Worker, error)
+ 	// List the Actors hosted by a given Worker.
+ 	ListWorkerActorAssignments(ctx context.Context, in *ListWorkerActorAssignmentsRequest, opts ...grpc.CallOption) (*ListWorkerActorAssignmentsResponse, error)
+ 	// List Actors.
+@@ -449,6 +453,16 @@ func (c *controlClient) DrainWorker(ctx context.Context, in *DrainWorkerRequest,
+ 	return out, nil
+ }
+ 
++func (c *controlClient) DrainIdleWorker(ctx context.Context, in *DrainWorkerRequest, opts ...grpc.CallOption) (*Worker, error) {
++	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
++	out := new(Worker)
++	err := c.cc.Invoke(ctx, Control_DrainIdleWorker_FullMethodName, in, out, cOpts...)
++	if err != nil {
++		return nil, err
++	}
++	return out, nil
++}
++
+ func (c *controlClient) ListWorkerActorAssignments(ctx context.Context, in *ListWorkerActorAssignmentsRequest, opts ...grpc.CallOption) (*ListWorkerActorAssignmentsResponse, error) {
+ 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+ 	out := new(ListWorkerActorAssignmentsResponse)
+@@ -693,6 +707,9 @@ type ControlServer interface {
+ 	// it. Idempotent; one-way. Deliberately leaves any bound Actor alone.
+ 	// Returns ABORTED if another write lands on the Worker first; retry.
+ 	DrainWorker(context.Context, *DrainWorkerRequest) (*Worker, error)
++	// Drain a Worker only if it has no Actor assignments.
++	// Returns FAILED_PRECONDITION while an Actor is assigned.
++	DrainIdleWorker(context.Context, *DrainWorkerRequest) (*Worker, error)
+ 	// List the Actors hosted by a given Worker.
+ 	ListWorkerActorAssignments(context.Context, *ListWorkerActorAssignmentsRequest) (*ListWorkerActorAssignmentsResponse, error)
+ 	// List Actors.
+@@ -816,6 +833,9 @@ func (UnimplementedControlServer) DeleteWorker(context.Context, *DeleteWorkerReq
+ func (UnimplementedControlServer) DrainWorker(context.Context, *DrainWorkerRequest) (*Worker, error) {
+ 	return nil, status.Error(codes.Unimplemented, "method DrainWorker not implemented")
+ }
++func (UnimplementedControlServer) DrainIdleWorker(context.Context, *DrainWorkerRequest) (*Worker, error) {
++	return nil, status.Error(codes.Unimplemented, "method DrainIdleWorker not implemented")
++}
+ func (UnimplementedControlServer) ListWorkerActorAssignments(context.Context, *ListWorkerActorAssignmentsRequest) (*ListWorkerActorAssignmentsResponse, error) {
+ 	return nil, status.Error(codes.Unimplemented, "method ListWorkerActorAssignments not implemented")
+ }
+@@ -1338,6 +1358,24 @@ func _Control_DrainWorker_Handler(srv interface{}, ctx context.Context, dec func
+ 	return interceptor(ctx, in, info, handler)
+ }
+ 
++func _Control_DrainIdleWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
++	in := new(DrainWorkerRequest)
++	if err := dec(in); err != nil {
++		return nil, err
++	}
++	if interceptor == nil {
++		return srv.(ControlServer).DrainIdleWorker(ctx, in)
++	}
++	info := &grpc.UnaryServerInfo{
++		Server:     srv,
++		FullMethod: Control_DrainIdleWorker_FullMethodName,
++	}
++	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
++		return srv.(ControlServer).DrainIdleWorker(ctx, req.(*DrainWorkerRequest))
++	}
++	return interceptor(ctx, in, info, handler)
++}
++
+ func _Control_ListWorkerActorAssignments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+ 	in := new(ListWorkerActorAssignmentsRequest)
+ 	if err := dec(in); err != nil {
+@@ -1751,6 +1789,10 @@ var Control_ServiceDesc = grpc.ServiceDesc{
+ 			MethodName: "DrainWorker",
+ 			Handler:    _Control_DrainWorker_Handler,
+ 		},
++		{
++			MethodName: "DrainIdleWorker",
++			Handler:    _Control_DrainIdleWorker_Handler,
++		},
+ 		{
+ 			MethodName: "ListWorkerActorAssignments",
+ 			Handler:    _Control_ListWorkerActorAssignments_Handler,
