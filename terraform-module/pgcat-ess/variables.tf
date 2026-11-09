@@ -106,10 +106,10 @@ variable "monitoring_agent_image" {
 variable "monitoring_receiver_host" {
   type        = string
   default     = null
-  description = "VPC-only PrivateZone alias for the Terraform-owned NLB receiver; no URL credentials."
+  description = "Private IPv4 address of the Terraform-owned NLB receiver."
   validation {
-    condition     = var.monitoring_receiver_host == null ? true : var.monitoring_receiver_host == "write.pgcat-metrics.rdev.internal"
-    error_message = "Only the reviewed private receiver alias is accepted."
+    condition     = var.monitoring_receiver_host == null ? true : startswith(var.monitoring_receiver_host, "10.70.") && can(cidrnetmask("${var.monitoring_receiver_host}/32"))
+    error_message = "Only an IPv4 receiver in the private rdev VPC range is accepted."
   }
 }
 variable "instance_class" { type = string }

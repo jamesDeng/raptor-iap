@@ -26,6 +26,14 @@ variable "worker_instance_id" {
     error_message = "Exact ACK worker ECS ID required."
   }
 }
+variable "endpoint_zone_id" {
+  type        = string
+  description = "Zone whose private NLB address the local PgCat agents use."
+  validation {
+    condition     = contains([for z in var.nlb_zones : z.zone_id], var.endpoint_zone_id)
+    error_message = "The receiver endpoint zone must be configured on the NLB."
+  }
+}
 variable "worker_security_group_id" {
   type = string
   validation {
