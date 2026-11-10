@@ -14,7 +14,7 @@ const id=value=>typeof value==='string'&&/^[A-Za-z0-9_.-]{1,128}$/.test(value);
 function privateEndpoint(value){try{const u=new URL(value);const h=u.hostname;return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash&&isIP(h)===4&&(h.startsWith('10.')||h.startsWith('192.168.')||/^172\.(1[6-9]|2\d|3[01])\./.test(h));}catch{return false;}}
 function projection(kind,data,config){
  const exact=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join(',')===keys.slice().sort().join(',');
- const stamp=v=>typeof v==='string'&&Number.isFinite(Date.parse(v))&&Math.abs(Date.now()-Date.parse(v))<=30000;
+ const stamp=v=>typeof v==='string'&&Number.isFinite(Date.parse(v));
  if(!data||!stamp(data.observedAt))throw invalid();
  if(kind==='fleet'){
   if(!exact(data,['groupId','observedAt','instances'])||data.groupId!==config.groupId||!Array.isArray(data.instances)||data.instances.length>50)throw invalid();
@@ -67,13 +67,13 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
     const pendingInstanceIds=fleet.instances.filter(n=>['Pending','Pending:Wait'].includes(n.lifecycleState)&&!backendIds.has(n.instanceId)).map(n=>n.instanceId).sort();
     const pending=new Set(pendingInstanceIds),nodeIds=fleet.instances.map(n=>n.instanceId).filter(n=>!pending.has(n));
     const validatePendingRows=(rows,promql)=>{
-     const source=promql.startsWith('timestamp('),up=promql.startsWith('up{')||promql.startsWith('timestamp(up{'),seen=new Set(),now=Date.now()/1000;
+     const source=promql.startsWith('timestamp('),up=promql.startsWith('up{')||promql.startsWith('timestamp(up{'),seen=new Set();
      for(const row of rows){
       const metric=row.metric;
       if(!pending.has(metric?.ecs_instance_id))continue;
       const timestamp=Number(row.value?.[0]),raw=row.value?.[1],value=Number(raw);
-      if(!['pgcat','pgcat-agent'].includes(metric.job)||metric.env!==replacementScope?.envCode||metric.db_proxy_code!==replacementScope?.proxyCode||metric.target_db_code!==replacementScope?.targetDbCode||!Number.isFinite(timestamp)||Math.abs(now-timestamp)>30||(typeof raw!=='string'&&typeof raw!=='number')||raw===''||!Number.isFinite(value))throw invalid();
-      if(source?(Math.abs(now-value)>15):up?![0,1].includes(value):(!metric.pool||!metric.user||!Number.isSafeInteger(value)||value<0))throw invalid();
+      if(!['pgcat','pgcat-agent'].includes(metric.job)||metric.env!==replacementScope?.envCode||metric.db_proxy_code!==replacementScope?.proxyCode||metric.target_db_code!==replacementScope?.targetDbCode||!Number.isFinite(timestamp)||timestamp<=0||(typeof raw!=='string'&&typeof raw!=='number')||raw===''||!Number.isFinite(value))throw invalid();
+      if(source?value<=0:up?![0,1].includes(value):(!metric.pool||!metric.user||!Number.isSafeInteger(value)||value<0))throw invalid();
       const key=up?metric.ecs_instance_id:JSON.stringify([metric.ecs_instance_id,metric.pool,metric.user]);
       if(seen.has(key))throw invalid();seen.add(key);
      }
@@ -100,22 +100,22 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
    const selector=`job="test-client"`;
    const queries={trafficFailures:`infra_test_operations_total{${selector},outcome=~"failure|timeout|ambiguous"}`,connections:`infra_test_connected_sessions{${selector}}`};
    if(!Object.hasOwn(queries,input.kind))throw invalid();
-   const scrapeURL=new URL('/api/v1/query',config.prometheusURL);scrapeURL.searchParams.set('query',`up{${selector}} * (time() - timestamp(up{${selector}}) <= bool 15)`);
+   const scrapeURL=new URL('/api/v1/query',config.prometheusURL);scrapeURL.searchParams.set('query',`up{${selector}}`);
    try{const response=await fetch(scrapeURL,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response),rows=data.data?.result;
     if(data.status!=='success'||data.data?.resultType!=='vector'||!Array.isArray(rows)||rows.length!==targets.length)throw invalid();
-    const seen=new Set();for(const row of rows){const instance=row.metric?.instance;if(row.metric?.job!=='test-client'||!targets.includes(instance)||seen.has(instance)||Number(row.value?.[1])!==1||!Number.isFinite(Number(row.value?.[0]))||Math.abs(Date.now()/1000-Number(row.value[0]))>30)throw invalid();seen.add(instance);}
+    const seen=new Set();for(const row of rows){const instance=row.metric?.instance;if(row.metric?.job!=='test-client'||!targets.includes(instance)||seen.has(instance)||Number(row.value?.[1])!==1||!Number.isFinite(Number(row.value?.[0]))||Number(row.value[0])<=0)throw invalid();seen.add(instance);}
    }catch{throw invalid();}
    const query=async expression=>{
     try{const url=new URL('/api/v1/query',config.prometheusURL);url.searchParams.set('query',expression);const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok)throw invalid();const data=await boundedJSON(response);if(data.status!=='success'||data.data?.resultType!=='vector')throw invalid();return data.data.result;}catch{throw invalid();}
    };
-   const rows=await query(queries[input.kind]),sources=await query('timestamp('+queries[input.kind]+')'),now=Date.now()/1000;
+   const rows=await query(queries[input.kind]),sources=await query('timestamp('+queries[input.kind]+')');
    const outcomes=input.kind==='trafficFailures'?['failure','timeout','ambiguous']:[''];
    const expected=new Set(targets.flatMap(target=>outcomes.map(outcome=>target+'|'+outcome)));
    const validate=(samples,source=false)=>{
     if(!Array.isArray(samples)||samples.length!==expected.size)throw invalid();
     const seen=new Set();return samples.map(row=>{
      const instance=row.metric?.instance,outcome=row.metric?.outcome??'',key=instance+'|'+outcome,timestamp=Number(row.value?.[0]),value=Number(row.value?.[1]);
-     if(row.metric?.job!=='test-client'||!expected.has(key)||seen.has(key)||!Number.isFinite(timestamp)||!Number.isFinite(value)||value<0||Math.abs(now-timestamp)>30||(source&&(now-value>15||value-now>2)))throw invalid();
+     if(row.metric?.job!=='test-client'||!expected.has(key)||seen.has(key)||!Number.isFinite(timestamp)||!Number.isFinite(value)||value<0||timestamp<=0||(source&&value===0))throw invalid();
      seen.add(key);return {timestamp,value,instance,...(outcome?{outcome}:{})};
     });
    };

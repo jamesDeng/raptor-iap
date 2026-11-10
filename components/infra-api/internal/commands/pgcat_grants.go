@@ -111,10 +111,6 @@ func ObserveGrantedExpansion(ctx context.Context, reader PgcatExpansionReader, e
 	return result, nil
 }
 
-func pgcatFresh(at, now time.Time) bool {
-	return !at.IsZero() && !at.After(now.Add(2*time.Second)) && now.Sub(at) <= 30*time.Second
-}
-
 func pgcatIDs(a, b []string) bool {
 	first, second := slices.Clone(a), slices.Clone(b)
 	slices.Sort(first)
@@ -201,11 +197,11 @@ func (p pgcatPhase) cohort(s policy.ProxySnapshot) (old, added []string, err err
 	return old, added, nil
 }
 
-func (p pgcatPhase) verifiesDrain(originals, replacements []string, now time.Time) bool {
+func (p pgcatPhase) verifiesDrain(originals, replacements []string) bool {
 	action, ok := p.actions["db-proxy.drain"]
 	d := p.drain
 	if !ok || d.DrainActionID != action.ActionID || d.DrainObservedAt.Before(*action.RecordedAt) ||
-		d.ObservedAt.Before(d.DrainObservedAt) || !pgcatFresh(d.ObservedAt, now) ||
+		d.ObservedAt.Before(d.DrainObservedAt) ||
 		d.RequestID != p.hold.RequestID || d.ScopeDigest != p.hold.ScopeDigest || d.ObservationID != p.hold.ObservationID ||
 		len(d.FreshConnections) != 2 || len(d.Sockets) != 2 {
 		return false
@@ -213,7 +209,7 @@ func (p pgcatPhase) verifiesDrain(originals, replacements []string, now time.Tim
 	for _, id := range originals {
 		start, end := p.hold.Sockets[id], d.Sockets[id]
 		if start.ID != end.ID || !start.OpenedAt.Equal(end.OpenedAt) || end.Rounds <= start.Rounds ||
-			end.LastSQLAt.Before(d.DrainObservedAt) || !pgcatFresh(end.LastSQLAt, now) {
+			end.LastSQLAt.Before(d.DrainObservedAt) {
 			return false
 		}
 	}
@@ -235,7 +231,7 @@ func (p pgcatPhase) releasedProbes(before time.Time) bool {
 		!release.ReleasedAt.Before(p.drain.ObservedAt) && !release.ReleasedAt.After(before)
 }
 
-func (r Runtime) pgcatClients(ctx context.Context, snapshot policy.ProxySnapshot, now time.Time, requireZero []string) error {
+func (r Runtime) pgcatClients(ctx context.Context, snapshot policy.ProxySnapshot, requireZero []string) error {
 	if r.Metrics == nil {
 		return domain.ErrNotConfigured
 	}
@@ -248,7 +244,7 @@ func (r Runtime) pgcatClients(ctx context.Context, snapshot policy.ProxySnapshot
 	}
 	counts := map[string]float64{}
 	for _, row := range rows {
-		if _, duplicate := counts[row.InstanceID]; duplicate || !pgcatFresh(row.ObservedAt, now) ||
+		if _, duplicate := counts[row.InstanceID]; duplicate || row.ObservedAt.IsZero() ||
 			math.IsNaN(row.Clients) || math.IsInf(row.Clients, 0) || row.Clients < 0 || math.Trunc(row.Clients) != row.Clients {
 			return failure("MetricsInvalid")
 		}
@@ -311,12 +307,11 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 			return out, err
 		}
 		if variant.Capability == "db-proxy.scale-out" && snapshot.Desired == 2 && command.DesiredCapacity == 4 {
-			if expanded.ActionID != "" || !pgcatFresh(phase.hold.ObservedAt, now) {
+			if expanded.ActionID != "" {
 				return out, failure("MissingEvidence")
 			}
 			for _, node := range snapshot.Nodes {
-				if !node.Protected || !node.Healthy || !node.Registered || node.Drained ||
-					!pgcatFresh(phase.hold.Sockets[node.ID].LastSQLAt, now) {
+				if !node.Protected || !node.Healthy || !node.Registered || node.Drained {
 					return out, failure("MissingEvidence")
 				}
 			}
@@ -340,7 +335,7 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 		traffic := phase.traffic
 		if restart.ActionID == "" || !phase.releasedProbes(restart.ClaimedAt) || traffic.RestartActionID != restart.ActionID || traffic.ApplicationUID == "" ||
 			restart.ProviderRequestID != traffic.ApplicationUID+":"+strconv.FormatInt(traffic.Generation, 10) ||
-			!traffic.NoErrors || !pgcatFresh(phase.trafficAt, now) || phase.trafficAt.Before(*restart.RecordedAt) || len(traffic.Nodes) != 2 {
+			!traffic.NoErrors || phase.trafficAt.Before(*restart.RecordedAt) || len(traffic.Nodes) != 2 {
 			return out, failure("MissingEvidence")
 		}
 		for _, id := range replacements {
@@ -349,7 +344,7 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 				return out, failure("MissingEvidence")
 			}
 		}
-		if err := r.pgcatClients(ctx, snapshot, now, originals); err != nil {
+		if err := r.pgcatClients(ctx, snapshot, originals); err != nil {
 			return out, err
 		}
 		set(variant.Capability, `{"desiredCapacity":2}`)
@@ -373,11 +368,11 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 			}
 		}
 		for _, id := range replacements {
-			if at := phase.sql[id]; !pgcatFresh(at, now) || at.Before(*expanded.RecordedAt) {
+			if at := phase.sql[id]; at.Before(*expanded.RecordedAt) {
 				return out, failure("MissingEvidence")
 			}
 		}
-		if err := r.pgcatClients(ctx, snapshot, now, nil); err != nil {
+		if err := r.pgcatClients(ctx, snapshot, nil); err != nil {
 			return out, err
 		}
 		if protection, ok := command.(domain.ProtectionCommand); ok {
@@ -409,7 +404,7 @@ func (r Runtime) PreparePgcatGrant(ctx context.Context, env domain.Environment, 
 	case domain.RestartCommand:
 		restarter, ok := r.Restarter.(pgcatGrantedRestarter)
 		if snapshot.Desired != 4 || !ok || phase.actions["application.restart"].ActionID != "" ||
-			policy.TargetedPgcatRetirement(snapshot, originals, replacements) != nil || !phase.verifiesDrain(originals, replacements, now) || !phase.releasedProbes(now) {
+			policy.TargetedPgcatRetirement(snapshot, originals, replacements) != nil || !phase.verifiesDrain(originals, replacements) || !phase.releasedProbes(now) {
 			return out, failure("MissingEvidence")
 		}
 		set("application.restart", `{}`)

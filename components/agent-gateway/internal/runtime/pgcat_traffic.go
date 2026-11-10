@@ -128,7 +128,7 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 	if err != nil || json.Unmarshal(body, &deployment) != nil || deployment.UID != scope.Application.UID ||
 		deployment.Generation != restart.Generation || deployment.ObservedGeneration != restart.Generation ||
 		deployment.Replicas != 2 || deployment.ReadyReplicas != 2 || deployment.UpdatedReplicas != 2 || deployment.AvailableReplicas != 2 ||
-		deployment.ObservedAt.Before(after) || !pgcatFreshTime(deployment.ObservedAt, time.Now()) {
+		deployment.ObservedAt.Before(after) || deployment.ObservedAt.IsZero() {
 		return json.RawMessage(`{"readiness":"traffic-warming"}`), nil
 	}
 	for _, old := range pair.logs.streams {

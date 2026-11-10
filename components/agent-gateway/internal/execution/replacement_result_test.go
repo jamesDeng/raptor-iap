@@ -130,7 +130,7 @@ func TestActualHarnessDirectFixtureSurvivesGatewayRoundTrip(t *testing.T) {
 func TestGrantedReplacementRequiresVerifiedTrafficAndExactRetirement(t *testing.T) {
 	b, original := directHarnessFixture(t)
 	b.ApprovalProtocol, b.ExecutionMode = "request-grants-v1", "replacement"
-	for _, fault := range []string{"", "old pending contract", "uncertain submission", "wrong ESS activity", "wrong original", "missing app traffic", "late final result"} {
+	for _, fault := range []string{"", "old pending contract", "uncertain submission", "wrong ESS activity", "wrong original", "missing app traffic", "delayed publication", "out of order traffic"} {
 		t.Run(fault, func(t *testing.T) {
 			now := time.Now().UTC()
 			r := original
@@ -162,10 +162,12 @@ func TestGrantedReplacementRequiresVerifiedTrafficAndExactRetirement(t *testing.
 				v.Retirement.DestroyedIDs[1] = v.NewInstanceIDs[0]
 			case "missing app traffic":
 				delete(final.Nodes, v.NewInstanceIDs[1])
-			case "late final result":
+			case "delayed publication":
 				v.ObservedAt = now.Add(time.Minute)
+			case "out of order traffic":
+				final.ObservedAt = traffic.ObservedAt
 			}
-			if err := ValidateLiveResult(r, b); (err != nil) != (fault != "") {
+			if err := ValidateLiveResult(r, b); (err != nil) != (fault != "" && fault != "delayed publication") {
 				t.Fatalf("validation of %q: %v", fault, err)
 			}
 		})

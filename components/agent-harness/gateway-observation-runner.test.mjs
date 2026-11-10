@@ -65,20 +65,20 @@ test('Gateway reports registered new nodes awaiting their first scrape only in r
  }}).fetch,probe:noProbe});
  assert.deepEqual(staggered,{readiness:'metrics-warming',instanceIds:ids.slice().sort(),missingInstanceIds:['i-new-a'],observedAt:staggered.observedAt});
 });
-for(const mode of ['wrong-series','foreign-row','missing-rows','stale-response','stale-source','extra-bundle','missing-sample','extra-sample','non-array','stale-fleet','stale-backend','foreign-fleet','foreign-backend','missing-pool'])test(`clients bundle ${mode} rejects the entire observation`,async()=>{
+for(const mode of ['wrong-series','foreign-row','missing-rows','invalid-response-time','invalid-source-time','extra-bundle','missing-sample','extra-sample','non-array','missing-fleet-time','missing-backend-time','foreign-fleet','foreign-backend','missing-pool'])test(`clients bundle ${mode} rejects the entire observation`,async()=>{
  const f=fixture({damage:data=>{
   const m=data.pgproxyWorkload.metrics;
   if(mode==='wrong-series')m.series='active';
   if(mode==='foreign-row')m.samples.waitingTimestamp[0].metric.db_proxy_code='foreign';
   if(mode==='missing-rows')m.samples.waitingTimestamp=[];
-  if(mode==='stale-response')m.samples.waitingTimestamp[0].value[0]=0;
-  if(mode==='stale-source')m.samples.waitingTimestamp[0].value[1]='0';
+  if(mode==='invalid-response-time')m.samples.waitingTimestamp[0].value[0]=0;
+  if(mode==='invalid-source-time')m.samples.waitingTimestamp[0].value[1]='0';
   if(mode==='extra-bundle')m.rows=[];
   if(mode==='missing-sample')delete m.samples.waiting;
   if(mode==='extra-sample')m.samples.extra=[];
   if(mode==='non-array')m.samples.up={};
-  if(mode==='stale-fleet')m.fleet.observedAt=new Date(0).toISOString();
-  if(mode==='stale-backend')m.backend.observedAt=new Date(0).toISOString();
+  if(mode==='missing-fleet-time')delete m.fleet.observedAt;
+  if(mode==='missing-backend-time')delete m.backend.observedAt;
   if(mode==='foreign-fleet')m.fleet.groupId='other';
   if(mode==='foreign-backend')m.backend.serverGroupId='other';
   if(mode==='missing-pool')m.samples.idle[0].metric.pool='other';

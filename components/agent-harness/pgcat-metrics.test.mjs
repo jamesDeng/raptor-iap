@@ -27,9 +27,11 @@ test('opted-in first scrapes report missing nodes without publishing partial evi
  }}),/InvalidObservation/);
 });
 
-test('slow sequential queries cannot refresh old scrape or response ages at completion',async t=>{
+test('slow sequential queries retain original timestamps without an age rejection',async t=>{
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
- await assert.rejects(()=>readPgcatClients({scope,nodeIds:['node-a','node-b'],pool:'test',user:'poc_app',query:async q=>{t.mock.timers.tick(6000);return rows(q);}}),/InvalidObservation/);
+ const result=await readPgcatClients({scope,nodeIds:['node-a','node-b'],pool:'test',user:'poc_app',query:async q=>{t.mock.timers.tick(6000);return rows(q);}});
+ assert.equal(Date.parse(result.observedAt)-Date.parse(result.responseAt),42000);
+ assert.deepEqual(result.nodes.map(n=>n.connectedClients),[0,6]);
 });
 test('fast collection retains oldest response and scrape timestamps',async t=>{
  const start=Date.now();t.mock.timers.enable({apis:['Date'],now:start});

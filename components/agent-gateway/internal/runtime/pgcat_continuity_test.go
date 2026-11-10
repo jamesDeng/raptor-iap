@@ -30,7 +30,7 @@ func TestPgcatContinuityRetainsTheExactSocketsAndRejectsLoss(t *testing.T) {
 	ctx := context.Background()
 	original := map[string]netip.Addr{"old-1": netip.MustParseAddr("10.70.1.220"), "old-2": netip.MustParseAddr("10.70.1.221")}
 	added := map[string]netip.Addr{"new-1": netip.MustParseAddr("10.70.1.225"), "new-2": netip.MustParseAddr("10.70.1.226")}
-	start := time.Now().UTC().Add(-time.Second)
+	start := time.Now().UTC().Add(-2 * time.Minute)
 	first := &fixturePgcatSocket{backend: original["old-1"]}
 	second := &fixturePgcatSocket{backend: original["old-2"]}
 	attempt := 0

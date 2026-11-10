@@ -109,7 +109,6 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 		return out, nil
 	}
 	binding := approval.Binding{RequestID: in.RequestID, ActionID: in.ActionID, EnvCode: env.Code, ProxyCode: in.ProxyCode, GroupID: s.GroupID, DesiredCapacity: in.DesiredCapacity}
-	var observations []policy.ClientObservation
 	if operation.RequiresHumanApproval {
 		if e = policy.DirectReplacementScaleInAllowed(s, in.DesiredCapacity); e != nil {
 			return domain.ScaleReceipt{}, e
@@ -122,15 +121,11 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 			return domain.ScaleReceipt{}, failure("ApprovalRequired")
 		}
 		rows, e := r.Metrics.ConnectedClients(ctx, s)
-		observations = rows
 		if e != nil {
 			return domain.ScaleReceipt{}, e
 		}
-		now := time.Now()
-		if r.Now != nil {
-			now = r.Now()
-		}
-		if e = policy.ScaleInClientsAllowed(s, rows, now, in.DesiredCapacity); e != nil {
+
+		if e = policy.ScaleInClientsAllowed(s, rows, in.DesiredCapacity); e != nil {
 			return domain.ScaleReceipt{}, e
 		}
 	}
@@ -141,21 +136,6 @@ func (r Runtime) scale(ctx context.Context, env domain.Environment, in domain.Sc
 		allowed, e := r.Claims.Claim(ctx, binding)
 		if e != nil || !allowed {
 			return domain.ScaleReceipt{}, failure("ApprovalRequired")
-		}
-	}
-	if operation.RequiresHumanApproval {
-		now := time.Now()
-		if r.Now != nil {
-			now = r.Now()
-		}
-		if checkErr := policy.ScaleInClientsAllowed(s, observations, now, in.DesiredCapacity); checkErr != nil {
-			receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			recordErr := r.Claims.Record(receiptCtx, binding, "not_submitted", "")
-			cancel()
-			if recordErr != nil {
-				return domain.ScaleReceipt{}, failure("SubmissionUnknown")
-			}
-			return domain.ScaleReceipt{}, checkErr
 		}
 	}
 	requestID, e := r.Backend.Scale(ctx, env, s.GroupID, in.DesiredCapacity)

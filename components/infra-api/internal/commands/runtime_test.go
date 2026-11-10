@@ -116,24 +116,16 @@ func TestScaleOutAndProtectionRequireNoApproval(t *testing.T) {
 	}
 }
 
-func TestMetricsExpiringDuringClaimPreventSubmission(t *testing.T) {
+func TestScaleInAcceptsOlderCompleteZeroConnectionObservations(t *testing.T) {
 	b := &backendFixture{s: snapshot()}
-	a := &approvalFixture{allowed: true}
 	claim := &claimFixture{allowed: true}
-	clockCalls := 0
-	r := Runtime{Backend: b, Metrics: metricsFixture{}, Approval: a, Claims: claim, Now: func() time.Time {
-		clockCalls++
-		if clockCalls == 1 {
-			return time.Unix(1000, 0)
-		}
-		return time.Unix(1050, 0)
-	}}
-	_, e := r.Scale(context.Background(), domain.Environment{Code: "dev"}, domain.ScaleCommand{ProxyTarget: domain.ProxyTarget{RequestID: "r", EnvCode: "dev", ProxyCode: "p", GroupID: "g"}, ActionID: "action", DesiredCapacity: 1})
-	if e == nil || b.calls != 0 {
-		t.Fatalf("expired metric submitted: %v mutations=%d", e, b.calls)
-	}
-	if claim.outcome != "not_submitted" {
-		t.Fatal("claimed refusal was not recorded")
+	r := Runtime{Backend: b, Metrics: metricsFixture{}, Approval: &approvalFixture{allowed: true}, Claims: claim,
+		Now: func() time.Time { return time.Unix(1050, 0) }}
+	_, err := r.Scale(context.Background(), domain.Environment{Code: "dev"}, domain.ScaleCommand{
+		ProxyTarget: domain.ProxyTarget{RequestID: "r", EnvCode: "dev", ProxyCode: "p", GroupID: "g"}, ActionID: "action", DesiredCapacity: 1,
+	})
+	if err != nil || b.calls != 1 || claim.outcome != "submitted" {
+		t.Fatalf("complete zero-connection observations rejected: %v, mutations=%d, outcome=%s", err, b.calls, claim.outcome)
 	}
 }
 

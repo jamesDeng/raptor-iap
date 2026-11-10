@@ -94,7 +94,7 @@ test('observations before expansion and pending replacements cannot reuse earlie
  trace.observe('fleet',{...evidence().fleet,instances:evidence().fleet.instances.slice(0,2)});assert.equal(gate.blocked(),false);
  trace.beforeMutation('db_proxy_scale',{actionId:'expand',desiredCapacity:4});assert.equal(gate.ready(),false);assert.equal(gate.blocked(),true);
 });
-test('reopen rejects duplicate, malformed, foreign, stale-at-creation and orphaned witnesses',()=>{
+test('reopen rejects duplicate, malformed, foreign, pre-expansion and orphaned witnesses',()=>{
  for(const corrupt of [
   (s,r)=>s.entries.push(structuredClone(r)),
   (_s,r)=>r.data.identity.requestId='foreign',
@@ -102,6 +102,7 @@ test('reopen rejects duplicate, malformed, foreign, stale-at-creation and orphan
   (_s,r)=>r.data.identity.model='other',
   (_s,r)=>r.data.identity.scope.targetDbCode='foreign',
   (_s,r)=>r.data.expansionKey='a'.repeat(64),
+  (_s,r)=>r.data.observedAt=new Date(0).toISOString(),
   (_s,r)=>r.data.evidence.metrics.nodes.pop(),
   (_s,r)=>r.data.evidence.metrics.sourceAt=new Date(Date.parse(r.data.observedAt)-31000).toISOString(),
   (_s,r)=>r.data.evidence.metrics.responseAt=new Date(Date.parse(r.data.observedAt)-31000).toISOString(),
@@ -148,20 +149,20 @@ test('a valid older saved witness with exact SQL receipts still reopens',()=>{
  row.evidence.probes[1].instanceId='foreign';
  assert.throws(()=>new ReplacementReadiness(session,new ReplacementTrace(session,binding,scope)),/InvalidEvidence/);
 });
-test('source evidence ages at witness creation even when metric completion remains fresh',t=>{
+test('a complete post-expansion witness survives a delayed collection',t=>{
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const {gate}=setup(),e=evidence();
  t.mock.timers.tick(14000);e.metrics.observedAt=new Date().toISOString();
  t.mock.timers.tick(17000);
  for(const kind of ['fleet','backend','capacity'])e[kind].observedAt=new Date().toISOString();
- observe(gate,e);assert.equal(gate.ready(),false);assert.equal(gate.blocked(),true);
+ observe(gate,e);assert.equal(gate.ready(),true);assert.equal(gate.blocked(),false);
 });
 
-test('witness alignment includes the newest metric timestamps, not only oldest ages',t=>{
+test('witness requires ordered source and response timestamps',t=>{
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const {gate}=setup();t.mock.timers.tick(20000);const e=evidence();
  e.fleet.observedAt=new Date(Date.now()-20000).toISOString();
- e.metrics.latestResponseAt=new Date(Date.now()+15000).toISOString();
+ e.metrics.latestResponseAt=new Date(Date.now()-10000).toISOString();
  e.metrics.latestSourceAt=e.metrics.latestResponseAt;
  observe(gate,e);assert.equal(gate.ready(),false);assert.equal(gate.blocked(),true);
 });

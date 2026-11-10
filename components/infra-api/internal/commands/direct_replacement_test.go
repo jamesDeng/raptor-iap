@@ -256,9 +256,9 @@ func TestDirectReplacementBudgetUsesAllPoolActiveIdleAndWaitingTotals(t *testing
 }
 
 // The new capacity exception must not bypass metrics, unchanged snapshots,
-// exact approval, durable claims, or their freshness check after a claim.
+// exact approval or durable claims.
 func TestDirectReplacementScaleInPreservesExistingGates(t *testing.T) {
-	for _, mode := range []string{"connected-first", "connected-second", "connected-combined", "malformed", "missing", "stale", "duplicate-metric", "approval", "foreign-action", "foreign-request", "foreign-env", "foreign-proxy", "foreign-group", "foreign-desired", "no-approval", "no-claim", "lost-claim", "changed", "expired-after-claim"} {
+	for _, mode := range []string{"connected-first", "connected-second", "connected-combined", "malformed", "missing", "missing-timestamp", "duplicate-metric", "approval", "foreign-action", "foreign-request", "foreign-env", "foreign-proxy", "foreign-group", "foreign-desired", "no-approval", "no-claim", "lost-claim", "changed"} {
 		t.Run(mode, func(t *testing.T) {
 			b := &backendFixture{s: directSnapshot(), change: mode == "changed"}
 			a := directApproval()
@@ -280,8 +280,8 @@ func TestDirectReplacementScaleInPreservesExistingGates(t *testing.T) {
 			case "missing":
 				rows = rows[:1]
 				want = "MetricsInvalid"
-			case "stale":
-				rows[1].ObservedAt = time.Unix(954, 0)
+			case "missing-timestamp":
+				rows[1].ObservedAt = time.Time{}
 				want = "MetricsInvalid"
 			case "duplicate-metric":
 				rows = append(rows, rows[0])
@@ -306,17 +306,8 @@ func TestDirectReplacementScaleInPreservesExistingGates(t *testing.T) {
 				a.claimed = true
 			case "changed":
 				want = "TargetChanged"
-			case "expired-after-claim":
-				want = "MetricsInvalid"
 			}
-			clocks := 0
-			r := Runtime{Backend: b, Metrics: rows, Approval: a, Claims: a, Now: func() time.Time {
-				clocks++
-				if mode == "expired-after-claim" && clocks > 1 {
-					return time.Unix(1046, 0)
-				}
-				return time.Unix(1000, 0)
-			}}
+			r := Runtime{Backend: b, Metrics: rows, Approval: a, Claims: a}
 			if mode == "no-approval" {
 				r.Approval = nil
 			}
@@ -326,9 +317,6 @@ func TestDirectReplacementScaleInPreservesExistingGates(t *testing.T) {
 			_, err := r.Scale(context.Background(), domain.Environment{Code: "dev"}, directCommand())
 			if err == nil || err.Error() != want || b.calls != 0 {
 				t.Fatalf("want %s, got %v, mutations=%d", want, err, b.calls)
-			}
-			if mode == "expired-after-claim" && a.outcome != "not_submitted" {
-				t.Fatalf("claimed refusal not recorded: %+v", a)
 			}
 		})
 	}

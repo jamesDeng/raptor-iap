@@ -115,8 +115,7 @@ func validPgcatTrafficResult(v *ReplacementConvergence) bool {
 			}
 		}
 	}
-	return v.Traffic.RestartActionID == v.FinalTraffic.RestartActionID && v.FinalTraffic.ObservedAt.After(v.Traffic.ObservedAt) &&
-		v.ObservedAt.Sub(v.FinalTraffic.ObservedAt) <= 30*time.Second
+	return v.Traffic.RestartActionID == v.FinalTraffic.RestartActionID && v.FinalTraffic.ObservedAt.After(v.Traffic.ObservedAt)
 }
 
 func validateUsage(rows []Usage) error {

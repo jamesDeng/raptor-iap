@@ -109,7 +109,7 @@ const pendingSampleFailures=[
   ['up-malformed','up{',row=>{row.value[1]='bad';}],
   ['pool-stale','pgcat_pools_cl_active',row=>{row.value[0]=0;}],
   ['pool-malformed','pgcat_pools_cl_active',row=>{delete row.metric.pool;}],
-  ['source-stale','timestamp(pgcat_pools_cl_active',row=>{row.value[1]='0';}],
+  ['invalid-source-time','timestamp(pgcat_pools_cl_active',row=>{row.value[1]='0';}],
   ['source-malformed','timestamp(up',row=>{row.value[1]='bad';}],
  ];
 for(const [name,target,damage] of pendingSampleFailures){
@@ -142,12 +142,12 @@ test('capacity reads exact provider desired count rather than inferring it from 
  assert.equal((await tools.cloudRead({kind:'capacity'})).desiredCapacity,4);assert.ok(command.includes('DescribeScalingGroups'));assert.ok(command.includes('["group"]'));
 });
 
-test('traffic counters require every outcome and fresh source samples for the current client',async()=>{
- for(const defect of ['missing','duplicate','source-stale']) {
+test('traffic counters require every outcome and valid source timestamps for the current client',async()=>{
+ for(const defect of ['missing','duplicate','invalid-source-time']) {
   const tools=createObservationTools({operatorDiagnosticReads:true,binding,config:config(),exec:clientRead,fetch:async value=>{
    const q=new URL(value).searchParams.get('query'),now=Date.now()/1000;
    const metric=outcome=>({job:'test-client',instance:'10.70.1.20:9090',outcome});
-   let rows=q.startsWith('up{')?[{metric:{job:'test-client',instance:'10.70.1.20:9090'},value:[now,'1']}]:['failure','timeout','ambiguous'].map(o=>({metric:metric(o),value:[now,q.startsWith('timestamp(')?String(defect==='source-stale'?now-60:now):'0']}));
+   let rows=q.startsWith('up{')?[{metric:{job:'test-client',instance:'10.70.1.20:9090'},value:[now,'1']}]:['failure','timeout','ambiguous'].map(o=>({metric:metric(o),value:[now,q.startsWith('timestamp(')?String(defect==='invalid-source-time'?0:now):'0']}));
    if(!q.startsWith('up{')&&defect==='missing')rows=rows.slice(0,1);
    if(!q.startsWith('up{')&&defect==='duplicate')rows[2]=rows[0];
    return {ok:true,json:async()=>({status:'success',data:{resultType:'vector',result:rows}})};

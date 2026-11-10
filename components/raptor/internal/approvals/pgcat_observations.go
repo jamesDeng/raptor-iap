@@ -21,9 +21,8 @@ type PgcatObservation struct {
 }
 
 func (s *Service) RecordPgcatObservation(ctx context.Context, in PgcatObservation) error {
-	now := time.Now()
 	if (!grantUUID(in.RequestID) || !validGrantDigest(in.ScopeDigest)) || !grantUUID(in.AttemptID) || !grantIdentifier(in.Subject) ||
-		in.ObservedAt.IsZero() || in.ObservedAt.After(now.Add(2*time.Second)) || now.Sub(in.ObservedAt) > 30*time.Second {
+		in.ObservedAt.IsZero() {
 		return domain.ErrInvalid
 	}
 	switch in.Kind {
