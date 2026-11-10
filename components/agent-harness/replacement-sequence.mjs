@@ -77,6 +77,7 @@ export class ReplacementSequence {
   const requested=saved[0].data,at=entries.indexOf(saved[0]),wait=requested?.wait;
   if(!requested||Object.keys(requested).sort().join(',')!=='cohort,evidence,identity,kind,observedAt,version,wait,withdrawalKeys'||![1,2].includes(requested.version)||requested.kind!=='requested'||!same(requested.identity,this.trace.identity)||!same(requested.cohort,this.cohort())||Buffer.byteLength(canonical(requested))>32768)throw invalid();
   const withdrawals=this.intents('withdraw');
+  if(this.trace.versioned&&!this.submittedWithdrawal())throw invalid();
   if(this.idsFor('withdraw').length!==2||!same(requested.withdrawalKeys,withdrawals.map(i=>i.key))||!wait||Object.keys(wait).sort().join(',')!=='actionId,approvalId,bindingDigest,definitionSha256,kind,requestId,startedAt,wakeAfterSeconds'||wait.kind!=='resource'||wait.approvalId!==''||!/^capacity-[a-f0-9-]{36}$/.test(wait.actionId)||wait.requestId!==this.trace.identity.requestId||wait.definitionSha256!==this.trace.identity.definitionSha256||wait.bindingDigest!==wait.definitionSha256||wait.wakeAfterSeconds!==60||!Number.isFinite(Date.parse(wait.startedAt)))throw invalid();
   const begun=Date.parse(wait.startedAt),e=requested.evidence,c=requested.cohort;
   if(!Number.isFinite(Date.parse(requested.observedAt))||Date.parse(requested.observedAt)<begun)throw invalid();
@@ -96,12 +97,14 @@ export class ReplacementSequence {
   const restart=this.permits.find(p=>p.stage==='restart');
   if(restart){const restartAt=entries.findIndex(e=>e.type==='custom'&&e.customType===TYPE&&e.data.key===restart.key);if(saved.length!==2||entries.indexOf(saved[1])>=restartAt||Date.parse(restart.observedAt)<Date.parse(this.withdrawalCompleted.resumedAt))throw invalid();}
  }
+ needsWithdrawalWait(){return !this.withdrawalRequested&&!this.intents('restart').length&&this.idsFor('withdraw').length===2;}
  withdrawalWaitReads(){
-  if(this.withdrawalRequested||this.intents('restart').length||this.idsFor('withdraw').length!==2)return [];
+  if(!this.needsWithdrawalWait())return [];
   const {oldInstanceIds:old,newInstanceIds:added}=this.cohort();
   const withdrawals=this.intents('withdraw');
   const results=withdrawals.map(i=>this.trace.rows.find(r=>r.kind==='result'&&r.key===i.key));
   if(this.trace.unresolved()||results.some(r=>!r))return ['request_grant_actions_list'];
+  if(this.trace.versioned&&!this.submittedWithdrawal())throw invalid();
   const lastResult=Math.max(...results.map(r=>Date.parse(r.observedAt)));
   return missingReads([
    [observed(this.current.fleet,lastResult)&&this.fleet([...old,...added])&&this.current.fleet.instances.every(protectedNode),'cloud_read fleet'],
@@ -110,7 +113,7 @@ export class ReplacementSequence {
   ]);
  }
  recordResourceWait(wait){
-  if(wait?.kind!=='resource'||this.withdrawalRequested||this.intents('restart').length||this.idsFor('withdraw').length!==2||this.withdrawalWaitReads().length)return;
+  if(wait?.kind!=='resource'||!this.needsWithdrawalWait()||this.withdrawalWaitReads().length)return;
   const pick=(value,keys)=>Object.fromEntries(keys.map(k=>[k,value[k]]));
   const f=this.current.fleet,b=this.current.backend,c=this.current.capacity;
   const evidence={fleet:{...pick(f,['observedAt','groupId']),instances:f.instances.map(n=>pick(n,['instanceId','lifecycleState','healthStatus','protectedFromScaleIn']))},backend:{...pick(b,['observedAt','serverGroupId']),nodes:b.nodes.map(n=>pick(n,['instanceId','status','registered','healthy']))},capacity:pick(c,['observedAt','groupId','desiredCapacity','minSize','maxSize'])};
@@ -160,14 +163,18 @@ export class ReplacementSequence {
   if(this.drainProof&&(this.drainProof.observationId!==args.observationId||this.drainProof.drainActionId!==args.drainActionId))throw invalid();
   return this.drainProof;
  }
+ submittedWithdrawal(){
+  const withdrawals=this.intents('withdraw');
+  if(withdrawals.length!==1)return undefined;
+  const receipt=this.trace.rows.find(row=>row.kind==='result'&&row.key===withdrawals[0].key);
+  return receipt?.state.outcome==='submitted'&&toolID(receipt.state.actionId)?receipt:undefined;
+ }
  validateDrainProof(proof){
-  const withdrawal=this.intents('withdraw')[0];
-  const receipt=this.trace.rows.find(row=>row.kind==='result'&&row.key===withdrawal?.key);
-  if(!this.trace.versioned||!this.withdrawalCompleted||receipt?.state.outcome!=='submitted'||!toolID(receipt.state.actionId)||
-   !proof||proof.drainActionId!==receipt.state.actionId||
+  const receipt=this.submittedWithdrawal();
+  if(!this.trace.versioned||!this.withdrawalCompleted||!receipt||!proof||proof.drainActionId!==receipt.state.actionId||
    Object.keys(proof).sort().join(',')!=='drainActionId,drainObservedAt,freshConnections,observationId,observedAt,requestId,scopeDigest,sockets'||
    proof.requestId!==this.trace.identity.requestId||proof.scopeDigest!==this.trace.identity.scope.resolutionDigest||
-   !toolID(proof.observationId)||!observed(proof)||!Number.isFinite(Date.parse(proof.drainObservedAt)))throw invalid();
+   !toolID(proof.observationId)||!observed(proof)||!observed({observedAt:proof.drainObservedAt},Date.parse(this.withdrawalCompleted.resumedAt)))throw invalid();
   const {oldInstanceIds:old,newInstanceIds:added}=this.cohort(),drainAt=Date.parse(proof.drainObservedAt),observedAt=Date.parse(proof.observedAt);
   if(!same(Object.keys(proof.sockets??{}).sort(),old)||!same(Object.keys(proof.freshConnections??{}).sort(),added))throw invalid();
   const sockets=Object.values(proof.sockets),counts=Object.values(proof.freshConnections);
@@ -344,7 +351,7 @@ export class ReplacementSequence {
   this.validateReceipt(tool,args,receipt);
   if(tool==='db_proxy_scale'){this.current={};this.probes.clear();}
   if(tool==='db_proxy_node_protection_set')delete this.current.fleet;
-  if(tool==='db_proxy_nodes_deregister')delete this.current.backend;
+  if(tool==='db_proxy_nodes_deregister')for(const kind of this.trace.versioned?['fleet','backend','capacity']:['backend'])delete this.current[kind];
   if(tool==='deployment_restart')for(const kind of ['deployment','metrics','trafficFailures','connections'])delete this.current[kind];
  }
  completionEvidence(){

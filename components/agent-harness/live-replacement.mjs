@@ -1,7 +1,7 @@
 import {startPgcatTroubleshooting} from './conversation.mjs';
 import {QualificationTrace} from './qualification-trace.mjs';
 import {qualificationReadBatches} from './qualification-read-plan.mjs';
-import {observationExtension,observationArgsCategory,operationObservationTools} from './observation-extension.mjs';
+import {observationExtension,observationArgsCategory,operationObservationTools,validContinuityArgs} from './observation-extension.mjs';
 import fs from 'node:fs';
 import {qualifyReplacementConvergence} from './replacement-completion.mjs';
 import {ReplacementTrace} from './replacement-trace.mjs';
@@ -67,7 +67,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const readiness=qualification?undefined:new ReplacementReadiness(manager,trace);
   const sequence=qualification?undefined:new ReplacementSequence(manager,trace,readiness,selectedProfile,decisionContext);
   const readTools=tools.filter(name=>!REPLACEMENT_WRITES.has(name));
-  const readOnlyNames=new Set(readTools.filter(name=>name!=='resource_wait'&&(!grants||name!=='pgcat_connection_continuity')));
+  const readOnlyNames=new Set(readTools.filter(name=>name!=='resource_wait'));
   const isReadOnlyTool=name=>readOnlyNames.has(name);
   const scheduleRead=createReadConcurrency(4);
   const proposalTools=grants?[...readTools,GRANT_PROPOSAL]:undefined;
@@ -94,10 +94,11 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     return data;
    }),
    ...(observer.pgcatConnectionContinuity?{pgcatConnectionContinuity:args=>serializedRead(async()=>{
+    if(!validContinuityArgs(args))throw Error('InvalidObservation');
     const saved=args.phase==='verify-drain'?sequence.savedDrainProof(args):undefined;
     if(saved)return saved;
     const result=await observer.pgcatConnectionContinuity(args);sequence.observeContinuity(args,result);return result;
-   },false)}:{}),
+   },!['verify-drain','release-probes'].includes(args?.phase))}:{}),
    dbConnectionProbe:args=>serializedRead(async()=>{
     if(qualification)trace.requireBaselineNode(args?.instanceId);
     else{
@@ -202,7 +203,8 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
      narrate(reason);
      return {block:true,reason};
     };
-    if((REPLACEMENT_WRITES.has(name)||continuity)&&context.assistantMessage.content.filter(part=>part.type==='toolCall').length!==1)
+    const withdrawalWait=name==='resource_wait'&&sequence.needsWithdrawalWait();
+    if((REPLACEMENT_WRITES.has(name)||continuity||withdrawalWait)&&context.assistantMessage.content.filter(part=>part.type==='toolCall').length!==1)
      return reject('Run this operation in a separate tool round after reviewing the preceding reads.');
     const reads=continuity?sequence.continuityReads(context.args):name==='resource_wait'?sequence.withdrawalWaitReads():[];
     if(reads.length)return reject('PgCat drain step held. Read '+reads.join(', ')+'.');

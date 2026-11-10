@@ -312,12 +312,15 @@ function drainProof(){
 test('only observed post-drain routing qualifies a resource wait and socket verification',()=>{
  const {gate}=grantedWithdrawal();
  assert.throws(()=>gate.observeContinuity(verifyDrain,drainProof()),/InvalidEvidence/);
- assert.ok(gate.withdrawalWaitReads().includes('cloud_read backend'));
+ assert.deepEqual(gate.withdrawalWaitReads(),['cloud_read fleet','cloud_read backend','cloud_read capacity']);
  assert.ok(gate.continuityReads(verifyDrain).includes('cloud_read fleet, backend and capacity after drain, then resource_wait'));
  assert.ok(gate.continuityReads(releaseDrain).length);
  observe({gate},observations([...old,...added],{withdrawn:old}));
  assert.deepEqual(gate.withdrawalWaitReads(),[]);
  assert.ok(gate.continuityReads(verifyDrain).length);
+ const receipt=gate.trace.rows.find(row=>row.kind==='result'&&row.tool==='db_proxy_nodes_deregister');
+ receipt.state.outcome='unknown';
+ assert.throws(()=>gate.withdrawalWaitReads(),/InvalidEvidence/);
 });
 test('checkpoint reuses completed drain proof for the same request after a later wait',t=>{
  const run=completedGrantDrain(t);
@@ -335,6 +338,8 @@ test('checkpoint reuses completed drain proof for the same request after a later
 test('drain proof rejects the wrong route count and a checkpoint entry ahead of its completed wait',t=>{
  const run=completedGrantDrain(t);
  const proof=drainProof();
+ const tooEarly=new Date(Date.now()-1).toISOString();
+ assert.throws(()=>run.gate.observeContinuity(verifyDrain,{...proof,drainObservedAt:tooEarly}),/InvalidEvidence/);
  assert.throws(()=>run.gate.observeContinuity(verifyDrain,{...proof,freshConnections:{[added[0]]:24,[added[1]]:0}}),/InvalidEvidence/);
  run.gate.observeContinuity(verifyDrain,proof);
  const entries=run.session.entries;

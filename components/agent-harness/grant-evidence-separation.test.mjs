@@ -81,7 +81,8 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    [modelCall('cloud_read',{kind:'fleet'}),modelCall('cloud_read',{kind:'backend'})],[drain],...(drainOrder?[
     [modelCall('resource_wait',{seconds:60})],
     [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})],[release],
-    ['fleet','backend','capacity'].map(kind=>modelCall('cloud_read',{kind})),[modelCall('resource_wait',{seconds:60})]
+    ['fleet','backend','capacity'].map(kind=>modelCall('cloud_read',{kind})),
+    [modelCall('resource_wait',{seconds:60}),modelCall('cloud_read',{kind:'fleet'})],[modelCall('resource_wait',{seconds:60})]
    ]:drainAccepted?[[drain]]:[])
   ]:phase==='after-drain-wait'?[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
@@ -206,7 +207,7 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:resumed.sessionReference,
    decisionContext:{...resumed.paused,decision:'resume'}});
   if(drainOrder){
-   assert.equal(round,11,'a wait without all post-drain reads must not pause the request');
+   assert.equal(round,12,'only a standalone wait with all post-drain reads can pause the request');
    assert.equal(drained.paused?.kind,'resource');
    assert.deepEqual(continuityCalls,['hold'],'both premature continuity phases must be blocked before Gateway');
    t.mock.timers.tick(60000);
