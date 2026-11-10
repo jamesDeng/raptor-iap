@@ -51,6 +51,41 @@ def summary(plan,sha,stack="test-foundation"):
         rows.append('| `'+address+'` | '+', '.join(actions)+' |')
     return '<!-- raptor-terraform-plan -->\n'+select_stack(stack)['label']+' plan for `'+sha+'`\n\n| Resource | Action |\n|---|---|\n'+('\n'.join(rows) if rows else '| — | No resource changes |')+'\n\nValues are withheld; raw plan/state are never posted.\n'
 
+
+def verify_pgcat_baseline_plan(plan):
+    """Bound this temporary recovery to the existing test ESS group."""
+    group_address = 'module.proxy[0].alicloud_ess_scaling_group.proxy'
+    refresh_addresses = {
+        'module.database[0].terraform_data.identity_refresh',
+        'module.proxy[0].terraform_data.identity_refresh',
+    }
+    if plan.get('complete') is not True or plan.get('errored') or plan.get('deferred_changes'):
+        raise ValueError('Incomplete PgCat recovery plan')
+    found_group = False
+    for resource in plan.get('resource_changes', []):
+        if resource.get('mode') != 'managed':
+            continue
+        address = resource['address']
+        change = resource['change']
+        actions = change['actions']
+        if change.get('importing') or resource.get('previous_address'):
+            raise ValueError('Unexpected PgCat recovery ownership change')
+        if actions == ['no-op']:
+            continue
+        if address in refresh_addresses and actions == ['update']:
+            continue
+        if address != group_address or actions != ['update'] or found_group:
+            raise ValueError('Unexpected PgCat recovery resource action')
+        before, after = change['before'], change['after']
+        if before['id'] != 'asg-t4necb4dfmu6o3z2rn0g' or before['desired_capacity'] != 4:
+            raise ValueError('Unexpected PgCat recovery group or baseline')
+        if after != dict(before, desired_capacity=2) or any(change.get('after_unknown', {}).values()):
+            raise ValueError('Unexpected PgCat recovery attribute change')
+        found_group = True
+    if not found_group:
+        raise ValueError('PgCat recovery capacity update is missing')
+    return 'Verified exact PgCat test group: the only cloud configuration change is desired capacity 4 to 2.'
+
 def require_protection(document):
     rules=document.get('protection_rules',[])
     if not any(r.get('type')=='required_reviewers' and r.get('reviewers') for r in rules):
@@ -146,7 +181,10 @@ def main():
             if mode=='plan':
                 command(['terraform','plan','-input=false','-lock-timeout=5m','-var-file='+str(variable),'-out='+str(path)],STACK)
                 plan=json.loads(command(['terraform','show','-json',str(path)],STACK))
-                Path(os.environ['TF_SUMMARY_PATH']).write_text(summary(plan,sha,stack_name))
+                report = summary(plan,sha,stack_name)
+                if stack_name == 'test-foundation':
+                    report += '\n' + verify_pgcat_baseline_plan(plan) + '\n'
+                Path(os.environ['TF_SUMMARY_PATH']).write_text(report)
                 if os.environ.get('TF_ENCRYPTED_PLAN_PATH'):
                     key=base64.b64decode(os.environ['TF_PLAN_KEY'],validate=True)
                     Path(os.environ['TF_ENCRYPTED_PLAN_PATH']).write_bytes(seal(path.read_bytes(),key,sha,stack_name))
@@ -154,6 +192,9 @@ def main():
                 if os.environ.get('GITHUB_REF')!='refs/heads/main':raise ValueError('Apply requires main')
                 key=base64.b64decode(os.environ['TF_PLAN_KEY'],validate=True)
                 path.write_bytes(unseal(Path(os.environ['TF_ENCRYPTED_PLAN_PATH']).read_bytes(),key,sha,stack_name));path.chmod(0o600)
+                if stack_name == 'test-foundation':
+                    plan = json.loads(command(['terraform','show','-json',str(path)],STACK))
+                    print(verify_pgcat_baseline_plan(plan))
                 command(['terraform','apply','-input=false',str(path)],STACK)
                 print('Reviewed saved plan applied successfully.')
     finally:variable.unlink(missing_ok=True)

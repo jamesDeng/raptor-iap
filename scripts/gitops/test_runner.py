@@ -1,5 +1,29 @@
 import unittest
-from runner import summary, seal, unseal, require_protection
+from runner import summary, seal, unseal, require_protection, verify_pgcat_baseline_plan
+
+
+class PgCatBaselinePlanContracts(unittest.TestCase):
+    def setUp(self):
+        before = {'id':'asg-t4necb4dfmu6o3z2rn0g','desired_capacity':4,'protected_instances':['old-a','old-b']}
+        self.change = {'actions':['update'],'before':before,'after':dict(before, desired_capacity=2)}
+        self.plan = {'complete':True,'resource_changes':[
+            {'mode':'managed','address':'module.proxy[0].alicloud_ess_scaling_group.proxy','change':self.change},
+        ]}
+
+    def test_only_exact_capacity_update_is_reported(self):
+        self.assertIn('capacity 4 to 2', verify_pgcat_baseline_plan(self.plan))
+
+    def test_protection_drift_rejects_update(self):
+        self.change['after']['protected_instances'] = []
+        with self.assertRaises(ValueError): verify_pgcat_baseline_plan(self.plan)
+
+    def test_unrelated_update_rejects_plan(self):
+        self.plan['resource_changes'].append({'mode':'managed','address':'module.proxy[0].alicloud_nlb_listener.proxy','change':{'actions':['update']}})
+        with self.assertRaises(ValueError): verify_pgcat_baseline_plan(self.plan)
+
+    def test_unknown_group_attributes_reject_update(self):
+        self.change['after_unknown'] = {'protected_instances':True}
+        with self.assertRaises(ValueError): verify_pgcat_baseline_plan(self.plan)
 
 class Contracts(unittest.TestCase):
     def test_comment_never_contains_values(self):
