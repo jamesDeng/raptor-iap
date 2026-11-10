@@ -52,6 +52,14 @@ def summary(plan,sha,stack="test-foundation"):
     return '<!-- raptor-terraform-plan -->\n'+select_stack(stack)['label']+' plan for `'+sha+'`\n\n| Resource | Action |\n|---|---|\n'+('\n'.join(rows) if rows else '| — | No resource changes |')+'\n\nValues are withheld; raw plan/state are never posted.\n'
 
 
+def has_unknown_plan_value(mask):
+    if isinstance(mask, dict):
+        return any(has_unknown_plan_value(value) for value in mask.values())
+    if isinstance(mask, list):
+        return any(has_unknown_plan_value(value) for value in mask)
+    return mask is not False
+
+
 def verify_pgcat_baseline_plan(plan):
     """Bound this temporary recovery to the existing test ESS group."""
     group_address = 'module.proxy[0].alicloud_ess_scaling_group.proxy'
@@ -79,7 +87,7 @@ def verify_pgcat_baseline_plan(plan):
         before, after = change['before'], change['after']
         if before['id'] != 'asg-t4necb4dfmu6o3z2rn0g' or before['desired_capacity'] != 4:
             raise ValueError('Unexpected PgCat recovery group or baseline')
-        if after != dict(before, desired_capacity=2) or any(change.get('after_unknown', {}).values()):
+        if after != dict(before, desired_capacity=2) or has_unknown_plan_value(change.get('after_unknown', {})):
             raise ValueError('Unexpected PgCat recovery attribute change')
         found_group = True
     if not found_group:

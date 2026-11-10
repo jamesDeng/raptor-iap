@@ -11,6 +11,7 @@ class PgCatBaselinePlanContracts(unittest.TestCase):
         ]}
 
     def test_only_exact_capacity_update_is_reported(self):
+        self.change['after_unknown'] = {'vswitch_ids':[False]}
         self.assertIn('capacity 4 to 2', verify_pgcat_baseline_plan(self.plan))
 
     def test_protection_drift_rejects_update(self):
@@ -22,7 +23,7 @@ class PgCatBaselinePlanContracts(unittest.TestCase):
         with self.assertRaises(ValueError): verify_pgcat_baseline_plan(self.plan)
 
     def test_unknown_group_attributes_reject_update(self):
-        self.change['after_unknown'] = {'protected_instances':True}
+        self.change['after_unknown'] = {'protected_instances':[True]}
         with self.assertRaises(ValueError): verify_pgcat_baseline_plan(self.plan)
 
 class Contracts(unittest.TestCase):
