@@ -155,9 +155,6 @@ func decodeTerminal(raw []byte, b execution.AttemptBinding, secrets []string) (t
 			return out, terminalRejection{"pause"}
 		}
 	}
-	if len(out.Usage) > 10 {
-		return out, terminalRejection{"usage"}
-	}
 	for _, u := range out.Usage {
 		if u.Input < 0 || u.Output < 0 || u.TotalTokens < 0 || u.Input > 10000000 || u.Output > 10000000 || u.TotalTokens > 10000000 {
 			return out, terminalRejection{"usage"}

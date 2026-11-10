@@ -57,6 +57,22 @@ func TestPauseObservationCannotBeTerminalCompletion(t *testing.T) {
 	}
 }
 
+func TestTerminalDecodesMoreThanTenUsageRecords(t *testing.T) {
+	usage := make([]execution.Usage, 11)
+	for i := range usage {
+		usage[i] = execution.Usage{Input: 3, Output: 2, TotalTokens: 5}
+	}
+	terminal := terminalFile{Phase: "live-inference", Error: "MissingEvidence", Usage: usage}
+	raw, err := json.Marshal(terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeTerminal(raw, execution.AttemptBinding{}, nil)
+	if err != nil || got.Error != "MissingEvidence" || len(got.Usage) != 11 {
+		t.Fatalf("terminal usage rejected or lost: category=%s rows=%d error=%v", terminalRejectCategory(err), len(got.Usage), err)
+	}
+}
+
 func TestResourceTerminalBindsWaitToRequestDefinition(t *testing.T) {
 	b := execution.AttemptBinding{RequestID: "request", AttemptID: "attempt", Operation: "db-proxy.replace-nodes", ObjectKind: "db-proxy", DefinitionSHA256: strings.Repeat("a", 64), SkillsCommit: strings.Repeat("b", 40), Model: "gpt-5.6-luna"}
 	row := map[string]any{"phase": "live-inference", "passed": false, "paused": map[string]any{"kind": "resource", "approvalId": "", "actionId": "capacity-ready", "bindingDigest": b.DefinitionSHA256, "requestId": b.RequestID, "definitionSha256": b.DefinitionSHA256, "startedAt": time.Now().UTC().Format(time.RFC3339Nano), "wakeAfterSeconds": 60}, "sessionReference": map[string]any{"version": 1, "requestId": b.RequestID, "definitionSha256": b.DefinitionSHA256, "skillsCommit": b.SkillsCommit, "model": b.Model, "sessionId": "session", "file": "session.jsonl", "sha256": strings.Repeat("d", 64)}}
