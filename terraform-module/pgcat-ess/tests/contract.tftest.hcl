@@ -35,6 +35,13 @@ run "private_tagged_capacity" {
     error_message = "Encrypted disk and Docker startup from a standard ECS image required."
   }
   assert {
+    condition = (
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "set -- docker.io") &&
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "retry apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends \"$@\"")
+    )
+    error_message = "PgCat package installation must wait for the dpkg lock before retrying."
+  }
+  assert {
     condition     = alicloud_ess_scaling_group.proxy.desired_capacity == 2 && alicloud_ess_scaling_group.proxy.max_size == 4 && alicloud_ess_scaling_group.proxy.min_size == 2
     error_message = "Bounded baseline/surge required."
   }
@@ -129,6 +136,7 @@ run "monitoring_agent_is_explicit_and_local" {
   }
   assert {
     condition = (
+      strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "set -- \"$@\" curl") &&
       strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "--agent --config.file=/etc/prometheus/agent.yml") &&
       strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "127.0.0.1:9930") &&
       strcontains(base64decode(alicloud_ess_scaling_configuration.proxy.user_data), "pgcat-agent") &&
