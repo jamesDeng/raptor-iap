@@ -94,7 +94,7 @@ test('observations before expansion and pending replacements cannot reuse earlie
  trace.observe('fleet',{...evidence().fleet,instances:evidence().fleet.instances.slice(0,2)});assert.equal(gate.blocked(),false);
  trace.beforeMutation('db_proxy_scale',{actionId:'expand',desiredCapacity:4});assert.equal(gate.ready(),false);assert.equal(gate.blocked(),true);
 });
-test('reopen rejects duplicate, malformed, foreign, stale-at-creation and orphaned witnesses',()=>{
+test('reopen rejects duplicate, malformed, foreign, pre-expansion and orphaned witnesses',()=>{
  for(const corrupt of [
   (s,r)=>s.entries.push(structuredClone(r)),
   (_s,r)=>r.data.identity.requestId='foreign',
@@ -102,6 +102,7 @@ test('reopen rejects duplicate, malformed, foreign, stale-at-creation and orphan
   (_s,r)=>r.data.identity.model='other',
   (_s,r)=>r.data.identity.scope.targetDbCode='foreign',
   (_s,r)=>r.data.expansionKey='a'.repeat(64),
+  (_s,r)=>r.data.observedAt=new Date(0).toISOString(),
   (_s,r)=>r.data.evidence.metrics.nodes.pop(),
   (_s,r)=>r.data.evidence.metrics.sourceAt=new Date(Date.parse(r.data.observedAt)-31000).toISOString(),
   (_s,r)=>r.data.evidence.metrics.responseAt=new Date(Date.parse(r.data.observedAt)-31000).toISOString(),

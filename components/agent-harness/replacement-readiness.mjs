@@ -46,7 +46,7 @@ function validEvidence(e,trace,expansion,at){
  if(sources[0]>sources[1]||responses[0]>responses[1])return false;
  times.push(...sources,...responses);
  const submittedAt=timestamp(expansion.intent.observedAt);
- return times.every(t=>Number.isFinite(t)&&t>=submittedAt);
+ return at>=submittedAt&&times.every(t=>Number.isFinite(t)&&t>=submittedAt);
 }
 export class ReplacementReadiness {
  constructor(manager,trace){
