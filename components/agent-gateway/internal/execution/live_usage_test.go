@@ -43,3 +43,32 @@ func TestSegmentUsageIsImmutableFencedAndCumulative(t *testing.T) {
 		t.Fatal("negative usage")
 	}
 }
+
+func TestSegmentUsagePersistsMoreThanTenRecords(t *testing.T) {
+	s, x, b := liveAttempt(t)
+	ctx := context.Background()
+	usage := make([]Usage, 11)
+	for i := range usage {
+		usage[i] = Usage{Input: 3, Output: 2, TotalTokens: 5}
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.SaveSegmentUsage(ctx, x.AttemptID, "owner", usage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := Usage{Input: 33, Output: 22, TotalTokens: 55}
+	if got, err := s.RequestUsage(ctx, b.RequestID); err != nil || got != want {
+		t.Fatalf("request usage: got %+v, want %+v, error %v", got, want, err)
+	}
+}
+
+func TestSegmentUsageRejectsOversizedPayloadBeforePersisting(t *testing.T) {
+	s, x, b := liveAttempt(t)
+	ctx := context.Background()
+	if err := s.SaveSegmentUsage(ctx, x.AttemptID, "owner", make([]Usage, 2048)); err != ErrInvalid {
+		t.Fatalf("oversized usage: got %v, want %v", err, ErrInvalid)
+	}
+	if got, err := s.RequestUsage(ctx, b.RequestID); err != nil || got != (Usage{}) {
+		t.Fatalf("oversized usage affected request totals: %+v, %v", got, err)
+	}
+}

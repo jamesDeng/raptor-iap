@@ -7,9 +7,6 @@ import (
 )
 
 func (s *Store) SaveSegmentUsage(ctx context.Context, attempt, owner string, usage []Usage) error {
-	if len(usage) > 10 {
-		return ErrInvalid
-	}
 	for _, u := range usage {
 		if u.Input < 0 || u.Output < 0 || u.TotalTokens < 0 || u.Input > 10000000 || u.Output > 10000000 || u.TotalTokens > 10000000 {
 			return ErrInvalid
@@ -17,6 +14,10 @@ func (s *Store) SaveSegmentUsage(ctx context.Context, attempt, owner string, usa
 	}
 	if usage == nil {
 		usage = []Usage{}
+	}
+	raw, _ := json.Marshal(usage)
+	if len(raw) > 64*1024 {
+		return ErrInvalid
 	}
 	tx, _, e := s.liveTx(ctx, attempt, owner)
 	if e != nil {
@@ -26,7 +27,6 @@ func (s *Store) SaveSegmentUsage(ctx context.Context, attempt, owner string, usa
 	if _, e = bindingFrom(ctx, tx, attempt); e != nil {
 		return e
 	}
-	raw, _ := json.Marshal(usage)
 	var previous []byte
 	if e = tx.QueryRow(ctx, "SELECT segment_usage FROM gateway.attempts WHERE id=$1", attempt).Scan(&previous); e != nil {
 		return e
