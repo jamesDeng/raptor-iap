@@ -55,3 +55,44 @@ func TestConversationRuntimeDeliveryNativeAX(t *testing.T) {
 		t.Fatal("stale AX owner wrote")
 	}
 }
+
+func TestApplicationEvidenceAppCodeAcrossAXResultDecoders(t *testing.T) {
+	b := execution.AttemptBinding{RequestID: execution.NewID(), AttemptID: execution.NewID(), Operation: "application.question",
+		ObjectKind: "application", ObjectCode: "A00003", EnvCode: "rdev.ali", ClusterID: "cluster",
+		Model: "gpt-6.1-sol", ProviderID: "codex", ConnectionVersion: 1,
+		SkillsCommit: "645245d297db872765369b76728a00cb4cb53c8b"}
+	turnID := execution.NewID()
+	events := []execution.RuntimeEvent{{Kind: "turn", TurnID: turnID}}
+	for _, tc := range []struct {
+		name, fields string
+		want         bool
+	}{
+		{name: "AX guest application code", fields: `,"appCode":"A00003"`, want: true},
+		{name: "older guest", want: true},
+		{name: "different application", fields: `,"appCode":"A00004"`},
+		{name: "unrecognized identity field", fields: `,"foreign":"A00003"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := `{"requestId":"` + b.RequestID + `","envCode":"rdev.ali","objectCode":"A00003","workloadKey":"opaque-workload","clusterId":"cluster","namespace":"raptor-test","name":"rdev-test-client-client","uid":"app-uid"` + tc.fields + `}`
+			result := `{"evidenceVersion":2,"requestId":"` + b.RequestID + `","attemptId":"` + b.AttemptID + `","selectedModel":"gpt-6.1-sol","actualModel":"gpt-6.1-sol","selectedProvider":"codex","actualProvider":"openai-codex","answer":"Two ready replicas.","generatedAt":"2026-11-10T06:04:47Z","evidence":[
+				{"server":"raptor","tool":"request_get","observedAt":"2026-11-10T06:04:42Z","evidenceMode":"catalog","identity":{"requestId":"` + b.RequestID + `","envCode":"rdev.ali","objectCode":"A00003"},"state":{"available":true}},
+				{"server":"infra","tool":"deployments_list","observedAt":"2026-11-10T06:04:43Z","evidenceMode":"discovery","identity":` + identity + `,"state":{"state":"ready"}},
+				{"server":"infra","tool":"deployment_status_get","observedAt":"2026-11-10T06:04:46Z","evidenceMode":"live","identity":` + identity + `,"state":{"readyReplicas":2}}
+			]}`
+			read := func(_ context.Context, path string, _ int64) ([]byte, error) {
+				if path != "/tmp/raptor-private/conversation-turn-"+turnID+".json" {
+					t.Fatalf("unexpected AX turn path %q", path)
+				}
+				return []byte(`{"turnId":"` + turnID + `","messageIds":[],"result":` + result + `}`), nil
+			}
+			turns, err := observeConversation(context.Background(), events, b, read, nil)
+			if (err == nil) != tc.want || tc.want && len(turns) != 1 {
+				t.Errorf("conversation turn count %d, error %v", len(turns), err)
+			}
+			_, err = decodeTerminal([]byte(`{"phase":"live-inference","passed":true,"result":`+result+`}`), b, nil)
+			if (err == nil) != tc.want {
+				t.Errorf("terminal result error %v", err)
+			}
+		})
+	}
+}
