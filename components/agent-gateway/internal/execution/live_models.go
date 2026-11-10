@@ -49,6 +49,7 @@ type EvidenceIdentity struct {
 	RequestID   string `json:"requestId,omitempty"`
 	EnvCode     string `json:"envCode"`
 	ObjectCode  string `json:"objectCode,omitempty"`
+	AppCode     string `json:"appCode,omitempty"`
 	ClusterID   string `json:"clusterId,omitempty"`
 	Namespace   string `json:"namespace,omitempty"`
 	Name        string `json:"name,omitempty"`
@@ -195,7 +196,7 @@ func ValidateLiveResult(r LiveResult, b AttemptBinding, known ...string) error {
 	discovered := map[EvidenceIdentity]bool{}
 	for _, v := range r.Evidence {
 		name := "mcp__" + v.Server + "__" + v.Tool
-		if !liveTools[name] || v.ObservedAt.IsZero() || v.Identity.EnvCode != b.EnvCode || len(v.State) > 4096 || !json.Valid(v.State) {
+		if !liveTools[name] || v.ObservedAt.IsZero() || v.Identity.EnvCode != b.EnvCode || (v.Identity.AppCode != "" && v.Identity.AppCode != b.ObjectCode) || len(v.State) > 4096 || !json.Valid(v.State) {
 			return ErrInvalid
 		}
 		if v.Server == "raptor" {
