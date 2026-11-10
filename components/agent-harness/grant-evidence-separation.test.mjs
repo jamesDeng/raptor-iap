@@ -8,10 +8,11 @@ import {runLiveReplacement} from './live-replacement.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 import {binding,scope,old,added,observations} from './replacement-sequence-fixtures.mjs';
 
-for(const stale of ['baseline','metrics','drain-delayed','drain-already-protected','drain-unhealthy','drain-wrong-target']){
+for(const stale of ['baseline','metrics','drain-delayed','drain-already-protected','drain-order','drain-unhealthy','drain-wrong-target']){
 test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
  const drainScenario=stale.startsWith('drain-');
- const alreadyProtected=stale==='drain-already-protected';
+ const drainOrder=stale==='drain-order';
+ const alreadyProtected=stale==='drain-already-protected'||drainOrder;
  const drainAccepted=alreadyProtected||stale==='drain-delayed';
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'grant-evidence-')));
@@ -48,7 +49,8 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
  const {runtime}=await loadPiRuntime({stateRoot});
  runtime.getAuth=async()=>({type:'oauth',access:'fixture'});
  const progress=[],writes=[],refreshOrder=[];
- let phase='proposal',round=0,observationsMade=0,canariesReleased=0,newProtected=false;
+ let phase='proposal',round=0,observationsMade=0,canariesReleased=0,newProtected=false,drainSubmitted=false;
+ const continuityCalls=[];
  const visible=[];
  let feedback;
  runtime.streamSimple=(model,context)=>{
@@ -76,7 +78,18 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    [...['fleet','backend','capacity'].map(kind=>modelCall('cloud_read',{kind})),
     ...added.map(instanceId=>modelCall('db_connection_probe',{instanceId})),modelCall('metrics_read',{kind:'pgcatClients'})],
    [alreadyProtected?modelCall('cloud_read',{kind:'fleet'}):protect],
-   [modelCall('cloud_read',{kind:'fleet'}),modelCall('cloud_read',{kind:'backend'})],[drain],...(drainAccepted?[[drain]]:[])
+   [modelCall('cloud_read',{kind:'fleet'}),modelCall('cloud_read',{kind:'backend'})],[drain],...(drainOrder?[
+    [modelCall('resource_wait',{seconds:60})],
+    [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})],[release],
+    ['fleet','backend','capacity'].map(kind=>modelCall('cloud_read',{kind})),
+    [modelCall('resource_wait',{seconds:60}),modelCall('cloud_read',{kind:'fleet'})],[modelCall('resource_wait',{seconds:60})]
+   ]:drainAccepted?[[drain]]:[])
+  ]:phase==='after-drain-wait'?[
+   [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
+   [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})],[release],[modelCall('resource_wait',{seconds:60})]
+  ]:phase==='after-probe-release'?[
+   [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
+   [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})]
   ]:[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[requestRead,expand],
    [release,requestRead],
@@ -121,6 +134,7 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    }
    if(name==='db_proxy_node_protection_set')newProtected=true;
    if(name==='db_proxy_nodes_deregister'){
+    drainSubmitted=true;
     writes.push({args,grant:new Headers(init.headers).get('X-Raptor-Request-Grant'),round});
     refreshOrder.push('drain');
    }
@@ -130,7 +144,7 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
  };
  const observed=work=>async args=>{observationsMade++;return work(args);};
  const isDrainRefresh=()=>phase==='drain'&&round===5;
- const fleetObservations=()=>phase==='drain'?observations([...old,...added],{unprotected:newProtected?[]:added}):observations();
+ const fleetObservations=()=>phase==='drain'?observations([...old,...added],{unprotected:newProtected?[]:added,withdrawn:drainSubmitted?old:[]}):observations();
  const observer={cloudRead:observed(args=>{
   const data=fleetObservations()[args.kind];
   if(isDrainRefresh()){
@@ -153,11 +167,13 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    if(isDrainRefresh())refreshOrder.push(args.instanceId);
    return {...args,connected:true};
   }),pgcatConnectionContinuity:observed(args=>{
+   continuityCalls.push(args.phase);
    if(args.phase==='release-probes')canariesReleased++;
    if(round===7&&args.phase==='hold')refreshOrder.push('hold');
    const at=new Date().toISOString();
    return {requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',observedAt:at,
-    sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at}]))};
+    sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at,openedAt:new Date(Date.now()-61000).toISOString(),rounds:2}])),
+    ...(args.phase==='verify-drain'?{drainActionId:'drain',drainObservedAt:at,freshConnections:Object.fromEntries(added.map(id=>[id,12]))}:{})};
   })};
  const options={stateRoot,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,fetch,
   skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:fs.realpathSync(new URL('../../agent-skills',import.meta.url))},
@@ -187,9 +203,28 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
  assert.deepEqual(refreshOrder,['write']);
  if(drainScenario){
   phase='drain';round=0;refreshOrder.length=0;newProtected=alreadyProtected;
-  await runLiveReplacement({...options,privateRoot:path.join(root,'drain'),
+  const drained=await runLiveReplacement({...options,privateRoot:path.join(root,'drain'),
    binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:resumed.sessionReference,
    decisionContext:{...resumed.paused,decision:'resume'}});
+  if(drainOrder){
+   assert.equal(round,12,'only a standalone wait with all post-drain reads can pause the request');
+   assert.equal(drained.paused?.kind,'resource');
+   assert.deepEqual(continuityCalls,['hold'],'both premature continuity phases must be blocked before Gateway');
+   t.mock.timers.tick(60000);
+   phase='after-drain-wait';round=0;
+   const released=await runLiveReplacement({...options,privateRoot:path.join(root,'after-drain-wait'),
+    binding:{...b,attemptId:'66666666-6666-4666-8666-666666666666'},sessionReference:drained.sessionReference,
+    decisionContext:{...drained.paused,decision:'resume'}});
+   assert.equal(released.paused?.kind,'resource',JSON.stringify(released));
+   assert.deepEqual(continuityCalls,['hold','verify-drain','release-probes']);
+   t.mock.timers.tick(60000);
+   phase='after-probe-release';round=0;
+   await runLiveReplacement({...options,privateRoot:path.join(root,'after-probe-release'),
+    binding:{...b,attemptId:'77777777-7777-4777-8777-777777777777'},sessionReference:released.sessionReference,
+    decisionContext:{...released.paused,decision:'resume'}});
+   assert.deepEqual(continuityCalls,['hold','verify-drain','release-probes'],'checkpoint replay must not contact Gateway again');
+   assert.equal(canariesReleased,1);
+  }
   assert.equal(newProtected,true,'the exact replacements must be protected before drain');
   assert.deepEqual(refreshOrder,['fleet','backend',...(drainAccepted?['drain']:[])]);
   assert.deepEqual(writes.slice(1),drainAccepted?[{args:drain.arguments,grant:grantID,round:6}]:[]);

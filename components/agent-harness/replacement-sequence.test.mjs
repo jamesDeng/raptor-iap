@@ -278,3 +278,71 @@ for(const omitted of ['fleet','backend','capacity','metrics','deployment','disco
  if(omitted!=='discovery')y.gate.observe('mcp',['raptor.deployments_list','infra.deployments_list','infra.deployment_status_get'].map(name=>({server:name.split('.')[0],tool:name.split('.')[1],observedAt:new Date().toISOString()})));
  assert.throws(()=>y.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
 });
+
+function grantedWithdrawal(session=setup().session,decision){
+ const trace=new ReplacementTrace(session,{...binding,approvalProtocol:'request-grants-v1'},scope);
+ const gate=new ReplacementSequence(session,trace,new ReplacementReadiness(session,trace),'resource-v1',decision);
+ const run={session,trace,gate};
+ if(trace.baseline())return run;
+ observe(run);
+ const at=new Date().toISOString();
+ gate.observeContinuity({phase:'hold'},{requestId:binding.requestId,scopeDigest:scope.resolutionDigest,observationId:'hold',
+  observedAt:at,sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at}]))});
+ mutate(run,'db_proxy_scale',{actionId:'expand',desiredCapacity:4},{actionId:'expand',scalingActivityId:'asa-test',previousDesiredCapacity:2,desiredCapacity:4,outcome:'submitted'});
+ observe(run,observations([...old,...added]));
+ mutate(run,'db_proxy_nodes_deregister',{nodeIds:old},{actionId:'drain',instanceIds:old,outcome:'submitted'});
+ return run;
+}
+const verifyDrain={phase:'verify-drain',observationId:'hold',drainActionId:'drain'};
+const releaseDrain={...verifyDrain,phase:'release-probes'};
+function completedGrantDrain(t){
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ const initial=grantedWithdrawal();
+ observe(initial,observations([...old,...added],{withdrawn:old}));
+ const decision=requestWithdrawalWait(initial);
+ t.mock.timers.tick(60000);
+ return grantedWithdrawal(initial.session,decision);
+}
+function drainProof(){
+ const at=new Date().toISOString();
+ return {requestId:binding.requestId,scopeDigest:scope.resolutionDigest,observationId:'hold',drainActionId:'drain',
+  observedAt:at,drainObservedAt:at,sockets:Object.fromEntries(old.map(id=>[id,{id,openedAt:new Date(Date.now()-61000).toISOString(),lastSqlAt:at,rounds:2}])),
+  freshConnections:Object.fromEntries(added.map(id=>[id,12]))};
+}
+test('only observed post-drain routing qualifies a resource wait and socket verification',()=>{
+ const {gate}=grantedWithdrawal();
+ assert.throws(()=>gate.observeContinuity(verifyDrain,drainProof()),/InvalidEvidence/);
+ assert.deepEqual(gate.withdrawalWaitReads(),['cloud_read fleet','cloud_read backend','cloud_read capacity']);
+ assert.ok(gate.continuityReads(verifyDrain).includes('cloud_read fleet, backend and capacity after drain, then resource_wait'));
+ assert.ok(gate.continuityReads(releaseDrain).length);
+ observe({gate},observations([...old,...added],{withdrawn:old}));
+ assert.deepEqual(gate.withdrawalWaitReads(),[]);
+ assert.ok(gate.continuityReads(verifyDrain).length);
+ const receipt=gate.trace.rows.find(row=>row.kind==='result'&&row.tool==='db_proxy_nodes_deregister');
+ receipt.state.outcome='unknown';
+ assert.throws(()=>gate.withdrawalWaitReads(),/InvalidEvidence/);
+});
+test('checkpoint reuses completed drain proof for the same request after a later wait',t=>{
+ const run=completedGrantDrain(t);
+ const proof=drainProof();
+ run.gate.observeContinuity(verifyDrain,proof);
+ const resumed=grantedWithdrawal(run.session);
+ assert.throws(()=>resumed.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')),/MissingEvidence/);
+ observe(resumed,observations([...old,...added],{withdrawn:old}));
+ assert.doesNotThrow(()=>resumed.gate.beforeMutation('deployment_restart',argsFor('deployment_restart')));
+ assert.deepEqual(run.gate.continuityReads(verifyDrain),[]);
+ assert.deepEqual(run.gate.continuityReads(releaseDrain),[]);
+ assert.deepEqual(resumed.gate.savedDrainProof(verifyDrain),proof);
+ assert.throws(()=>resumed.gate.savedDrainProof({...verifyDrain,observationId:'foreign'}),/InvalidEvidence/);
+});
+test('drain proof rejects the wrong route count and a checkpoint entry ahead of its completed wait',t=>{
+ const run=completedGrantDrain(t);
+ const proof=drainProof();
+ const tooEarly=new Date(Date.now()-1).toISOString();
+ assert.throws(()=>run.gate.observeContinuity(verifyDrain,{...proof,drainObservedAt:tooEarly}),/InvalidEvidence/);
+ assert.throws(()=>run.gate.observeContinuity(verifyDrain,{...proof,freshConnections:{[added[0]]:24,[added[1]]:0}}),/InvalidEvidence/);
+ run.gate.observeContinuity(verifyDrain,proof);
+ const entries=run.session.entries;
+ entries.unshift(entries.pop());
+ assert.throws(()=>grantedWithdrawal(run.session),/InvalidEvidence/);
+});
