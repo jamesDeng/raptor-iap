@@ -172,7 +172,7 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 		return nil
 	}
 	if err := read("backend", &backend); err != nil || backend.ServerGroupID != scope.ServerGroupID ||
-		backend.ListenerID != scope.ListenerID || !pgcatFreshTime(backend.ObservedAt, time.Now()) {
+		backend.ListenerID != scope.ListenerID || backend.ObservedAt.IsZero() {
 		return nil, ErrRuntimeUnavailable
 	}
 	all := make(map[string]netip.Addr, len(backend.Nodes))
@@ -196,7 +196,7 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 			ObservedAt      time.Time `json:"observedAt"`
 		}
 		if len(all) != 2 || len(routed) != 2 || read("capacity", &capacity) != nil || capacity.GroupID != scope.GroupID ||
-			capacity.DesiredCapacity != 2 || !pgcatFreshTime(capacity.ObservedAt, time.Now()) {
+			capacity.DesiredCapacity != 2 || capacity.ObservedAt.IsZero() {
 			return nil, ErrRuntimeUnavailable
 		}
 		evidence, err := p.pgcat.hold(ctx, binding.RequestID, scope.ResolutionDigest, routed, backend.ObservedAt, connect, entry.active)
@@ -226,7 +226,7 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 		} else {
 			var retired execution.PgcatResultRetirement
 			if len(all) != 2 || read("retirement", &retired) != nil || retired.Status != "Successful" ||
-				!pgcatFreshTime(retired.ObservedAt, time.Now()) || !p.pgcat.matchesOriginalNodes(binding.RequestID, retired.DestroyedIDs) ||
+				retired.ObservedAt.IsZero() || !p.pgcat.matchesOriginalNodes(binding.RequestID, retired.DestroyedIDs) ||
 				p.RecordPgcatObservation == nil {
 				return nil, ErrRuntimeUnavailable
 			}

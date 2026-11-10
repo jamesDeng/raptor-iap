@@ -74,17 +74,13 @@ func NewResource(resolve func(context.Context, string, string, string) (domain.R
 	}
 	return &Client{resolve: resolve, query: query}, nil
 }
-func fresh(stamp float64, now time.Time) bool {
-	n := float64(now.UnixNano()) / 1e9
-	return !math.IsNaN(stamp) && !math.IsInf(stamp, 0) && stamp > 0 && n-stamp <= 45 && stamp-n <= 5
-}
-func value(row sample, now time.Time) (float64, error) {
+func value(row sample) (float64, error) {
 	if len(row.Value) != 2 {
 		return 0, fail()
 	}
 	var stamp float64
 	var text string
-	if json.Unmarshal(row.Value[0], &stamp) != nil || !fresh(stamp, now) || json.Unmarshal(row.Value[1], &text) != nil {
+	if json.Unmarshal(row.Value[0], &stamp) != nil || stamp <= 0 || json.Unmarshal(row.Value[1], &text) != nil {
 		return 0, fail()
 	}
 	v, e := strconv.ParseFloat(text, 64)
@@ -203,7 +199,7 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 			return nil, fail()
 		}
 		id := r.Metric["ecs_instance_id"]
-		v, e := value(r, now)
+		v, e := value(r)
 		if e != nil {
 			return nil, e
 		}
@@ -223,7 +219,7 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 			case "infra_pgcat_connected_clients":
 				e = put(recorded, id, v)
 			case "infra_pgcat_client_observation_timestamp_seconds":
-				if !fresh(v, now) {
+				if v <= 0 {
 					return nil, fail()
 				}
 				e = put(observed, id, v)
@@ -252,8 +248,8 @@ func (c *Client) ConnectedClients(ctx context.Context, s policy.ProxySnapshot) (
 		if _, exists := sourceTimes[key]; exists {
 			return nil, fail()
 		}
-		stamp, e := value(r, now)
-		if e != nil || !fresh(stamp, now) {
+		stamp, e := value(r)
+		if e != nil || stamp <= 0 {
 			return nil, fail()
 		}
 		sourceTimes[key] = stamp

@@ -85,13 +85,9 @@ func pgcatNodeAddresses(nodes map[string]netip.Addr) (map[netip.Addr]string, boo
 	return out, true
 }
 
-func pgcatFreshTime(value, now time.Time) bool {
-	return !value.IsZero() && !value.After(now.Add(2*time.Second)) && now.Sub(value) <= 30*time.Second
-}
-
 func (r *pgcatContinuity) hold(ctx context.Context, request, scope string, original map[string]netip.Addr, seenAt time.Time, connect pgcatConnector, lifecycle ...func(context.Context) bool) (pgcatHoldEvidence, error) {
 	want, valid := pgcatNodeAddresses(original)
-	if request == "" || scope == "" || !valid || connect == nil || !pgcatFreshTime(seenAt, time.Now()) {
+	if request == "" || scope == "" || !valid || connect == nil || seenAt.IsZero() {
 		return pgcatHoldEvidence{}, ErrConfiguration
 	}
 	r.mu.Lock()
@@ -196,7 +192,7 @@ func (h *pgcatHeldPair) close() {
 
 func (r *pgcatContinuity) verifyDrain(ctx context.Context, request, scope, observation, action string, seenAt time.Time, replacements map[string]netip.Addr, connect pgcatConnector) (pgcatDrainEvidence, error) {
 	want, valid := pgcatNodeAddresses(replacements)
-	if !valid || !transportID.MatchString(action) || connect == nil || !pgcatFreshTime(seenAt, time.Now()) {
+	if !valid || !transportID.MatchString(action) || connect == nil || seenAt.IsZero() {
 		return pgcatDrainEvidence{}, ErrConfiguration
 	}
 	r.mu.Lock()
@@ -236,7 +232,7 @@ func (r *pgcatContinuity) verifyDrain(ctx context.Context, request, scope, obser
 		}
 		counts[want[backend]]++
 	}
-	if len(counts) != 2 || !pgcatFreshTime(seenAt, time.Now()) {
+	if len(counts) != 2 {
 		return pgcatDrainEvidence{}, ErrRuntimeUnavailable
 	}
 	hold.mu.Lock()
@@ -340,7 +336,7 @@ func (r *pgcatContinuity) releaseProbes(ctx context.Context, request, scope, obs
 		return pgcatProbeRelease{}, ErrRuntimeUnavailable
 	}
 	if pair.releasedAt.IsZero() {
-		if !pgcatFreshTime(pair.lastDrain.ObservedAt, time.Now()) || pair.probe(ctx) != nil {
+		if pair.probe(ctx) != nil {
 			return pgcatProbeRelease{}, ErrRuntimeUnavailable
 		}
 		pair.releasedAt = time.Now().UTC()

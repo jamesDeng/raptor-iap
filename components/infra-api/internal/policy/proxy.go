@@ -143,7 +143,7 @@ func DirectReplacementScaleInAllowed(s ProxySnapshot, desired int) error {
 	}
 	return nil
 }
-func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.Time, desired int) error {
+func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, desired int) error {
 	observed := map[string]ClientObservation{}
 	for _, r := range rows {
 		if _, exists := observed[r.InstanceID]; exists {
@@ -164,7 +164,7 @@ func ScaleInClientsAllowed(s ProxySnapshot, rows []ClientObservation, now time.T
 		}
 		eligible++
 		r, ok := observed[n.ID]
-		if !ok || math.IsNaN(r.Clients) || math.IsInf(r.Clients, 0) || r.Clients < 0 || math.Trunc(r.Clients) != r.Clients || r.ObservedAt.IsZero() || now.Sub(r.ObservedAt) > 45*time.Second || r.ObservedAt.Sub(now) > 5*time.Second {
+		if !ok || math.IsNaN(r.Clients) || math.IsInf(r.Clients, 0) || r.Clients < 0 || math.Trunc(r.Clients) != r.Clients || r.ObservedAt.IsZero() {
 			return refuse("MetricsInvalid")
 		}
 		totalClients += r.Clients

@@ -8,10 +8,10 @@ test('fixed observer qualifies convergence without certifying retained traffic a
  const result=await qualifyReplacementConvergence(trace,observer(),scope);
  assert.equal(result.converged,true);assert.equal(result.acceptance,'pending');assert.deepEqual(result.oldInstanceIds,['old-a','old-b']);assert.deepEqual(result.newInstanceIds,['new-a','new-b']);assert.equal(result.desiredCapacity,2);
 });
-test('missing stages unresolved submissions old nodes and stale health cannot qualify',async()=>{
+test('missing stages unresolved submissions old nodes and malformed evidence cannot qualify',async()=>{
  for(const t of [{...trace,unresolved:()=>true},{...trace,scaleActions:()=>trace.scaleActions().slice(1)}])await assert.rejects(()=>qualifyReplacementConvergence(t,observer(),scope),/MissingEvidence/);
  const o=observer(),read=o.cloudRead;o.cloudRead=async args=>{const d=await read(args);if(args.kind==='fleet')d.instances[0].instanceId='old-a';return d;};await assert.rejects(()=>qualifyReplacementConvergence(trace,o,scope),/MissingEvidence/);
- const stale=observer(),fresh=stale.cloudRead;stale.cloudRead=async args=>({...await fresh(args),observedAt:'2020-01-01T00:00:00Z'});await assert.rejects(()=>qualifyReplacementConvergence(trace,stale,scope),/MissingEvidence/);
+ const invalid=observer(),readCloud=invalid.cloudRead;invalid.cloudRead=async args=>({...await readCloud(args),observedAt:'invalid'});await assert.rejects(()=>qualifyReplacementConvergence(trace,invalid,scope),/MissingEvidence/);
 });
 
 test('direct convergence emits only two stages and retains exact readyFour cohort and restart generation',async()=>{

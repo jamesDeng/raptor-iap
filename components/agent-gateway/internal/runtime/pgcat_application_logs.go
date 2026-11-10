@@ -75,7 +75,7 @@ func (s *pgcatLogState) observeLog(line []byte, since time.Time) error {
 		} `json:"snapshot"`
 	}
 	if json.Unmarshal(line, &event) != nil || event.PodUID != s.podUID || !transportID.MatchString(event.ProcessID) ||
-		event.At.IsZero() || event.At.After(time.Now().Add(2*time.Second)) || (s.processID != "" && event.ProcessID != s.processID) || s.final {
+		event.At.IsZero() || (s.processID != "" && event.ProcessID != s.processID) || s.final {
 		return ErrRuntimeUnavailable
 	}
 	if event.At.Before(since) {

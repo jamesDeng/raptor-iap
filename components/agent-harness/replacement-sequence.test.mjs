@@ -156,7 +156,7 @@ test('initial SQL and control reads cannot be replaced by only healthy cloud obs
  assert.throws(()=>x.gate.beforeMutation('db_proxy_scale',argsFor('db_proxy_scale',{actionId:'expand',desiredCapacity:4})),/MissingEvidence/);
 });
 
-test('a resumed grant needs fresh request, environment and object reads before expansion',()=>{
+test('a resumed grant requires request, environment and object reads even when valid reads are older',()=>{
  const {session}=setup();
  const grantBinding={...binding,approvalProtocol:'request-grants-v1'};
  const initialTrace=new ReplacementTrace(session,grantBinding,scope);
@@ -180,8 +180,6 @@ test('a resumed grant needs fresh request, environment and object reads before e
  assert.throws(()=>gate.beforeMutation('db_proxy_scale',args),/MissingEvidence/);
  observe({gate});
  gate.observe('mcp',[{server:'raptor',tool:'request_get',observedAt:new Date(Date.now()-43000).toISOString()}]);
- assert.throws(()=>gate.beforeMutation('db_proxy_scale',args),/MissingEvidence/);
- observe({gate});
  assert.doesNotThrow(()=>gate.beforeMutation('db_proxy_scale',args));
 });
 

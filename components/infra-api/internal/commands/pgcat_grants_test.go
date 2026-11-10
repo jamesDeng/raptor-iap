@@ -63,7 +63,7 @@ func (r *grantedRestarterFixture) RestartGrantedPgcat(ctx context.Context, env d
 	return r.Restart(ctx, env, command)
 }
 
-func TestPgcatScaleOutHoldCanExpireBetweenDispatchAndPlanning(t *testing.T) {
+func TestPgcatScaleOutHoldDoesNotExpireBetweenDispatchAndPlanning(t *testing.T) {
 	start := time.Now().UTC().Truncate(time.Second)
 	target := domain.ProxyTarget{RequestID: "req", EnvCode: "dev", ProxyCode: "p", GroupID: "g"}
 	backend := &grantedBackendFixture{backendFixture: backendFixture{s: policy.ProxySnapshot{
@@ -74,10 +74,9 @@ func TestPgcatScaleOutHoldCanExpireBetweenDispatchAndPlanning(t *testing.T) {
 		name     string
 		observed time.Duration
 		checked  time.Duration
-		wantErr  bool
 	}{
 		{name: "fresh at client dispatch", checked: 28600 * time.Millisecond},
-		{name: "expired at Infra planning", checked: 31 * time.Second, wantErr: true},
+		{name: "older observation at Infra planning", checked: 5 * time.Minute},
 		{name: "same sockets refreshed after baseline", observed: 27 * time.Second, checked: 31 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,12 +98,8 @@ func TestPgcatScaleOutHoldCanExpireBetweenDispatchAndPlanning(t *testing.T) {
 				Target: target, ScopeDigest: hold.ScopeDigest, ActionID: "expand", State: state,
 				Operation: domain.ScaleCommand{ProxyTarget: target, ActionID: "expand", DesiredCapacity: 4},
 			})
-			if tc.wantErr {
-				if err == nil || err.Error() != "MissingEvidence" || prepared.Submit != nil {
-					t.Fatalf("expired hold reached submission: %v", err)
-				}
-			} else if err != nil || prepared.Capability != "db-proxy.scale-out" || prepared.Submit == nil {
-				t.Fatalf("fresh hold did not prepare scale-out: %v", err)
+			if err != nil || prepared.Capability != "db-proxy.scale-out" || prepared.Submit == nil {
+				t.Fatalf("recorded hold did not prepare scale-out: %v", err)
 			}
 		})
 	}

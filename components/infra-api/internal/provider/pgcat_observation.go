@@ -67,7 +67,7 @@ func (p *reader) ObservePgcatSeries(ctx context.Context, env domain.Environment,
 	if err != nil {
 		return domain.PgcatSeriesObservation{}, err
 	}
-	// Source freshness and all-pool/node coverage remain the consumer's checks.
+	// The consumer checks source attribution and coverage for all pools and nodes.
 	return domain.PgcatSeriesObservation{Series: series, ObservedAt: time.Now().UTC(), Rows: rows}, nil
 }
 

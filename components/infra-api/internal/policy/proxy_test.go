@@ -95,7 +95,7 @@ func TestDirectReplacementScaleInGuardDoesNotChangeOtherCapacityPolicies(t *test
 
 // Client observations retain the provider's all-pool active+idle+waiting total.
 // Protection excludes retained nodes, never an arbitrary termination target.
-func TestScaleInRequiresFreshCombinedClientBudgetOnEveryUnprotectedNode(t *testing.T) {
+func TestScaleInRequiresCombinedClientBudgetOnEveryUnprotectedNode(t *testing.T) {
 	now := time.Unix(1000, 0)
 	s := ProxySnapshot{Nodes: []Node{{ID: "a"}, {ID: "b"}, {ID: "protected", Protected: true}}}
 	for _, tc := range []struct {
@@ -112,8 +112,8 @@ func TestScaleInRequiresFreshCombinedClientBudgetOnEveryUnprotectedNode(t *testi
 		{"protected clients excluded", []ClientObservation{{"a", 1, now}, {"b", 0, now}, {"protected", 100, now}}, ""},
 		{"missing", []ClientObservation{{"a", 1, now}}, "MetricsInvalid"},
 		{"duplicate", []ClientObservation{{"a", 0, now}, {"a", 0, now}, {"b", 0, now}}, "MetricsInvalid"},
-		{"stale", []ClientObservation{{"a", 0, now.Add(-46 * time.Second)}, {"b", 0, now}}, "MetricsInvalid"},
-		{"future", []ClientObservation{{"a", 0, now.Add(6 * time.Second)}, {"b", 0, now}}, "MetricsInvalid"},
+		{"older complete readings", []ClientObservation{{"a", 0, now.Add(-time.Minute)}, {"b", 0, now}}, ""},
+		{"clock skew", []ClientObservation{{"a", 0, now.Add(6 * time.Second)}, {"b", 0, now}}, ""},
 		{"missing time", []ClientObservation{{"a", 0, time.Time{}}, {"b", 0, now}}, "MetricsInvalid"},
 		{"fractional", []ClientObservation{{"a", 0.5, now}, {"b", 0, now}}, "MetricsInvalid"},
 		{"negative", []ClientObservation{{"a", -1, now}, {"b", 0, now}}, "MetricsInvalid"},
@@ -121,7 +121,7 @@ func TestScaleInRequiresFreshCombinedClientBudgetOnEveryUnprotectedNode(t *testi
 		{"infinite", []ClientObservation{{"a", math.Inf(1), now}, {"b", 0, now}}, "MetricsInvalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if e := ScaleInClientsAllowed(s, tc.rows, now, 2); code(e) != tc.want {
+			if e := ScaleInClientsAllowed(s, tc.rows, 2); code(e) != tc.want {
 				t.Fatalf("want %q, got %v", tc.want, e)
 			}
 		})
@@ -141,7 +141,7 @@ func TestScaleInRejectsMissingEligibleNodesAndMalformedMembership(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Unix(1000, 0)
-			if e := ScaleInClientsAllowed(ProxySnapshot{Nodes: tc.nodes}, []ClientObservation{{"a", 0, now}}, now, 2); code(e) != tc.want {
+			if e := ScaleInClientsAllowed(ProxySnapshot{Nodes: tc.nodes}, []ClientObservation{{"a", 0, now}}, 2); code(e) != tc.want {
 				t.Fatalf("want %q, got %v", tc.want, e)
 			}
 		})

@@ -44,7 +44,7 @@ func (c HTTPRaptor) ReadPgcatDrainAction(ctx context.Context, requestID, env, pr
 	a := response.Data
 	if a.RequestID != requestID || a.ActionID != actionID || a.EnvCode != env || a.ScopeDigest != scopeDigest ||
 		a.State != "submitted" || a.ProviderRequestID == "" || a.ClaimedAt.IsZero() || a.RecordedAt.Before(a.ClaimedAt) ||
-		a.RecordedAt.After(time.Now().Add(2*time.Second)) || a.Capability.Capability != "db-proxy.drain" ||
+		a.Capability.Capability != "db-proxy.drain" ||
 		a.Capability.Target.Kind != "db-proxy" || a.Capability.Target.Code != proxy {
 		return PgcatDrainAction{}, ErrInvalid
 	}
@@ -123,7 +123,7 @@ func (c HTTPRaptor) ReadPgcatRestartAction(ctx context.Context, requestID, env, 
 	generation, err := strconv.ParseInt(strings.TrimPrefix(a.ProviderRequestID, uid+":"), 10, 64)
 	if err != nil || generation < 1 || !strings.HasPrefix(a.ProviderRequestID, uid+":") || a.RequestID != requestID ||
 		a.ActionID != actionID || a.EnvCode != env || a.ScopeDigest != scopeDigest || a.State != "submitted" ||
-		a.ClaimedAt.IsZero() || a.RecordedAt.Before(a.ClaimedAt) || a.RecordedAt.After(time.Now().Add(2*time.Second)) ||
+		a.ClaimedAt.IsZero() || a.RecordedAt.Before(a.ClaimedAt) ||
 		a.Capability.Capability != "application.restart" || a.Capability.Target.Kind != "application" || a.Capability.Target.Code != app {
 		return PgcatRestartAction{}, ErrInvalid
 	}

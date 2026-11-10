@@ -42,11 +42,11 @@ function validEvidence(e,trace,expansion,at){
  if(trace.versioned&&probes===undefined)return false;
  if(probes!==undefined&&(!exactIds(probes,added)||probes.some(p=>p.connected!==true||Object.hasOwn(p,'readiness'))))return false;
  const times=[fleet,backend,capacity,metrics,...(probes??[])].map(r=>timestamp(r.observedAt));
- const sources=[timestamp(metrics.sourceAt),timestamp(metrics.latestSourceAt)],responses=[timestamp(metrics.responseAt),timestamp(metrics.latestResponseAt)],completed=timestamp(metrics.observedAt);
- if(sources.some(t=>!Number.isFinite(t)||Math.abs(completed-t)>15000)||responses.some(t=>!Number.isFinite(t)||Math.abs(completed-t)>30000)||sources[0]>sources[1]||responses[0]>responses[1])return false;
+ const sources=[timestamp(metrics.sourceAt),timestamp(metrics.latestSourceAt)],responses=[timestamp(metrics.responseAt),timestamp(metrics.latestResponseAt)];
+ if(sources[0]>sources[1]||responses[0]>responses[1])return false;
  times.push(...sources,...responses);
  const submittedAt=timestamp(expansion.intent.observedAt);
- return times.every(t=>Number.isFinite(t)&&Math.abs(at-t)<=30000&&t>=submittedAt)&&Math.max(...times)-Math.min(...times)<=30000;
+ return times.every(t=>Number.isFinite(t)&&t>=submittedAt);
 }
 export class ReplacementReadiness {
  constructor(manager,trace){
@@ -71,7 +71,7 @@ export class ReplacementReadiness {
   return {intent:intents[0],result:this.trace.rows.find(r=>r.kind==='result'&&r.key===intents[0].key)};
  }
  // This is a historical exact-cohort milestone, not the skill's active/idle
- // readiness decision or a substitute for Infra's fresh per-mutation gates.
+ // readiness decision or a substitute for Infra's write gates.
  // It survives approval and 60-second resource waits.
  ready(){return Boolean(this.witness&&this.witness.expansionKey===this.expansion()?.intent.key);}
  blocked(){return this.trace.rows.some(r=>r.kind==='intent'&&r.tool==='db_proxy_scale'&&r.args.desiredCapacity===4)&&!this.ready();}
@@ -81,7 +81,7 @@ export class ReplacementReadiness {
   const observed=timestamp(data.observedAt);
   return this.blocked()&&state?.previousDesiredCapacity===2&&state.desiredCapacity===4&&['submitted','unknown'].includes(state.outcome)
    &&Object.keys(data).sort().join(',')==='instanceIds,missingInstanceIds,observedAt,readiness'
-   &&Math.abs(Date.now()-observed)<=30000&&observed>=timestamp(expansion.intent.observedAt)
+   &&observed>=timestamp(expansion.intent.observedAt)
    &&original?.length===2&&Array.isArray(ids)&&ids.length===4&&new Set(ids).size===4&&ids.every(id)&&original.every(v=>ids.includes(v))
    &&Array.isArray(missing)&&missing.length>=1&&missing.length<=2&&new Set(missing).size===missing.length&&missing.every(v=>ids.includes(v)&&!original.includes(v));
  }

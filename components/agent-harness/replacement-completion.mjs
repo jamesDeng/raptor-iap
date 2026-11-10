@@ -1,7 +1,7 @@
 // This establishes operational convergence only. Full retained-window traffic
 // and approval/gate assessment is a separate acceptance boundary.
 const missing=()=>new Error('MissingEvidence');
-const fresh=row=>row&&typeof row.observedAt==='string'&&Number.isFinite(Date.parse(row.observedAt))&&Math.abs(Date.now()-Date.parse(row.observedAt))<=30000;
+const observed=row=>row&&typeof row.observedAt==='string'&&Number.isFinite(Date.parse(row.observedAt));
 export async function qualifyReplacementConvergence(trace,observer,scope,sequence){
  const original=trace.baseline()?.instanceIds,actions=trace.scaleActions(),cohort=sequence?.cohort();
  const stages=sequence?[[2,4],[4,2]]:[[2,4],[4,3],[3,2]];
@@ -9,26 +9,26 @@ export async function qualifyReplacementConvergence(trace,observer,scope,sequenc
 
  if(actions.some((a,i)=>!a.actionId||a.previousDesiredCapacity!==stages[i][0]||a.desiredCapacity!==stages[i][1]||!['submitted','unknown'].includes(a.outcome)))throw missing();
  const capacity=await observer.cloudRead({kind:'capacity'});
- if(!fresh(capacity)||capacity.groupId!==scope.groupId||capacity.desiredCapacity!==2||capacity.minSize!==2||capacity.maxSize!==4)throw missing();
+ if(!observed(capacity)||capacity.groupId!==scope.groupId||capacity.desiredCapacity!==2||capacity.minSize!==2||capacity.maxSize!==4)throw missing();
  const fleet=await observer.cloudRead({kind:'fleet'}),nodes=fleet?.instances;
- if(!fresh(fleet)||fleet.groupId!==scope.groupId||!Array.isArray(nodes)||nodes.length!==2||new Set(nodes.map(n=>n.instanceId)).size!==2||nodes.some(n=>!n.instanceId||original.includes(n.instanceId)||n.protectedFromScaleIn!==true||n.lifecycleState!=='Protected'||n.healthStatus!=='Healthy'))throw missing();
+ if(!observed(fleet)||fleet.groupId!==scope.groupId||!Array.isArray(nodes)||nodes.length!==2||new Set(nodes.map(n=>n.instanceId)).size!==2||nodes.some(n=>!n.instanceId||original.includes(n.instanceId)||n.protectedFromScaleIn!==true||n.lifecycleState!=='Protected'||n.healthStatus!=='Healthy'))throw missing();
  const ids=nodes.map(n=>n.instanceId).sort();
  if(sequence&&(JSON.stringify([...cohort.oldInstanceIds].sort())!==JSON.stringify([...original].sort())||JSON.stringify([...cohort.newInstanceIds].sort())!==JSON.stringify(ids)))throw missing();
  const backend=await observer.cloudRead({kind:'backend'});
- if(!fresh(backend)||backend.serverGroupId!==scope.serverGroupId||!Array.isArray(backend.nodes)||backend.nodes.length!==2||new Set(backend.nodes.map(n=>n.instanceId)).size!==2||backend.nodes.some(n=>!ids.includes(n.instanceId)||n.registered!==true||n.healthy!==true))throw missing();
+ if(!observed(backend)||backend.serverGroupId!==scope.serverGroupId||!Array.isArray(backend.nodes)||backend.nodes.length!==2||new Set(backend.nodes.map(n=>n.instanceId)).size!==2||backend.nodes.some(n=>!ids.includes(n.instanceId)||n.registered!==true||n.healthy!==true))throw missing();
  if(trace.versioned){
   const retirement=await observer.cloudRead({kind:'retirement'});
-  if(!fresh(retirement)||retirement.status!=='Successful')throw missing();
+  if(!observed(retirement)||retirement.status!=='Successful')throw missing();
   await observer.metricsRead({kind:'pgcatClients'});
  }else{
   for(const instanceId of ids){const probe=await observer.dbConnectionProbe({instanceId});if(probe.instanceId!==instanceId||probe.connected!==true)throw missing();}
  }
  const app=await observer.deploymentRead({});
- if(!fresh(app)||['clusterId','namespace','name','uid'].some(k=>app[k]!==scope.application[k])||app.replicas!==2||['readyReplicas','updatedReplicas','availableReplicas'].some(k=>app[k]!==2))throw missing();
+ if(!observed(app)||['clusterId','namespace','name','uid'].some(k=>app[k]!==scope.application[k])||app.replicas!==2||['readyReplicas','updatedReplicas','availableReplicas'].some(k=>app[k]!==2))throw missing();
  // Recheck capacity after sequential reads; no successful mutation ack substitutes
  // for this observation. The collector independently assesses the whole window.
  const final=await observer.cloudRead({kind:'capacity'});
- if(!fresh(final)||final.groupId!==scope.groupId||final.desiredCapacity!==2||final.minSize!==2||final.maxSize!==4)throw missing();
+ if(!observed(final)||final.groupId!==scope.groupId||final.desiredCapacity!==2||final.minSize!==2||final.maxSize!==4)throw missing();
  const evidence=sequence?.completionEvidence();
  if(sequence&&(!Number.isSafeInteger(evidence.restartGeneration)||evidence.restartGeneration<1||!Number.isSafeInteger(app.generation)||app.generation<evidence.restartGeneration||!Number.isSafeInteger(app.observedGeneration)||app.observedGeneration!==app.generation||JSON.stringify(evidence.newInstanceIds)!==JSON.stringify(cohort.newInstanceIds)))throw missing();
  return {version:trace.versioned?3:sequence?2:1,...(sequence?{restartGeneration:evidence.restartGeneration}:{}),

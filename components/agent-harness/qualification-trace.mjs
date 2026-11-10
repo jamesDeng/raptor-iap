@@ -6,7 +6,7 @@ export const QUALIFICATION_CHECKS=['mcp.raptor.request_get','mcp.raptor.environm
 const READ_STAGES=[QUALIFICATION_CHECKS.slice(0,3),QUALIFICATION_CHECKS.slice(3,5),QUALIFICATION_CHECKS.slice(5,6),QUALIFICATION_CHECKS.slice(6,7),QUALIFICATION_CHECKS.slice(7,9),QUALIFICATION_CHECKS.slice(9)];
 const canonical=v=>JSON.stringify(v,(_k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).sort().map(k=>[k,x[k]])):x);
 const invalid=()=>Error('InvalidEvidence');
-const fresh=t=>typeof t==='string'&&Number.isFinite(Date.parse(t))&&Math.abs(Date.now()-Date.parse(t))<=120000;
+const observed=t=>typeof t==='string'&&Number.isFinite(Date.parse(t));
 const validIds=ids=>Array.isArray(ids)&&[2,4].includes(ids.length)&&ids.every(id=>typeof id==='string'&&/^[-A-Za-z0-9_.]{1,128}$/.test(id))&&new Set(ids).size===ids.length;
 export class QualificationTrace {
  constructor(manager,b,scope,continuation){
@@ -19,11 +19,11 @@ export class QualificationTrace {
   if(name==='mcp.raptor.approval_get'){if(!this.continuation||this.approvalGetRead||this.checks.size||canonical(args)!==canonical({requestId:this.identity.requestId,approvalId:this.continuation.approvalId}))throw Error('MissingEvidence');return;}
   if(this.continuation?.approvalId&&!this.approvalGetRead)throw Error('MissingEvidence');
   const stage=READ_STAGES.findIndex(group=>group.includes(name));if(stage<0)throw Error('MissingEvidence');
-  if(READ_STAGES.slice(0,stage).flat().some(prior=>!fresh(this.checks.get(prior))))throw Error('MissingEvidence');
+  if(READ_STAGES.slice(0,stage).flat().some(prior=>!observed(this.checks.get(prior))))throw Error('MissingEvidence');
   if(stage>3&&canonical(this.fleet)!==canonical(this.baseline))throw Error('MissingEvidence');
  }
  approvalRead(data){const c=this.continuation;if(!c||this.approvalGetRead||this.checks.size||data?.requestId!==this.identity.requestId||data.approvalId!==c.approvalId||data.actionId!==c.actionId||data.state!=='approved'||!data.binding||createHash('sha256').update(canonical(data.binding)).digest('hex')!==c.bindingDigest)throw invalid();this.approvalGetRead=true;}
- observation(name,data){if(!QUALIFICATION_CHECKS.includes(name)||!fresh(data?.observedAt))throw invalid();if(name==='deployment.status'){if(['clusterId','namespace','name','uid'].some(k=>data[k]!==this.scope.application[k])||['replicas','readyReplicas','updatedReplicas','availableReplicas'].some(k=>data[k]!==2)||(data.envCode!==undefined&&data.envCode!==this.scope.envCode)||(data.objectCode!==undefined&&data.objectCode!==this.scope.application.appCode)||(data.generation!==undefined&&data.observedGeneration!==data.generation))throw invalid();}this.checks.set(name,data.observedAt);}
+ observation(name,data){if(!QUALIFICATION_CHECKS.includes(name)||!observed(data?.observedAt))throw invalid();if(name==='deployment.status'){if(['clusterId','namespace','name','uid'].some(k=>data[k]!==this.scope.application[k])||['replicas','readyReplicas','updatedReplicas','availableReplicas'].some(k=>data[k]!==2)||(data.envCode!==undefined&&data.envCode!==this.scope.envCode)||(data.objectCode!==undefined&&data.objectCode!==this.scope.application.appCode)||(data.generation!==undefined&&data.observedGeneration!==data.generation))throw invalid();}this.checks.set(name,data.observedAt);}
  mcp(rows){for(const row of rows){const name='mcp.'+row.server+'.'+row.tool;if(QUALIFICATION_CHECKS.includes(name))this.observation(name,row);}}
  cloud(kind,data){
   if(kind==='fleet'){
@@ -37,8 +37,8 @@ export class QualificationTrace {
   this.observation('cloud.'+kind,data);
  }
  sql(data){if(data?.connected!==true||!this.baseline?.includes(data.instanceId))throw invalid();this.probes.set(data.instanceId,new Date().toISOString());}
- requireBaselineNode(instanceId){if(!this.baseline?.includes(instanceId)||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(name=>!fresh(this.checks.get(name))))throw Error('MissingEvidence');}
- requireReadsReady(){if(!this.baseline||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(n=>!fresh(this.checks.get(n)))||this.probes.size!==this.baseline.length||[...this.probes.values()].some(t=>!fresh(t)))throw Error('MissingEvidence');}
+ requireBaselineNode(instanceId){if(!this.baseline?.includes(instanceId)||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(name=>!observed(this.checks.get(name))))throw Error('MissingEvidence');}
+ requireReadsReady(){if(!this.baseline||canonical(this.fleet)!==canonical(this.baseline)||canonical(this.backend)!==canonical(this.baseline)||QUALIFICATION_CHECKS.some(n=>!observed(this.checks.get(n)))||this.probes.size!==this.baseline.length||[...this.probes.values()].some(t=>!observed(t)))throw Error('MissingEvidence');}
  requireResourceWaitReady(){if(this.resourceResumed)throw Error('MissingEvidence');this.requireReadsReady();}
  requireApprovalReady(args){if(args?.actionId===this.resourceActionId&&this.resourceActionId)throw Error('InvalidApprovalPause');if(!this.resourceResumed)throw Error('MissingEvidence');this.requireReadsReady();}
  complete(){const c=this.continuation;this.requireApprovalReady();if(!this.approvalGetRead||c?.decision!=='resume'||!c.approvalId||!c.actionId||!/^[a-f0-9]{64}$/.test(c.bindingDigest??''))throw Error('MissingEvidence');

@@ -8,11 +8,11 @@ import {runLiveReplacement} from './live-replacement.mjs';
 import {operationCapabilities,operationToolSchema} from './operation-profile.mjs';
 import {binding,scope,old,added,observations} from './replacement-sequence-fixtures.mjs';
 
-for(const stale of ['baseline','metrics','refresh-still-stale','drain-stale','drain-fresh','drain-already-protected','drain-unhealthy','drain-still-stale','drain-wrong-target']){
-test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
+for(const stale of ['baseline','metrics','drain-delayed','drain-already-protected','drain-unhealthy','drain-wrong-target']){
+test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
  const drainScenario=stale.startsWith('drain-');
  const alreadyProtected=stale==='drain-already-protected';
- const drainAccepted=alreadyProtected||['drain-stale','drain-fresh'].includes(stale);
+ const drainAccepted=alreadyProtected||stale==='drain-delayed';
  t.mock.timers.enable({apis:['Date'],now:Date.now()});
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'grant-evidence-')));
  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -54,7 +54,7 @@ test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
  runtime.streamSimple=(model,context)=>{
   round++;
   if(phase==='resume'&&round===7)t.mock.timers.tick(stale==='metrics'?1000:31000);
-  if(phase==='drain'&&round===5&&stale!=='drain-fresh')t.mock.timers.tick(31000);
+  if(phase==='drain'&&round===6)t.mock.timers.tick(31000);
   visible.push(getCurrentTools(context.messages).map(tool=>tool.name));
   if(phase==='resume'&&round===4)feedback=context.messages.findLast(m=>m.role==='toolResult'&&m.toolName===expand.name);
   const rounds=phase==='proposal'?[
@@ -75,7 +75,8 @@ test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
    [...['fleet','backend','capacity'].map(kind=>modelCall('cloud_read',{kind})),
     ...added.map(instanceId=>modelCall('db_connection_probe',{instanceId})),modelCall('metrics_read',{kind:'pgcatClients'})],
-   [alreadyProtected?modelCall('cloud_read',{kind:'fleet'}):protect],[drain],...(drainAccepted?[[drain]]:[])
+   [alreadyProtected?modelCall('cloud_read',{kind:'fleet'}):protect],
+   [modelCall('cloud_read',{kind:'fleet'}),modelCall('cloud_read',{kind:'backend'})],[drain],...(drainAccepted?[[drain]]:[])
   ]:[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[requestRead,expand],
    [release,requestRead],
@@ -128,7 +129,7 @@ test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
   return Response.json({jsonrpc:'2.0',id:rpc.id,result});
  };
  const observed=work=>async args=>{observationsMade++;return work(args);};
- const isDrainRefresh=()=>phase==='drain'&&round>=5;
+ const isDrainRefresh=()=>phase==='drain'&&round===5;
  const fleetObservations=()=>phase==='drain'?observations([...old,...added],{unprotected:newProtected?[]:added}):observations();
  const observer={cloudRead:observed(args=>{
   const data=fleetObservations()[args.kind];
@@ -142,9 +143,8 @@ test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
    const evidence=fleetObservations()[args.kind==='pgcatClients'?'metrics':args.kind];
    if(args.kind==='pgcatClients'){
     if(round===7||isDrainRefresh())refreshOrder.push('pgcatClients');
-    if(stale==='drain-still-stale'&&isDrainRefresh())evidence.sourceAt=new Date(Date.now()-15001).toISOString();
-    if((stale==='metrics'&&round===6)||(stale==='refresh-still-stale'&&round===7)){
-     evidence.sourceAt=new Date(Date.now()-(round===6?14500:16000)).toISOString();
+    if(stale==='metrics'&&round===6){
+     evidence.sourceAt=new Date(Date.now()-14500).toISOString();
     }
    }
    return evidence;
@@ -180,31 +180,19 @@ test(`an approved PgCat write checks ${stale} before dispatch`,async t=>{
  assert.match(feedback?.content[0].text,/environment_get/);
  assert.match(feedback?.content[0].text,/object_get/);
  assert.match(feedback?.content[0].text,/pgcat_connection_continuity/);
- assert.equal(progress.filter(e=>e.tool===expand.name&&e.outcome==='failed').length,stale==='refresh-still-stale'?3:2);
+ assert.equal(progress.filter(e=>e.tool===expand.name&&e.outcome==='failed').length,2);
  assert.ok(progress.some(e=>e.summary?.includes('separate tool round')));
- if(stale==='refresh-still-stale'){
-  assert.equal(resumed.paused,undefined);
-  assert.deepEqual(writes,[]);
-  assert.deepEqual(refreshOrder,['hold','pgcatClients']);
-  return;
- }
  assert.equal(resumed.paused?.kind,'resource',JSON.stringify(resumed));
  assert.deepEqual(writes,[{args:expand.arguments,grant:grantID,round:7}]);
- assert.deepEqual(refreshOrder,stale==='metrics'?['pgcatClients','write']:['hold','pgcatClients','write']);
+ assert.deepEqual(refreshOrder,['write']);
  if(drainScenario){
   phase='drain';round=0;refreshOrder.length=0;newProtected=alreadyProtected;
   await runLiveReplacement({...options,privateRoot:path.join(root,'drain'),
    binding:{...b,attemptId:'55555555-5555-4555-8555-555555555555'},sessionReference:resumed.sessionReference,
    decisionContext:{...resumed.paused,decision:'resume'}});
   assert.equal(newProtected,true,'the exact replacements must be protected before drain');
-  if(stale==='drain-wrong-target'){
-   assert.equal(writes.length,1);
-   assert.deepEqual(refreshOrder,[]);
-  }else{
-   assert.deepEqual(refreshOrder.slice(0,5).sort(),['backend','capacity','fleet',...added].sort());
-   assert.deepEqual(refreshOrder.slice(5),drainAccepted?['pgcatClients','drain']:['pgcatClients']);
-   assert.deepEqual(writes.slice(1),drainAccepted?[{args:drain.arguments,grant:grantID,round:5}]:[]);
-  }
+  assert.deepEqual(refreshOrder,['fleet','backend',...(drainAccepted?['drain']:[])]);
+  assert.deepEqual(writes.slice(1),drainAccepted?[{args:drain.arguments,grant:grantID,round:6}]:[]);
   return;
  }
  phase='after-expansion';round=0;

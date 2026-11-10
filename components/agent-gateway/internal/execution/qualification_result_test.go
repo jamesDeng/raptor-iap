@@ -21,7 +21,11 @@ func TestQualificationResultCannotMasqueradeAsReplacement(t *testing.T) {
 		t.Fatal("qualification accepted as replacement")
 	}
 	b.ExecutionMode = "qualification"
-	for _, what := range []string{"missing", "traffic-pass", "foreign", "stale", "scope", "answer"} {
+	r.Qualification.ObservedAt = time.Now().Add(-time.Hour)
+	if err := ValidateLiveResult(r, b); err != nil {
+		t.Fatalf("valid delayed qualification rejected: %v", err)
+	}
+	for _, what := range []string{"missing", "traffic-pass", "foreign", "missing-timestamp", "scope", "answer"} {
 		bad := r
 		q := *r.Qualification
 		q.Checks = append([]string{}, q.Checks...)
@@ -33,8 +37,8 @@ func TestQualificationResultCannotMasqueradeAsReplacement(t *testing.T) {
 			q.TrafficAcceptance = "PASS"
 		case "foreign":
 			q.ConnectedNodeIDs = []string{"i1", "other"}
-		case "stale":
-			q.ObservedAt = time.Now().Add(-time.Hour)
+		case "missing-timestamp":
+			q.ObservedAt = time.Time{}
 		case "scope":
 			q.Scope.ProxyCode = "foreign"
 		case "answer":

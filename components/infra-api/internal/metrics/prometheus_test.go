@@ -81,6 +81,31 @@ func TestMetricsRequiresEveryNodeIncludingProtected(t *testing.T) {
 		t.Fatalf("wrong observation: %+v", rows)
 	}
 }
+func TestMetricsPreserveTimestampFromOlderCompleteScrapes(t *testing.T) {
+	client, scope, values, sources := metricFixture(t)
+	recordedAt := time.Now().UTC().Truncate(time.Second).Add(-2 * time.Minute)
+	rawTime := json.RawMessage(fmt.Sprintf("%q", fmt.Sprint(recordedAt.Unix())))
+	for _, row := range *values {
+		row.Value[0] = json.RawMessage(fmt.Sprint(recordedAt.Unix()))
+		if row.Metric["__name__"] == "infra_pgcat_client_observation_timestamp_seconds" {
+			row.Value[1] = rawTime
+		}
+	}
+	for _, row := range *sources {
+		row.Value[0] = json.RawMessage(fmt.Sprint(recordedAt.Unix()))
+		row.Value[1] = rawTime
+	}
+	rows, err := client.ConnectedClients(context.Background(), scope)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("older complete scrape rejected: %v, rows=%v", err, rows)
+	}
+	for _, row := range rows {
+		if row.Clients != 0 || !row.ObservedAt.Equal(recordedAt) {
+			t.Fatalf("unexpected observation: %+v", row)
+		}
+	}
+}
+
 func TestMetricsAcceptsAgentAndSelectsItBeforeCentralScrape(t *testing.T) {
 	c, s, rows, times := metricFixture(t)
 	previous := c.query
@@ -104,8 +129,8 @@ func TestMetricsAcceptsAgentAndSelectsItBeforeCentralScrape(t *testing.T) {
 		t.Fatal("agent precedence missing from query")
 	}
 }
-func TestMetricsRefusesMissingStaleOrAmbiguousCoverage(t *testing.T) {
-	cases := []string{"missing raw", "duplicate raw", "missing protected", "missing pool", "missing user", "down", "stale raw", "stale recorded", "negative", "fraction", "nan", "infinite", "record mismatch", "foreign node", "foreign db", "duplicate up", "missing source", "duplicate source", "foreign group", "empty nodes"}
+func TestMetricsRefusesMissingInvalidOrAmbiguousCoverage(t *testing.T) {
+	cases := []string{"missing raw", "duplicate raw", "missing protected", "missing pool", "missing user", "down", "invalid raw timestamp", "invalid recorded timestamp", "negative", "fraction", "nan", "infinite", "record mismatch", "foreign node", "foreign db", "duplicate up", "missing source", "duplicate source", "foreign group", "empty nodes"}
 	for _, kind := range cases {
 		t.Run(kind, func(t *testing.T) {
 			c, s, rows, times := metricFixture(t)
@@ -123,10 +148,10 @@ func TestMetricsRefusesMissingStaleOrAmbiguousCoverage(t *testing.T) {
 				(*rows)[0].Metric["user"] = "other"
 			case "down":
 				set(5, 0)
-			case "stale raw":
-				(*times)[0].Value[1] = json.RawMessage(fmt.Sprintf("%q", fmt.Sprint(time.Now().Unix()-90)))
-			case "stale recorded":
-				set(4, float64(time.Now().Unix()-90))
+			case "invalid raw timestamp":
+				(*times)[0].Value[1] = json.RawMessage(`"0"`)
+			case "invalid recorded timestamp":
+				set(4, 0)
 			case "negative":
 				set(0, -1)
 			case "fraction":

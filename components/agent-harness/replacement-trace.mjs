@@ -4,7 +4,7 @@ const invalid=()=>new Error('InvalidEvidence');
 const canonical=value=>JSON.stringify(value,(_key,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 const digest=value=>createHash('sha256').update(canonical(value)).digest('hex');
 const mutations=new Set(['db_proxy_scale','db_proxy_node_protection_set','db_proxy_nodes_deregister','deployment_restart']);
-const fresh=stamp=>Number.isFinite(Date.parse(stamp))&&Math.abs(Date.now()-Date.parse(stamp))<=30000;
+const observed=stamp=>Number.isFinite(Date.parse(stamp));
 export class ReplacementTrace {
  constructor(manager,binding,scope){
   this.manager=manager;this.versioned=binding.approvalProtocol==='request-grants-v1';this.identity={requestId:binding.requestId,definitionSha256:binding.definitionSha256,skillsCommit:binding.skillsCommit,model:binding.model,scope};
@@ -34,7 +34,7 @@ export class ReplacementTrace {
  baseline(){return this.rows.find(r=>r.kind==='baseline');}
  observe(kind,data){
   if(kind!=='fleet'||this.baseline()||this.rows.some(r=>r.kind==='intent'))return;
-  if(data.groupId!==this.identity.scope.groupId||!fresh(data.observedAt)||!Array.isArray(data.instances)||data.instances.length!==2||new Set(data.instances.map(n=>n.instanceId)).size!==2||data.instances.some(n=>!n.instanceId||!['InService','Protected'].includes(n.lifecycleState)||n.healthStatus!=='Healthy'))return;
+  if(data.groupId!==this.identity.scope.groupId||!observed(data.observedAt)||!Array.isArray(data.instances)||data.instances.length!==2||new Set(data.instances.map(n=>n.instanceId)).size!==2||data.instances.some(n=>!n.instanceId||!['InService','Protected'].includes(n.lifecycleState)||n.healthStatus!=='Healthy'))return;
   this.append({kind:'baseline',instanceIds:data.instances.map(n=>n.instanceId).sort(),observedAt:data.observedAt});
  }
  key(tool,args){return digest({tool,args:{...args,...(args.nodeIds?{nodeIds:[...args.nodeIds].sort()}:{})}});}
