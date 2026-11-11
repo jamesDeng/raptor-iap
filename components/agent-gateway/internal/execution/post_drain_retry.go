@@ -18,8 +18,8 @@ func retryablePostDrain(ctx context.Context, tx pgx.Tx, b AttemptBinding) (strin
 	var anchor string
 	var archive []byte
 	// The first recovery anchors to the attempt that recorded the drain proof.
-	// A later failure may reuse that anchor only if it ran catalog/grant reads.
-	// The runtime still verifies the original archive and the unchanged action journal.
+	// A later failure may reuse that anchor only if it ran reads or continuity.
+	// The runtime verifies the original archive, exact continuity phase, and unchanged action journal.
 	err := tx.QueryRow(ctx, `SELECT e.failure_code='MissingEvidence' AND e.checkpoint_status='verified'
   AND a.runtime_id<>'' AND CASE WHEN COALESCE(e.resume_context->>'postDrainAttempt','')='' THEN EXISTS (
    SELECT 1 FROM (SELECT payload FROM gateway.runtime_events WHERE attempt_id=a.id ORDER BY runtime_sequence DESC LIMIT 1) last
@@ -39,7 +39,7 @@ func retryablePostDrain(ctx context.Context, tx pgx.Tx, b AttemptBinding) (strin
      'mcp__raptor__request_get','mcp__raptor__request_grant_get','mcp__raptor__request_grant_action_get',
      'mcp__raptor__request_grant_actions_list','mcp__raptor__environment_get','mcp__raptor__object_get',
      'mcp__raptor__deployments_list','mcp__infra__deployments_list','mcp__infra__deployment_status_get',
-     'cloud_read','deployment_read','metrics_read'
+     'cloud_read','deployment_read','metrics_read','pgcat_connection_continuity'
     ))
    ),false)
   ) END,

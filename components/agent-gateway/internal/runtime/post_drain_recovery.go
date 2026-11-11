@@ -40,6 +40,13 @@ func (n *NativeLive) restorePostDrain(ctx context.Context, in *execution.LiveSta
 	if err != nil {
 		return err
 	}
+	if journal.release != nil {
+		receiptArchive, ended, err := n.Store.PostDrainCheckpoint(ctx, b, journal.releaseAttempt)
+		if err != nil || !ended.Before(p.startedAt) || journal.release.ReleasedAt.After(ended) ||
+			receiptArchive.ArchiveKey != n.Config.BucketPrefix+"/lifecycle/"+journal.releaseAttempt+".tgz" {
+			return ErrConfiguration
+		}
+	}
 	reference := *in.SessionCheckpoint
 	anchorArchive, err := n.Verifier.VerifyCheckpoint(ctx, reference.Archive)
 	if err != nil {
@@ -68,15 +75,19 @@ func (n *NativeLive) restorePostDrain(ctx context.Context, in *execution.LiveSta
 	reference.Archive, reference.SessionSHA256 = verified, hash
 	in.SessionCheckpoint, in.Checkpoint = &reference, verified
 	decision := *in.DecisionContext
-	decision.Guidance = fmt.Sprintf("Resume at probe release and the application restart in this run. "+
-		"The saved expansion and drain are verified; do not repeat them or recheck the already validated action receipts. "+
-		"After reading request_get and the saved grant, call pgcat_connection_continuity in its own round with "+
-		"{\"phase\":\"release-probes\",\"observationId\":%q,\"drainActionId\":%q}. "+
-		"Discover the bound application with Raptor and Infra deployments_list, then use the returned workloadKey in Infra deployment_status_get. "+
-		"Read deployment_read, cloud_read fleet, backend and capacity, and metrics_read pgcatClients. "+
-		"Submit deployment_restart once, then continue with the selected skill through SQL on both replacement nodes, "+
-		"zero original clients, exact retirement and final SQL. Use resource_wait when readiness or traffic is warming.",
-		journal.drain.ObservationID, journal.drain.DrainActionID)
+	if journal.release == nil {
+		decision.Guidance = fmt.Sprintf("The saved expansion and drain are verified. After request_get and request_grant_get, call "+
+			"pgcat_connection_continuity alone with {\"phase\":\"release-probes\",\"observationId\":%q,\"drainActionId\":%q}. ",
+			journal.drain.ObservationID, journal.drain.DrainActionID)
+	} else {
+		receipt := journal.release
+		decision.ProbeRelease = &execution.PgcatContinuationRelease{RequestID: receipt.RequestID, ScopeDigest: receipt.ScopeDigest,
+			ObservationID: receipt.ObservationID, DrainActionID: receipt.DrainActionID, ObservedAt: receipt.ObservedAt, ReleasedAt: receipt.ReleasedAt}
+		decision.Guidance = "The expansion, drain and probe release are verified and complete. After request_get and request_grant_get, proceed directly to the application reads. "
+	}
+	decision.Guidance += "Discover the bound application with Raptor and Infra deployments_list, then read Infra deployment_status_get with its returned workloadKey. " +
+		"Read deployment_read, cloud_read fleet, backend and capacity, and metrics_read pgcatClients. Submit deployment_restart once, then follow the selected skill through SQL on both replacement nodes, " +
+		"zero original clients, exact retirement and final SQL. Use resource_wait if readiness or traffic is warming."
 	in.DecisionContext = &decision
 	return nil
 }
@@ -167,6 +178,11 @@ func (p *ObservationProxy) restoreDrainObserver(ctx context.Context, in executio
 			complete = complete && covered
 		}
 		if complete {
+			if journal.release != nil {
+				pair.mu.Lock()
+				pair.releasedAt, pair.recoveredRelease = journal.release.ReleasedAt, journal.release
+				pair.mu.Unlock()
+			}
 			return nil
 		}
 		select {

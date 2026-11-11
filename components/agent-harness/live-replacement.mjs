@@ -3,6 +3,7 @@ import {QualificationTrace} from './qualification-trace.mjs';
 import {qualificationReadBatches} from './qualification-read-plan.mjs';
 import {observationExtension,observationArgsCategory,operationObservationTools,validContinuityArgs} from './observation-extension.mjs';
 import fs from 'node:fs';
+import {getCurrentSystemMessage} from '@earendil-works/pi-ai';
 import {qualifyReplacementConvergence} from './replacement-completion.mjs';
 import {ReplacementTrace} from './replacement-trace.mjs';
 import {ReplacementSequence} from './replacement-sequence.mjs';
@@ -66,6 +67,11 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const trace=qualification?new QualificationTrace(manager,b,replacementScope,decisionContext):new ReplacementTrace(manager,b,replacementScope);
   const readiness=qualification?undefined:new ReplacementReadiness(manager,trace);
   const sequence=qualification?undefined:new ReplacementSequence(manager,trace,readiness,selectedProfile,decisionContext);
+  if(decisionContext?.probeRelease){
+   const receipt=decisionContext.probeRelease;
+   if(!sequence||!grants)throw Error('InvalidEvidence');
+   sequence.observeContinuity({phase:'release-probes',observationId:receipt.observationId,drainActionId:receipt.drainActionId},receipt);
+  }
   const readTools=tools.filter(name=>!REPLACEMENT_WRITES.has(name));
   const readOnlyNames=new Set(readTools.filter(name=>name!=='resource_wait'));
   const isReadOnlyTool=name=>readOnlyNames.has(name);
@@ -97,6 +103,10 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     if(!validContinuityArgs(args))throw Error('InvalidObservation');
     const saved=args.phase==='verify-drain'?sequence.savedDrainProof(args):undefined;
     if(saved)return saved;
+    if(args.phase==='release-probes'&&sequence.probeRelease){
+     const proof=sequence.savedDrainProof(args);
+     return {...sequence.probeRelease,sockets:proof.sockets};
+    }
     const result=await observer.pgcatConnectionContinuity(args);sequence.observeContinuity(args,result);return result;
    },!['verify-drain','release-probes'].includes(args?.phase))}:{}),
    dbConnectionProbe:args=>serializedRead(async()=>{
@@ -187,6 +197,23 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const loader=await createOperationResourceLoader({sdk,stateRoot,binding:b,skills,settingsManager:settings,extensionFactories:[mcp.extension,resourceWaitExtension(pause,qualification?()=>trace.requireResourceWaitReady():undefined),...(observer?[observationExtension(tracedObserver)]:[])].map(extension=>withReadOnlyToolPolicy(extension,isReadOnlyTool,scheduleRead)) ,systemPrompt:(qualification?QUALIFICATION_SYSTEM+RESOURCE_TRANSPORT_NOTICE+(approvalResume?QUALIFICATION_RESUME:resourceResume?QUALIFICATION_RESOURCE_RESUME:QUALIFICATION_FIRST):(grants?GRANT_SYSTEM+grants.resumeInstruction():SYSTEM+EXPANSION_READINESS)+pinnedInstructions+(grants||trace.baseline()?'':INITIAL_READS))+readPlan+'\nTrusted selectors: '+JSON.stringify({binding:b,resource:{envCode:replacementScope.envCode,proxyCode:replacementScope.proxyCode,application:{appCode:replacementScope.application.appCode},targetDbCode:replacementScope.targetDbCode}})});
   const provider=b.providerId==='codex'?'openai-codex':'openai';const model=runtime.getModel(provider,b.model);if(!model||model.id!==b.model||model.provider!==provider)throw Error('InvalidJob');
   ({session}=await sdk.createAgentSession({cwd:stateRoot,agentDir:stateRoot,modelRuntime:runtime,model,thinkingLevel:'off',noTools:'all',tools,resourceLoader:loader,settingsManager:settings,sessionManager:manager}));
+  const prompt=(qualification?'Execute read-only qualification using its pinned skill.':'Execute the selected request operation using its pinned skill.')+
+   (decisionContext?'\nVerified continuation context: '+JSON.stringify(decisionContext):'')+
+   (sequence?.probeRelease?'\nThe saved expansion, drain and probe release are complete. Recheck the request and grant. '+(sequence.continuationStep(true)?.instruction??'Check the final replacement evidence.'):'');
+  if(sessionReference&&sequence?.probeRelease){
+   // Keep the stored session and its action journal intact. Project only the
+   // current resumed turn into the provider, so previous final answers cannot
+   // be mistaken for decisions to stop this run.
+   const transform=session.agent.transformContext;
+   session.agent.transformContext=async(messages,signal)=>{
+    const projected=transform?await transform(messages,signal):messages;
+    const start=projected.findLastIndex(message=>message.role==='user'&&
+     message.content.some(part=>part.type==='text'&&part.text===prompt));
+    const system=getCurrentSystemMessage(projected);
+    if(start<0||!system)throw Error('InvalidSessionReference');
+    return [system,...projected.slice(start).filter(message=>message.role!=='system')];
+   };
+  }
   // Pi runs all-read batches concurrently. A non-read tool marks the entire
   // mixed batch sequential before any execution, preserving mutation ordering.
   await session.bindExtensions({mode:'sdk'});await mcp.ready(session);session.setActiveToolsByName(activeTools);
@@ -287,7 +314,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     inbox=startPgcatTroubleshooting({binding:b,privateRoot,model,stream,getProgress:()=>[phaseSummary,...publicStatus],onProgress,onUsage:u=>replyUsage.push(u),onFinish:()=>{if(!finishTroubleshooting)return false;finishTroubleshooting();return true;}});
     inboxTimer=setInterval(()=>{void inbox.poll().catch(()=>{});},100);
    }
-   if(!error)await session.prompt((qualification?'Execute read-only qualification using its pinned skill.':'Execute the selected request operation using its pinned skill.')+(decisionContext?'\nVerified continuation context: '+JSON.stringify(decisionContext):''));}
+   if(!error)await session.prompt(prompt);}
   // A local rejection before any recorded mutation leaves only a read-only
   // troubleshooting inbox. Never hold a request with possible provider effects.
   const scaleRejection=toolDiagnostics.get('mcp__infra__db_proxy_scale');
