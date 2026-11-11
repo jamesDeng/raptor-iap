@@ -27,6 +27,14 @@ func (b *limitedOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// Diagnostic capture must not affect command success if stderr is unexpected.
+type diagnosticOutput struct{ limitedOutput }
+
+func (b *diagnosticOutput) Write(p []byte) (int, error) {
+	_, _ = b.limitedOutput.Write(p)
+	return len(p), nil
+}
+
 func gatewayObservationSecrets(credential string) []string {
 	if credential == "" {
 		return nil
@@ -72,8 +80,13 @@ func gatewayObservationInput(ctx context.Context, in execution.LiveStart, m Obse
 
 // Gateway executes its packaged validator, never an agent-supplied program.
 func ExecuteGatewayObservation(ctx context.Context, in execution.LiveStart, m ObservationMaterial, tool string, args json.RawMessage) (json.RawMessage, error) {
+	started := time.Now()
+	traceFleet := isFleetObservation(tool, args)
 	input, deadline, err := gatewayObservationInput(ctx, in, m, tool, args)
 	if err != nil {
+		if traceFleet {
+			logFleetObservationFailure(ctx, in.Binding, fleetObservationDiagnostic{Stage: "input_validation", Category: "invalid_input", ElapsedMS: time.Since(started).Milliseconds()})
+		}
 		return nil, err
 	}
 	call, cancel := context.WithDeadline(ctx, deadline)
@@ -84,11 +97,21 @@ func ExecuteGatewayObservation(ctx context.Context, in execution.LiveStart, m Ob
 	out := &limitedOutput{limit: 262144}
 	cmd.Stdout = out
 	cmd.Stderr = io.Discard
+	diagnostic := &diagnosticOutput{limitedOutput{limit: 1024}}
+	if traceFleet {
+		cmd.Stderr = diagnostic
+	}
 	if cmd.Run() != nil || call.Err() != nil || !time.Now().Before(deadline) || !json.Valid(out.data) {
+		if traceFleet {
+			logFleetObservationFailure(ctx, in.Binding, fleetExecutionFailure(call, diagnostic.data, started))
+		}
 		return nil, ErrRuntimeUnavailable
 	}
 	for _, secret := range gatewayObservationSecrets(in.Access.Credential) {
 		if bytes.Contains(out.data, []byte(secret)) {
+			if traceFleet {
+				logFleetObservationFailure(ctx, in.Binding, fleetObservationDiagnostic{Stage: "result_guard", Category: "unsafe_result", ElapsedMS: time.Since(started).Milliseconds()})
+			}
 			return nil, ErrRuntimeUnavailable
 		}
 	}

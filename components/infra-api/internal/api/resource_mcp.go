@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"raptor-iap/infra-api/internal/domain"
 	"raptor-iap/infra-api/internal/policy"
 	"time"
 )
@@ -60,8 +61,24 @@ func newResourceMCPHandler(op resourceOperations) http.Handler {
 				ctx = readContext
 			}
 			if spec.path == "" {
+				if spec.name == "proxy_observation_get" && args["kind"] == "fleet" {
+					var observationID, apiGatewayID string
+					if r.Extra != nil {
+						observationID = r.Extra.Header.Get("X-Raptor-Observation-Id")
+						apiGatewayID = r.Extra.Header.Get("X-Ca-Request-Id")
+					}
+					ctx = domain.WithFleetReadTrace(ctx, args["requestId"], observationID, apiGatewayID)
+				}
 				data, e := op.proxyRead(ctx, spec.name, args)
-				return resourceMCPResult(data, e)
+				result, err := resourceMCPResult(data, e)
+				if e != nil {
+					if diagnostic := domain.FleetReadDiagnostic(ctx); diagnostic != nil {
+						// Keep the public tool error unchanged. Only the observer
+						// that supplied a correlation ID receives safe diagnostics.
+						result.Meta = mcp.Meta{"raptor/fleetReadFailure": diagnostic}
+					}
+				}
+				return result, err
 			}
 			q := url.Values{}
 			for k, v := range args {

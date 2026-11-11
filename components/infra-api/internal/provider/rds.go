@@ -27,11 +27,14 @@ func cloudPages(config func(string) *openapi.Config) func(context.Context, domai
 			if e != nil {
 				return page{}, e
 			}
+			started := time.Now()
 			r, e := c.DescribeScalingGroupsWithContext(ctx, &ess.DescribeScalingGroupsRequest{RegionId: tea.String(env.Region), PageNumber: tea.Int32(int32(n)), PageSize: tea.Int32(50), Tags: []*ess.DescribeScalingGroupsRequestTags{{Key: tea.String("env"), Value: tea.String(env.Code)}, {Key: tea.String("db-proxy-code"), Value: tea.String(code)}}}, noRetry())
 			if e != nil {
+				logFleetESSFailure(ctx, "resolve_ess_scaling_groups", started, e, "")
 				return page{}, e
 			}
 			if r == nil || r.Body == nil || r.Body.TotalCount == nil {
+				logFleetESSFailure(ctx, "resolve_ess_scaling_groups", started, nil, "")
 				return page{}, errors.New("missing provider page")
 			}
 			pg := page{Total: int(*r.Body.TotalCount)}
@@ -55,11 +58,18 @@ func cloudPages(config func(string) *openapi.Config) func(context.Context, domai
 					if id == "" {
 						return page{}, errors.New("invalid provider record")
 					}
+					started := time.Now()
 					detail, err := c.DescribeScalingGroupsWithContext(ctx, &ess.DescribeScalingGroupsRequest{RegionId: tea.String(env.Region), ScalingGroupIds: []*string{tea.String(id)}, PageNumber: tea.Int32(1), PageSize: tea.Int32(1)}, &dara.RuntimeOptions{Autoretry: tea.Bool(false)})
 					if err != nil {
+						logFleetESSFailure(ctx, "resolve_ess_scaling_group_by_id", started, err, "")
 						return page{}, err
 					}
 					if detail == nil || detail.Body == nil || detail.Body.TotalCount == nil || *detail.Body.TotalCount != 1 || len(detail.Body.ScalingGroups) != 1 || detail.Body.ScalingGroups[0] == nil || tea.StringValue(detail.Body.ScalingGroups[0].ScalingGroupId) != id {
+						var responseID string
+						if detail != nil && detail.Body != nil {
+							responseID = tea.StringValue(detail.Body.RequestId)
+						}
+						logFleetESSFailure(ctx, "resolve_ess_scaling_group_by_id", started, nil, responseID)
 						return page{}, errors.New("incomplete group metadata")
 					}
 					tags = map[string]string{}

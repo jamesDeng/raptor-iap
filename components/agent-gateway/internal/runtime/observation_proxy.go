@@ -221,6 +221,8 @@ func (p *ObservationProxy) guardedExecute(parent context.Context, hash [32]byte,
 	default:
 		return nil, 429
 	}
+	started := time.Now()
+	traceFleet := isFleetObservation(tool, args)
 	var raw json.RawMessage
 	var err error
 	if tool == pgcatContinuityTool {
@@ -230,15 +232,13 @@ func (p *ObservationProxy) guardedExecute(parent context.Context, hash [32]byte,
 		return nil, 503
 	} else {
 		raw, err = p.execute(ctx, entry.start, entry.material, tool, args)
-		var cloud struct {
-			Kind string `json:"kind"`
-		}
-		if tool == "cloud_read" && errors.Is(err, ErrRuntimeUnavailable) && json.Unmarshal(args, &cloud) == nil && cloud.Kind == "fleet" && ctx.Err() == nil {
+		if traceFleet && errors.Is(err, ErrRuntimeUnavailable) && ctx.Err() == nil {
 			log.Print("PgCat fleet observation unavailable; waiting before one read retry")
 			timer := time.NewTimer(time.Second)
 			defer timer.Stop()
 			select {
 			case <-ctx.Done():
+				logFleetObservationFailure(ctx, entry.start.Binding, fleetObservationDiagnostic{Stage: "retry_wait", Category: "context_ended", ElapsedMS: time.Since(started).Milliseconds()})
 				return nil, 503
 			case <-timer.C:
 			}
@@ -255,10 +255,16 @@ func (p *ObservationProxy) guardedExecute(parent context.Context, hash [32]byte,
 		}
 	}
 	if err != nil || ctx.Err() != nil || !active() || !entry.expires.After(time.Now()) || entry.check(ctx) != nil || ctx.Err() != nil || !active() || len(raw) > 262144 || !json.Valid(raw) || unsafe {
+		if traceFleet && err == nil {
+			logFleetObservationFailure(ctx, entry.start.Binding, fleetObservationDiagnostic{Stage: "result_guard", Category: "result_rejected", ElapsedMS: time.Since(started).Milliseconds()})
+		}
 		return nil, 503
 	}
 	if entry.start.Binding.ApprovalProtocol == "request-grants-v1" &&
 		p.recordPgcatObservation(ctx, entry, tool, args, raw) != nil {
+		if traceFleet {
+			logFleetObservationFailure(ctx, entry.start.Binding, fleetObservationDiagnostic{Stage: "evidence_record", Category: "observation_not_recorded", ElapsedMS: time.Since(started).Milliseconds()})
+		}
 		return nil, 503
 	}
 	return raw, 200
