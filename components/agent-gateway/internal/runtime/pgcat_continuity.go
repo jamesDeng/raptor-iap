@@ -86,6 +86,37 @@ func pgcatNodeAddresses(nodes map[string]netip.Addr) (map[netip.Addr]string, boo
 }
 
 func (r *pgcatContinuity) hold(ctx context.Context, request, scope string, original map[string]netip.Addr, seenAt time.Time, connect pgcatConnector, lifecycle ...func(context.Context) bool) (pgcatHoldEvidence, error) {
+	return r.capture(ctx, request, scope, execution.NewID(), original, nil, seenAt, connect, lifecycle...)
+}
+
+// recaptureBeforeDrain keeps the logical observation and its original cohort,
+// but records new physical sockets. Only the caller that verified no drain was
+// claimed may use this path.
+func (r *pgcatContinuity) recaptureBeforeDrain(ctx context.Context, saved pgcatHoldEvidence, routed map[string]netip.Addr, seenAt time.Time, connect pgcatConnector, lifecycle ...func(context.Context) bool) (pgcatHoldEvidence, error) {
+	if saved.ObservationID == "" || len(saved.Sockets) != 2 || len(routed) != 4 {
+		return pgcatHoldEvidence{}, ErrConfiguration
+	}
+	original, added := make(map[string]netip.Addr, 2), make(map[string]netip.Addr, 2)
+	for id, addr := range routed {
+		if _, old := saved.Sockets[id]; old {
+			original[id] = addr
+		} else {
+			added[id] = addr
+		}
+	}
+	skip, valid := pgcatNodeAddresses(added)
+	if !valid {
+		return pgcatHoldEvidence{}, ErrConfiguration
+	}
+	for _, addr := range original {
+		if skip[addr] != "" {
+			return pgcatHoldEvidence{}, ErrConfiguration
+		}
+	}
+	return r.capture(ctx, saved.RequestID, saved.ScopeDigest, saved.ObservationID, original, skip, seenAt, connect, lifecycle...)
+}
+
+func (r *pgcatContinuity) capture(ctx context.Context, request, scope, observationID string, original map[string]netip.Addr, skip map[netip.Addr]string, seenAt time.Time, connect pgcatConnector, lifecycle ...func(context.Context) bool) (pgcatHoldEvidence, error) {
 	want, valid := pgcatNodeAddresses(original)
 	if request == "" || scope == "" || !valid || connect == nil || seenAt.IsZero() {
 		return pgcatHoldEvidence{}, ErrConfiguration
@@ -95,14 +126,13 @@ func (r *pgcatContinuity) hold(ctx context.Context, request, scope string, origi
 	if prior := r.requests[request]; prior != nil {
 		prior.mu.Lock()
 		defer prior.mu.Unlock()
-		if prior.lost || scope != prior.scope || !maps.Equal(prior.original, original) {
+		if prior.lost || scope != prior.scope || !maps.Equal(prior.original, original) || (skip != nil && prior.id != observationID) {
 			return pgcatHoldEvidence{}, ErrRuntimeUnavailable
 		}
 		return prior.evidence(), nil
 	}
-	hold := &pgcatHeldPair{id: execution.NewID(), request: request, scope: scope, original: maps.Clone(original), sockets: make(map[string]*pgcatHeldSocket)}
+	hold := &pgcatHeldPair{id: observationID, request: request, scope: scope, original: maps.Clone(original), sockets: make(map[string]*pgcatHeldSocket)}
 	for range 24 {
-		opened := time.Now().UTC()
 		conn, err := connect(ctx)
 		if err != nil {
 			break
@@ -111,13 +141,14 @@ func (r *pgcatContinuity) hold(ctx context.Context, request, scope string, origi
 		node := want[backend]
 		if err != nil || node == "" || hold.sockets[node] != nil {
 			conn.close()
-			if err != nil || node == "" {
+			if err != nil || (node == "" && skip[backend] == "") {
 				break
 			}
 			continue
 		}
+		firstSQL := time.Now().UTC()
 		hold.sockets[node] = &pgcatHeldSocket{pgcatSocket: conn,
-			pgcatSocketEvidence: pgcatSocketEvidence{ID: execution.NewID(), OpenedAt: opened, LastSQLAt: time.Now().UTC(), Rounds: 1}}
+			pgcatSocketEvidence: pgcatSocketEvidence{ID: execution.NewID(), OpenedAt: firstSQL, LastSQLAt: firstSQL, Rounds: 1}}
 		if len(hold.sockets) == 2 {
 			background, cancel := context.WithCancel(context.Background())
 			hold.cancel = cancel
@@ -190,9 +221,9 @@ func (h *pgcatHeldPair) close() {
 	}
 }
 
-func (r *pgcatContinuity) verifyDrain(ctx context.Context, request, scope, observation, action string, seenAt time.Time, replacements map[string]netip.Addr, connect pgcatConnector) (pgcatDrainEvidence, error) {
+func (r *pgcatContinuity) verifyDrain(ctx context.Context, request, scope, observation, action string, claimedAt, seenAt time.Time, replacements map[string]netip.Addr, connect pgcatConnector) (pgcatDrainEvidence, error) {
 	want, valid := pgcatNodeAddresses(replacements)
-	if !valid || !transportID.MatchString(action) || connect == nil || seenAt.IsZero() {
+	if !valid || !transportID.MatchString(action) || connect == nil || claimedAt.IsZero() || seenAt.Before(claimedAt) {
 		return pgcatDrainEvidence{}, ErrConfiguration
 	}
 	r.mu.Lock()
@@ -208,7 +239,7 @@ func (r *pgcatContinuity) verifyDrain(ctx context.Context, request, scope, obser
 	}
 	for oldID, addr := range hold.original {
 		socket := hold.sockets[oldID]
-		if want[addr] != "" || replacements[oldID].IsValid() || !socket.OpenedAt.Before(seenAt) {
+		if want[addr] != "" || replacements[oldID].IsValid() || !socket.OpenedAt.Before(claimedAt) {
 			hold.mu.Unlock()
 			return pgcatDrainEvidence{}, ErrRuntimeUnavailable
 		}

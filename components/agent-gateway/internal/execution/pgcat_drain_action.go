@@ -11,6 +11,7 @@ import (
 
 type PgcatDrainAction struct {
 	NodeIDs    []string
+	ClaimedAt  time.Time
 	RecordedAt time.Time
 }
 
@@ -58,7 +59,7 @@ func (c HTTPRaptor) ReadPgcatDrainAction(ctx context.Context, requestID, env, pr
 		len(args.NodeIDs) != 2 || args.NodeIDs[0] == args.NodeIDs[1] || !journalName.MatchString(args.NodeIDs[0]) || !journalName.MatchString(args.NodeIDs[1]) {
 		return PgcatDrainAction{}, ErrInvalid
 	}
-	return PgcatDrainAction{NodeIDs: args.NodeIDs, RecordedAt: a.RecordedAt}, nil
+	return PgcatDrainAction{NodeIDs: args.NodeIDs, ClaimedAt: a.ClaimedAt, RecordedAt: a.RecordedAt}, nil
 }
 
 type PgcatObservationRecord struct {

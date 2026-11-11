@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
+	"log"
 	"time"
 )
 
@@ -58,7 +60,14 @@ func (n *NativeLive) prepareObservation(ctx context.Context, in execution.LiveSt
 		return ObservationMaterial{}, ErrConfiguration
 	}
 	material, err := n.Observe(ctx, in)
-	if err != nil || material.Validate(in.Binding, *in.Access.ReplacementScope) != nil {
+	if in.DecisionContext != nil && errors.Is(err, ErrRuntimeUnavailable) && ctx.Err() == nil {
+		log.Print("observation preparation retry stage=source_credentials")
+		material, err = n.Observe(ctx, in)
+	}
+	if err != nil {
+		return ObservationMaterial{}, err
+	}
+	if material.Validate(in.Binding, *in.Access.ReplacementScope) != nil {
 		return ObservationMaterial{}, ErrConfiguration
 	}
 	return n.Observations.Register(in, material, func(call context.Context) error {

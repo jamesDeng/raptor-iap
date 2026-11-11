@@ -27,6 +27,7 @@ type observationEntry struct {
 	active   func(context.Context) bool
 }
 type ObservationProxy struct {
+	ReadPgcatPreDrainHold  func(context.Context, execution.AttemptBinding, execution.ReplacementScope) (json.RawMessage, error)
 	ReadPgcatRestartAction func(context.Context, string, string, string, string, string, string) (execution.PgcatRestartAction, error)
 	RecordPgcatObservation func(context.Context, execution.PgcatObservationRecord) error
 	ReadPgcatDrainAction   func(context.Context, string, string, string, string, string) (execution.PgcatDrainAction, error)
@@ -167,10 +168,7 @@ func (p *ObservationProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // qualificationPreflight uses only the registered private entry. Its output is
 // deliberately discarded; it is feasibility evidence, never the model baseline.
-func (p *ObservationProxy) qualificationPreflight(ctx context.Context, in execution.LiveStart) error {
-	if p == nil {
-		return ErrConfiguration
-	}
+func (p *ObservationProxy) registeredEntry(in execution.LiveStart) ([32]byte, observationEntry, bool) {
 	p.mu.Lock()
 	var hash [32]byte
 	var entry observationEntry
@@ -182,7 +180,15 @@ func (p *ObservationProxy) qualificationPreflight(ctx context.Context, in execut
 		}
 	}
 	p.mu.Unlock()
-	if matches != 1 {
+	return hash, entry, matches == 1
+}
+
+func (p *ObservationProxy) qualificationPreflight(ctx context.Context, in execution.LiveStart) error {
+	if p == nil {
+		return ErrConfiguration
+	}
+	hash, entry, ok := p.registeredEntry(in)
+	if !ok {
 		return ErrConfiguration
 	}
 	_, status := p.guardedExecute(ctx, hash, entry, "metrics_read", json.RawMessage(`{"kind":"pgcatClients"}`))

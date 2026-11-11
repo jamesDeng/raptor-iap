@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
+	"log"
 	"net"
 	"net/url"
 	"regexp"
@@ -48,14 +49,17 @@ func (p ObserverPreparation) Prepare(ctx context.Context, in execution.LiveStart
 	}
 	cloud, err := p.Cloud(ctx, in)
 	if err != nil {
+		log.Print("observation preparation failed stage=cloud_credentials")
 		return ObservationMaterial{}, ErrRuntimeUnavailable
 	}
 	kube, err := p.Kube(ctx, in)
 	if err != nil {
+		log.Print("observation preparation failed stage=kubernetes_credentials")
 		return ObservationMaterial{}, ErrRuntimeUnavailable
 	}
 	sql, err := p.SQL(ctx, in)
 	if err != nil {
+		log.Print("observation preparation failed stage=sql_credentials")
 		return ObservationMaterial{}, ErrRuntimeUnavailable
 	}
 	until := cloud.ExpiresAt

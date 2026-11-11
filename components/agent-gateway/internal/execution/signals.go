@@ -139,7 +139,7 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 				return ErrInvalid
 			}
 			if eligible {
-				if _, e = tx.Exec(ctx, "UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now() WHERE request_id=$1", v.RequestID); e != nil {
+				if _, e = tx.Exec(ctx, `UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now(),resume_context=CASE WHEN $2 AND failure_code='PreparationFailed' THEN resume_context || '{"preparationRetry":true}'::jsonb ELSE resume_context END WHERE request_id=$1`, v.RequestID, binding.ExecutionMode == "replacement"); e != nil {
 					return ErrUnavailable
 				}
 			}

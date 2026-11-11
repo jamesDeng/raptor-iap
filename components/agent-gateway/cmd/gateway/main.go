@@ -151,6 +151,7 @@ func main() {
 		raptor := execution.HTTPRaptor{BaseURL: os.Getenv("RAPTOR_OPEN_API_URL"), Username: user, Password: password}
 		if observations != nil {
 			observations.ReadPgcatDrainAction = raptor.ReadPgcatDrainAction
+			observations.ReadPgcatPreDrainHold = raptor.ReadPgcatPreDrainHold
 			observations.ReadPgcatRestartAction = raptor.ReadPgcatRestartAction
 			observations.RecordPgcatObservation = raptor.RecordPgcatObservation
 		}
