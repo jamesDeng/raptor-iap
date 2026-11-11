@@ -140,6 +140,15 @@ func (s *pgcatLogState) check(requireFinal, requireStartup bool, after time.Time
 		!s.lastAt.Before(after)
 }
 
+func (s *pgcatLogState) shutdownComplete(after time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bad || s.success == 0 || (s.final && s.lastAt.Before(after)) {
+		return false, ErrRuntimeUnavailable
+	}
+	return s.final, nil
+}
+
 func pgcatPodLog(ctx context.Context, material ObservationMaterial, pod pgcatAppPod, since time.Time, follow bool) (io.ReadCloser, error) {
 	if !pgcatPodName.MatchString(pod.Name) || !transportID.MatchString(pod.UID) || since.IsZero() {
 		return nil, ErrConfiguration
@@ -175,8 +184,14 @@ type pgcatAppLogWatch struct {
 	cancel  context.CancelFunc
 }
 
-func (p *ObservationProxy) pgcatPods(ctx context.Context, entry observationEntry) ([]pgcatAppPod, error) {
-	raw, err := p.execute(ctx, entry.start, entry.material, "pgcat_client_pods", json.RawMessage(`{}`))
+func (p *ObservationProxy) pgcatPods(ctx context.Context, entry observationEntry, retiringPodUIDs []string) ([]pgcatAppPod, error) {
+	args, err := json.Marshal(struct {
+		RetiringPodUIDs []string `json:"retiringPodUids,omitempty"`
+	}{retiringPodUIDs})
+	if err != nil {
+		return nil, ErrConfiguration
+	}
+	raw, err := p.execute(ctx, entry.start, entry.material, "pgcat_client_pods", args)
 	var out struct {
 		Pods []pgcatAppPod `json:"pods"`
 	}
@@ -204,7 +219,7 @@ func (p *ObservationProxy) startPgcatLogWatch(ctx context.Context, entry observa
 	if pair.logs != nil {
 		return nil
 	}
-	pods, err := p.pgcatPods(ctx, entry)
+	pods, err := p.pgcatPods(ctx, entry, nil)
 	if err != nil {
 		return err
 	}

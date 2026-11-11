@@ -1,12 +1,87 @@
 package runtime
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestPgcatTrafficWaitsForOldPodFinalLogsAfterDeploymentReady(t *testing.T) {
+	now := time.Now().UTC()
+	routed := map[string]netip.Addr{
+		"new-1": netip.MustParseAddr("10.70.1.250"),
+		"new-2": netip.MustParseAddr("10.70.1.251"),
+	}
+	start := execution.LiveStart{
+		Binding: execution.AttemptBinding{RequestID: "request-1"},
+		Access: execution.AgentAccess{ReplacementScope: &execution.ReplacementScope{
+			ResolutionDigest: "scope-1", Application: execution.ApplicationScope{UID: "deployment-1"},
+		}},
+	}
+	for _, tc := range []struct {
+		name     string
+		final    bool
+		bad      bool
+		lastAt   time.Time
+		wantWait bool
+		wantPods bool
+	}{
+		{name: "healthy stream still following", lastAt: now, wantWait: true},
+		{name: "stream closed before final event", lastAt: now, bad: true},
+		{name: "final event predates restart", lastAt: now.Add(-2 * time.Minute), final: true},
+		{name: "final event received", lastAt: now, final: true, wantPods: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			checkedPods := false
+			proxy := &ObservationProxy{
+				pgcat: newPgcatContinuity(),
+				ReadPgcatRestartAction: func(context.Context, string, string, string, string, string, string) (execution.PgcatRestartAction, error) {
+					return execution.PgcatRestartAction{Generation: 2, ClaimedAt: now.Add(-time.Minute), RecordedAt: now.Add(-time.Minute)}, nil
+				},
+				execute: func(_ context.Context, _ execution.LiveStart, _ ObservationMaterial, tool string, args json.RawMessage) (json.RawMessage, error) {
+					if tool == "deployment_read" {
+						return json.Marshal(map[string]any{"uid": "deployment-1", "observedAt": now,
+							"generation": 2, "observedGeneration": 2, "replicas": 2, "readyReplicas": 2, "updatedReplicas": 2, "availableReplicas": 2})
+					}
+					if tool == "pgcat_client_pods" {
+						checkedPods = true
+						if string(args) != `{"retiringPodUids":["old-1","old-2"]}` {
+							t.Fatalf("pod discovery was not bound to the old pods: %s", args)
+						}
+					}
+					return nil, ErrRuntimeUnavailable
+				},
+			}
+			proxy.pgcat.requests["request-1"] = &pgcatHeldPair{
+				id: "observation-1", scope: "scope-1", releasedAt: now.Add(-time.Minute),
+				lastDrain: &pgcatDrainEvidence{FreshConnections: map[string]int{"new-1": 12, "new-2": 12}},
+				logs: &pgcatAppLogWatch{streams: map[string]*pgcatLogState{
+					"old-1": {success: 1, final: tc.final, bad: tc.bad, lastAt: tc.lastAt},
+					"old-2": {success: 1, final: true, lastAt: now},
+				}},
+			}
+			result, err := proxy.pgcatTraffic(ctx, observationEntry{start: start},
+				pgcatContinuityArgs{Phase: "verify-traffic", ObservationID: "observation-1", RestartActionID: "restart-1"}, routed)
+			if tc.wantWait {
+				if err != nil || string(result) != `{"readiness":"traffic-warming"}` {
+					t.Fatalf("expected traffic warmup, got %s, %v", result, err)
+				}
+			} else if !errors.Is(err, ErrRuntimeUnavailable) {
+				t.Fatalf("expected unavailable, got %s, %v", result, err)
+			}
+			if checkedPods != tc.wantPods {
+				t.Fatalf("checked new pods = %v, want %v", checkedPods, tc.wantPods)
+			}
+		})
+	}
+}
 
 func TestPgcatApplicationLogsRequireContinuousSuccessfulPodEvents(t *testing.T) {
 	since := time.Now().UTC().Add(-time.Minute)
