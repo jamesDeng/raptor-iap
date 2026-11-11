@@ -370,6 +370,11 @@ func (r *pgcatContinuity) releaseProbes(ctx context.Context, request, scope, obs
 		return pgcatProbeRelease{}, ErrRuntimeUnavailable
 	}
 	if pair.restoredDrain {
+		for _, stream := range pair.logs.streams {
+			if !stream.check(false, false, pair.logs.started) {
+				return pgcatProbeRelease{}, ErrRuntimeUnavailable
+			}
+		}
 		if pair.recoveredRelease == nil {
 			pair.releasedAt = time.Now().UTC()
 			proof := pair.lastDrain.pgcatHoldEvidence
