@@ -28,10 +28,14 @@ func retryablePreparation(ctx context.Context, tx pgx.Tx, b AttemptBinding) (boo
 		return false, nil
 	}
 	b.DefinitionSHA256 = hash
+	return matchesResumedResourceWait(ctx, tx, b)
+}
+
+func matchesResumedResourceWait(ctx context.Context, tx pgx.Tx, b AttemptBinding) (bool, error) {
 	var cpRaw, waitRaw, resumeRaw, parentRaw []byte
 	var phase, parentHash, parentState string
 	var sameSession bool
-	err = tx.QueryRow(ctx, `SELECT s.checkpoint,w.wait,w.phase,e.resume_context,s.checkpoint=w.checkpoint,a.binding,a.definition_sha256,a.state
+	err := tx.QueryRow(ctx, `SELECT s.checkpoint,w.wait,w.phase,e.resume_context,s.checkpoint=w.checkpoint,a.binding,a.definition_sha256,a.state
  FROM gateway.operation_sessions s
  JOIN gateway.executions e ON e.request_id=s.request_id
  JOIN LATERAL (SELECT w.* FROM gateway.live_waits w JOIN gateway.attempts source ON source.id=w.attempt_id WHERE w.request_id=s.request_id ORDER BY source.started_at DESC,source.id DESC LIMIT 1) w ON w.attempt_id=s.attempt_id
@@ -52,7 +56,7 @@ func retryablePreparation(ctx context.Context, tx pgx.Tx, b AttemptBinding) (boo
 	}
 	parent.AttemptID = b.AttemptID
 	parent.DefinitionSHA256 = parentHash
-	if parent != b || parentState != "waiting_resource" || !sameSession || !cp.validFor(b) || !wait.Valid() || wait.Kind != "resource" || phase != "resumed" || wait.BindingDigest != hash {
+	if parent != b || parentState != "waiting_resource" || !sameSession || !cp.validFor(b) || !wait.Valid() || wait.Kind != "resource" || phase != "resumed" || wait.BindingDigest != b.DefinitionSHA256 {
 		return false, nil
 	}
 	return continuation == (ContinuationContext{ApprovalID: wait.ApprovalID, ActionID: wait.ActionID, BindingDigest: wait.BindingDigest, Decision: "resume"}), nil

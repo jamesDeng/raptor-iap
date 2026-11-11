@@ -152,6 +152,7 @@ func main() {
 		if observations != nil {
 			observations.ReadPgcatDrainAction = raptor.ReadPgcatDrainAction
 			observations.ReadPgcatPreDrainHold = raptor.ReadPgcatPreDrainHold
+			observations.ReadPgcatRequestJournal = raptor.ReadPgcatRequestJournal
 			observations.ReadPgcatRestartAction = raptor.ReadPgcatRestartAction
 			observations.RecordPgcatObservation = raptor.RecordPgcatObservation
 		}

@@ -22,18 +22,19 @@ type pgcatAppPod struct {
 var pgcatPodName = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?$`)
 
 type pgcatLogState struct {
-	mu        sync.Mutex
-	podUID    string
-	processID string
-	lastAt    time.Time
-	sequence  uint64
-	success   int
-	routes    map[netip.Addr]int64
-	routeFrom time.Time
-	started   bool
-	final     bool
-	bad       bool
-	ready     chan struct{}
+	mu         sync.Mutex
+	podUID     string
+	processID  string
+	lastAt     time.Time
+	firstSQLAt time.Time
+	sequence   uint64
+	success    int
+	routes     map[netip.Addr]int64
+	routeFrom  time.Time
+	started    bool
+	final      bool
+	bad        bool
+	ready      chan struct{}
 }
 
 func newPgcatLogState(podUID string) *pgcatLogState {
@@ -117,6 +118,9 @@ func (s *pgcatLogState) observeLog(line []byte, since time.Time) error {
 			s.routes[addr] = count
 		}
 		s.success++
+		if s.firstSQLAt.IsZero() {
+			s.firstSQLAt = event.At
+		}
 	case "scheduled", "connected", "disconnected":
 	case "skipped", "connection_failure":
 		return ErrRuntimeUnavailable
@@ -138,6 +142,15 @@ func (s *pgcatLogState) check(requireFinal, requireStartup bool, after time.Time
 	defer s.mu.Unlock()
 	return !s.bad && s.success > 0 && s.final == requireFinal && (!requireStartup || s.started) &&
 		!s.lastAt.Before(after)
+}
+
+func (s *pgcatLogState) recoveryCoverage(before, through time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bad || s.final || s.started || s.firstSQLAt.IsZero() || !s.firstSQLAt.Before(before) {
+		return false, ErrRuntimeUnavailable
+	}
+	return !s.lastAt.Before(through), nil
 }
 
 func (s *pgcatLogState) shutdownComplete(after time.Time) (bool, error) {

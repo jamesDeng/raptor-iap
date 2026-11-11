@@ -27,23 +27,25 @@ type observationEntry struct {
 	active   func(context.Context) bool
 }
 type ObservationProxy struct {
-	ReadPgcatPreDrainHold  func(context.Context, execution.AttemptBinding, execution.ReplacementScope) (json.RawMessage, error)
-	ReadPgcatRestartAction func(context.Context, string, string, string, string, string, string) (execution.PgcatRestartAction, error)
-	RecordPgcatObservation func(context.Context, execution.PgcatObservationRecord) error
-	ReadPgcatDrainAction   func(context.Context, string, string, string, string, string) (execution.PgcatDrainAction, error)
-	origin                 string
-	execute                ObservationExecutor
-	mu                     sync.Mutex
-	entries                map[[32]byte]observationEntry
-	busy                   chan struct{}
-	pgcat                  *pgcatContinuity
+	ReadPgcatRequestJournal func(context.Context, execution.AttemptBinding, execution.ReplacementScope) (execution.PgcatRequestJournal, error)
+	startedAt               time.Time
+	ReadPgcatPreDrainHold   func(context.Context, execution.AttemptBinding, execution.ReplacementScope) (json.RawMessage, error)
+	ReadPgcatRestartAction  func(context.Context, string, string, string, string, string, string) (execution.PgcatRestartAction, error)
+	RecordPgcatObservation  func(context.Context, execution.PgcatObservationRecord) error
+	ReadPgcatDrainAction    func(context.Context, string, string, string, string, string) (execution.PgcatDrainAction, error)
+	origin                  string
+	execute                 ObservationExecutor
+	mu                      sync.Mutex
+	entries                 map[[32]byte]observationEntry
+	busy                    chan struct{}
+	pgcat                   *pgcatContinuity
 }
 
 func NewObservationProxy(origin string, execute ObservationExecutor) (*ObservationProxy, error) {
 	if origin != "https://api.rdev.raptor-iap.top"+observationRoute || execute == nil {
 		return nil, ErrConfiguration
 	}
-	return &ObservationProxy{origin: origin, execute: execute, entries: map[[32]byte]observationEntry{}, busy: make(chan struct{}, 4), pgcat: newPgcatContinuity()}, nil
+	return &ObservationProxy{origin: origin, startedAt: time.Now(), execute: execute, entries: map[[32]byte]observationEntry{}, busy: make(chan struct{}, 4), pgcat: newPgcatContinuity()}, nil
 }
 func (p *ObservationProxy) Register(in execution.LiveStart, m ObservationMaterial, check func(context.Context) error, lifecycle ...func(context.Context) bool) (ObservationMaterial, error) {
 	if in.Binding.Operation != "db-proxy.replace-nodes" || in.Access.Binding != in.Binding || in.Access.ReplacementScope == nil || !in.Access.ReplacementScope.ResourceValidFor(in.Binding) || check == nil {
