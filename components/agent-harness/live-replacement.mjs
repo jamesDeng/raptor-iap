@@ -63,7 +63,6 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   const grants=b.approvalProtocol==='request-grants-v1'?new RequestGrantRuntime(manager,b,replacementScope,decisionContext):undefined;
   let readFailure=false,qualificationPauseAck,waitingForMetrics=false,uncertainWrite,refreshRejected=false;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:true});const serializedRead=(work,readOnly=true)=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly});
   const localToolRejections=new Set(),completionReminders=new Set();
-  let probesReleased=false;
   const trace=qualification?new QualificationTrace(manager,b,replacementScope,decisionContext):new ReplacementTrace(manager,b,replacementScope);
   const readiness=qualification?undefined:new ReplacementReadiness(manager,trace);
   const sequence=qualification?undefined:new ReplacementSequence(manager,trace,readiness,selectedProfile,decisionContext);
@@ -98,9 +97,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
     if(!validContinuityArgs(args))throw Error('InvalidObservation');
     const saved=args.phase==='verify-drain'?sequence.savedDrainProof(args):undefined;
     if(saved)return saved;
-    const result=await observer.pgcatConnectionContinuity(args);sequence.observeContinuity(args,result);
-    if(args.phase==='release-probes'&&result?.releasedAt)probesReleased=true;
-    return result;
+    const result=await observer.pgcatConnectionContinuity(args);sequence.observeContinuity(args,result);return result;
    },!['verify-drain','release-probes'].includes(args?.phase))}:{}),
    dbConnectionProbe:args=>serializedRead(async()=>{
     if(qualification)trace.requireBaselineNode(args?.instanceId);
@@ -256,7 +253,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    if(wait){if(!qualification)sequence.recordResourceWait(wait);grants?.recordWait(wait);return {action:'end'};}
    if(refreshRejected){refreshRejected=false;return {action:'continue'};}
    if(!qualification&&decision?.action!=='end'&&turn.toolResults.length===0&&['stop','length'].includes(turn.message.stopReason)){
-    const step=sequence.continuationStep(probesReleased);
+    const step=sequence.continuationStep(Boolean(grants?.approved));
     if(step&&!completionReminders.has(step.stage)){
      completionReminders.add(step.stage);
      narrate('The recorded drain is valid and the replacement is still in progress. I’ll continue with the next required step.');

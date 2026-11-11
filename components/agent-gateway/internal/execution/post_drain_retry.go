@@ -29,6 +29,9 @@ func retryablePostDrain(ctx context.Context, tx pgx.Tx, b AttemptBinding) (strin
    SELECT 1 FROM gateway.attempts source WHERE source.request_id=a.request_id AND source.id<>a.id
     AND source.id::text=e.resume_context->>'postDrainAttempt' AND source.state='failed'
     AND source.definition_sha256=a.definition_sha256 AND source.ended_at<a.started_at
+  ) AND EXISTS (
+   SELECT 1 FROM gateway.runtime_events event WHERE event.attempt_id=a.id AND
+    event.payload->>'kind'='tool_result' AND event.payload->>'outcome'='succeeded'
   ) AND NOT EXISTS (
    SELECT 1 FROM gateway.runtime_events event WHERE event.attempt_id=a.id AND NOT COALESCE((
     event.payload->>'kind' IN ('progress','message','reply') OR

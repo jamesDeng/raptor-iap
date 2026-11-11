@@ -4,6 +4,7 @@ import {ReplacementEvidenceRequired} from './replacement-evidence.mjs';
 // permits retain ordering, never current health, across approval/resource waits.
 const WAIT='raptor-replacement-withdrawal-wait-v1';
 const DRAIN='raptor-pgcat-drain-v1';
+const PROBE_RELEASE='raptor-pgcat-probe-release-v1';
 const TRAFFIC='raptor-pgcat-traffic-v1';
 const FINAL_TRAFFIC='raptor-pgcat-final-traffic-v1';
 const digest=v=>createHash('sha256').update(canonical(v)).digest('hex');
@@ -69,6 +70,11 @@ export class ReplacementSequence {
   }
   this.loadWithdrawalWait(entries,decisionContext);
   this.loadDrainProof(entries);
+  const releases=entries.filter(e=>e.type==='custom'&&e.customType===PROBE_RELEASE);
+  if(releases.length){
+   if(releases.length!==1||entries.indexOf(releases[0])<=entries.findIndex(e=>e.type==='custom'&&e.customType===DRAIN))throw invalid();
+   this.probeRelease=this.validateProbeRelease(releases[0].data);
+  }
  }
  loadWithdrawalWait(entries,decision){
   const saved=entries.filter(e=>e.type==='custom'&&e.customType===WAIT);
@@ -196,6 +202,14 @@ export class ReplacementSequence {
   this.validateDrainProof(row.proof);
   this.drainProof=structuredClone(row.proof);
  }
+ validateProbeRelease(receipt){
+  const proof=this.drainProof;
+  if(!proof||!receipt||['requestId','scopeDigest','observationId','drainActionId'].some(k=>receipt[k]!==proof[k])||
+   !observed({observedAt:receipt.releasedAt},Date.parse(proof.observedAt))||
+   !observed(receipt,Date.parse(receipt.releasedAt)))throw invalid();
+  const {requestId,scopeDigest,observationId,drainActionId,observedAt,releasedAt}=receipt;
+  return {requestId,scopeDigest,observationId,drainActionId,observedAt,releasedAt};
+ }
  observeContinuity(args,result){
   if(!this.trace.versioned||!result||result.readiness==='traffic-warming')return;
   if(args.phase==='hold'){
@@ -212,6 +226,15 @@ export class ReplacementSequence {
    if(Buffer.byteLength(canonical(row))>8192)throw invalid();
    this.manager.appendCustomEntry(DRAIN,row);
    this.drainProof=structuredClone(result);
+  }else if(args.phase==='release-probes'){
+   this.savedDrainProof(args);
+   const receipt=this.validateProbeRelease(result);
+   if(this.probeRelease){
+    if(this.probeRelease.releasedAt!==receipt.releasedAt)throw invalid();
+    return;
+   }
+   this.manager.appendCustomEntry(PROBE_RELEASE,receipt);
+   this.probeRelease=receipt;
   }else if(['verify-traffic','verify-final-traffic'].includes(args.phase)){
    const r=this.restart(),scope=this.trace.identity.scope;
    if(!r||!result.noErrors||!observed(result,r.at)||result.generation!==r.generation||result.restartActionId!==r.actionId||
@@ -356,13 +379,14 @@ export class ReplacementSequence {
  }
  // Guide a stopped model from the recorded phase. Tools still enforce all
  // guards and the model still chooses and executes the next tool round.
- continuationStep(probesReleased){
+ continuationStep(grantVerified){
   if(!this.trace.versioned||!this.drainProof||this.finalTraffic)return;
+  if(!grantVerified)return {stage:'grant',instruction:'Read request_get first, then request_grant_get for the saved grant in its own tool round.'};
   if(this.trace.unresolved())return {stage:'reconcile',instruction:'Read request_grant_actions_list to reconcile the outstanding action. Never replay it.'};
   const {observationId,drainActionId}=this.drainProof;
   const restart=this.restart();
   if(!restart){
-   if(!probesReleased)return {stage:'release',instruction:'Use the verified saved drain proof. Call pgcat_connection_continuity alone with '+JSON.stringify({phase:'release-probes',observationId,drainActionId})+'. Keep the existing expansion and drain.'};
+   if(!this.probeRelease)return {stage:'release',instruction:'Use the verified saved drain proof. Call pgcat_connection_continuity alone with '+JSON.stringify({phase:'release-probes',observationId,drainActionId})+'. Keep the existing expansion and drain.'};
    return {stage:'restart',instruction:'Finish the bound Deployment discovery and status reads, deployment_read, fleet, backend, capacity and pgcatClients. Then use deployment_restart once with the discovered workloadKey.'};
   }
   const trafficArgs=phase=>JSON.stringify({phase,observationId,restartActionId:restart.actionId});
