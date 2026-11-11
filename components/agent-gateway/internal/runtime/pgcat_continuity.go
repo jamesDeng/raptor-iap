@@ -133,7 +133,6 @@ func (r *pgcatContinuity) capture(ctx context.Context, request, scope, observati
 	}
 	hold := &pgcatHeldPair{id: observationID, request: request, scope: scope, original: maps.Clone(original), sockets: make(map[string]*pgcatHeldSocket)}
 	for range 24 {
-		opened := time.Now().UTC()
 		conn, err := connect(ctx)
 		if err != nil {
 			break
@@ -147,8 +146,9 @@ func (r *pgcatContinuity) capture(ctx context.Context, request, scope, observati
 			}
 			continue
 		}
+		firstSQL := time.Now().UTC()
 		hold.sockets[node] = &pgcatHeldSocket{pgcatSocket: conn,
-			pgcatSocketEvidence: pgcatSocketEvidence{ID: execution.NewID(), OpenedAt: opened, LastSQLAt: time.Now().UTC(), Rounds: 1}}
+			pgcatSocketEvidence: pgcatSocketEvidence{ID: execution.NewID(), OpenedAt: firstSQL, LastSQLAt: firstSQL, Rounds: 1}}
 		if len(hold.sockets) == 2 {
 			background, cancel := context.WithCancel(context.Background())
 			hold.cancel = cancel

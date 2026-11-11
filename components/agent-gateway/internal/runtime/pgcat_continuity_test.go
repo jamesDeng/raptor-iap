@@ -120,18 +120,24 @@ func TestPgcatContinuityRecapturesExactOriginalsBeforeDrain(t *testing.T) {
 	first := &fixturePgcatSocket{backend: original["old-1"]}
 	second := &fixturePgcatSocket{backend: original["old-2"]}
 	picks := []pgcatSocket{replacement, first, second}
+	var claimDuringDial time.Time
 	registry := newPgcatContinuity()
 	defer registry.release("request")
 	hold, err := registry.recaptureBeforeDrain(ctx, oldRecord, routed, time.Now(), func(context.Context) (pgcatSocket, error) {
 		socket := picks[0]
 		picks = picks[1:]
+		if socket == second {
+			time.Sleep(time.Millisecond)
+			claimDuringDial = time.Now().UTC()
+			time.Sleep(time.Millisecond)
+		}
 		return socket, nil
 	})
 	if err != nil || hold.ObservationID != oldRecord.ObservationID || !replacement.closed.Load() || len(hold.Sockets) != 2 ||
 		hold.Sockets["old-1"].ID == oldRecord.Sockets["old-1"].ID || hold.Sockets["old-2"].ID == oldRecord.Sockets["old-2"].ID {
 		t.Fatalf("pre-drain socket recapture failed: %+v %v", hold, err)
 	}
-	if _, err := registry.verifyDrain(ctx, "request", "scope", hold.ObservationID, "too-early", hold.Sockets["old-1"].OpenedAt,
+	if _, err := registry.verifyDrain(ctx, "request", "scope", hold.ObservationID, "too-early", claimDuringDial,
 		time.Now().UTC(), added, func(context.Context) (pgcatSocket, error) {
 			t.Fatal("new connection attempted using a post-claim hold")
 			return nil, nil
