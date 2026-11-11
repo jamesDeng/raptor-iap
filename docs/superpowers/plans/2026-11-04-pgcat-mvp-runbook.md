@@ -11,6 +11,11 @@ IAM or runtime release is needed for this acceptance change. Runtime
 `acceptance=pending` stays unchanged; ordinary logs support an operator report.
 The [approved design](../specs/2026-11-04-pgcat-mvp-logs-design.md) controls scope.
 
+For the current request-grants flow, use the [verified Raptor Agent replacement
+procedure and acceptance record](#verified-raptor-agent-replacement-on-2026-11-11).
+The original MVP procedure below retains its November 4 release and acceptance
+settings.
+
 ## Source, idle state and preflight
 
 Use the current reviewed source, immutable `skills-v0.5.0` resource-v1 release,
@@ -193,3 +198,99 @@ low cost. Cleanup may remove only reviewed expired runs under that dedicated
 parent, after assessment; preserve the current run and unrelated evidence.
 The utility itself deletes no prior run or unrelated file. Record actual cleanup
 and remaining uncertainties before the cutoff; do not infer them from an exit.
+
+## Verified Raptor Agent replacement on 2026-11-11
+
+Raptor request `8a0cb7f0` completed a full **2→4→2** in `rdev.ali` on PgCat
+`DP00001` with test application `A00003`
+(`raptor-test/rdev-test-client-client`). It ran GPT-6.1 Sol with
+`skills-v0.5.16`. The request-scoped grant covered expansion, node protection,
+drain, one rolling restart and retirement. The operator verified read-only
+qualification with replacement disabled, confirmed that Progress showed agent
+updates and tool events, and received a reply to a troubleshooting message.
+The operator enabled the test gate and resumed the original request. Raptor
+Agent executed all five writes through the authorized tools, and the operator
+restored the gate to disabled after acceptance.
+[Replacement request](https://raptor.rdev.raptor-iap.top/#request=8a0cb7f0-4ea3-4940-b9dc-6eec1292f194) ·
+[Read-only qualification](https://raptor.rdev.raptor-iap.top/#request=54a36f25-b07a-4999-917d-aaec289cb8f5)
+
+### Replacement and SQL acceptance
+
+1. Confirm the two healthy, protected originals, both at NLB weight 100.
+   Record the bound application's ready generation and baseline SQL. Hold a
+   live, identified TCP connection to each original and execute SQL on each.
+   Expand once to four. Wait for both replacements to be healthy, registered,
+   queryable and visible in metrics. Protect the exact replacement pair.
+2. Drain the exact originals by setting their Alibaba Cloud NLB backend
+   weights to zero. Keep them registered and running. After the recorded
+   post-drain wait, execute SQL on the same two held TCP sockets. Separately,
+   open new connections and verify that they succeed and reach only the
+   replacement pair. Save both results to the request checkpoint before
+   releasing the held probes. Stop if any held SQL fails, any fresh connection
+   reaches an original, or the evidence is incomplete.
+3. Roll the bound application once and wait for the new generation to be
+   observed with all replicas updated, ready and available. Confirm real
+   application SQL on **each** replacement. Wait until complete PgCat metrics
+   show **zero active, idle and waiting client connections on each original**.
+   A missing series is incomplete evidence. Weight zero and elapsed drain
+   time only describe routing and timing.
+4. Scale from four to two once, targeting only the two original instance IDs.
+   Confirm the matching ESS retirement activity succeeded and removed those
+   exact IDs. Verify the retained pair is healthy, protected and routed at
+   weight 100, with the application still ready. Sample final application SQL
+   on both retained nodes and confirm Raptor shows Completed, a verified
+   checkpoint and confirmed cleanup.
+
+### Waiting, rereading and continuing after HTTP 503
+
+The initial attempt `1cb4a467-03a2-43ae-b965-414c0f6c569a` returned HTTP 503
+from `cloud_read` with `kind=fleet` before expansion. The upstream error
+category was unavailable. Gateway now waits one second and retries this read
+once on runtime unavailability within the existing read deadline, rechecking
+authorization, lease and cancellation before the retry. A second failure
+returns the error. This retry applies to the fleet observation.
+[Fleet retry and recovery](https://github.com/jamesDeng/raptor-iap/pull/447) ·
+[Gateway deployment](https://github.com/jamesDeng/raptor-iap/pull/448)
+
+- **Before any write.** If the attempt ends in `ToolFailed`, use **Continue**
+  on the same request once Gateway supports this recovery. Require the verified
+  checkpoint and confirmed sandbox, key and access cleanup, successful grant
+  lookup, the recorded 503 on the cloud observation, and no write starts or
+  results in the retained history or durable action journal. Raptor revalidates
+  the saved approval and scope. Refresh the two-node baseline and verify the
+  same healthy, protected originals. The resumed attempt restores the logical
+  hold and opens fresh physical sockets before the first write. Use those
+  sockets for the later same-connection drain check.
+- **After a write.** Match the original request, node IDs and action receipts
+  to the live state. A pending provider transition or unavailable observation
+  calls for `resource_wait` and a reread of the scoped selector. If a write's
+  outcome is unknown, reconcile that action from the journal and live provider
+  state before taking another action. Keep verified drain evidence and resume
+  from the first unfinished step. Once scale-in is recorded, resume with
+  read-only retirement and final SQL checks using its saved receipt. If the
+  checkpoint, identities or receipts disagree, stop and investigate. Do not
+  replay expansion, drain, restart or scale-in.
+  [Post-retirement wait](https://github.com/jamesDeng/raptor-iap/pull/442) ·
+  [Post-retirement 503 recovery](https://github.com/jamesDeng/raptor-iap/pull/444)
+
+### Evidence from request 8a0cb7f0
+
+All times are on 2026-11-11 in Shanghai (UTC+8). The original nodes were
+`i-t4n7kle6pj89zjalm3gc` and `i-t4n7kle6pj89zjalm3gd`. The replacements were
+`i-t4nbfsik5vzvkapm239x` and `i-t4nbfsik5vzvkapm239y`, shown as `239x` and
+`239y` below.
+
+| Time | Evidence |
+| --- | --- |
+| 18:26:27 | Fleet read returned 503. The attempt checkpoint verified, cleanup was confirmed and the request's write journal was empty. The same request and grant were reused. |
+| Before expansion | Both originals were healthy and protected at NLB weight 100. Application generation 31 was 2/2 ready. Baseline SQL recorded 540 successes in 90 seconds with zero errors. |
+| 19:10:33–19:19:21 | Logical hold recovered with the original node identities. One expansion was submitted at 19:11:10. Both replacements became healthy and registered. The protection action was submitted at 19:19:21. |
+| 19:19:46–19:21:43 | The originals stayed registered and their NLB weights went from 100 to 0. Both held TCP sockets executed SQL after drain. All 24 successful new connections reached the replacements, 10 on `239x` and 14 on `239y`. The journal recorded verified drain evidence before restart. |
+| 19:21:54–19:25:21 | One rolling restart advanced the Deployment from generation 31 to 32, with 2/2 updated, ready and available. At 19:25:12 Prometheus showed zero active, idle and waiting clients on each original. Pre-retirement traffic evidence recorded 314 successful queries and transactions on `239x` and 313 on `239y`, with zero errors. |
+| 19:25:48–19:29:22 | One scale-in targeted the original pair. ESS activity `asa-t4ncpkz85h0u6ri1c8zd` succeeded and listed exactly those two retired instances. Both retained nodes were healthy, protected and at NLB weight 100. Each recorded 324 successful application queries and 324 transactions in the final sample, with zero errors. |
+| 19:29:26 | Raptor reported **Completed**, checkpoint verified and cleanup confirmed. The durable journal recorded exactly five write actions, one per approved operation. |
+
+The independent Prometheus observer recorded 36 valid 90-second SQL windows
+with zero failures, timeouts or ambiguous outcomes. Some observer polls did
+not produce usable samples. The 36-window count describes valid samples.
+[Raptor Progress and Result](https://raptor.rdev.raptor-iap.top/#request=8a0cb7f0-4ea3-4940-b9dc-6eec1292f194)
