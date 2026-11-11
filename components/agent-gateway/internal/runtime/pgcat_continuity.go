@@ -51,6 +51,7 @@ type pgcatHeldPair struct {
 	releasedAt       time.Time
 	recoveredRelease *pgcatProbeRelease
 	restoredDrain    bool
+	retiredRestart   *pgcatRetiredRestart
 	traffic          *pgcatTrafficSample
 	mu               sync.Mutex
 	id               string
@@ -342,7 +343,12 @@ func (r *pgcatContinuity) matchesOriginalNodes(request string, ids []string) boo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	held := r.requests[request]
-	return held != nil && len(ids) == 2 && ids[0] != ids[1] && held.original[ids[0]].IsValid() && held.original[ids[1]].IsValid()
+	if held == nil || len(ids) != 2 || ids[0] == ids[1] {
+		return false
+	}
+	_, first := held.original[ids[0]]
+	_, second := held.original[ids[1]]
+	return first && second
 }
 
 type pgcatProbeRelease struct {

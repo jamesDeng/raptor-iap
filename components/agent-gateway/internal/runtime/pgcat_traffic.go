@@ -103,7 +103,7 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 	}
 	pair.mu.Lock()
 	defer pair.mu.Unlock()
-	if pair.id != args.ObservationID || pair.scope != scope.ResolutionDigest || pair.releasedAt.IsZero() || pair.logs == nil || pair.lastDrain == nil {
+	if pair.id != args.ObservationID || pair.scope != scope.ResolutionDigest || pair.releasedAt.IsZero() || (pair.logs == nil && pair.retiredRestart == nil) || pair.lastDrain == nil {
 		return nil, ErrRuntimeUnavailable
 	}
 	for id := range routed {
@@ -131,16 +131,26 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 		deployment.ObservedAt.Before(after) || deployment.ObservedAt.IsZero() {
 		return json.RawMessage(`{"readiness":"traffic-warming"}`), nil
 	}
-	shutdownPending := false
-	for _, old := range pair.logs.streams {
-		complete, err := old.shutdownComplete(restart.ClaimedAt)
-		if err != nil {
-			return nil, err
+	var since time.Time
+	var oldPodUIDs []string
+	if pair.retiredRestart != nil {
+		if args.Phase != "verify-final-traffic" || args.RestartActionID != pair.retiredRestart.action ||
+			!restart.ClaimedAt.Equal(pair.retiredRestart.claimedAt) {
+			return nil, ErrRuntimeUnavailable
 		}
-		shutdownPending = shutdownPending || !complete
-	}
-	if shutdownPending {
-		return json.RawMessage(`{"readiness":"traffic-warming"}`), nil
+		since = pair.retiredRestart.claimedAt
+	} else {
+		since = pair.logs.started
+		oldPodUIDs = slices.Sorted(maps.Keys(pair.logs.streams))
+		for _, old := range pair.logs.streams {
+			complete, err := old.shutdownComplete(restart.ClaimedAt)
+			if err != nil {
+				return nil, err
+			}
+			if !complete {
+				return json.RawMessage(`{"readiness":"traffic-warming"}`), nil
+			}
+		}
 	}
 	slot := &pair.traffic
 	if args.Phase == "verify-final-traffic" {
@@ -155,15 +165,15 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 		routeFrom = base.at
 	}
 	appOps := map[netip.Addr]int64{}
-	pods, err := p.pgcatPods(ctx, entry, slices.Sorted(maps.Keys(pair.logs.streams)))
+	pods, err := p.pgcatPods(ctx, entry, oldPodUIDs)
 	if err != nil {
 		return nil, err
 	}
 	for _, pod := range pods {
-		if pair.logs.streams[pod.UID] != nil {
+		if slices.Contains(oldPodUIDs, pod.UID) {
 			return nil, ErrRuntimeUnavailable
 		}
-		stream, err := pgcatPodLog(ctx, entry.material, pod, pair.logs.started, false)
+		stream, err := pgcatPodLog(ctx, entry.material, pod, since, false)
 		if err != nil {
 			return nil, err
 		}
@@ -171,7 +181,7 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 		state.routes = map[netip.Addr]int64{}
 		state.routeFrom = routeFrom
 		bounded := &io.LimitedReader{R: stream, N: 16 * 1024 * 1024}
-		state.readLogs(bounded, pair.logs.started, false)
+		state.readLogs(bounded, since, false)
 		_ = stream.Close()
 		if bounded.N == 0 || !state.check(false, true, after) {
 			return nil, ErrRuntimeUnavailable

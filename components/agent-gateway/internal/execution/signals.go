@@ -130,6 +130,7 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 			slotSafe := slot == nil && !unresolved || slot != nil && *slot != v.RequestID
 			eligible := status == "failed" && attemptState == "failed" && attemptEnded && hint.AttemptID == attempt && hint.AttemptID != "" && clean && !recovery && slotSafe
 			var postDrain string
+			var postRetirement bool
 			if eligible && binding.ExecutionMode == "replacement" {
 				eligible, e = retryablePreparation(ctx, tx, binding)
 				if e != nil {
@@ -142,12 +143,19 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 					}
 					eligible = postDrain != ""
 				}
+				if !eligible {
+					postRetirement, e = retryablePostRetirement(ctx, tx, binding)
+					if e != nil {
+						return ErrUnavailable
+					}
+					eligible = postRetirement
+				}
 			}
 			if binding.ExecutionMode == "replacement" && status == "failed" && hint.AttemptID == attempt && !eligible {
 				return ErrInvalid
 			}
 			if eligible {
-				if _, e = tx.Exec(ctx, `UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now(),resume_context=CASE WHEN $3::text<>'' THEN resume_context || jsonb_build_object('postDrainAttempt', $3::text) WHEN $2 AND failure_code='PreparationFailed' THEN resume_context || '{"preparationRetry":true}'::jsonb ELSE resume_context END WHERE request_id=$1`, v.RequestID, binding.ExecutionMode == "replacement", postDrain); e != nil {
+				if _, e = tx.Exec(ctx, `UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now(),resume_context=CASE WHEN $4 THEN resume_context || jsonb_build_object('postRetirementAttempt', $5::text) WHEN $3::text<>'' THEN resume_context || jsonb_build_object('postDrainAttempt', $3::text) WHEN $2 AND failure_code='PreparationFailed' THEN resume_context || '{"preparationRetry":true}'::jsonb ELSE resume_context END WHERE request_id=$1`, v.RequestID, binding.ExecutionMode == "replacement", postDrain, postRetirement, attempt); e != nil {
 					return ErrUnavailable
 				}
 			}

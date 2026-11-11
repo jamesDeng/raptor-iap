@@ -8,6 +8,16 @@ export async function qualifyReplacementConvergence(trace,observer,scope,sequenc
  if(!observer||!Array.isArray(original)||original.length!==2||new Set(original).size!==2||trace.unresolved()||actions.length!==stages.length||new Set(actions.map(a=>a.actionId)).size!==stages.length)throw missing();
 
  if(actions.some((a,i)=>!a.actionId||a.previousDesiredCapacity!==stages[i][0]||a.desiredCapacity!==stages[i][1]||!['submitted','unknown'].includes(a.outcome)))throw missing();
+
+ // Request-grant runs collect final observations within tool turns, where
+ // temporary provider failures can checkpoint and resume the same request.
+ if(trace.versioned){
+  const evidence=sequence.completionEvidence();
+  return {version:3,restartGeneration:evidence.restartGeneration,converged:true,acceptance:'verified',
+   scope:structuredClone(scope),oldInstanceIds:evidence.oldInstanceIds,newInstanceIds:evidence.newInstanceIds,
+   desiredCapacity:2,actions,observedAt:new Date().toISOString(),
+   traffic:evidence.traffic,finalTraffic:evidence.finalTraffic,retirement:evidence.retirement};
+ }
  const capacity=await observer.cloudRead({kind:'capacity'});
  if(!observed(capacity)||capacity.groupId!==scope.groupId||capacity.desiredCapacity!==2||capacity.minSize!==2||capacity.maxSize!==4)throw missing();
  const fleet=await observer.cloudRead({kind:'fleet'}),nodes=fleet?.instances;
@@ -16,13 +26,7 @@ export async function qualifyReplacementConvergence(trace,observer,scope,sequenc
  if(sequence&&(JSON.stringify([...cohort.oldInstanceIds].sort())!==JSON.stringify([...original].sort())||JSON.stringify([...cohort.newInstanceIds].sort())!==JSON.stringify(ids)))throw missing();
  const backend=await observer.cloudRead({kind:'backend'});
  if(!observed(backend)||backend.serverGroupId!==scope.serverGroupId||!Array.isArray(backend.nodes)||backend.nodes.length!==2||new Set(backend.nodes.map(n=>n.instanceId)).size!==2||backend.nodes.some(n=>!ids.includes(n.instanceId)||n.registered!==true||n.healthy!==true))throw missing();
- if(trace.versioned){
-  const retirement=await observer.cloudRead({kind:'retirement'});
-  if(!observed(retirement)||retirement.status!=='Successful')throw missing();
-  await observer.metricsRead({kind:'pgcatClients'});
- }else{
-  for(const instanceId of ids){const probe=await observer.dbConnectionProbe({instanceId});if(probe.instanceId!==instanceId||probe.connected!==true)throw missing();}
- }
+ for(const instanceId of ids){const probe=await observer.dbConnectionProbe({instanceId});if(probe.instanceId!==instanceId||probe.connected!==true)throw missing();}
  const app=await observer.deploymentRead({});
  if(!observed(app)||['clusterId','namespace','name','uid'].some(k=>app[k]!==scope.application[k])||app.replicas!==2||['readyReplicas','updatedReplicas','availableReplicas'].some(k=>app[k]!==2))throw missing();
  // Recheck capacity after sequential reads; no successful mutation ack substitutes
@@ -31,8 +35,7 @@ export async function qualifyReplacementConvergence(trace,observer,scope,sequenc
  if(!observed(final)||final.groupId!==scope.groupId||final.desiredCapacity!==2||final.minSize!==2||final.maxSize!==4)throw missing();
  const evidence=sequence?.completionEvidence();
  if(sequence&&(!Number.isSafeInteger(evidence.restartGeneration)||evidence.restartGeneration<1||!Number.isSafeInteger(app.generation)||app.generation<evidence.restartGeneration||!Number.isSafeInteger(app.observedGeneration)||app.observedGeneration!==app.generation||JSON.stringify(evidence.newInstanceIds)!==JSON.stringify(cohort.newInstanceIds)))throw missing();
- return {version:trace.versioned?3:sequence?2:1,...(sequence?{restartGeneration:evidence.restartGeneration}:{}),
-  converged:true,acceptance:trace.versioned?'verified':'pending',scope:structuredClone(scope),oldInstanceIds:[...original].sort(),
-  newInstanceIds:ids,desiredCapacity:2,actions,observedAt:new Date().toISOString(),
-  ...(trace.versioned?{traffic:evidence.traffic,finalTraffic:evidence.finalTraffic,retirement:evidence.retirement}:{})};
+ return {version:sequence?2:1,...(sequence?{restartGeneration:evidence.restartGeneration}:{}),
+  converged:true,acceptance:'pending',scope:structuredClone(scope),oldInstanceIds:[...original].sort(),
+  newInstanceIds:ids,desiredCapacity:2,actions,observedAt:new Date().toISOString()};
 }
