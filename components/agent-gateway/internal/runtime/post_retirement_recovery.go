@@ -141,7 +141,17 @@ func (n *NativeLive) restorePostRetirement(ctx context.Context, in *execution.Li
 		return err
 	}
 	terminal, err := n.Verifier.postDrainSessionFile(ctx, verified, reference.SessionFile)
-	if err != nil || len(terminal) <= len(anchor) || !bytes.HasPrefix(terminal, anchor) {
+	if err != nil {
+		return ErrCheckpointVerification
+	}
+	// The first recovery restores the failed segment after its wait anchor.
+	// Later read-only waits have already checkpointed that same segment.
+	switch {
+	case len(terminal) > len(anchor) && bytes.HasPrefix(terminal, anchor):
+		reference.Archive, reference.SessionSHA256 = verified, digestBytes(terminal)
+	case len(anchor) > len(terminal) && bytes.HasPrefix(anchor, terminal):
+		reference.Archive = anchorArchive
+	default:
 		return ErrCheckpointVerification
 	}
 	_, entry, ok := p.registeredEntry(*in)
@@ -163,8 +173,7 @@ func (n *NativeLive) restorePostRetirement(ctx context.Context, in *execution.Li
 	pair.releasedAt = journal.drain.release.ReleasedAt
 	pair.retiredRestart = &journal.restart
 	pair.mu.Unlock()
-	reference.Archive, reference.SessionSHA256 = verified, digestBytes(terminal)
-	in.SessionCheckpoint, in.Checkpoint = &reference, verified
+	in.SessionCheckpoint, in.Checkpoint = &reference, reference.Archive
 	decision := *in.DecisionContext
 	decision.Retirement = &journal.scale
 	decision.Guidance = "Continue the original request with reads only. The restart and scale-in receipts are saved. Observe the exact retirement and two retained nodes, then verify fresh final SQL on both nodes. Use resource_wait while the provider or traffic is still settling."
