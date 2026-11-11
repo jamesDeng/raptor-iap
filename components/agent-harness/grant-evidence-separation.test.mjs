@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {createHash} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import {loadPiRuntime} from './pi-adapter.mjs';
@@ -52,16 +53,30 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
  let phase='proposal',round=0,observationsMade=0,canariesReleased=0,newProtected=false,drainSubmitted=false;
  const continuityCalls=[];
  const visible=[];
- let feedback;
+ let feedback,drainOnlySnapshot,recordedRelease;
  runtime.streamSimple=(model,context)=>{
   round++;
   if(phase==='resume'&&round===7)t.mock.timers.tick(stale==='metrics'?1000:31000);
   if(phase==='drain'&&round===6)t.mock.timers.tick(31000);
   visible.push(getCurrentTools(context.messages).map(tool=>tool.name));
   if(phase==='resume'&&round===4)feedback=context.messages.findLast(m=>m.role==='toolResult'&&m.toolName===expand.name);
-  if(phase==='after-drain-wait'&&round===5)assert.match(JSON.stringify(context.messages.at(-1)),/Runtime continuation.*release-probes/);
+  if(phase==='after-drain-wait'&&round===5){
+   assert.match(JSON.stringify(context.messages.at(-1)),/Runtime continuation.*release-probes/);
+   const directory=path.join(stateRoot,'sessions');
+   const file=fs.readdirSync(directory).find(name=>name.endsWith('.jsonl'));
+   drainOnlySnapshot=fs.readFileSync(path.join(directory,file));
+   assert.match(drainOnlySnapshot.toString(),/raptor-pgcat-drain-v1/);
+   assert.doesNotMatch(drainOnlySnapshot.toString(),/raptor-pgcat-probe-release-v1/);
+  }
+  if(phase==='after-probe-release'&&round===1){
+   assert.ok(!context.messages.some(m=>m.role==='toolResult'&&m.toolName===expand.name),'old finished turns do not enter the provider context');
+   assert.match(JSON.stringify(context.messages.at(-1)),/deployment_restart/);
+   assert.ok(getCurrentTools(context.messages).some(tool=>tool.name==='mcp__raptor__request_get'));
+   assert.ok(!getCurrentTools(context.messages).some(tool=>tool.name==='mcp__infra__deployment_restart'));
+  }
   if(phase==='after-probe-release'&&round===2)assert.match(JSON.stringify(context.messages.at(-1)),/Runtime continuation.*request_get.*request_grant_get/);
-  if(phase==='after-probe-release'&&round===6)assert.match(JSON.stringify(context.messages.at(-1)),/Runtime continuation.*deployment_restart/);
+  if(phase==='after-probe-release'&&round===4)assert.ok(getCurrentTools(context.messages).some(tool=>tool.name==='mcp__infra__deployment_restart'));
+  if(phase==='after-probe-release'&&round===7)assert.match(JSON.stringify(context.messages.at(-1)),/Runtime continuation.*deployment_restart/);
   const rounds=phase==='proposal'?[
    [requestRead],[modelCall('mcp__raptor__request_grant_request',proposal)]
   ]:phase==='resume'?[
@@ -92,7 +107,7 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})],[],[release],[modelCall('resource_wait',{seconds:60})]
   ]:phase==='after-probe-release'?[
    [],[requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
-   [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})]
+   [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})],[release]
   ]:[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[requestRead,expand],
    [release,requestRead],
@@ -174,6 +189,8 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    if(args.phase==='release-probes')canariesReleased++;
    if(round===7&&args.phase==='hold')refreshOrder.push('hold');
    const at=new Date().toISOString();
+   if(args.phase==='release-probes')recordedRelease={requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',
+    drainActionId:'drain',observedAt:at,releasedAt:at};
    return {requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',observedAt:at,
     sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at,openedAt:new Date(Date.now()-61000).toISOString(),rounds:2}])),
     ...(args.phase==='verify-drain'?{drainActionId:'drain',drainObservedAt:at,freshConnections:Object.fromEntries(added.map(id=>[id,12]))}:{}),
@@ -224,11 +241,16 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    assert.deepEqual(continuityCalls,['hold','verify-drain','release-probes']);
    t.mock.timers.tick(60000);
    phase='after-probe-release';round=0;
-   const afterRelease=await runLiveReplacement({...options,privateRoot:path.join(root,'after-probe-release'),
-    binding:{...b,attemptId:'77777777-7777-4777-8777-777777777777'},sessionReference:released.sessionReference,
-    decisionContext:{...released.paused,decision:'resume'}});
+   const recoveredState=path.join(root,'recovered-state'),recoveredSessions=path.join(recoveredState,'sessions');
+   fs.mkdirSync(recoveredSessions,{recursive:true});
+   fs.copyFileSync(path.join(stateRoot,'auth.json'),path.join(recoveredState,'auth.json'));
+   fs.writeFileSync(path.join(recoveredSessions,released.sessionReference.file),drainOnlySnapshot);
+   const reference={...released.sessionReference,sha256:createHash('sha256').update(drainOnlySnapshot).digest('hex')};
+   const afterRelease=await runLiveReplacement({...options,stateRoot:recoveredState,privateRoot:path.join(root,'after-probe-release'),
+    binding:{...b,attemptId:'77777777-7777-4777-8777-777777777777'},sessionReference:reference,
+    decisionContext:{...drained.paused,decision:'resume',probeRelease:recordedRelease}});
    assert.equal(afterRelease.error,'MissingEvidence','a second no-progress stop does not claim success');
-   assert.equal(round,6,'the reminders refresh the grant, then continue from the saved release');
+   assert.equal(round,7,'the reminders refresh the grant, then continue from the saved release');
    assert.deepEqual(continuityCalls,['hold','verify-drain','release-probes'],'checkpoint replay must not contact Gateway again');
    assert.equal(canariesReleased,1);
   }

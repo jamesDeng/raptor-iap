@@ -4,17 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/jackc/pgx/v5"
+	"time"
 )
 
+// PgcatContinuationRelease is issued only from the verified observation journal.
+type PgcatContinuationRelease struct {
+	RequestID     string    `json:"requestId"`
+	ScopeDigest   string    `json:"scopeDigest"`
+	ObservationID string    `json:"observationId"`
+	DrainActionID string    `json:"drainActionId"`
+	ObservedAt    time.Time `json:"observedAt"`
+	ReleasedAt    time.Time `json:"releasedAt"`
+}
+
 type ContinuationContext struct {
-	PreparationRetry bool   `json:"-"`
-	PostDrainAttempt string `json:"-"`
-	Kind             string `json:"kind,omitempty"`
-	ApprovalID       string `json:"approvalId"`
-	ActionID         string `json:"actionId"`
-	BindingDigest    string `json:"bindingDigest"`
-	Decision         string `json:"decision"`
-	Guidance         string `json:"guidance"`
+	ProbeRelease     *PgcatContinuationRelease `json:"probeRelease,omitempty"`
+	PreparationRetry bool                      `json:"-"`
+	PostDrainAttempt string                    `json:"-"`
+	Kind             string                    `json:"kind,omitempty"`
+	ApprovalID       string                    `json:"approvalId"`
+	ActionID         string                    `json:"actionId"`
+	BindingDigest    string                    `json:"bindingDigest"`
+	Decision         string                    `json:"decision"`
+	Guidance         string                    `json:"guidance"`
 }
 
 // LiveContinuationContext validates persisted scheduling against the same
@@ -36,6 +48,9 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 		return nil, ErrInvalid
 	}
 	saved := persisted.ContinuationContext
+	if saved.ProbeRelease != nil {
+		return nil, ErrInvalid
+	}
 	cp, e := s.OperationSession(ctx, b)
 	if e != nil || cp == nil {
 		return nil, ErrInvalid

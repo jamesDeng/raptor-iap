@@ -50,7 +50,7 @@ func TestFailedAfterDrainResumesOnlyExactVerifiedTerminalAttempt(t *testing.T) {
 }
 
 func TestFailedPostDrainReadOnlyContinuationReusesOriginalProof(t *testing.T) {
-	for _, tool := range []string{"mcp__raptor__request_grant_action_get", "mcp__infra__deployment_restart", "pgcat_connection_continuity"} {
+	for _, tool := range []string{"mcp__raptor__request_grant_action_get", "mcp__infra__deployment_restart", "pgcat_connection_continuity", "resource_wait"} {
 		t.Run(tool, func(t *testing.T) {
 			s, _, b := failedResourcePreparation(t)
 			ctx := t.Context()
@@ -89,7 +89,7 @@ func TestFailedPostDrainReadOnlyContinuationReusesOriginalProof(t *testing.T) {
 			must(s.BindLive(ctx, b.AttemptID, "retry", b, b.DefinitionSHA256))
 			must(s.FinalizeLive(ctx, b.AttemptID, "retry", LiveOutcome{Status: "failed", FailureCode: "MissingEvidence", SandboxAbsent: true, KeyAbsent: true, AccessRevoked: true}))
 			markFailed(b.AttemptID, tool)
-			if tool != "mcp__raptor__request_grant_action_get" {
+			if tool != "mcp__raptor__request_grant_action_get" && tool != "pgcat_connection_continuity" {
 				if err := sendContinue(b.AttemptID); err != ErrInvalid {
 					t.Fatalf("potential side effect allowed replay: %v", err)
 				}

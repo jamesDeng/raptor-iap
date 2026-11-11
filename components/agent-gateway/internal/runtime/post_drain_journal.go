@@ -11,9 +11,11 @@ import (
 )
 
 type pgcatPostDrainJournal struct {
-	hold  pgcatHoldEvidence
-	drain pgcatDrainEvidence
-	claim time.Time
+	hold           pgcatHoldEvidence
+	drain          pgcatDrainEvidence
+	claim          time.Time
+	release        *pgcatProbeRelease
+	releaseAttempt string
 }
 
 func postDrainJournal(state execution.PgcatRequestJournal, b execution.AttemptBinding, scope execution.ReplacementScope, failed string, ended time.Time) (pgcatPostDrainJournal, error) {
@@ -34,6 +36,13 @@ func postDrainJournal(state execution.PgcatRequestJournal, b execution.AttemptBi
 				return out, ErrConfiguration
 			}
 			drainedAt = out.drain.ObservedAt
+		case "probe-release":
+			var receipt pgcatProbeRelease
+			if out.release != nil || row.Subject != "fleet" || row.AttemptID == failed || row.AttemptID == b.AttemptID ||
+				json.Unmarshal(row.Data, &receipt) != nil || !sameJournalTime(row.ObservedAt, receipt.ReleasedAt) {
+				return out, ErrConfiguration
+			}
+			out.release, out.releaseAttempt = &receipt, row.AttemptID
 		case "sql":
 		default:
 			return out, ErrConfiguration
@@ -45,6 +54,9 @@ func postDrainJournal(state execution.PgcatRequestJournal, b execution.AttemptBi
 		out.drain.ObservationID != out.hold.ObservationID || drainedAt.IsZero() || drainedAt.After(ended) ||
 		out.drain.DrainObservedAt.IsZero() || drainedAt.Before(out.drain.DrainObservedAt) ||
 		len(out.hold.Sockets) != 2 || len(out.drain.Sockets) != 2 || len(out.drain.FreshConnections) != 2 {
+		return out, ErrConfiguration
+	}
+	if out.release != nil && !matchesSavedProbeRelease(*out.release, out.drain) {
 		return out, ErrConfiguration
 	}
 	var expectedSockets []string
@@ -116,6 +128,21 @@ func postDrainJournal(state execution.PgcatRequestJournal, b execution.AttemptBi
 		return out, ErrConfiguration
 	}
 	return out, nil
+}
+
+func matchesSavedProbeRelease(receipt pgcatProbeRelease, drain pgcatDrainEvidence) bool {
+	if receipt.RequestID != drain.RequestID || receipt.ScopeDigest != drain.ScopeDigest || receipt.ObservationID != drain.ObservationID ||
+		receipt.DrainActionID != drain.DrainActionID || receipt.Recovery != "previous-controller-cleanup" ||
+		!receipt.ObservedAt.Equal(receipt.ReleasedAt) || receipt.ReleasedAt.Before(drain.ObservedAt) || len(receipt.Sockets) != len(drain.Sockets) {
+		return false
+	}
+	for id, socket := range drain.Sockets {
+		got := receipt.Sockets[id]
+		if got.ID != socket.ID || got.Rounds != socket.Rounds || !got.OpenedAt.Equal(socket.OpenedAt) || !got.LastSQLAt.Equal(socket.LastSQLAt) {
+			return false
+		}
+	}
+	return true
 }
 
 func sortedStrings(values []string) []string {
