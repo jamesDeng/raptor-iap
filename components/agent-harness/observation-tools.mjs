@@ -40,8 +40,11 @@ export function createObservationTools({binding,config,replacementScope,fetch=gl
  const readClients=(kind,selector)=>execute('kubectl',['--kubeconfig',config.private?.kubeconfig,'--namespace',config.application.namespace,'get',kind,...(kind==='deployment'?[config.application.name]:['--selector',selector]),'--output','json'],{});
  const tools = {
   async pgcatClientPods(input){
-   if(binding.approvalProtocol!=='request-grants-v1'||!input||Object.keys(input).length)throw invalid();
-   const pods=await discoverClientPods(config.application,readClients);
+   if(binding.approvalProtocol!=='request-grants-v1'||!input)throw invalid();
+   const keys=Object.keys(input);
+   const retiring=input.retiringPodUids;
+   if(keys.length&&(keys.join(',')!=='retiringPodUids'||!Array.isArray(retiring)||retiring.length!==2||new Set(retiring).size!==2||!retiring.every(id)))throw invalid();
+   const pods=await discoverClientPods(config.application,readClients,retiring);
    if(pods.length!==2||pods.some(p=>!/^[-a-z0-9.]{1,253}$/.test(p.name??'')||!id(p.uid)))throw invalid();
    return {pods};
   },

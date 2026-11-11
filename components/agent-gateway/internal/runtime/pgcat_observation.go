@@ -304,6 +304,13 @@ func (p *ObservationProxy) recordPgcatObservation(ctx context.Context, entry obs
 
 func validPgcatInternalObservation(binding execution.AttemptBinding, tool string, args json.RawMessage) bool {
 	var fields map[string]json.RawMessage
-	return binding.ApprovalProtocol == "request-grants-v1" && tool == "pgcat_client_pods" &&
-		json.Unmarshal(args, &fields) == nil && fields != nil && len(fields) == 0
+	if binding.ApprovalProtocol != "request-grants-v1" || tool != "pgcat_client_pods" || json.Unmarshal(args, &fields) != nil || fields == nil {
+		return false
+	}
+	if len(fields) == 0 {
+		return true
+	}
+	var ids []string
+	return len(fields) == 1 && json.Unmarshal(fields["retiringPodUids"], &ids) == nil && len(ids) == 2 &&
+		ids[0] != ids[1] && transportID.MatchString(ids[0]) && transportID.MatchString(ids[1])
 }

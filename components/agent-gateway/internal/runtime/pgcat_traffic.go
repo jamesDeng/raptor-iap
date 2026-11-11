@@ -131,10 +131,16 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 		deployment.ObservedAt.Before(after) || deployment.ObservedAt.IsZero() {
 		return json.RawMessage(`{"readiness":"traffic-warming"}`), nil
 	}
+	shutdownPending := false
 	for _, old := range pair.logs.streams {
-		if !old.check(true, false, restart.ClaimedAt) {
-			return nil, ErrRuntimeUnavailable
+		complete, err := old.shutdownComplete(restart.ClaimedAt)
+		if err != nil {
+			return nil, err
 		}
+		shutdownPending = shutdownPending || !complete
+	}
+	if shutdownPending {
+		return json.RawMessage(`{"readiness":"traffic-warming"}`), nil
 	}
 	slot := &pair.traffic
 	if args.Phase == "verify-final-traffic" {
@@ -149,7 +155,7 @@ func (p *ObservationProxy) pgcatTraffic(ctx context.Context, entry observationEn
 		routeFrom = base.at
 	}
 	appOps := map[netip.Addr]int64{}
-	pods, err := p.pgcatPods(ctx, entry)
+	pods, err := p.pgcatPods(ctx, entry, slices.Sorted(maps.Keys(pair.logs.streams)))
 	if err != nil {
 		return nil, err
 	}
