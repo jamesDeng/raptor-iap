@@ -40,7 +40,7 @@ func (c *Client) submissionCallLimit(ctx context.Context, path string, in any, o
 		return errors.New("submission unavailable")
 	}
 	raw, e := io.ReadAll(io.LimitReader(response.Body, int64(responseLimit)+1))
-	if e != nil || len(raw) > responseLimit || jsoninput.Decode(raw, out) != nil {
+	if e != nil || jsoninput.DecodeBounded(raw, out, responseLimit) != nil {
 		return errors.New("submission unavailable")
 	}
 	return nil

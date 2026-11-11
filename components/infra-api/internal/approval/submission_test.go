@@ -5,8 +5,40 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestPgcatRequestStateUsesItsOwnResponseLimit(t *testing.T) {
+	large := `{"data":{"observations":[{"data":{"evidence":"` + strings.Repeat("x", 8700) + `"}}],"actions":[]}}`
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"journal above 8 KiB", large, true},
+		{"journal above 64 KiB", strings.Replace(large, strings.Repeat("x", 8700), strings.Repeat("x", 65536), 1), false},
+		{"duplicate key in large journal", strings.Replace(large, `"actions":[]`, `"actions":[],"actions":[]`, 1), false},
+		{"unknown field in large journal", strings.Replace(large, `"actions":[]`, `"actions":[],"extra":true`, 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/infra/pgcat-request-state" {
+					t.Error("wrong journal endpoint")
+				}
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer s.Close()
+			c, err := New(s.URL, "service", "private", s.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := c.ReadPgcatRequestState(t.Context(), "request", "scope")
+			if (err == nil) != tc.want || (tc.want && len(state.Observations) != 1) {
+				t.Fatalf("unexpected journal result: %v", err)
+			}
+		})
+	}
+}
 
 func TestSubmissionClientExactWireAndAuth(t *testing.T) {
 	b := Binding{RequestID: "request", ActionID: "action", EnvCode: "env", ProxyCode: "proxy", GroupID: "group", DesiredCapacity: 3}

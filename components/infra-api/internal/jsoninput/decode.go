@@ -10,7 +10,11 @@ import (
 // Reject duplicates recursively before decoding: encoding/json otherwise keeps
 // the final value, including duplicates inside node arrays/embedded objects.
 func Decode(raw []byte, out any) error {
-	if len(raw) == 0 || len(raw) > 8192 {
+	return DecodeBounded(raw, out, 8192)
+}
+
+func DecodeBounded(raw []byte, out any, limit int) error {
+	if len(raw) == 0 || len(raw) > limit {
 		return errors.New("invalid input")
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
