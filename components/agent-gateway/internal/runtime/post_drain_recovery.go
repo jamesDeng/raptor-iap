@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -67,7 +68,15 @@ func (n *NativeLive) restorePostDrain(ctx context.Context, in *execution.LiveSta
 	reference.Archive, reference.SessionSHA256 = verified, hash
 	in.SessionCheckpoint, in.Checkpoint = &reference, verified
 	decision := *in.DecisionContext
-	decision.Guidance = "The saved drain proof is verified. Keep the original expansion and drain receipts. Refresh the request grant, application selector and current four-node evidence. Use release-probes with the saved observation and drain action, then submit the bound rolling restart once. Continue through application SQL traffic on both replacements, zero old clients and exact retirement."
+	decision.Guidance = fmt.Sprintf("Resume at probe release and the application restart in this run. "+
+		"The saved expansion and drain are verified; do not repeat them or recheck the already validated action receipts. "+
+		"After reading request_get and the saved grant, call pgcat_connection_continuity in its own round with "+
+		"{\"phase\":\"release-probes\",\"observationId\":%q,\"drainActionId\":%q}. "+
+		"Discover the bound application with Raptor and Infra deployments_list, then use the returned workloadKey in Infra deployment_status_get. "+
+		"Read deployment_read, cloud_read fleet, backend and capacity, and metrics_read pgcatClients. "+
+		"Submit deployment_restart once, then continue with the selected skill through SQL on both replacement nodes, "+
+		"zero original clients, exact retirement and final SQL. Use resource_wait when readiness or traffic is warming.",
+		journal.drain.ObservationID, journal.drain.DrainActionID)
 	in.DecisionContext = &decision
 	return nil
 }

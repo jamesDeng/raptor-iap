@@ -335,6 +335,27 @@ test('checkpoint reuses completed drain proof for the same request after a later
  assert.deepEqual(resumed.gate.savedDrainProof(verifyDrain),proof);
  assert.throws(()=>resumed.gate.savedDrainProof({...verifyDrain,observationId:'foreign'}),/InvalidEvidence/);
 });
+test('a completed drain provides the next unfinished step after a model stop',t=>{
+ const run=completedGrantDrain(t);
+ assert.equal(run.gate.continuationStep(false),undefined);
+ run.gate.observeContinuity(verifyDrain,drainProof());
+ const {gate}=grantedWithdrawal(run.session);
+ assert.equal(gate.continuationStep(false).stage,'release');
+ assert.match(gate.continuationStep(false).instruction,/"phase":"release-probes","observationId":"hold","drainActionId":"drain"/);
+ assert.equal(gate.continuationStep(true).stage,'restart');
+ gate.trace.unresolved=()=>true;
+ assert.match(gate.continuationStep(true).instruction,/request_grant_actions_list/);
+ gate.trace.unresolved=()=>false;
+ gate.restart=()=>({generation:6,actionId:'restart-accepted'});
+ assert.match(gate.continuationStep(true).instruction,/verify-traffic.*restart-accepted/);
+ gate.trafficProof={noErrors:true};
+ assert.match(gate.continuationStep(true).instruction,/zero.*scale/i);
+ const savedIntents=gate.intents.bind(gate);
+ gate.intents=stage=>stage==='shrink'?[{}]:savedIntents(stage);
+ assert.match(gate.continuationStep(true).instruction,/verify-final-traffic/);
+ gate.finalTraffic={noErrors:true};
+ assert.equal(gate.continuationStep(true),undefined);
+});
 test('drain proof rejects the wrong route count and a checkpoint entry ahead of its completed wait',t=>{
  const run=completedGrantDrain(t);
  const proof=drainProof();

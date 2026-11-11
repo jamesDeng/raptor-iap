@@ -354,6 +354,22 @@ export class ReplacementSequence {
   if(tool==='db_proxy_nodes_deregister')for(const kind of this.trace.versioned?['fleet','backend','capacity']:['backend'])delete this.current[kind];
   if(tool==='deployment_restart')for(const kind of ['deployment','metrics','trafficFailures','connections'])delete this.current[kind];
  }
+ // Guide a stopped model from the recorded phase. Tools still enforce all
+ // guards and the model still chooses and executes the next tool round.
+ continuationStep(probesReleased){
+  if(!this.trace.versioned||!this.drainProof||this.finalTraffic)return;
+  if(this.trace.unresolved())return {stage:'reconcile',instruction:'Read request_grant_actions_list to reconcile the outstanding action. Never replay it.'};
+  const {observationId,drainActionId}=this.drainProof;
+  const restart=this.restart();
+  if(!restart){
+   if(!probesReleased)return {stage:'release',instruction:'Use the verified saved drain proof. Call pgcat_connection_continuity alone with '+JSON.stringify({phase:'release-probes',observationId,drainActionId})+'. Keep the existing expansion and drain.'};
+   return {stage:'restart',instruction:'Finish the bound Deployment discovery and status reads, deployment_read, fleet, backend, capacity and pgcatClients. Then use deployment_restart once with the discovered workloadKey.'};
+  }
+  const trafficArgs=phase=>JSON.stringify({phase,observationId,restartActionId:restart.actionId});
+  if(this.intents('shrink').length)return {stage:'final-traffic',instruction:'Wait for the exact retirement, check the two-node fleet, metrics and Deployment, then call pgcat_connection_continuity with '+trafficArgs('verify-final-traffic')+'. Use resource_wait if not ready.'};
+  if(!this.trafficProof)return {stage:'traffic',instruction:'Check the restarted Deployment and wait for 2/2, then call pgcat_connection_continuity with '+trafficArgs('verify-traffic')+'. If metrics or traffic are warming, use resource_wait and recheck.'};
+  return {stage:'retire',instruction:'Confirm zero old clients in pgcatClients and refresh the required fleet, backend, capacity and Deployment reads, then call the approved scale to 2 once.'};
+ }
  completionEvidence(){
   const cohort=this.cohort(),r=this.restart();
   if(this.trace.unresolved()||this.intents('shrink').length!==1||!r||!this.capacity(2)||!this.fleet(cohort.newInstanceIds)||!this.current.fleet.instances.every(protectedNode)||!this.backend(cohort.newInstanceIds)||!this.app(r.generation,r.at))throw missing();
