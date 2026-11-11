@@ -8,6 +8,7 @@ import (
 
 type ContinuationContext struct {
 	PreparationRetry bool   `json:"-"`
+	PostDrainAttempt string `json:"-"`
 	Kind             string `json:"kind,omitempty"`
 	ApprovalID       string `json:"approvalId"`
 	ActionID         string `json:"actionId"`
@@ -28,7 +29,8 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 	}
 	var persisted struct {
 		ContinuationContext
-		PreparationRetry bool `json:"preparationRetry"`
+		PreparationRetry bool   `json:"preparationRetry"`
+		PostDrainAttempt string `json:"postDrainAttempt"`
 	}
 	if json.Unmarshal(raw, &persisted) != nil {
 		return nil, ErrInvalid
@@ -58,6 +60,15 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 	if (decision.Next != "resume" && decision.Next != "continue") || saved.Decision != decision.Next || saved.Guidance != decision.Guidance {
 		return nil, ErrInvalid
 	}
-	saved.PreparationRetry = persisted.PreparationRetry && wait.Kind == "resource" && decision.Next == "resume"
+	if persisted.PostDrainAttempt != "" {
+		if b.ApprovalProtocol != "request-grants-v1" || b.ExecutionMode != "replacement" ||
+			wait.Kind != "resource" || decision.Next != "resume" || !conversationUUID.MatchString(persisted.PostDrainAttempt) ||
+			persisted.PostDrainAttempt == b.AttemptID {
+			return nil, ErrInvalid
+		}
+		saved.PostDrainAttempt = persisted.PostDrainAttempt
+	} else {
+		saved.PreparationRetry = persisted.PreparationRetry && wait.Kind == "resource" && decision.Next == "resume"
+	}
 	return &saved, nil
 }

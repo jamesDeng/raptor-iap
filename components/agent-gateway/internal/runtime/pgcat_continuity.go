@@ -45,21 +45,23 @@ type pgcatHeldSocket struct {
 }
 
 type pgcatHeldPair struct {
-	finalTraffic *pgcatTrafficSample
-	logs         *pgcatAppLogWatch
-	lastDrain    *pgcatDrainEvidence
-	releasedAt   time.Time
-	traffic      *pgcatTrafficSample
-	mu           sync.Mutex
-	id           string
-	request      string
-	scope        string
-	original     map[string]netip.Addr
-	sockets      map[string]*pgcatHeldSocket
-	cancel       context.CancelFunc
-	stopWatching context.CancelFunc
-	drain        string
-	lost         bool
+	finalTraffic     *pgcatTrafficSample
+	logs             *pgcatAppLogWatch
+	lastDrain        *pgcatDrainEvidence
+	releasedAt       time.Time
+	recoveredRelease *pgcatProbeRelease
+	restoredDrain    bool
+	traffic          *pgcatTrafficSample
+	mu               sync.Mutex
+	id               string
+	request          string
+	scope            string
+	original         map[string]netip.Addr
+	sockets          map[string]*pgcatHeldSocket
+	cancel           context.CancelFunc
+	stopWatching     context.CancelFunc
+	drain            string
+	lost             bool
 }
 
 type pgcatContinuity struct {
@@ -347,6 +349,7 @@ type pgcatProbeRelease struct {
 	pgcatHoldEvidence
 	DrainActionID string    `json:"drainActionId"`
 	ReleasedAt    time.Time `json:"releasedAt"`
+	Recovery      string    `json:"recovery,omitempty"`
 }
 
 func (r *pgcatContinuity) get(request string) *pgcatHeldPair {
@@ -366,6 +369,16 @@ func (r *pgcatContinuity) releaseProbes(ctx context.Context, request, scope, obs
 		pair.logs == nil {
 		return pgcatProbeRelease{}, ErrRuntimeUnavailable
 	}
+	if pair.restoredDrain {
+		if pair.recoveredRelease == nil {
+			pair.releasedAt = time.Now().UTC()
+			proof := pair.lastDrain.pgcatHoldEvidence
+			proof.ObservedAt = pair.releasedAt
+			pair.recoveredRelease = &pgcatProbeRelease{pgcatHoldEvidence: proof, DrainActionID: action,
+				ReleasedAt: pair.releasedAt, Recovery: "previous-controller-cleanup"}
+		}
+		return *pair.recoveredRelease, nil
+	}
 	if pair.releasedAt.IsZero() {
 		if pair.probe(ctx) != nil {
 			return pgcatProbeRelease{}, ErrRuntimeUnavailable
@@ -384,4 +397,21 @@ func (r *pgcatContinuity) probesReleased(request string) bool {
 	pair.mu.Lock()
 	defer pair.mu.Unlock()
 	return !pair.releasedAt.IsZero()
+}
+
+// installRecoveredDrain restores only immutable evidence. There are no
+// historical socket handles in this process and no probes are re-opened.
+func (r *pgcatContinuity) installRecoveredDrain(ctx context.Context, request, scope string, proof pgcatDrainEvidence, original map[string]netip.Addr, active func(context.Context) bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ctx.Err() != nil || r.requests[request] != nil || active == nil {
+		return ErrRuntimeUnavailable
+	}
+	pair := &pgcatHeldPair{id: proof.ObservationID, request: request, scope: scope, original: maps.Clone(original),
+		drain: proof.DrainActionID, lastDrain: &proof, lost: true, restoredDrain: true}
+	r.requests[request] = pair
+	watch, stop := context.WithCancel(context.Background())
+	pair.stopWatching = stop
+	go r.watchRequest(watch, request, pair, active)
+	return nil
 }

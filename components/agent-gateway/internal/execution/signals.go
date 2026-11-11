@@ -129,17 +129,25 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 			clean := json.Unmarshal(cleanup, &confirmed) == nil && confirmed.SandboxAbsent && confirmed.KeyAbsent && confirmed.AccessRevoked
 			slotSafe := slot == nil && !unresolved || slot != nil && *slot != v.RequestID
 			eligible := status == "failed" && attemptState == "failed" && attemptEnded && hint.AttemptID == attempt && hint.AttemptID != "" && clean && !recovery && slotSafe
+			var postDrain bool
 			if eligible && binding.ExecutionMode == "replacement" {
 				eligible, e = retryablePreparation(ctx, tx, binding)
 				if e != nil {
 					return ErrUnavailable
+				}
+				if !eligible {
+					postDrain, e = retryablePostDrain(ctx, tx, binding)
+					if e != nil {
+						return ErrUnavailable
+					}
+					eligible = postDrain
 				}
 			}
 			if binding.ExecutionMode == "replacement" && status == "failed" && hint.AttemptID == attempt && !eligible {
 				return ErrInvalid
 			}
 			if eligible {
-				if _, e = tx.Exec(ctx, `UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now(),resume_context=CASE WHEN $2 AND failure_code='PreparationFailed' THEN resume_context || '{"preparationRetry":true}'::jsonb ELSE resume_context END WHERE request_id=$1`, v.RequestID, binding.ExecutionMode == "replacement"); e != nil {
+				if _, e = tx.Exec(ctx, `UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now(),resume_context=CASE WHEN $3 THEN resume_context || jsonb_build_object('postDrainAttempt', $4::text) WHEN $2 AND failure_code='PreparationFailed' THEN resume_context || '{"preparationRetry":true}'::jsonb ELSE resume_context END WHERE request_id=$1`, v.RequestID, binding.ExecutionMode == "replacement", postDrain, attempt); e != nil {
 					return ErrUnavailable
 				}
 			}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -254,6 +255,10 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	}
 	observation, e := n.prepareObservation(ctx, in)
 	if e != nil {
+		return h, e
+	}
+	if e := n.restorePostDrain(ctx, &in); e != nil {
+		log.Print("live preparation failed stage=pgcat_post_drain_recovery")
 		return h, e
 	}
 	if _, e := n.Verifier.VerifyCheckpoint(ctx, in.Checkpoint); e != nil {

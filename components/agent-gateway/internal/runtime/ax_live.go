@@ -152,6 +152,10 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		}
 		return h, e
 	}
+	if e := a.restorePostDrain(ctx, &in); e != nil {
+		log.Print("live preparation failed stage=pgcat_post_drain_recovery")
+		return h, e
+	}
 	cp, e := a.Verifier.VerifyCheckpoint(ctx, in.Checkpoint)
 	if e != nil {
 		log.Print("AX preparation failed stage=checkpoint_verification")
