@@ -153,3 +153,25 @@ func TestPgcatContinuityRecapturesExactOriginalsBeforeDrain(t *testing.T) {
 		t.Fatalf("drain did not verify the newly held original sockets: %+v %v", drain, err)
 	}
 }
+
+func TestPgcatContinuityRecapturesUnexpandedFleet(t *testing.T) {
+	registry := newPgcatContinuity()
+	defer registry.release("request")
+	routed := map[string]netip.Addr{"old-a": netip.MustParseAddr("10.70.1.220"), "old-b": netip.MustParseAddr("10.70.1.221")}
+	saved := pgcatHoldEvidence{RequestID: "request", ScopeDigest: "scope", ObservationID: "held-originals",
+		Sockets: map[string]pgcatSocketEvidence{"old-a": {ID: "previous-a"}, "old-b": {ID: "previous-b"}}}
+	picks := []string{"old-a", "old-b"}
+	probe := func(context.Context) (pgcatSocket, error) {
+		id := picks[0]
+		picks = picks[1:]
+		return &fixturePgcatSocket{backend: routed[id]}, nil
+	}
+	if _, err := registry.recaptureBeforeDrain(t.Context(), saved, map[string]netip.Addr{"old-a": routed["old-a"], "foreign": routed["old-b"]}, time.Now(), probe); err == nil {
+		t.Fatal("changed cohort accepted")
+	}
+	hold, err := registry.recaptureBeforeDrain(t.Context(), saved, routed, time.Now(), probe)
+	if err != nil || hold.ObservationID != saved.ObservationID || len(hold.Sockets) != 2 || len(picks) != 0 ||
+		hold.Sockets["old-a"].ID == saved.Sockets["old-a"].ID || hold.Sockets["old-b"].ID == saved.Sockets["old-b"].ID {
+		t.Fatalf("wrong hold or physical sockets: %v", err)
+	}
+}

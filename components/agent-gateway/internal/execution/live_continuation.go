@@ -18,6 +18,7 @@ type PgcatContinuationRelease struct {
 }
 
 type ContinuationContext struct {
+	PreExpansionRetry     bool                      `json:"-"`
 	PostRetirementAttempt string                    `json:"-"`
 	Retirement            *ReplacementScaleAction   `json:"retirement,omitempty"`
 	ProbeRelease          *PgcatContinuationRelease `json:"probeRelease,omitempty"`
@@ -43,6 +44,7 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 	}
 	var persisted struct {
 		ContinuationContext
+		PreExpansionRetry     bool   `json:"preExpansionRetry"`
 		PreparationRetry      bool   `json:"preparationRetry"`
 		PostDrainAttempt      string `json:"postDrainAttempt"`
 		PostRetirementAttempt string `json:"postRetirementAttempt"`
@@ -77,6 +79,14 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 	}
 	if (decision.Next != "resume" && decision.Next != "continue") || saved.Decision != decision.Next || saved.Guidance != decision.Guidance {
 		return nil, ErrInvalid
+	}
+	if persisted.PreExpansionRetry {
+		if b.ApprovalProtocol != "request-grants-v1" || b.ExecutionMode != "replacement" || wait.Kind != "grant" || decision.Next != "resume" ||
+			persisted.PostDrainAttempt != "" || persisted.PostRetirementAttempt != "" || persisted.PreparationRetry {
+			return nil, ErrInvalid
+		}
+		saved.PreExpansionRetry = true
+		return &saved, nil
 	}
 	if persisted.PostRetirementAttempt != "" {
 		if b.ApprovalProtocol != "request-grants-v1" || b.ExecutionMode != "replacement" ||

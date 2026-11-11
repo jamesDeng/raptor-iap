@@ -32,6 +32,10 @@ func retryablePreparation(ctx context.Context, tx pgx.Tx, b AttemptBinding) (boo
 }
 
 func matchesResumedResourceWait(ctx context.Context, tx pgx.Tx, b AttemptBinding) (bool, error) {
+	return matchesResumedWait(ctx, tx, b, "resource", "waiting_resource")
+}
+
+func matchesResumedWait(ctx context.Context, tx pgx.Tx, b AttemptBinding, kind, state string) (bool, error) {
 	var cpRaw, waitRaw, resumeRaw, parentRaw []byte
 	var phase, parentHash, parentState string
 	var sameSession bool
@@ -56,8 +60,13 @@ func matchesResumedResourceWait(ctx context.Context, tx pgx.Tx, b AttemptBinding
 	}
 	parent.AttemptID = b.AttemptID
 	parent.DefinitionSHA256 = parentHash
-	if parent != b || parentState != "waiting_resource" || !sameSession || !cp.validFor(b) || !wait.Valid() || wait.Kind != "resource" || phase != "resumed" || wait.BindingDigest != b.DefinitionSHA256 {
+	if parent != b || parentState != state || !sameSession || !cp.validFor(b) || !wait.Valid() || wait.Kind != kind || phase != "resumed" ||
+		(kind == "resource" && wait.BindingDigest != b.DefinitionSHA256) {
 		return false, nil
 	}
-	return continuation == (ContinuationContext{ApprovalID: wait.ApprovalID, ActionID: wait.ActionID, BindingDigest: wait.BindingDigest, Decision: "resume"}), nil
+	expected := ContinuationContext{ApprovalID: wait.ApprovalID, ActionID: wait.ActionID, BindingDigest: wait.BindingDigest, Decision: "resume"}
+	if kind == "grant" {
+		expected.Kind = kind
+	}
+	return continuation == expected, nil
 }

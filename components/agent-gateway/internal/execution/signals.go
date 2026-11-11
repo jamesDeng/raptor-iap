@@ -129,12 +129,20 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 			clean := json.Unmarshal(cleanup, &confirmed) == nil && confirmed.SandboxAbsent && confirmed.KeyAbsent && confirmed.AccessRevoked
 			slotSafe := slot == nil && !unresolved || slot != nil && *slot != v.RequestID
 			eligible := status == "failed" && attemptState == "failed" && attemptEnded && hint.AttemptID == attempt && hint.AttemptID != "" && clean && !recovery && slotSafe
+			var preExpansion bool
 			var postDrain string
 			var postRetirement string
 			if eligible && binding.ExecutionMode == "replacement" {
 				eligible, e = retryablePreparation(ctx, tx, binding)
 				if e != nil {
 					return ErrUnavailable
+				}
+				if !eligible {
+					preExpansion, e = retryablePreExpansion(ctx, tx, binding)
+					if e != nil {
+						return ErrUnavailable
+					}
+					eligible = preExpansion
 				}
 				if !eligible {
 					postDrain, e = retryablePostDrain(ctx, tx, binding)
@@ -155,7 +163,7 @@ func (s *Store) DeliverSignal(ctx context.Context, v Signal) error {
 				return ErrInvalid
 			}
 			if eligible {
-				if _, e = tx.Exec(ctx, `UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now(),resume_context=CASE WHEN $4::text<>'' THEN resume_context || jsonb_build_object('postRetirementAttempt', $4::text) WHEN $3::text<>'' THEN resume_context || jsonb_build_object('postDrainAttempt', $3::text) WHEN $2 AND failure_code='PreparationFailed' THEN resume_context || '{"preparationRetry":true}'::jsonb ELSE resume_context END WHERE request_id=$1`, v.RequestID, binding.ExecutionMode == "replacement", postDrain, postRetirement); e != nil {
+				if _, e = tx.Exec(ctx, `UPDATE gateway.executions SET status='queued',stage='preparing',failure_code='',cleanup='pending',cleanup_status='{}',checkpoint_status='pending',checkpoint='{}',result=NULL,queued_at=now(),updated_at=now(),resume_context=CASE WHEN $5 THEN resume_context || '{"preExpansionRetry":true}'::jsonb WHEN $4::text<>'' THEN resume_context || jsonb_build_object('postRetirementAttempt', $4::text) WHEN $3::text<>'' THEN resume_context || jsonb_build_object('postDrainAttempt', $3::text) WHEN $2 AND failure_code='PreparationFailed' THEN resume_context || '{"preparationRetry":true}'::jsonb ELSE resume_context END WHERE request_id=$1`, v.RequestID, binding.ExecutionMode == "replacement", postDrain, postRetirement, preExpansion); e != nil {
 					return ErrUnavailable
 				}
 			}

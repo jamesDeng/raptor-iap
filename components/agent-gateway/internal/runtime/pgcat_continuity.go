@@ -96,7 +96,7 @@ func (r *pgcatContinuity) hold(ctx context.Context, request, scope string, origi
 // but records new physical sockets. Only the caller that verified no drain was
 // claimed may use this path.
 func (r *pgcatContinuity) recaptureBeforeDrain(ctx context.Context, saved pgcatHoldEvidence, routed map[string]netip.Addr, seenAt time.Time, connect pgcatConnector, lifecycle ...func(context.Context) bool) (pgcatHoldEvidence, error) {
-	if saved.ObservationID == "" || len(saved.Sockets) != 2 || len(routed) != 4 {
+	if saved.ObservationID == "" || len(saved.Sockets) != 2 || (len(routed) != 2 && len(routed) != 4) {
 		return pgcatHoldEvidence{}, ErrConfiguration
 	}
 	original, added := make(map[string]netip.Addr, 2), make(map[string]netip.Addr, 2)
@@ -107,9 +107,16 @@ func (r *pgcatContinuity) recaptureBeforeDrain(ctx context.Context, saved pgcatH
 			added[id] = addr
 		}
 	}
-	skip, valid := pgcatNodeAddresses(added)
-	if !valid {
+	if len(original) != 2 {
 		return pgcatHoldEvidence{}, ErrConfiguration
+	}
+	skip := make(map[netip.Addr]string, 2)
+	if len(added) != 0 {
+		var valid bool
+		skip, valid = pgcatNodeAddresses(added)
+		if !valid {
+			return pgcatHoldEvidence{}, ErrConfiguration
+		}
 	}
 	for _, addr := range original {
 		if skip[addr] != "" {

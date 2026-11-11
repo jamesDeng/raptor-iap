@@ -438,3 +438,38 @@ func TestObservationProxyAllowsFourBoundedReads(t *testing.T) {
 		t.Fatalf("overflow status %d", status)
 	}
 }
+
+func TestObservationProxyWaitsAndRechecksFleet(t *testing.T) {
+	calls := 0
+	var first time.Time
+	p, err := NewObservationProxy("https://api.rdev.raptor-iap.top"+observationRoute, func(_ context.Context, _ execution.LiveStart, _ ObservationMaterial, tool string, args json.RawMessage) (json.RawMessage, error) {
+		if tool != "cloud_read" || string(args) != `{"kind":"fleet"}` {
+			t.Fatalf("unexpected selector %s %s", tool, args)
+		}
+		calls++
+		if calls == 1 {
+			first = time.Now()
+			return nil, ErrRuntimeUnavailable
+		}
+		if time.Since(first) < time.Second {
+			t.Fatal("retried without waiting")
+		}
+		return json.RawMessage(`{"instances":[]}`), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := proxyStart()
+	_, err = p.Register(in, ObservationMaterial{}, func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, entry, ok := p.registeredEntry(in)
+	if !ok {
+		t.Fatal("missing entry")
+	}
+	_, code := p.guardedExecute(t.Context(), hash, entry, "cloud_read", json.RawMessage(`{"kind":"fleet"}`))
+	if code != 200 || calls != 2 {
+		t.Fatalf("status %d, fleet calls %d", code, calls)
+	}
+}
