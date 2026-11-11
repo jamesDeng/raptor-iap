@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"github.com/jamesDeng/raptor-iap/components/agent-gateway/internal/execution"
 	"io"
+	"log"
 	"net/http"
 	"reflect"
 	"strings"
@@ -228,6 +230,23 @@ func (p *ObservationProxy) guardedExecute(parent context.Context, hash [32]byte,
 		return nil, 503
 	} else {
 		raw, err = p.execute(ctx, entry.start, entry.material, tool, args)
+		var cloud struct {
+			Kind string `json:"kind"`
+		}
+		if tool == "cloud_read" && errors.Is(err, ErrRuntimeUnavailable) && json.Unmarshal(args, &cloud) == nil && cloud.Kind == "fleet" && ctx.Err() == nil {
+			log.Print("PgCat fleet observation unavailable; waiting before one read retry")
+			timer := time.NewTimer(time.Second)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return nil, 503
+			case <-timer.C:
+			}
+			if !active() || ctx.Err() != nil || entry.check(ctx) != nil || ctx.Err() != nil || !active() {
+				return nil, 401
+			}
+			raw, err = p.execute(ctx, entry.start, entry.material, tool, args)
+		}
 	}
 	unsafe := false
 	for _, secret := range entry.material.Secrets {
