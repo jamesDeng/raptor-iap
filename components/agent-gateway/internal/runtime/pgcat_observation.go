@@ -136,6 +136,14 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 		return nil, ErrConfiguration
 	}
 	binding, scope := entry.start.Binding, entry.start.Access.ReplacementScope
+	if pair := p.pgcat.get(binding.RequestID); pair != nil {
+		pair.mu.Lock()
+		retired := pair.retiredRestart != nil
+		pair.mu.Unlock()
+		if retired && args.Phase != "verify-final-traffic" {
+			return nil, ErrConfiguration
+		}
+	}
 	if args.Phase == "release-probes" {
 		release, err := p.pgcat.releaseProbes(ctx, binding.RequestID, scope.ResolutionDigest, args.ObservationID, args.DrainActionID)
 		if err != nil {

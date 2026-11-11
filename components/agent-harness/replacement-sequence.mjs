@@ -377,10 +377,29 @@ export class ReplacementSequence {
   if(tool==='db_proxy_nodes_deregister')for(const kind of this.trace.versioned?['fleet','backend','capacity']:['backend'])delete this.current[kind];
   if(tool==='deployment_restart')for(const kind of ['deployment','metrics','trafficFailures','connections'])delete this.current[kind];
  }
+ retirementReceipt(){
+  if(!this.trace.versioned||!this.trafficProof?.noErrors||this.trace.unresolved())return;
+  return this.trace.scaleActions().find(a=>a.previousDesiredCapacity===4&&a.desiredCapacity===2&&a.outcome==='submitted'&&toolID(a.actionId)&&toolID(a.scalingActivityId));
+ }
+ finalTrafficReads(){
+  const shrink=this.retirementReceipt();
+  if(!shrink)return ['the submitted scale-in receipt'];
+  const {oldInstanceIds,newInstanceIds}=this.cohort(),restart=this.restart(),retirement=this.current.retirement;
+  return missingReads([
+   [observed(retirement)&&retirement.status==='Successful'&&retirement.actionId===shrink.actionId&&
+    retirement.scalingActivityId===shrink.scalingActivityId&&Array.isArray(retirement.destroyedIds)&&
+    same([...retirement.destroyedIds].sort(),oldInstanceIds),'cloud_read retirement'],
+   [this.capacity(2),'cloud_read capacity'],
+   [this.fleet(newInstanceIds)&&this.current.fleet.instances.every(protectedNode),'cloud_read fleet'],
+   [this.backend(newInstanceIds),'cloud_read backend'],
+   [metricsValid(this.current.metrics,newInstanceIds),'metrics_read pgcatClients'],
+   [restart&&this.app(restart.generation,restart.at)&&this.current.deployment.generation===restart.generation,'deployment_read'],
+  ]);
+ }
  // Guide a stopped model from the recorded phase. Tools still enforce all
  // guards and the model still chooses and executes the next tool round.
  continuationStep(grantVerified){
-  if(!this.trace.versioned||!this.drainProof||this.finalTraffic)return;
+  if(!this.trace.versioned||!this.drainProof)return;
   if(!grantVerified)return {stage:'grant',instruction:'Read request_get first, then request_grant_get for the saved grant in its own tool round.'};
   if(this.trace.unresolved())return {stage:'reconcile',instruction:'Read request_grant_actions_list to reconcile the outstanding action. Never replay it.'};
   const {observationId,drainActionId}=this.drainProof;
@@ -390,7 +409,12 @@ export class ReplacementSequence {
    return {stage:'restart',instruction:'Finish the bound Deployment discovery and status reads, deployment_read, fleet, backend, capacity and pgcatClients. Then use deployment_restart once with the discovered workloadKey.'};
   }
   const trafficArgs=phase=>JSON.stringify({phase,observationId,restartActionId:restart.actionId});
-  if(this.intents('shrink').length)return {stage:'final-traffic',instruction:'Wait for the exact retirement, check the two-node fleet, metrics and Deployment, then call pgcat_connection_continuity with '+trafficArgs('verify-final-traffic')+'. Use resource_wait if not ready.'};
+  if(this.intents('shrink').length){
+   if(this.finalTraffic){
+    try{this.completionEvidence();return;}catch(e){if(e.message!=='MissingEvidence')throw e;}
+   }
+   return {stage:'final-traffic',instruction:'The scale-in receipt is saved. Read cloud_read retirement first. After it succeeds, read cloud_read fleet, backend and capacity, metrics_read pgcatClients, and deployment_read. Then call pgcat_connection_continuity with '+trafficArgs('verify-final-traffic')+'. Use resource_wait while retirement or traffic is settling.'};
+  }
   if(!this.trafficProof)return {stage:'traffic',instruction:'Check the restarted Deployment and wait for 2/2, then call pgcat_connection_continuity with '+trafficArgs('verify-traffic')+'. If metrics or traffic are warming, use resource_wait and recheck.'};
   return {stage:'retire',instruction:'Confirm zero old clients in pgcatClients and refresh the required fleet, backend, capacity and Deployment reads, then call the approved scale to 2 once.'};
  }
@@ -398,13 +422,9 @@ export class ReplacementSequence {
   const cohort=this.cohort(),r=this.restart();
   if(this.trace.unresolved()||this.intents('shrink').length!==1||!r||!this.capacity(2)||!this.fleet(cohort.newInstanceIds)||!this.current.fleet.instances.every(protectedNode)||!this.backend(cohort.newInstanceIds)||!this.app(r.generation,r.at))throw missing();
   if(this.trace.versioned){
-   const retirement=this.current.retirement,shrink=this.trace.scaleActions().find(action=>action.desiredCapacity===2);
-   if(!this.trafficProof?.noErrors||!this.finalTraffic?.noErrors||!observed(this.finalTraffic)||
-    !observed(retirement)||retirement.status!=='Successful'||
-    retirement.actionId!==shrink?.actionId||retirement.scalingActivityId!==shrink.scalingActivityId||
-    !same([...retirement.destroyedIds].sort(),cohort.oldInstanceIds)||
-    !metricsValid(this.current.metrics,cohort.newInstanceIds))throw missing();
-   return {...cohort,restartGeneration:r.generation,traffic:this.trafficProof,finalTraffic:this.finalTraffic,retirement};
+   if(this.finalTrafficReads().length||!this.finalTraffic?.noErrors||
+    !observed(this.finalTraffic,Math.max(...['retirement','capacity','fleet','backend','metrics','deployment'].map(k=>Date.parse(this.current[k].observedAt)))))throw missing();
+   return {...cohort,restartGeneration:r.generation,traffic:this.trafficProof,finalTraffic:this.finalTraffic,retirement:this.current.retirement};
   }
   return {...cohort,restartGeneration:r.generation};
  }

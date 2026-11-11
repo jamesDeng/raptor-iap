@@ -18,7 +18,7 @@ test('remote errors and oversized output are sanitized',async()=>{
 test('remote observation failure reports only a bounded tool and category',async()=>{
  const secret='fixture-private-response';const diagnostics=[];
  const unavailable=createObservationTools({binding,config:config(),replacementScope:scope,onDiagnostic:x=>diagnostics.push(x),fetch:async()=>new Response(secret,{status:503})});
- await assert.rejects(unavailable.cloudRead({kind:'fleet'}),/InvalidObservation/);
+ await assert.rejects(unavailable.cloudRead({kind:'fleet'}),e=>e.message==='InvalidObservation'&&e.name==='ObservationServiceUnavailable');
  const invalid=createObservationTools({binding,config:config(),replacementScope:scope,onDiagnostic:x=>diagnostics.push(x),fetch:async()=>new Response(secret)});
  await assert.rejects(invalid.deploymentRead({}),/InvalidObservation/);
  const local=createObservationTools({binding,config:config(),replacementScope:scope,onDiagnostic:x=>diagnostics.push(x),fetch:async()=>{throw Error('should not fetch')}});

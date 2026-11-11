@@ -361,7 +361,21 @@ test('a completed drain provides the next unfinished step after a model stop and
  resumed.intents=stage=>stage==='shrink'?[{}]:savedIntents(stage);
  assert.match(resumed.continuationStep(true).instruction,/verify-final-traffic/);
  resumed.finalTraffic={noErrors:true};
+ resumed.completionEvidence=()=>({});
  assert.equal(resumed.continuationStep(true),undefined);
+});
+test('only a submitted scale-in with accepted traffic unlocks the retirement read phase',()=>{
+ const {gate}=grantedWithdrawal();
+ const receipt={actionId:'shrink',previousDesiredCapacity:4,desiredCapacity:2,outcome:'submitted',scalingActivityId:'asa-example'};
+ gate.trace.scaleActions=()=>[receipt];
+ assert.equal(gate.retirementReceipt(),undefined);
+ gate.trafficProof={noErrors:true};
+ assert.equal(gate.retirementReceipt(),receipt);
+ gate.trace.scaleActions=()=>[{...receipt,outcome:'unknown'}];
+ assert.equal(gate.retirementReceipt(),undefined);
+ gate.trace.scaleActions=()=>[receipt];
+ gate.trace.unresolved=()=>true;
+ assert.equal(gate.retirementReceipt(),undefined);
 });
 test('drain proof rejects the wrong route count and a checkpoint entry ahead of its completed wait',t=>{
  const run=completedGrantDrain(t);

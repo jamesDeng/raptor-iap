@@ -18,15 +18,17 @@ type PgcatContinuationRelease struct {
 }
 
 type ContinuationContext struct {
-	ProbeRelease     *PgcatContinuationRelease `json:"probeRelease,omitempty"`
-	PreparationRetry bool                      `json:"-"`
-	PostDrainAttempt string                    `json:"-"`
-	Kind             string                    `json:"kind,omitempty"`
-	ApprovalID       string                    `json:"approvalId"`
-	ActionID         string                    `json:"actionId"`
-	BindingDigest    string                    `json:"bindingDigest"`
-	Decision         string                    `json:"decision"`
-	Guidance         string                    `json:"guidance"`
+	PostRetirementAttempt string                    `json:"-"`
+	Retirement            *ReplacementScaleAction   `json:"retirement,omitempty"`
+	ProbeRelease          *PgcatContinuationRelease `json:"probeRelease,omitempty"`
+	PreparationRetry      bool                      `json:"-"`
+	PostDrainAttempt      string                    `json:"-"`
+	Kind                  string                    `json:"kind,omitempty"`
+	ApprovalID            string                    `json:"approvalId"`
+	ActionID              string                    `json:"actionId"`
+	BindingDigest         string                    `json:"bindingDigest"`
+	Decision              string                    `json:"decision"`
+	Guidance              string                    `json:"guidance"`
 }
 
 // LiveContinuationContext validates persisted scheduling against the same
@@ -41,14 +43,15 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 	}
 	var persisted struct {
 		ContinuationContext
-		PreparationRetry bool   `json:"preparationRetry"`
-		PostDrainAttempt string `json:"postDrainAttempt"`
+		PreparationRetry      bool   `json:"preparationRetry"`
+		PostDrainAttempt      string `json:"postDrainAttempt"`
+		PostRetirementAttempt string `json:"postRetirementAttempt"`
 	}
 	if json.Unmarshal(raw, &persisted) != nil {
 		return nil, ErrInvalid
 	}
 	saved := persisted.ContinuationContext
-	if saved.ProbeRelease != nil {
+	if saved.ProbeRelease != nil || saved.Retirement != nil {
 		return nil, ErrInvalid
 	}
 	cp, e := s.OperationSession(ctx, b)
@@ -74,6 +77,15 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 	}
 	if (decision.Next != "resume" && decision.Next != "continue") || saved.Decision != decision.Next || saved.Guidance != decision.Guidance {
 		return nil, ErrInvalid
+	}
+	if persisted.PostRetirementAttempt != "" {
+		if b.ApprovalProtocol != "request-grants-v1" || b.ExecutionMode != "replacement" ||
+			wait.Kind != "resource" || decision.Next != "resume" || !conversationUUID.MatchString(persisted.PostRetirementAttempt) ||
+			persisted.PostRetirementAttempt == b.AttemptID || persisted.PostDrainAttempt != "" {
+			return nil, ErrInvalid
+		}
+		saved.PostRetirementAttempt = persisted.PostRetirementAttempt
+		return &saved, nil
 	}
 	if persisted.PostDrainAttempt != "" {
 		if b.ApprovalProtocol != "request-grants-v1" || b.ExecutionMode != "replacement" ||

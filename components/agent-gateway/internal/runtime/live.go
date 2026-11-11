@@ -257,6 +257,10 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	if e != nil {
 		return h, e
 	}
+	if e := n.restorePostRetirement(ctx, &in); e != nil {
+		log.Print("live preparation failed stage=pgcat_post_retirement_recovery")
+		return h, e
+	}
 	if e := n.restorePostDrain(ctx, &in); e != nil {
 		log.Print("live preparation failed stage=pgcat_post_drain_recovery")
 		return h, e

@@ -2,6 +2,9 @@ import {isDeepStrictEqual} from 'node:util';
 import {createReadConcurrency} from './mcp-runtime.mjs';
 import {PG_CAT_CONTINUITY,validContinuityArgs} from './observation-extension.mjs';
 const invalid=()=>new Error('InvalidObservation');
+export class ObservationServiceUnavailable extends Error {
+ constructor(){super('InvalidObservation');this.name='ObservationServiceUnavailable';}
+}
 const tools={cloudRead:['cloud_read','kind',['fleet','backend','capacity']],deploymentRead:['deployment_read'],metricsRead:['metrics_read','kind',['trafficFailures','connections','pgcatClients']],dbConnectionProbe:['db_connection_probe','instanceId']};
 export function createRemoteObservationTools({binding,config,replacementScope,fetch=globalThis.fetch,onDiagnostic=()=>{}}){
  const keys=['version','transport','url','token','binding','scope','expiresAt'];
@@ -25,7 +28,7 @@ export function createRemoteObservationTools({binding,config,replacementScope,fe
    if(!response.ok||!response.body?.getReader)throw invalid();const reader=response.body.getReader();let size=0;const parts=[];
    try{for(;;){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>262200){await reader.cancel();throw invalid();}parts.push(Buffer.from(value));}}finally{reader.releaseLock();}
    const raw=Buffer.concat(parts).toString('utf8');if(raw.includes(config.token))throw invalid();const result=JSON.parse(raw);if(!result||Object.keys(result).join(',')!=='data'||result.data===null||typeof result.data!=='object'||Buffer.byteLength(JSON.stringify(result.data))>262144)throw invalid();return result.data;
-  }catch{onDiagnostic({tool,category});throw invalid();}
+  }catch{onDiagnostic({tool,category});throw category==='http-503'?new ObservationServiceUnavailable():invalid();}
   });
  }]));
 }
