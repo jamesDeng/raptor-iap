@@ -125,6 +125,7 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		var e error
 		skillsBundle, e = BuildSkillsBundle(ctx, a.Config.SkillsRepository, in.Skills)
 		if e != nil || in.Skills.CommitSHA != in.Binding.SkillsCommit || in.Access.ReplacementScope == nil {
+			log.Print("AX preparation failed stage=skills")
 			return h, ErrConfiguration
 		}
 		if in.Binding.ExecutionMode != "qualification" {
@@ -145,6 +146,7 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	}
 	observation, e := a.prepareObservation(ctx, in)
 	if e != nil {
+		log.Print("AX preparation failed stage=observation")
 		if in.Binding.Operation == "db-proxy.replace-nodes" && in.Binding.ExecutionMode == "qualification" {
 			log.Print("AX qualification preflight category=failed phase=observation_preparation")
 		}
@@ -152,6 +154,11 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	}
 	cp, e := a.Verifier.VerifyCheckpoint(ctx, in.Checkpoint)
 	if e != nil {
+		log.Print("AX preparation failed stage=checkpoint_verification")
+		return h, e
+	}
+	if e = a.Observations.recoverPgcatPreDrainHold(ctx, in); e != nil {
+		log.Print("AX preparation failed stage=pgcat_pre_drain_hold")
 		return h, e
 	}
 	// Qualification must prove the actual issued agent observation path before
@@ -176,6 +183,7 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 		}
 		modelLease, e = a.ModelCredentials.Lease(ctx, in.Binding)
 		if e != nil {
+			log.Print("AX preparation failed stage=model_lease")
 			return h, e
 		}
 	}
@@ -185,12 +193,13 @@ func (a *AXLive) Start(ctx context.Context, in execution.LiveStart) (execution.R
 	if a.axRuns[h.RequestID] != nil {
 		return h, ErrConfiguration
 	}
-	a.axRuns[h.RequestID] = &axRun{start: in, observation: observation, modelLease: modelLease}
 	ctx, cancel := context.WithDeadline(ctx, in.Deadline)
 	defer cancel()
 	if e = a.intent(ctx, in.Binding, "sandbox", "raptor-"+in.Binding.AttemptID); e != nil {
+		log.Print("AX preparation failed stage=sandbox_intent")
 		return h, e
 	}
+	a.axRuns[h.RequestID] = &axRun{start: in, observation: observation, modelLease: modelLease}
 	out, e := a.call(ctx, a.request(in, "ensure"))
 	if e != nil {
 		return h, e

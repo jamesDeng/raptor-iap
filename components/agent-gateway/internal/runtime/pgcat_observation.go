@@ -213,7 +213,7 @@ func (p *ObservationProxy) pgcatObservation(ctx context.Context, entry observati
 			return nil, ErrRuntimeUnavailable
 		}
 		evidence, err := p.pgcat.verifyDrain(ctx, binding.RequestID, scope.ResolutionDigest, args.ObservationID,
-			args.DrainActionID, backend.ObservedAt, routed, connect)
+			args.DrainActionID, drain.ClaimedAt, backend.ObservedAt, routed, connect)
 		if err != nil {
 			return nil, err
 		}

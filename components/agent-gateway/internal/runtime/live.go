@@ -259,6 +259,9 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	if _, e := n.Verifier.VerifyCheckpoint(ctx, in.Checkpoint); e != nil {
 		return h, e
 	}
+	if e := n.Observations.recoverPgcatPreDrainHold(ctx, in); e != nil {
+		return h, e
+	}
 	var modelLease ModelLease
 	if b.ProviderID != "" {
 		if n.ModelCredentials == nil {
@@ -282,10 +285,11 @@ func (n *NativeLive) Start(ctx context.Context, in execution.LiveStart) (executi
 	attemptCtx, cancelAttempt := context.WithDeadline(ctx, in.Deadline)
 	ctx = attemptCtx
 	r := &nativeRun{start: in, cancel: cancelAttempt, skillsBundle: skillsBundle, observation: observation, modelLease: modelLease}
-	n.runs[b.RequestID] = r
 	if e := n.intent(ctx, b, "key", "raptor-"+b.AttemptID); e != nil {
+		cancelAttempt()
 		return h, e
 	}
+	n.runs[b.RequestID] = r
 	key, e := n.managementFor(b).CreateKey(ctx, "raptor-"+b.AttemptID, in.Deadline)
 	if e != nil {
 		return h, e

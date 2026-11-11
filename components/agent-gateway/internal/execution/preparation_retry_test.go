@@ -93,8 +93,54 @@ func TestFailedResourcePreparationCanResumeExactSavedSession(t *testing.T) {
 		t.Fatal("duplicate changed new attempt")
 	}
 }
+func TestFailedProviderPreparationResumesExactSavedReplacement(t *testing.T) {
+	s, x, b := failedResourcePreparation(t)
+	ctx := context.Background()
+	before, err := s.OperationSession(ctx, b)
+	if err != nil || before == nil {
+		t.Fatalf("saved session: %v %v", before, err)
+	}
+	if _, err = s.Pool.Exec(ctx, "UPDATE gateway.executions SET failure_code='PreparationFailed' WHERE request_id=$1", b.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Pool.Exec(ctx, `UPDATE gateway.attempts a SET binding=jsonb_set(a.binding,'{replacementScope}',source.binding->'replacementScope')
+		FROM gateway.operation_sessions saved JOIN gateway.attempts source ON source.id=saved.attempt_id
+		WHERE saved.request_id=$1 AND a.id=$2`, b.RequestID, b.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Pool.Exec(ctx, "INSERT INTO gateway.runtime_intents(attempt_id,kind,name,resource_id) VALUES($1,'provider','ax','ax')", b.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]string{"attemptId": x.AttemptID})
+	if err = s.DeliverSignal(ctx, Signal{ID: NewID(), RequestID: x.RequestID, Kind: "continue", Payload: payload}); err != nil {
+		t.Fatal("confirmed provider selection must not prevent resuming the saved resource wait", err)
+	}
+	next, err := s.ClaimLiveNext(ctx, "retry")
+	if err != nil || next == nil || next.RequestID != x.RequestID {
+		t.Fatalf("did not claim original request: %v %v", next, err)
+	}
+	b.AttemptID = next.AttemptID
+	if err = s.BindLive(ctx, b.AttemptID, "retry", b, b.DefinitionSHA256); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.OperationSession(ctx, b)
+	if err != nil || after == nil || *before != *after {
+		t.Fatalf("saved session changed: %v", err)
+	}
+	continuation, err := s.LiveContinuationContext(ctx, b)
+	if err != nil || continuation == nil || !continuation.PreparationRetry {
+		t.Fatalf("missing internal preparation retry provenance: %+v %v", continuation, err)
+	}
+	if raw, err := json.Marshal(continuation); err != nil || strings.Contains(string(raw), "preparationRetry") {
+		t.Fatalf("internal provenance leaked to the guest contract: %s %v", raw, err)
+	}
+	if err = s.SaveIssuedScope(ctx, b.AttemptID, "retry", resourceTestScope(b, "original")); err != nil {
+		t.Fatal("prior provider selection must not prevent the same scope from being restored", err)
+	}
+}
+
 func TestFailedResourcePreparationRejectsUnsafeRetry(t *testing.T) {
-	for _, scenario := range []string{"wrong-attempt", "missing-session", "different-session", "corrupt-session", "runtime-intent", "runtime-id", "runtime-event", "cleanup", "recovery", "wrong-failure", "wait-provenance", "resume-context", "newer-wait", "missing-access-intent"} {
+	for _, scenario := range []string{"wrong-attempt", "missing-session", "different-session", "corrupt-session", "runtime-intent", "runtime-id", "runtime-event", "cleanup", "recovery", "wrong-failure", "unconfirmed-provider", "provider-sandbox", "wait-provenance", "resume-context", "newer-wait", "missing-access-intent"} {
 		t.Run(scenario, func(t *testing.T) {
 			s, x, _ := failedResourcePreparation(t)
 			ctx := context.Background()
@@ -119,6 +165,16 @@ func TestFailedResourcePreparationRejectsUnsafeRetry(t *testing.T) {
 				query = `UPDATE gateway.executions SET cleanup_status='{}' WHERE request_id=$1`
 			case "recovery":
 				query = `UPDATE gateway.executions SET recovery_needed=true WHERE request_id=$1`
+			case "unconfirmed-provider", "provider-sandbox":
+				if _, err := s.Pool.Exec(ctx, "UPDATE gateway.executions SET failure_code='PreparationFailed' WHERE request_id=$1", x.RequestID); err != nil {
+					t.Fatal(err)
+				}
+				query = `INSERT INTO gateway.runtime_intents(attempt_id,kind,name) SELECT e.attempt_id,'provider','ax' FROM gateway.executions e WHERE e.request_id=$1`
+				if scenario == "provider-sandbox" {
+					query = `INSERT INTO gateway.runtime_intents(attempt_id,kind,name,resource_id)
+						SELECT e.attempt_id, i.kind, i.name, i.resource_id FROM gateway.executions e
+						CROSS JOIN (VALUES ('provider','ax','ax'),('sandbox','started','')) AS i(kind,name,resource_id) WHERE e.request_id=$1`
+				}
 			case "wrong-failure":
 				query = `UPDATE gateway.executions SET failure_code='ToolFailed' WHERE request_id=$1`
 			case "wait-provenance":

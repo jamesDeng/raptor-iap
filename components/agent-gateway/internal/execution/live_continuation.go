@@ -7,12 +7,13 @@ import (
 )
 
 type ContinuationContext struct {
-	Kind          string `json:"kind,omitempty"`
-	ApprovalID    string `json:"approvalId"`
-	ActionID      string `json:"actionId"`
-	BindingDigest string `json:"bindingDigest"`
-	Decision      string `json:"decision"`
-	Guidance      string `json:"guidance"`
+	PreparationRetry bool   `json:"-"`
+	Kind             string `json:"kind,omitempty"`
+	ApprovalID       string `json:"approvalId"`
+	ActionID         string `json:"actionId"`
+	BindingDigest    string `json:"bindingDigest"`
+	Decision         string `json:"decision"`
+	Guidance         string `json:"guidance"`
 }
 
 // LiveContinuationContext validates persisted scheduling against the same
@@ -25,10 +26,14 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
 		return nil, nil
 	}
-	var saved ContinuationContext
-	if json.Unmarshal(raw, &saved) != nil {
+	var persisted struct {
+		ContinuationContext
+		PreparationRetry bool `json:"preparationRetry"`
+	}
+	if json.Unmarshal(raw, &persisted) != nil {
 		return nil, ErrInvalid
 	}
+	saved := persisted.ContinuationContext
 	cp, e := s.OperationSession(ctx, b)
 	if e != nil || cp == nil {
 		return nil, ErrInvalid
@@ -53,5 +58,6 @@ func (s *Store) LiveContinuationContext(ctx context.Context, b AttemptBinding) (
 	if (decision.Next != "resume" && decision.Next != "continue") || saved.Decision != decision.Next || saved.Guidance != decision.Guidance {
 		return nil, ErrInvalid
 	}
+	saved.PreparationRetry = persisted.PreparationRetry && wait.Kind == "resource" && decision.Next == "resume"
 	return &saved, nil
 }

@@ -13,12 +13,18 @@ func retryablePreparation(ctx context.Context, tx pgx.Tx, b AttemptBinding) (boo
 	var code, hash string
 	var untouched bool
 	err := tx.QueryRow(ctx, `SELECT e.failure_code,a.definition_sha256,
- a.runtime_id='' AND EXISTS(SELECT 1 FROM gateway.runtime_intents i WHERE i.attempt_id=a.id AND i.kind='access') AND NOT EXISTS(SELECT 1 FROM gateway.runtime_intents i WHERE i.attempt_id=a.id AND i.kind<>'access') AND NOT EXISTS(SELECT 1 FROM gateway.runtime_events v WHERE v.attempt_id=a.id)
+ a.runtime_id=''
+ AND EXISTS(SELECT 1 FROM gateway.runtime_intents i WHERE i.attempt_id=a.id AND i.kind='access')
+ AND NOT EXISTS(SELECT 1 FROM gateway.runtime_intents i WHERE i.attempt_id=a.id AND i.kind<>'access'
+   AND NOT (e.failure_code='PreparationFailed' AND i.kind='provider' AND i.name=i.resource_id AND i.resource_id IN ('ax','aliyun')))
+ AND (e.failure_code<>'PreparationFailed' OR EXISTS(SELECT 1 FROM gateway.runtime_intents i
+   WHERE i.attempt_id=a.id AND i.kind='provider' AND i.name=i.resource_id AND i.resource_id IN ('ax','aliyun')))
+ AND NOT EXISTS(SELECT 1 FROM gateway.runtime_events v WHERE v.attempt_id=a.id)
  FROM gateway.executions e JOIN gateway.attempts a ON a.id=e.attempt_id WHERE e.request_id=$1 AND a.id=$2`, b.RequestID, b.AttemptID).Scan(&code, &hash, &untouched)
 	if err != nil {
 		return false, err
 	}
-	if code != "ProviderUnavailable" || !untouched {
+	if !untouched || (code != "ProviderUnavailable" && code != "PreparationFailed") {
 		return false, nil
 	}
 	b.DefinitionSHA256 = hash
