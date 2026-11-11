@@ -62,7 +62,7 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
   manager=openOperationSession({sdk,stateRoot,binding:b,sessionReference});
   const grants=b.approvalProtocol==='request-grants-v1'?new RequestGrantRuntime(manager,b,replacementScope,decisionContext):undefined;
   let readFailure=false,qualificationPauseAck,waitingForMetrics=false,uncertainWrite,refreshRejected=false;const toolCallGate=createToolCallGate(()=>readFailure,{parallelReads:true});const serializedRead=(work,readOnly=true)=>toolCallGate(async()=>{try{return await work();}catch(e){readFailure=true;throw e;}},{readOnly});
-  const localToolRejections=new Set();
+  const localToolRejections=new Set(),completionReminders=new Set();
   const trace=qualification?new QualificationTrace(manager,b,replacementScope,decisionContext):new ReplacementTrace(manager,b,replacementScope);
   const readiness=qualification?undefined:new ReplacementReadiness(manager,trace);
   const sequence=qualification?undefined:new ReplacementSequence(manager,trace,readiness,selectedProfile,decisionContext);
@@ -252,6 +252,15 @@ export async function runLiveReplacement({stateRoot,privateRoot,runtime,binding:
    const wait=pause.endRound();
    if(wait){if(!qualification)sequence.recordResourceWait(wait);grants?.recordWait(wait);return {action:'end'};}
    if(refreshRejected){refreshRejected=false;return {action:'continue'};}
+   if(!qualification&&decision?.action!=='end'&&turn.toolResults.length===0&&['stop','length'].includes(turn.message.stopReason)){
+    const step=sequence.continuationStep(Boolean(grants?.approved));
+    if(step&&!completionReminders.has(step.stage)){
+     completionReminders.add(step.stage);
+     narrate('The recorded drain is valid and the replacement is still in progress. I’ll continue with the next required step.');
+     await session.steer('Runtime continuation of the same approved request. Continue using tools now. '+step.instruction,undefined,{source:'extension'});
+     return {action:'continue'};
+    }
+   }
    return decision;
   };
   session.subscribe(event=>{

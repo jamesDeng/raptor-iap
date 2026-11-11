@@ -59,6 +59,9 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
   if(phase==='drain'&&round===6)t.mock.timers.tick(31000);
   visible.push(getCurrentTools(context.messages).map(tool=>tool.name));
   if(phase==='resume'&&round===4)feedback=context.messages.findLast(m=>m.role==='toolResult'&&m.toolName===expand.name);
+  if(phase==='after-drain-wait'&&round===5)assert.match(JSON.stringify(context.messages.at(-1)),/Runtime continuation.*release-probes/);
+  if(phase==='after-probe-release'&&round===2)assert.match(JSON.stringify(context.messages.at(-1)),/Runtime continuation.*request_get.*request_grant_get/);
+  if(phase==='after-probe-release'&&round===6)assert.match(JSON.stringify(context.messages.at(-1)),/Runtime continuation.*deployment_restart/);
   const rounds=phase==='proposal'?[
    [requestRead],[modelCall('mcp__raptor__request_grant_request',proposal)]
   ]:phase==='resume'?[
@@ -86,9 +89,9 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    ]:drainAccepted?[[drain]]:[])
   ]:phase==='after-drain-wait'?[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
-   [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})],[release],[modelCall('resource_wait',{seconds:60})]
+   [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})],[],[release],[modelCall('resource_wait',{seconds:60})]
   ]:phase==='after-probe-release'?[
-   [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
+   [],[requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],
    [modelCall('pgcat_connection_continuity',{...release.arguments,phase:'verify-drain'})]
   ]:[
    [requestRead],[modelCall('mcp__raptor__request_grant_get',{requestId,grantId:grantID})],[requestRead,expand],
@@ -173,7 +176,8 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
    const at=new Date().toISOString();
    return {requestId,scopeDigest:scope.resolutionDigest,observationId:'held-originals',observedAt:at,
     sockets:Object.fromEntries(old.map(id=>[id,{id,lastSqlAt:at,openedAt:new Date(Date.now()-61000).toISOString(),rounds:2}])),
-    ...(args.phase==='verify-drain'?{drainActionId:'drain',drainObservedAt:at,freshConnections:Object.fromEntries(added.map(id=>[id,12]))}:{})};
+    ...(args.phase==='verify-drain'?{drainActionId:'drain',drainObservedAt:at,freshConnections:Object.fromEntries(added.map(id=>[id,12]))}:{}),
+    ...(args.phase==='release-probes'?{drainActionId:'drain',releasedAt:at}:{})};
   })};
  const options={stateRoot,privateRoot:path.join(root,'private'),runtime,binding:b,replacementScope:scope,observer,fetch,
   skills:{tag:'skills-v1.0.0',commitSHA:b.skillsCommit,path:fs.realpathSync(new URL('../../agent-skills',import.meta.url))},
@@ -216,12 +220,15 @@ test(`an approved PgCat write preserves gate behavior for ${stale}`,async t=>{
     binding:{...b,attemptId:'66666666-6666-4666-8666-666666666666'},sessionReference:drained.sessionReference,
     decisionContext:{...drained.paused,decision:'resume'}});
    assert.equal(released.paused?.kind,'resource',JSON.stringify(released));
+   assert.equal(round,6,'one extra model turn completes release after the early stop');
    assert.deepEqual(continuityCalls,['hold','verify-drain','release-probes']);
    t.mock.timers.tick(60000);
    phase='after-probe-release';round=0;
-   await runLiveReplacement({...options,privateRoot:path.join(root,'after-probe-release'),
+   const afterRelease=await runLiveReplacement({...options,privateRoot:path.join(root,'after-probe-release'),
     binding:{...b,attemptId:'77777777-7777-4777-8777-777777777777'},sessionReference:released.sessionReference,
     decisionContext:{...released.paused,decision:'resume'}});
+   assert.equal(afterRelease.error,'MissingEvidence','a second no-progress stop does not claim success');
+   assert.equal(round,6,'the reminders refresh the grant, then continue from the saved release');
    assert.deepEqual(continuityCalls,['hold','verify-drain','release-probes'],'checkpoint replay must not contact Gateway again');
    assert.equal(canariesReleased,1);
   }

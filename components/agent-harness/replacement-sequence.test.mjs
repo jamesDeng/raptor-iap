@@ -335,6 +335,34 @@ test('checkpoint reuses completed drain proof for the same request after a later
  assert.deepEqual(resumed.gate.savedDrainProof(verifyDrain),proof);
  assert.throws(()=>resumed.gate.savedDrainProof({...verifyDrain,observationId:'foreign'}),/InvalidEvidence/);
 });
+test('a completed drain provides the next unfinished step after a model stop and a later wait',t=>{
+ const run=completedGrantDrain(t),proof=drainProof();
+ assert.equal(run.gate.continuationStep(true),undefined);
+ run.gate.observeContinuity(verifyDrain,proof);
+ const {gate}=grantedWithdrawal(run.session);
+ assert.match(gate.continuationStep(false).instruction,/request_get.*request_grant_get/);
+ assert.equal(gate.continuationStep(true).stage,'release');
+ assert.match(gate.continuationStep(true).instruction,/"phase":"release-probes","observationId":"hold","drainActionId":"drain"/);
+ const {freshConnections,drainObservedAt,...hold}=proof;
+ const release={...hold,releasedAt:proof.observedAt};
+ assert.throws(()=>gate.observeContinuity(releaseDrain,{...release,observationId:'foreign'}),/InvalidEvidence/);
+ gate.observeContinuity(releaseDrain,release);
+ gate.observeContinuity(releaseDrain,release);
+ const resumed=grantedWithdrawal(run.session).gate;
+ assert.equal(resumed.continuationStep(true).stage,'restart');
+ resumed.trace.unresolved=()=>true;
+ assert.match(resumed.continuationStep(true).instruction,/request_grant_actions_list/);
+ resumed.trace.unresolved=()=>false;
+ resumed.restart=()=>({generation:6,actionId:'restart-accepted'});
+ assert.match(resumed.continuationStep(true).instruction,/verify-traffic.*restart-accepted/);
+ resumed.trafficProof={noErrors:true};
+ assert.match(resumed.continuationStep(true).instruction,/zero.*scale/i);
+ const savedIntents=resumed.intents.bind(resumed);
+ resumed.intents=stage=>stage==='shrink'?[{}]:savedIntents(stage);
+ assert.match(resumed.continuationStep(true).instruction,/verify-final-traffic/);
+ resumed.finalTraffic={noErrors:true};
+ assert.equal(resumed.continuationStep(true),undefined);
+});
 test('drain proof rejects the wrong route count and a checkpoint entry ahead of its completed wait',t=>{
  const run=completedGrantDrain(t);
  const proof=drainProof();
