@@ -154,3 +154,9 @@ variable "catalog_target_db_code" {
   }
 }
 
+
+variable "group_deletion_protection" {
+  description = "Prevent deletion of the ESS group during normal operation."
+  type        = bool
+  default     = true
+}
