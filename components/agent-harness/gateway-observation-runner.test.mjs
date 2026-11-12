@@ -1,6 +1,8 @@
 import {withResourceProof} from './replacement-sequence-fixtures.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {runGatewayObservation} from './gateway-observation-runner.mjs';
 const metricSeries=['up','upTimestamp','active','activeTimestamp','idle','idleTimestamp','waiting','waitingTimestamp'];
 const credential='raptor_at_'+'a'.repeat(43);
@@ -192,4 +194,60 @@ test('concurrent observations keep bundle cancellation and source results isolat
  ]);
  assert.equal(failed.status,'rejected');assert.equal(cancelled,true);assert.equal(succeeded.status,'fulfilled');assert.equal(succeeded.value.nodes[0].connectedClients,7);
  assert.equal(slow.calls.filter(r=>r.method==='tools/call').length,1);assert.equal(fresh.calls.filter(r=>r.method==='tools/call').length,1);
+});
+
+test('fleet HTTP failure reports only bounded diagnostics',async()=>{
+ const diagnostics=[];
+ const upstreamRequestId='01A23BCD-4567-89AB-CDEF-0123456789AB';
+ const f=fixture({respond:(rpc,init)=>{
+  if(rpc.method!=='tools/call')return;
+  assert.match(new Headers(init.headers).get('X-Raptor-Observation-Id'),/^[0-9a-f-]{36}$/);
+  return new Response(credential,{status:503,headers:{'X-Ca-Request-Id':upstreamRequestId}});
+ }});
+ await assert.rejects(runGatewayObservation(input(),{fetch:f.fetch,reportFailure:d=>diagnostics.push(d)}),/^Error: InvalidObservation$/);
+ assert.equal(diagnostics.length,1);
+ const {stage,category,httpStatus,upstreamId,observationId,elapsedMs}=diagnostics[0];
+ assert.deepEqual({stage,category,httpStatus,upstreamId},{stage:'mcp_call',category:'upstream_http',httpStatus:503,upstreamId:upstreamRequestId});
+ assert.match(observationId,/^[0-9a-f-]{36}$/);
+ assert.ok(Number.isInteger(elapsedMs)&&elapsedMs>=0);
+ assert.equal(JSON.stringify(diagnostics).includes(credential),false);
+});
+
+test('fleet validation failure omits invalid upstream IDs and response fields',async()=>{
+ const diagnostics=[];
+ const f=fixture({respond:(rpc)=>{
+  if(rpc.method!=='tools/call')return;
+  const data={privatePayload:credential};
+  return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result:{structuredContent:{data},content:[]}}).replace(credential,'raw-fixture-secret'),{headers:{'Content-Type':'application/json','X-Ca-Request-Id':credential}});
+ }});
+ await assert.rejects(runGatewayObservation(input(),{fetch:f.fetch,reportFailure:d=>diagnostics.push(d)}),/InvalidObservation/);
+ assert.equal(diagnostics.length,1);
+ assert.equal(diagnostics[0].stage,'observation_validation');
+ assert.equal(diagnostics[0].category,'invalid_observation');
+ assert.equal(diagnostics[0].upstreamId,'');
+ assert.doesNotMatch(JSON.stringify(diagnostics),/raw-fixture-secret|raptor_at_/);
+});
+
+test('fleet MCP failure retains Infra API diagnostics without the MCP error text',async()=>{
+ const diagnostics=[];
+ const upstreamId='01A23BCD-4567-89AB-CDEF-0123456789AB';
+ const infraFailure={stage:'ess_scaling_instances',category:'throttled',elapsedMs:4,upstreamId,httpStatus:429};
+ const f=fixture({respond:(rpc)=>{
+  if(rpc.method!=='tools/call')return;
+  const result={isError:true,content:[{type:'text',text:'raw-provider-error'}],_meta:{'raptor/fleetReadFailure':infraFailure}};
+  return new Response(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}),{headers:{'Content-Type':'application/json'}});
+ }});
+ await assert.rejects(runGatewayObservation(input(),{fetch:f.fetch,reportFailure:d=>diagnostics.push(d)}),/InvalidObservation/);
+ assert.equal(diagnostics.length,1);
+ assert.equal(diagnostics[0].category,'upstream_tool_error');
+ assert.deepEqual(diagnostics[0].infraFailure,infraFailure);
+ assert.doesNotMatch(JSON.stringify(diagnostics),/raw-provider-error|raptor_at_/);
+});
+
+test('runner CLI rejects unsupported input with the image-check error marker',()=>{
+ const runner=fileURLToPath(new URL('./gateway-observation-runner.mjs',import.meta.url));
+ const result=spawnSync(process.execPath,[runner],{input:'{}',encoding:'utf8'});
+ assert.equal(result.status,1);
+ assert.equal(result.stdout,'');
+ assert.equal(result.stderr,'InvalidObservation');
 });

@@ -245,3 +245,37 @@ func TestResourceServiceApplicationDiscoveryRetainsCatalogClusterSemantics(t *te
 		t.Fatal(w.Code, w.Body.String())
 	}
 }
+
+type failingFleetObserver struct{ resourceObserver }
+
+func (*failingFleetObserver) ObserveProxy(ctx context.Context, _ domain.Environment, _ domain.ProxyReadTarget, _ string) (domain.ProxyObservation, error) {
+	domain.LogFleetReadFailure(ctx, "ess_scaling_instances", "throttled", time.Now(), "01A23BCD-4567-89AB-CDEF-0123456789AB", 429)
+	return domain.ProxyObservation{}, &domain.CommandError{Code: "raw-provider-secret"}
+}
+
+func TestFleetReadMCPDiagnosticPreservesErrorAndOmitsRawProviderDetails(t *testing.T) {
+	h := newResourceMCPHandler(resourceOperations{reader: &failingFleetObserver{}, resolver: &resourceFixture{rows: resourceRows()}, principal: "user"})
+	const input = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"proxy_observation_get","arguments":{"requestId":"8a0cb7f0-4ea3-4940-b9dc-6eec1292f194","envCode":"dev","proxyCode":"p","kind":"fleet"}}}`
+	for _, observationID := range []string{"5c222020-6d33-4fd8-ad43-1adb377a0c54", ""} {
+		r := httptest.NewRequest("POST", "/mcp", strings.NewReader(input))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		r.Header.Set("X-Raptor-Observation-Id", observationID)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var payload struct {
+			Result struct {
+				IsError bool                               `json:"isError"`
+				Meta    map[string]domain.FleetReadFailure `json:"_meta"`
+			}
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &payload) != nil || !payload.Result.IsError ||
+			!strings.Contains(w.Body.String(), "ProviderUnavailable") || strings.Contains(w.Body.String(), "raw-provider-secret") {
+			t.Fatalf("unexpected MCP response: %d %s", w.Code, w.Body)
+		}
+		d, ok := payload.Result.Meta["raptor/fleetReadFailure"]
+		if ok != (observationID != "") || ok && (d.Stage != "ess_scaling_instances" || d.Category != "throttled" || d.HTTPStatus != 429 || d.UpstreamID != "01A23BCD-4567-89AB-CDEF-0123456789AB") {
+			t.Fatalf("unexpected diagnostic: %+v", d)
+		}
+	}
+}

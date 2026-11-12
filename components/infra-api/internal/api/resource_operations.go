@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"raptor-iap/infra-api/internal/domain"
 	"raptor-iap/infra-api/internal/resources"
@@ -256,7 +257,15 @@ func validateApplicationWorkload(r domain.ResolvedResource, workload domain.Appl
 	}
 	return nil
 }
-func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map[string]string) (any, error) {
+func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map[string]string) (_ any, failure error) {
+	stage := "input_validation"
+	started := time.Now()
+	defer func() {
+		var e *operationError
+		if errors.As(failure, &e) {
+			domain.LogFleetReadFailure(ctx, stage, e.code, started, "", 0)
+		}
+	}()
 	field, options := resourceProxyReadOptions(tool)
 	clients := tool == "proxy_pgcat_metrics_get" && args["series"] == "clients"
 	q := url.Values{}
@@ -275,6 +284,7 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	selectors := map[string]string{"requestId": args["requestId"], "envCode": args["envCode"], "proxyCode": args["proxyCode"]}
+	stage = "authorization"
 	i, e := o.authorize(ctx, tool, tool, selectors, args, false)
 	if e != nil {
 		return nil, e
@@ -285,6 +295,7 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 		binding, scope, expiry := *i.Binding, *i.ReplacementScope, *i.ExpiresAt
 		i.Binding, i.ReplacementScope, i.ExpiresAt = &binding, &scope, &expiry
 	}
+	stage = "resource_resolution"
 	r, e := o.resolver.Resolve(ctx, args["envCode"], "db-proxy", args["proxyCode"])
 	if e != nil {
 		return nil, commandFailure(e)
@@ -292,6 +303,7 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 	if !resolvedSelectors(r, args["envCode"], "db-proxy", args["proxyCode"], i) || r.Proxy == nil || r.PgproxyWorkload == nil || r.PgproxyWorkload.Type != "ess" {
 		return nil, &operationError{409, "IdentityChanged"}
 	}
+	stage = "resolution_proof"
 	if i != nil {
 		if e = o.matchProof(ctx, *i, r); e != nil {
 			return nil, e
@@ -321,6 +333,7 @@ func (o resourceOperations) proxyRead(ctx context.Context, tool string, args map
 	if _, err := proxySelectionSelectors(field, options, internal); err != nil {
 		return nil, &operationError{400, "InvalidInput"}
 	}
+	stage = "provider_observation"
 	data, e := (operations{reader: o.reader, scopes: map[string]domain.Environment{r.Environment.Code: r.Environment}}).observeProxyRead(ctx, tool, internal)
 	if e != nil {
 		return nil, e

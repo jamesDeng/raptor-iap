@@ -110,7 +110,16 @@ func observationLifecycle(state string) bool {
 	return false
 }
 
-func (p *ProxyBackend) observationMembers(ctx context.Context, env domain.Environment, m domain.ProxyMapping) ([]domain.FleetNode, error) {
+func (p *ProxyBackend) observationMembers(ctx context.Context, env domain.Environment, m domain.ProxyMapping) (_ []domain.FleetNode, failure error) {
+	var started time.Time
+	var sdkErr error
+	var responseID string
+	defer func() {
+		if failure != nil && !started.IsZero() {
+			logFleetESSFailure(ctx, "ess_scaling_instances", started, sdkErr, responseID)
+		}
+	}()
+
 	if p.sdk.instances == nil {
 		return nil, domain.ErrNotConfigured
 	}
@@ -118,7 +127,13 @@ func (p *ProxyBackend) observationMembers(ctx context.Context, env domain.Enviro
 	total := -1
 	seen := map[string]bool{}
 	for page := int32(1); page <= 100; page++ {
+		started = time.Now()
 		r, err := p.sdk.instances(ctx, &ess.DescribeScalingInstancesRequest{RegionId: tea.String(env.Region), ScalingGroupId: tea.String(m.GroupID), PageNumber: tea.Int32(page), PageSize: tea.Int32(50)}, noRetry())
+		sdkErr = err
+		responseID = ""
+		if r != nil && r.Body != nil {
+			responseID = tea.StringValue(r.Body.RequestId)
+		}
 		if err != nil || r == nil || r.Body == nil || r.Body.TotalCount == nil || r.Body.PageNumber == nil || *r.Body.PageNumber != page || *r.Body.TotalCount < 0 || *r.Body.TotalCount > 5000 {
 			return nil, providerRefusal()
 		}

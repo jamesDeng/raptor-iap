@@ -8,9 +8,19 @@ import (
 	"raptor-iap/infra-api/internal/domain"
 	"raptor-iap/infra-api/internal/policy"
 	"sort"
+	"time"
 )
 
-func (p *ProxyBackend) groups(ctx context.Context, env domain.Environment, m domain.ProxyMapping) ([]*ess.DescribeScalingGroupsResponseBodyScalingGroups, error) {
+func (p *ProxyBackend) groups(ctx context.Context, env domain.Environment, m domain.ProxyMapping) (_ []*ess.DescribeScalingGroupsResponseBodyScalingGroups, failure error) {
+	var started time.Time
+	var sdkErr error
+	var responseID string
+	defer func() {
+		if failure != nil && !started.IsZero() {
+			logFleetESSFailure(ctx, "ess_scaling_groups_by_tags", started, sdkErr, responseID)
+		}
+	}()
+
 	if p.sdk.groups == nil {
 		return nil, domain.ErrNotConfigured
 	}
@@ -18,7 +28,13 @@ func (p *ProxyBackend) groups(ctx context.Context, env domain.Environment, m dom
 	total := -1
 	seen := map[string]bool{}
 	for page := int32(1); page <= 100; page++ {
+		started = time.Now()
 		r, e := p.sdk.groups(ctx, &ess.DescribeScalingGroupsRequest{RegionId: tea.String(env.Region), PageNumber: tea.Int32(page), PageSize: tea.Int32(50), Tags: []*ess.DescribeScalingGroupsRequestTags{{Key: tea.String("env"), Value: tea.String(env.Code)}, {Key: tea.String("db-proxy-code"), Value: tea.String(m.Code)}}}, noRetry())
+		sdkErr = e
+		responseID = ""
+		if r != nil && r.Body != nil {
+			responseID = tea.StringValue(r.Body.RequestId)
+		}
 		if e != nil {
 			return nil, providerRefusal()
 		}
@@ -202,8 +218,23 @@ func (p *ProxyBackend) unhealthy(ctx context.Context, env domain.Environment, m 
 
 // Filtered ESS enumeration returns only the filter tags. Hydrate the exact
 // registered group without filters before verifying its database association.
-func (p *ProxyBackend) groupDetail(ctx context.Context, env domain.Environment, m domain.ProxyMapping) (*ess.DescribeScalingGroupsResponseBodyScalingGroups, error) {
+func (p *ProxyBackend) groupDetail(ctx context.Context, env domain.Environment, m domain.ProxyMapping) (_ *ess.DescribeScalingGroupsResponseBodyScalingGroups, failure error) {
+	var started time.Time
+	var sdkErr error
+	var responseID string
+	defer func() {
+		if failure != nil && !started.IsZero() {
+			logFleetESSFailure(ctx, "ess_scaling_group_by_id", started, sdkErr, responseID)
+		}
+	}()
+
+	started = time.Now()
 	r, e := p.sdk.groups(ctx, &ess.DescribeScalingGroupsRequest{RegionId: tea.String(env.Region), ScalingGroupIds: []*string{tea.String(m.GroupID)}, PageNumber: tea.Int32(1), PageSize: tea.Int32(1)}, noRetry())
+	sdkErr = e
+	responseID = ""
+	if r != nil && r.Body != nil {
+		responseID = tea.StringValue(r.Body.RequestId)
+	}
 	if e != nil || r == nil || r.Body == nil || r.Body.TotalCount == nil || *r.Body.TotalCount != 1 || r.Body.PageNumber == nil || *r.Body.PageNumber != 1 || len(r.Body.ScalingGroups) != 1 || r.Body.ScalingGroups[0] == nil {
 		return nil, providerRefusal()
 	}
