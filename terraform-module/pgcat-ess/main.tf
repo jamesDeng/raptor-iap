@@ -30,7 +30,7 @@ resource "alicloud_nlb_load_balancer" "proxy" {
   load_balancer_type          = "Network"
   payment_type                = "PayAsYouGo"
   vpc_id                      = var.vpc_id
-  deletion_protection_enabled = true
+  deletion_protection_enabled = var.nlb_deletion_protection_enabled
   tags                        = local.tags
   dynamic "zone_mappings" {
     for_each = var.nlb_zones

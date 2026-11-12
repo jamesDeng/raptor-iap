@@ -23,11 +23,12 @@ module "proxy" {
   execution_role_name    = "raptor-iap-rdev-pgcat-config"
   bootstrap_revision     = "744951df8415b4f4cfd4b78a6d7bb6e994ed11c2"
   # DP00001 POC closeout prepares a separate reviewed removal plan.
-  group_deletion_protection = false
-  bootstrap_reviewed        = true # reviewed artifact/config binding, not a claim of live ECS boot
-  monitoring_enabled        = var.monitoring_agent_enabled
-  monitoring_agent_image    = var.monitoring_agent_enabled ? "prom/prometheus@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e" : null
-  monitoring_receiver_host  = var.monitoring_agent_enabled ? module.metrics_receiver[0].private_endpoint : null
+  group_deletion_protection       = false
+  nlb_deletion_protection_enabled = false
+  bootstrap_reviewed              = true # reviewed artifact/config binding, not a claim of live ECS boot
+  monitoring_enabled              = var.monitoring_agent_enabled
+  monitoring_agent_image          = var.monitoring_agent_enabled ? "prom/prometheus@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e" : null
+  monitoring_receiver_host        = var.monitoring_agent_enabled ? module.metrics_receiver[0].private_endpoint : null
 }
 # Adopt existing IAM. Retire the temporary pgcat-iam state owner before APPLY.
 import {
