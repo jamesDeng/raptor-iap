@@ -44,7 +44,7 @@ def summary(plan,sha,stack="test-foundation"):
         address=r['address']; actions=r['change']['actions']
         if not re.fullmatch(r'[A-Za-z0-9_.\[\]"/-]{1,240}',address):raise ValueError('Unsafe address')
         if actions != ['forget'] and (not actions or any(a not in ('create','update','delete','no-op','read') for a in actions)):raise ValueError('Unknown action')
-        if actions==['forget']:actions=['forget (retained in cloud)']
+        if actions==['forget']:actions=['forget (no direct cloud deletion)']
         importing=bool(r['change'].get('importing'))
         if actions==['no-op'] and not importing:continue
         if importing:actions=['import']+([] if actions==['no-op'] else actions)

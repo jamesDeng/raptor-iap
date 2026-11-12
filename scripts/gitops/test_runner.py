@@ -56,7 +56,7 @@ class ForgetSummaryContracts(unittest.TestCase):
     def test_comment_distinguishes_retaining_cloud_resource_from_deletion(self):
         plan={'complete':True,'resource_changes':[{'mode':'managed','address':'module.proxy[0].alicloud_resource_manager_service_linked_role.nlb','change':{'actions':['forget'],'before':{'id':'PRIVATE_ID'}}}]}
         comment=summary(plan,'a'*40)
-        self.assertIn('forget (retained in cloud)',comment)
+        self.assertIn('forget (no direct cloud deletion)',comment)
         self.assertNotIn('PRIVATE_ID',comment)
 
 
