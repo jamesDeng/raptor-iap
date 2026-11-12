@@ -294,3 +294,37 @@ The independent Prometheus observer recorded 36 valid 90-second SQL windows
 with zero failures, timeouts or ambiguous outcomes. Some observer polls did
 not produce usable samples. The 36-window count describes valid samples.
 [Raptor Progress and Result](https://raptor.rdev.raptor-iap.top/#request=8a0cb7f0-4ea3-4940-b9dc-6eec1292f194)
+
+## POC closeout on 2026-11-12
+
+**The rdev PgCat 2→4→2 POC passed.** One request-scoped human grant let the
+Raptor Agent orchestrate five authorized actions through Infra API. The
+successful run used `rdev.ali`, PgCat `DP00001`, test app `A00003`, GPT-6.1 Sol,
+and `skills-v0.5.16`. Raptor marked it Completed with a verified checkpoint and
+confirmed cleanup. The replacement gate returned to disabled after acceptance.
+[Final replacement](https://raptor.rdev.raptor-iap.top/#request=15a6d72e-904c-44e0-b5d8-f6e862e457de) ·
+[Read-only qualification](https://raptor.rdev.raptor-iap.top/#request=a0226a37-a899-4615-aa34-971ebd1b9647)
+
+- The original nodes remained attached at NLB weight 0. The same two TCP
+  sockets still executed SQL. All 24 fresh connections reached the new pair,
+  split 10 and 14.
+- One rolling restart advanced the test Deployment from generation 32 to 33.
+  After the application returned to 2/2 ready, both old nodes reached zero
+  active, idle, and waiting connections. ESS activity `asa-t4nhxo619qrxc6ygixur`
+  retired exactly the old pair.
+- After retirement, the two new nodes recorded 341 and 340 successful
+  application queries and transactions with zero errors. Independent monitoring
+  recorded 46 usable SQL windows with no failures, timeouts, or ambiguous
+  outcomes and three unusable polls.
+- The original pre-expansion fleet 503 has bounded retry and same-request
+  recovery. Gateway and Infra API now correlate sanitized error diagnostics.
+  The original upstream cause remains unknown and the final run did not
+  exercise the live 503 path.
+  [Fleet recovery](https://github.com/jamesDeng/raptor-iap/pull/447) ·
+  [Failure tracing](https://github.com/jamesDeng/raptor-iap/pull/450)
+
+**Decision.** Proceed to pre-production evaluation. Before production approval,
+exercise uncertain write receipts, process loss during a held TCP connection,
+conflicting requests, and revocation. Use representative traffic and long
+transactions, define service and recovery objectives, and compare the Agent
+with the manual runbook and a deterministic workflow.
