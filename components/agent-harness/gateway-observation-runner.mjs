@@ -128,5 +128,22 @@ function invokeProbe(input){return new Promise((resolve,reject)=>{
  const child=execFile('/usr/local/bin/gateway-observer-probe',[],{env:{PATH:'/usr/local/bin:/usr/bin:/bin'},timeout:15000,maxBuffer:262144},(error,stdout)=>{if(error)return reject(invalid());try{resolve(JSON.parse(stdout));}catch{reject(invalid());}});child.stdin.on('error',()=>{});child.stdin.end(JSON.stringify(input));
 });}
 if(process.argv[1]?.endsWith('/gateway-observation-runner.mjs')){
- try{let input='';for await(const chunk of process.stdin){input+=chunk;if(Buffer.byteLength(input)>131072)throw invalid();}const result=await runGatewayObservation(JSON.parse(input),{reportFailure:diagnostic=>process.stderr.write(JSON.stringify(diagnostic))});const raw=JSON.stringify(result);if(Buffer.byteLength(raw)>262144)throw invalid();process.stdout.write(raw);}catch{process.exitCode=1;}
+ let reportedFailure=false;
+ try{
+  let input='';
+  for await(const chunk of process.stdin){
+   input+=chunk;
+   if(Buffer.byteLength(input)>131072)throw invalid();
+  }
+  const result=await runGatewayObservation(JSON.parse(input),{reportFailure:diagnostic=>{
+   process.stderr.write(JSON.stringify(diagnostic));
+   reportedFailure=true;
+  }});
+  const raw=JSON.stringify(result);
+  if(Buffer.byteLength(raw)>262144)throw invalid();
+  process.stdout.write(raw);
+ }catch{
+  if(!reportedFailure)process.stderr.write('InvalidObservation');
+  process.exitCode=1;
+ }
 }

@@ -1,6 +1,8 @@
 import {withResourceProof} from './replacement-sequence-fixtures.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {runGatewayObservation} from './gateway-observation-runner.mjs';
 const metricSeries=['up','upTimestamp','active','activeTimestamp','idle','idleTimestamp','waiting','waitingTimestamp'];
 const credential='raptor_at_'+'a'.repeat(43);
@@ -240,4 +242,12 @@ test('fleet MCP failure retains Infra API diagnostics without the MCP error text
  assert.equal(diagnostics[0].category,'upstream_tool_error');
  assert.deepEqual(diagnostics[0].infraFailure,infraFailure);
  assert.doesNotMatch(JSON.stringify(diagnostics),/raw-provider-error|raptor_at_/);
+});
+
+test('runner CLI rejects unsupported input with the image-check error marker',()=>{
+ const runner=fileURLToPath(new URL('./gateway-observation-runner.mjs',import.meta.url));
+ const result=spawnSync(process.execPath,[runner],{input:'{}',encoding:'utf8'});
+ assert.equal(result.status,1);
+ assert.equal(result.stdout,'');
+ assert.equal(result.stderr,'InvalidObservation');
 });
