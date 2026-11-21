@@ -1,6 +1,6 @@
 # Raptor read-only request progress with assistant-ui
 
-The request Progress tab uses the pinned `@assistant-ui/react@0.15.25` runtime, thread and grouped message primitives. Raptor authenticates the viewer, obtains a short-lived Gateway ticket, and the existing direct-progress controller subscribes to sandbox-gateway. No assistant-ui server or T3 backend is required for this view.
+The request Progress tab uses the pinned `@assistant-ui/react@0.15.25` runtime, thread and grouped message primitives. Raptor authenticates the viewer, obtains a short-lived Gateway ticket, and the existing direct-progress controller subscribes to sandbox-gateway. No assistant-ui server is required for this view.
 
 Narration is displayed inline, with consecutive tool calls grouped into expandable activity rows. Each tool shows its recorded start/result, outcome, timestamps and evidence mode. Content is rendered as escaped text. The viewer has no composer, message editing or execution commands; approvals stay in the platform.
 
@@ -8,7 +8,7 @@ Public progress events are mapped to stable message and tool IDs. Because the cu
 
 Only actual event summaries are shown. The viewer does not invent agent reasoning, skill-loading narration or approval transitions. Richer narration requires the producer to emit public progress summaries. Existing snapshot status, checkpoint, cleanup and recovery information remains independent of an answer. Timestamps provide a recorded activity span, not estimated total run time.
 
-The existing controller owns reconnection, ticket renewal, ordered replay, request navigation and saved-history fallback. The mounting exports `updateWorklog` / `resetWorklog` and generated asset paths remain stable for that integration; the active viewer no longer imports T3 WorkLog. The old vendored source is retained as provenance and is not bundled.
+The existing controller owns reconnection, ticket renewal, ordered replay, request navigation and saved-history fallback. The mounting exports `updateWorklog` / `resetWorklog` and generated asset paths remain stable for that integration.
 
 ## Build and verification
 
