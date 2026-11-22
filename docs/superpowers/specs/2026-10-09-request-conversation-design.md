@@ -25,7 +25,7 @@ These facts come from current source, not the recovered historical handoff.
 
 Extend the existing Raptor outbox, Gateway execution journal, Pi harness and assistant-ui runtime. This preserves the approved transport and operation authorization boundary.
 
-Alternatives considered: browser write tickets would put admission and revocation policy in two services; a separate T3 chat service would split Request identity, execution and conversation ownership. Neither is needed for this slice.
+Alternatives considered: browser write tickets would put admission and revocation policy in two services. This is not needed for this slice.
 
 ```mermaid
 sequenceDiagram
